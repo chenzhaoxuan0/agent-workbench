@@ -1,0 +1,144 @@
+@import "tailwindcss";
+
+/* ==========================================================================
+   Design tokens — 源自 DESIGN.md（Perplexity 风格参考）
+   scholar's parchment behind clean glass
+
+   核心约束（来自 DESIGN.md 的 Don't 清单，逐条遵守）：
+   - 画布永远是羊皮纸，不用纯白
+   - 强调色只有 Deep Teal 一个，不引入第二个彩色
+   - 字重只在 400 / 500 之间，没有 600+
+   - 卡片圆角 16 / 输入 12 / 按钮 6 / 胶囊 9999
+   - 扁平：除卡片那一道 1px 阴影外不加任何投影
+   ========================================================================== */
+
+@theme {
+  /* ---- Surfaces：暖白纸面体系 ---- */
+  --color-canvas: #faf8f5; /* 页面画布，全局底色 */
+  --color-rail: #f2efe9; /* 左右侧栏：比画布略深一档的羊皮纸 */
+  --color-card: #fdfbfa; /* 卡片面，比画布亮一档 */
+  --color-line: #d1d1cd; /* 铅笔线，1px 发丝边框 */
+  --color-line-soft: #e7e4de; /* 更浅一档，用于卡内部分隔 */
+
+  /* ---- Text：墨色系，暖调深黑而非纯黑 ---- */
+  --color-ink: #27251e; /* 正文、图标填充、按钮底色 */
+  --color-graphite: #72706b; /* 次要文字、导航图标、失效标签 */
+  --color-ash: #92918b; /* 辅助说明、极次要 */
+
+  /* ---- Accent：全场唯一彩色 ---- */
+  --color-teal: #016a71; /* 选中态、激活态、品牌强调 */
+  --color-teal-tint: #e7efef; /* 选中态的浅填充 */
+  --color-teal-edge: #a9c6c8; /* 选中态边框 */
+
+  /* ---- 语义色：仅用于 +/-, 成功/失败等真实语义，不做装饰 ---- */
+  --color-gain: #2f6b4f; /* diff 新增 */
+  --color-loss: #9a4a3c; /* diff 删除 / 错误 */
+
+  /* ---- Typography：字重锁死在 400 / 500 ---- */
+  --font-sans: Inter, "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system,
+    "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Code", "SF Mono", Consolas, "Liberation Mono", monospace;
+
+  --text-caption: 11px;
+  --text-body-sm: 12px;
+  --text-body: 14px;
+  --text-body-lg: 16px;
+
+  /* ---- Spacing：4px 基准，compact 密度 ---- */
+  --spacing: 0.25rem;
+  --spacing-gutter: 0.5rem; /* 元素间距 8px */
+  --spacing-pad: 1rem; /* 卡片内边距 16px */
+  --spacing-section: 2rem; /* 区块间距 32px */
+
+  /* ---- Radius：四档，不越界 ---- */
+  --radius-btn: 6px;
+  --radius-input: 12px;
+  --radius-card: 16px;
+  --radius-chip: 9999px;
+
+  /* ---- Shadow：全场只有这一道 ---- */
+  --shadow-subtle: 0 1px 2px 0 rgb(0 0 0 / 0.08);
+}
+
+/* ==========================================================================
+   Base
+   ========================================================================== */
+
+:root {
+  color-scheme: light;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.43;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* 全场唯一的动效承诺：颜色过渡，无位移无缩放 */
+button,
+a,
+input,
+textarea {
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease;
+}
+
+/* 焦点可见性：teal 细环，不靠阴影 */
+:where(button, a, input, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--color-teal);
+  outline-offset: 2px;
+  border-radius: var(--radius-btn);
+}
+
+::selection {
+  background: var(--color-teal-tint);
+  color: var(--color-ink);
+}
+
+/* 发丝滚动条，融入纸面 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #cfccc5 transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: #cfccc5;
+  border-radius: 4px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* 数字对齐，避免时间戳/计数跳动 */
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ==========================================================================
+   横向滚动但不显示滚动条
+   用于右栏标签条：标签放不下时要能滑，但 44px 高的标签栏容不下一条滚动条，
+   露出来会明显把标签挤偏。滚动能力保留，滚动条藏掉。
+   ========================================================================== */
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}

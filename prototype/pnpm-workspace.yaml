@@ -1,0 +1,4 @@
+# pnpm 11 起，构建脚本白名单从 package.json 迁到 pnpm-workspace.yaml，键名是 allowBuilds
+# esbuild 需要 postinstall 校验原生二进制，否则 vite 无法启动
+allowBuilds:
+  esbuild: true

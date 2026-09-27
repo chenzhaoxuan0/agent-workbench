@@ -1,0 +1,29 @@
+# 依赖与构建产物
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Vite / 工具缓存
+.vite/
+.turbo/
+coverage/
+
+# 本地环境与密钥 —— 绝不入库
+.env
+.env.*
+!.env.example
+
+# 编辑器与系统
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# 日志
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# 调试残留。契约自检在 scripts/check-*.ts 里，_ 前缀的只是打印中间值用
+prototype/scripts/_*.ts
