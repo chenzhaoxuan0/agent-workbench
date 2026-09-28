@@ -31,6 +31,9 @@ interface PickerRow {
 
 export function RuntimePicker() {
   const runtimes = useWorkbench((s) => s.runtimes);
+  // 已停用的执行器不出现在 rail / 列表（T3：Disabled 实例仍列在设置里，但选择器不出现）
+  const runtimePrefs = useWorkbench((s) => s.runtimePrefs);
+  const enabledRuntimes = useMemo(() => runtimes.filter((r) => runtimePrefs[r.id]?.enabled !== false), [runtimes, runtimePrefs]);
   const activeId = useWorkbench((s) => s.activeRuntimeId);
   const activeModels = useWorkbench(selectVisibleModels(activeId));
   const modelPrefsMap = useWorkbench((s) => s.modelPrefs);
@@ -74,7 +77,7 @@ export function RuntimePicker() {
   const rows = useMemo<readonly PickerRow[]>(() => {
     if (rail === "favorites") {
       const out: PickerRow[] = [];
-      for (const r of runtimes) {
+      for (const r of enabledRuntimes) {
         const prefs = prefsOf(modelPrefsMap, r.id);
         for (const spec of resolveVisibleModels(r.models, prefs)) {
           if (prefs.favoriteModels.includes(spec.id)) out.push({ runtime: r, spec });
@@ -177,7 +180,7 @@ export function RuntimePicker() {
               <Star size={16} className={cn(rail === "favorites" && "fill-current")} />
             </RailButton>
             <span className="my-0.5 h-px w-6 bg-line" aria-hidden />
-            {runtimes.map((r) => (
+            {enabledRuntimes.map((r) => (
               <RailButton
                 key={r.id}
                 selected={rail === r.id}

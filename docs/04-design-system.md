@@ -354,3 +354,21 @@ pi 仓库已更新克隆至 Agent/pi-latest（6f75515），其 models.json schem
   （两段确认）；「打开配置文件」以配置预览折叠面板等价呈现；
 - ⚠ 凭据边界：原型期 key 明文存 localStorage（本地单用户妥协）；
   dsh 是 secret 入凭据库、配置只留 apiKeyEnv 引用名——接真运行时须照做。
+
+### 供应商实例面板（2026-09-28 第十一轮，逻辑对齐 T3 Providers 页）
+
+设置模型分区重构为 **T3 ProviderSettingsPanel 的实例逻辑**，
+主体换成 `ui/ProviderInstancesPanel.tsx`（六家执行器 = provider instance）：
+
+- **左列实例列表**（240px）：图标 + 名称 + 版本徽章 + 状态行
+  （已就绪 · http / 未安装 · acp…）+ **启用 Switch**；
+  停用的执行器整体压暗，composer 选择器（rail / 列表 / 收藏聚合）同步隐藏；
+- **右列编辑器**：Display name（铅笔行内编辑）/ Runtime（端点覆盖 +
+  传输协议只读 + 启动参数）/ Environment（KEY-VALUE 变量表，可增删）/
+  Models（内嵌该 CLI 的模型清单管理）；
+- **顶栏**：「已检查 刚刚」+ 刷新（probeAll 全量重探测）；
+  Advanced 提供健康检查间隔步进（原型期本地态）；
+- dsh 式 API 供应商卡（pi 目录 + 兼容协议）保留，作为页面下半的独立分区。
+
+store：`useWorkbench.runtimePrefs`（enabled / displayName / endpoint /
+launchArgs / envVars / lastCheckedAt）+ `probeAll()` 全量重探测。

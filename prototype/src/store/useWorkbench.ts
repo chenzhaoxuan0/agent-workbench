@@ -26,6 +26,19 @@ runtimeRegistry.registerAll(mockFactories);
 
 export type ViewMode = "bot" | "project";
 
+/**
+ * 执行器实例偏好 —— 对齐 T3 ProviderInstanceCard 的可编辑面：
+ * 启用开关、显示名覆盖、端点覆盖、启动参数、环境变量、最近探测时间。
+ */
+export interface RuntimePref {
+  readonly enabled: boolean;
+  readonly displayName?: string;
+  readonly endpoint?: string;
+  readonly launchArgs?: string;
+  readonly envVars?: readonly { key: string; value: string }[];
+  readonly lastCheckedAt?: number;
+}
+
 interface TimelineItem {
   readonly id: number;
   readonly event: RuntimeEvent;
@@ -63,6 +76,11 @@ interface WorkbenchState {
   automations: readonly Automation[];
   /** 输入框草稿。空态建议卡片点一下就能预填 */
   draft: string;
+  /** 执行器实例偏好（T3 Providers 页逻辑：启用开关 / 覆盖 / 环境变量） */
+  runtimePrefs: Readonly<Record<string, RuntimePref>>;
+  setRuntimePref: (id: string, patch: Partial<Omit<RuntimePref, "enabled">> & { enabled?: boolean }) => void;
+  /** 全量重探测（T3 的 Checked 刷新） */
+  probeAll: () => Promise<void>;
   /** 已裁决的权限请求：requestId → 决策。用于把权限卡切成「已处理」态 */
   permissionDecisions: Readonly<Record<string, string>>;
   /** 本次运行的权限模式（composer 右侧常驻） */
@@ -171,6 +189,7 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
   deliverables: SAMPLE_DELIVERABLES,
   busy: false,
   draft: "",
+  runtimePrefs: {} as Readonly<Record<string, RuntimePref>>,
   permissionDecisions: {},
   permissionMode: "ask",
   attachments: [],
@@ -250,6 +269,23 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
     }),
 
   cancelRun: () => set({ busy: false }),
+
+  setRuntimePref: (id, patch) =>
+    set((s) => {
+      const base: RuntimePref = s.runtimePrefs[id] ?? { enabled: true };
+      return { runtimePrefs: { ...s.runtimePrefs, [id]: { ...base, ...patch } } };
+    }),
+
+  probeAll: async () => {
+    for (const entry of get().runtimes) {
+      void runtimeRegistry
+        .getOrCreate(entry.id)
+        .then((adapter) => adapter.probe())
+        .then((probe) => runtimeRegistry.setState(entry.id, probe.state))
+        .catch(() => undefined);
+    }
+    await Promise.resolve();
+  },
 
   resolvePermission: (requestId, decision) => {
     const sessions = get().sessions;

@@ -21,7 +21,7 @@ import {
   type SettingsSectionId,
 } from "../store/useShell.ts";
 import { useWorkbench, selectActiveUnit } from "../store/useWorkbench.ts";
-import { ModelSettingsSection } from "./ModelSettings.tsx";
+import { ProviderInstancesPanel } from "./ProviderInstancesPanel.tsx";
 import { ProviderSettingsSection } from "./ProviderSettingsSection.tsx";
 import { cn } from "./cn.ts";
 
@@ -204,8 +204,10 @@ function SectionBody({ section }: { section: SettingsSectionDef }) {
     case "models":
       return (
         <div className="space-y-6">
+          {/* 执行器实例面板（T3 Providers 逻辑：左列表+开关 / 右编辑器含 Models 管理） */}
+          <ProviderInstancesPanel />
+          {/* API 供应商（pi 目录 + 兼容协议）—— dsh ModelsSection 形态 */}
           <ProviderSettingsSection />
-          <ModelSettingsSection />
         </div>
       );
     case "shortcuts":

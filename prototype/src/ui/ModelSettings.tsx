@@ -78,7 +78,7 @@ export function ModelSettingsSection() {
   );
 }
 
-function ProviderModelPanel({ runtimeId, displayName }: { runtimeId: string; displayName: string }) {
+export function ProviderModelPanel({ runtimeId, displayName }: { runtimeId: string; displayName: string }) {
   const declared = useWorkbench((s) => s.runtimes.find((r) => r.id === runtimeId)?.models ?? EMPTY_SPECS);
   const prefs = useWorkbench((s) => prefsOf(s.modelPrefs, runtimeId));
   const apply = useWorkbench((s) => s.applyModelPrefs);
