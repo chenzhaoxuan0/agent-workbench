@@ -66,7 +66,7 @@ export const SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
   { id: "shortcuts", title: "快捷键", desc: "全局与工作区级键位", groupId: "basics", icon: "keyboard" },
 
   { id: "skills", title: "技能", desc: "SKILL.md 目录，跨工具共享", groupId: "agentCapabilities", icon: "wand" },
-  { id: "memory", title: "记忆", desc: "长期记忆的存储与查看", groupId: "agentCapabilities", icon: "brain" },
+  { id: "memory", title: "记忆", desc: "语义事实 / 情节事件 / 程序性技能 三层记忆（对齐 waku）", groupId: "agentCapabilities", icon: "brain" },
   { id: "hooks", title: "钩子", desc: "工具调用前后触发的自定义脚本", groupId: "agentCapabilities", icon: "anchor" },
   { id: "permissions", title: "权限", desc: "默认审批策略与信任范围", groupId: "agentCapabilities", icon: "shield" },
 

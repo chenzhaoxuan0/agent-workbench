@@ -1,0 +1,85 @@
+import { create } from "zustand";
+
+/**
+ * 记忆偏好 —— 全局默认，对齐 waku-agent 的记忆三柱与门控/整理参数
+ * （waku: WAKU_SEMANTIC_STORE / WAKU_EPISODIC_STORE / WAKU_RETRIEVAL_TOP_K /
+ *  WAKU_CONSOLIDATE_EVERY / small_model 门控）。
+ *
+ * 每 bot 的接入开关在「添加 bot」时单独声明（WorkUnit.memory），
+ * 这里的全局值作为未显式声明时的默认。
+ */
+
+export type SemanticStore = "sqlite" | "supabase" | "mem0" | "zep" | "langmem";
+export type EpisodicStore = "sqlite" | "notion";
+
+export interface MemoryPrefs {
+  /** 语义记忆 · 事实（人/项目/偏好的持久事实，FTS5 检索） */
+  semanticEnabled: boolean;
+  semanticStore: SemanticStore;
+  /** 检索条数（waku: WAKU_RETRIEVAL_TOP_K，默认 4） */
+  semanticTopK: number;
+  /** 情节记忆 · 事件（带日期的“发生过什么”一句话摘要） */
+  episodicEnabled: boolean;
+  episodicStore: EpisodicStore;
+  /** 程序性记忆 · 技能（SKILL.md 关键词命中注入，每轮最多 2 个） */
+  proceduralEnabled: boolean;
+  /** 检索门控：小模型先判断本次是否需要检索；fail-open（门控出错就检索） */
+  gateEnabled: boolean;
+  gateModel: string;
+  /** 记忆整理：每 N 次交换由小模型提取 facts + episode（waku 默认 6） */
+  consolidateEvery: number;
+  /** 人读镜像：每轮后重新生成 MEMORY.md */
+  mirrorMd: boolean;
+}
+
+const DEFAULTS: MemoryPrefs = {
+  semanticEnabled: true,
+  semanticStore: "sqlite",
+  semanticTopK: 4,
+  episodicEnabled: true,
+  episodicStore: "sqlite",
+  proceduralEnabled: true,
+  gateEnabled: true,
+  gateModel: "claude-haiku-4-5",
+  consolidateEvery: 6,
+  mirrorMd: true,
+};
+
+const STORAGE_KEY = "agent-workbench:memory-prefs";
+
+function load(): MemoryPrefs {
+  if (typeof window === "undefined") return DEFAULTS;
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    return raw ? { ...DEFAULTS, ...(JSON.parse(raw) as Partial<MemoryPrefs>) } : DEFAULTS;
+  } catch {
+    return DEFAULTS;
+  }
+}
+
+function save(prefs: MemoryPrefs): void {
+  try {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(prefs));
+  } catch {
+    /* 隐私模式/存储满：静默失败，内存态仍可用 */
+  }
+}
+
+interface MemoryPrefsState {
+  prefs: MemoryPrefs;
+  update: (patch: Partial<MemoryPrefs>) => void;
+  reset: () => void;
+}
+
+export const useMemoryPrefs = create<MemoryPrefsState>()((set, get) => ({
+  prefs: load(),
+  update: (patch) => {
+    const next = { ...get().prefs, ...patch };
+    save(next);
+    set({ prefs: next });
+  },
+  reset: () => {
+    save(DEFAULTS);
+    set({ prefs: DEFAULTS });
+  },
+}));

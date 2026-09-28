@@ -392,3 +392,19 @@ shortcuts / skills / memory / hooks / permissions / usage / trace / track；
   （N 模型 · N 收藏 · N 隐藏），点击展开完整清单管理；
 - **探测策略**（能力探测 / 未安装工具两开关）并入面板底部独立小卡
   （原执行器分区残留）。
+
+### 设置记忆分区：waku 三柱式（2026-09-28，接上轮 bot 分区化）
+
+设置 → 记忆从骨架升级为 waku 三柱结构（store/useMemoryPrefs，localStorage 持久化）：
+
+- **语义记忆 · 事实**：启用开关 + 存储后端（sqlite/supabase/mem0/zep/langmem）+
+  检索条数 top K（默认 4）；
+- **情节记忆 · 事件**：启用 + 存储后端（sqlite/notion）；
+- **程序性记忆 · 技能**：启用注入（SKILL.md 关键词命中、每轮最多 2 个）+
+  技能目录展示；
+- **检索门控**：小模型先判断是否检索（fail-open）+ 门控模型（默认
+  claude-haiku-4-5）；**整理频率** 每 N 次交换（默认 6，waku 同参）；
+- **MEMORY.md 人读镜像** 开关 + 导出占位。
+
+与每 bot 的 `WorkUnit.memory` 接入开关互补：这里是全局后端与策略，
+per-bot 只声明「接哪几类」。真运行时据此接 SQLite FTS5 / 远端后端。
