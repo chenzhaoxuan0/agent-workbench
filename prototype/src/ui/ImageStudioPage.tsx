@@ -12,8 +12,6 @@ import {
 } from "lucide-react";
 import {
   FORMAT_OPTIONS,
-  PRESET_MODELS,
-  IMAGE_STUDIO_STORAGE_KEY,
   qualityOptionsFor,
   sizeOptionsFor,
   useImageStudio,
@@ -25,11 +23,11 @@ import { cn } from "./cn.ts";
 /**
  * 出图工作台 —— 主视图（侧栏顶部动作区第三入口，与新建任务/搜索/自动化同级）。
  *
- * 生成逻辑移植自 gpt_image_playground（OpenAI 兼容 images API）：
- * - 纯文本 prompt → /v1/images/generations；
- * - 附参考图 → /v1/images/edits（FormData，image[] 多图）；
- * - 尺寸/质量选项随模型族切换（gpt-image* vs dall-e-3/2）；
- * - 历史任务本地留存（配额满丢最旧任务的图）。
+ * 生成逻辑移植自 gpt_image_playground（OpenAI 兼容 images / responses 双模式）：
+ * - 纯文本 prompt → /v1/images/generations；附参考图 → /v1/images/edits（FormData）；
+ * - 流式开启时 partial image 实时显示在 pending 任务卡；
+ * - 尺寸/质量/压缩/审核选项随模型族切换；
+ * - 供应商 profile 的完整编辑面在设置页「出图」分区，这里只放只读摘要 + 跳转。
  */
 
 export function ImageStudioPage() {
@@ -47,8 +45,7 @@ export function ImageStudioPage() {
             返回工作台
           </button>
           <span className="text-body-sm font-medium text-ink">出图</span>
-          <span className="rounded-chip bg-teal-tint px-1.5 py-0.5 text-[10px] text-teal">OpenAI 兼容 images API</span>
-          <span className="ml-auto font-mono text-[10px] text-ash">{IMAGE_STUDIO_STORAGE_KEY}</span>
+          <span className="rounded-chip bg-teal-tint px-1.5 py-0.5 text-[10px] text-teal">OpenAI 兼容 images / responses</span>
         </div>
       </div>
 
@@ -67,17 +64,18 @@ function Composer() {
   const setPrompt = useImageStudio((s) => s.setPrompt);
   const params = useImageStudio((s) => s.params);
   const setParams = useImageStudio((s) => s.setParams);
-  const profile = useImageStudio((s) => s.profile);
+  const profile = useImageStudio((s) => s.activeProfile());
   const refImages = useImageStudio((s) => s.refImages);
   const addRefImages = useImageStudio((s) => s.addRefImages);
   const removeRefImage = useImageStudio((s) => s.removeRefImage);
   const generate = useImageStudio((s) => s.generate);
   const busy = useImageStudio((s) => s.busy);
+  const openSettings = useShell((s) => s.openSettings);
 
-  const [configOpen, setConfigOpen] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const missing = !profile.apiKey.trim();
+  const isGptImage = profile.model.toLowerCase().includes("gpt-image");
   const canGenerate = !busy && prompt.trim().length > 0 && !missing;
 
   const onFiles = async (files: FileList | null) => {
@@ -93,27 +91,26 @@ function Composer() {
 
   return (
     <section className="mb-6 rounded-card border border-line bg-card p-4">
-      <div className="mb-3 flex items-center gap-2">
-        <Sparkles size={13} className="shrink-0 text-teal" />
-        <p className="text-body-sm font-medium text-ink">生成设置</p>
-        <span className="text-[10px] text-ash">
-          {refImages.length > 0 ? `参考图 ×${refImages.length} → 走 /images/edits 改图` : "纯文本 → /images/generations"}
+      {/* 当前供应商摘要（只读）→ 完整编辑在设置页「出图」分区 */}
+      <div className="mb-3 flex flex-wrap items-center gap-2 rounded-input border border-line-soft bg-rail px-3 py-2">
+        <span className="h-2 w-2 shrink-0 rounded-full bg-teal" aria-hidden />
+        <span className="text-caption font-medium text-ink">{profile.name}</span>
+        <span className="rounded-chip bg-line-soft px-1.5 py-0.5 font-mono text-[10px] text-graphite">
+          {profile.apiMode === "responses" ? "responses" : "images"}
         </span>
+        <span className="rounded-chip bg-line-soft px-1.5 py-0.5 font-mono text-[10px] text-graphite">{profile.model}</span>
+        {profile.codexCli && <span className="rounded-chip bg-line-soft px-1.5 py-0.5 text-[10px] text-graphite">codex 中转</span>}
+        {profile.streamImages && (
+          <span className="rounded-chip bg-teal-tint px-1.5 py-0.5 text-[10px] text-teal">流式 ×{profile.streamPartialImages ?? 0}</span>
+        )}
         <button
-          onClick={() => setConfigOpen((o) => !o)}
-          aria-expanded={configOpen}
-          className={cn(
-            "ml-auto flex shrink-0 items-center gap-1 rounded-btn px-2 py-1 text-caption",
-            configOpen ? "bg-teal-tint text-ink" : "text-graphite hover:bg-line-soft hover:text-ink",
-          )}
+          onClick={() => openSettings("image")}
+          className="ml-auto flex shrink-0 items-center gap-1 rounded-btn px-2 py-1 text-caption text-graphite hover:bg-line-soft hover:text-ink"
         >
-          <Settings2 size={12} />
-          供应商
-          <ChevronDown size={11} className={cn("transition-transform", configOpen && "rotate-180")} />
+          <Settings2 size={11} />
+          供应商设置
         </button>
       </div>
-
-      {configOpen && <ProfileEditor />}
 
       <textarea
         value={prompt}
@@ -144,17 +141,50 @@ function Composer() {
       )}
 
       <div className="mt-3 flex flex-wrap items-center gap-2">
-        {/* 参数组：尺寸/质量随模型族切换 */}
-        <SelectChip label="尺寸" value={params.size} options={sizes} onChange={(size) => setParams({ size })} />
-        <SelectChip label="质量" value={params.quality} options={qualities} onChange={(quality) => setParams({ quality })} />
-        {profile.model.toLowerCase().includes("gpt-image") && (
-          <SelectChip
-            label="格式"
-            value={params.output_format}
-            options={[...FORMAT_OPTIONS]}
-            labels={{ png: "PNG", jpeg: "JPEG", webp: "WebP" }}
-            onChange={(v) => setParams({ output_format: v as (typeof FORMAT_OPTIONS)[number] })}
-          />
+        {/* 参数组：随模型族切换（gpt-image 全量；dall-e 尺寸/质量族不同；codex 中转忽略 size/quality） */}
+        {!profile.codexCli && (
+          <>
+            <SelectChip label="尺寸" value={params.size} options={[...sizes]} onChange={(size) => setParams({ size })} />
+            <SelectChip label="质量" value={params.quality} options={[...qualities]} onChange={(quality) => setParams({ quality })} />
+          </>
+        )}
+        {isGptImage && !profile.codexCli && (
+          <>
+            <SelectChip
+              label="格式"
+              value={params.output_format}
+              options={[...FORMAT_OPTIONS]}
+              labels={{ png: "PNG", jpeg: "JPEG", webp: "WebP" }}
+              onChange={(v) => setParams({ output_format: v as (typeof FORMAT_OPTIONS)[number] })}
+            />
+            {params.output_format !== "png" && (
+              <SelectChip
+                label="压缩"
+                value={params.output_compression == null ? "默认" : String(params.output_compression)}
+                options={["默认", "60", "80", "95"]}
+                onChange={(v) => setParams({ output_compression: v === "默认" ? null : Number(v) })}
+              />
+            )}
+            <SelectChip
+              label="审核"
+              value={params.moderation}
+              options={["auto", "low"]}
+              onChange={(v) => setParams({ moderation: v as "auto" | "low" })}
+            />
+            <button
+              onClick={() => setParams({ transparent_output: !params.transparent_output })}
+              aria-pressed={params.transparent_output}
+              title="gpt-image 原生 background=transparent"
+              className={cn(
+                "shrink-0 rounded-btn border px-2.5 py-1.5 text-caption",
+                params.transparent_output
+                  ? "border-teal-edge bg-teal-tint text-ink"
+                  : "border-line text-graphite hover:bg-line-soft hover:text-ink",
+              )}
+            >
+              透明
+            </button>
+          </>
         )}
         <StepperChip value={params.n} min={1} max={4} onChange={(n) => setParams({ n })} />
 
@@ -180,7 +210,7 @@ function Composer() {
         <button
           onClick={() => void generate()}
           disabled={!canGenerate}
-          title={missing ? "先在「供应商」里填 API Key" : undefined}
+          title={missing ? "先在设置页「出图」里填 API Key" : undefined}
           className={cn(
             "ml-auto flex shrink-0 items-center gap-1.5 rounded-btn bg-ink px-4 py-1.5 text-caption font-medium text-canvas",
             canGenerate ? "hover:bg-graphite" : "cursor-not-allowed opacity-50",
@@ -190,60 +220,10 @@ function Composer() {
           {busy ? "生成中…" : "生成"}
         </button>
       </div>
+      {missing && (
+        <p className="mt-2 text-[10px] text-loss">当前供应商「{profile.name}」还没有填 API Key —— 到 设置 → 出图 里配置。</p>
+      )}
     </section>
-  );
-}
-
-function ProfileEditor() {
-  const profile = useImageStudio((s) => s.profile);
-  const setProfile = useImageStudio((s) => s.setProfile);
-  return (
-    <div className="mb-3 space-y-2 rounded-input border border-line-soft bg-rail p-3">
-      <div className="grid grid-cols-[92px_1fr] items-center gap-2">
-        <label className="text-caption text-graphite" htmlFor="studio-baseurl">API 地址</label>
-        <input
-          id="studio-baseurl"
-          value={profile.baseUrl}
-          onChange={(e) => setProfile({ baseUrl: e.target.value })}
-          placeholder="https://api.openai.com/v1"
-          className="rounded-btn border border-line bg-canvas px-2 py-1 font-mono text-caption text-ink outline-none focus:border-teal-edge"
-        />
-        <label className="text-caption text-graphite" htmlFor="studio-key">API Key</label>
-        <input
-          id="studio-key"
-          type="password"
-          value={profile.apiKey}
-          onChange={(e) => setProfile({ apiKey: e.target.value })}
-          placeholder="sk-…（仅存本地 localStorage）"
-          className="rounded-btn border border-line bg-canvas px-2 py-1 font-mono text-caption text-ink outline-none focus:border-teal-edge"
-        />
-        <label className="text-caption text-graphite" htmlFor="studio-model">模型</label>
-        <div className="flex items-center gap-1.5">
-          <input
-            id="studio-model"
-            value={profile.model}
-            onChange={(e) => setProfile({ model: e.target.value })}
-            className="min-w-0 flex-1 rounded-btn border border-line bg-canvas px-2 py-1 font-mono text-caption text-ink outline-none focus:border-teal-edge"
-          />
-          {[...PRESET_MODELS].map((m) => (
-            <button
-              key={m}
-              onClick={() => setProfile({ model: m })}
-              className={cn(
-                "shrink-0 rounded-chip px-2 py-0.5 text-[10px]",
-                profile.model === m ? "bg-teal-tint text-ink" : "bg-line-soft text-graphite hover:text-ink",
-              )}
-            >
-              {m}
-            </button>
-          ))}
-        </div>
-      </div>
-      <p className="text-[10px] leading-relaxed text-ash">
-        逻辑移植自 gpt_image_playground：直连 OpenAI 兼容端点（浏览器直连，需端点允许 CORS）；
-        模型族决定参数形态 —— gpt-image* 走 size/quality/output_format，dall-e 走 response_format=b64_json。
-      </p>
-    </div>
   );
 }
 
@@ -257,7 +237,7 @@ function Gallery() {
   if (history.length === 0) {
     return (
       <p className="py-14 text-center text-body-sm text-ash">
-        还没有生成记录。填好 API Key，写一段描述，生成第一张图。
+        还没有生成记录。在 设置 → 出图 配好供应商，写一段描述，生成第一张图。
       </p>
     );
   }
@@ -303,23 +283,41 @@ function TaskCard({ t, onRemove }: { t: ImageTask; onRemove: () => void }) {
         </button>
       </div>
       <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+        {t.profileName && (
+          <span className="rounded-chip bg-line-soft px-1.5 py-0.5 text-[10px] text-graphite">{t.profileName}</span>
+        )}
+        {t.model && <span className="rounded-chip bg-line-soft px-1.5 py-0.5 font-mono text-[10px] text-graphite">{t.model}</span>}
         <span className="rounded-chip bg-line-soft px-1.5 py-0.5 font-mono text-[10px] text-graphite">{t.params.size}</span>
         <span className="rounded-chip bg-line-soft px-1.5 py-0.5 font-mono text-[10px] text-graphite">{t.params.quality}</span>
         <span className="rounded-chip bg-line-soft px-1.5 py-0.5 font-mono text-[10px] text-graphite">×{t.params.n}</span>
-        <span className="rounded-chip bg-line-soft px-1.5 py-0.5 font-mono text-[10px] text-graphite">{t.params.output_format}</span>
+        {t.params.transparent_output && (
+          <span className="rounded-chip bg-teal-tint px-1.5 py-0.5 text-[10px] text-teal">透明</span>
+        )}
         {t.refImages && (
           <span className="rounded-chip bg-teal-tint px-1.5 py-0.5 text-[10px] text-teal">参考图 ×{t.refImages.length}</span>
         )}
       </div>
 
       {t.pending && (
-        <p className="mt-3 flex items-center gap-2 text-caption text-graphite">
-          <Loader2 size={12} className="animate-spin text-teal" />
-          生成中…（gpt-image 一张约 20–60s）
-        </p>
+        <div className="mt-3">
+          {t.partialImage ? (
+            <figure className="relative w-fit overflow-hidden rounded-input border border-line">
+              <img src={t.partialImage} alt="流式过渡图" className="block max-h-64 bg-line-soft object-contain" />
+              <figcaption className="absolute bottom-1.5 left-1.5 flex items-center gap-1 rounded-chip bg-canvas/90 px-2 py-0.5 text-[10px] text-graphite">
+                <Loader2 size={10} className="animate-spin text-teal" />
+                流式生成中…
+              </figcaption>
+            </figure>
+          ) : (
+            <p className="flex items-center gap-2 text-caption text-graphite">
+              <Loader2 size={12} className="animate-spin text-teal" />
+              生成中…（gpt-image 一张约 20–60s）
+            </p>
+          )}
+        </div>
       )}
       {t.error && (
-        <p className="mt-3 break-all rounded-btn bg-loss/5 px-2.5 py-2 text-caption leading-relaxed text-loss">{t.error}</p>
+        <p className="mt-3 whitespace-pre-wrap break-all rounded-btn bg-loss/5 px-2.5 py-2 text-caption leading-relaxed text-loss">{t.error}</p>
       )}
       {t.images.length > 0 && (
         <>

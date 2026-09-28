@@ -9,6 +9,7 @@ import {
   ChartBar,
   ChevronLeft,
   History,
+  ImagePlus,
   Keyboard,
   Minus,
   Package,
@@ -47,10 +48,12 @@ import {
 } from "../core/localMemorySource.ts";
 import { ProviderInstancesPanel } from "./ProviderInstancesPanel.tsx";
 import { ProviderSettingsSection } from "./ProviderSettingsSection.tsx";
+import { ImageSettingsSection } from "./ImageSettingsSection.tsx";
 import { cn } from "./cn.ts";
 
 const ICONS: Record<string, typeof Settings2> = {
   settings: Settings2,
+  image: ImagePlus,
   palette: Palette,
   package: Package,
   keyboard: Keyboard,
@@ -239,6 +242,9 @@ function SectionBody({ section }: { section: SettingsSectionDef }) {
       return <UsageSection />;
     case "memory":
       return <MemorySettingsSection />;
+    case "image":
+      /* 出图供应商 profile 管理（gpt_image_playground 字段全集） */
+      return <ImageSettingsSection />;
     case "permissions":
       return (
         <div className="space-y-6">

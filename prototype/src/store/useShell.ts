@@ -37,6 +37,7 @@ export type SettingsSectionId =
   | "general"
   | "appearance"
   | "models"
+  | "image"
   | "shortcuts"
   | "skills"
   | "memory"
@@ -77,6 +78,7 @@ export const SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
 
   { id: "skills", title: "技能", desc: "SKILL.md 目录，跨工具共享", groupId: "agentCapabilities", icon: "wand" },
   { id: "memory", title: "记忆", desc: "语义事实 / 情节事件 / 程序性技能 三层记忆（对齐 waku）", groupId: "agentCapabilities", icon: "brain" },
+  { id: "image", title: "出图", desc: "图像供应商 profile 管理（gpt_image_playground 字段全集）", groupId: "agentCapabilities", icon: "image" },
   { id: "hooks", title: "钩子", desc: "工具调用前后触发的自定义脚本", groupId: "agentCapabilities", icon: "anchor" },
   { id: "permissions", title: "权限", desc: "默认审批策略与信任范围", groupId: "agentCapabilities", icon: "shield" },
 

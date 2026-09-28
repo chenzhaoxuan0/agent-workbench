@@ -579,3 +579,32 @@ h-12 面包屑顶带 + 卡片输入区 + 结果画廊）。
 验证：gpt_image_playground 自带 mock-image-api（b64 模式，CORS 全开）
 起本地服务，浏览器端到端走通 配置→生成→画廊→持久化→刷新恢复，
 无 key 时生成按钮禁用。
+
+### 出图供应商设置补全 —— 落总设置页（2026-09-28 第二轮）
+
+出图工作台的供应商编辑从页内薄表单**升格为设置页独立分区**「出图」
+（agentCapabilities 组，ImageSettingsSection），字段对齐
+gpt_image_playground 的 ApiProfile 全集：
+
+- **多 profile 管理**：行列表（选中编辑 + 生效 Switch + 两段确认删除），
+  新增 profile 自动成为编辑目标；工作台只留当前 profile 的只读摘要
+  +「供应商设置」跳转；
+- **双接入模式**：images（generations/edits）与 responses
+  （tools: image_generation + tool_choice=required + 推理力度 +
+  专职图像模型 imageGenerationModel）；
+- **流式传输**：stream=true + partial_images(0–3)，SSE 解析
+  partial_image / completed 事件，过渡图实时显示在 pending 任务卡；
+  多张拆并发单发（codexCli 与流式+多张两条路径）；
+- **codexCli 中转**：丢弃 size/quality 参数，尺寸改写为 prompt 前缀
+  （prependCodexCliSizePrompt），prompt 改写守卫前缀一并移植；
+- **response_format=b64_json**（dall-e 族）、**透明背景实现方式**
+  （api=原生 background 参数 / local=canvas 抠图，标注待接真）、
+  **output_compression / moderation** 参数随模型族下发；
+- 请求侧 hint 文案沿用原仓库（流式不支持 / 透明背景不支持）。
+
+未移植（接真时再补）：fal.ai 供应商族、自定义 HTTP 服务商映射、
+透明背景 local 方法的 canvas 后处理实现。
+
+e2e：playground mock（8787，images）+ 自建 SSE mock（8788，responses
+流式正路径）双端点走通 —— 字段全集渲染、images 生成、responses 流式
+（partial→final）、双 profile 持久化与切换回退，零 pageerror。

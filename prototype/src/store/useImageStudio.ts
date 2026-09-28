@@ -1,16 +1,24 @@
 import { create } from "zustand";
-import { callImageApi, type ImageCallResult, type ImageGenParams, type ImageOutputFormat, type ImageProfile } from "../core/imageApi.ts";
+import {
+  callImageApi,
+  type ImageCallResult,
+  type ImageGenParams,
+  type ImageProfile,
+  type PartialImageEvent,
+} from "../core/imageApi.ts";
 
 /**
- * 出图工作台 store —— 供应商配置 + 任务历史。
+ * 出图工作台 store —— 多供应商 profile 管理 + 生成参数 + 任务历史。
  *
- * 配置与 gpt_image_playground 的 ApiProfile 对齐（baseUrl/apiKey/model/timeout），
- * 默认值取该仓库的 DEFAULT_OPENAI_BASE_URL 与 DEFAULT_IMAGES_MODEL：
+ * profile 形态对齐 gpt_image_playground 的 ApiProfile（images/responses 双模式、
+ * 流式、codexCli、response_format、透明背景方法），默认值取该仓库默认：
  * `https://api.openai.com/v1` + `gpt-image-2.5-sunburst`。
- * 任务历史是本页面的「会话」概念：一次生图 = 一条任务（prompt + 参数 + 结果图）。
+ * 供应商的完整编辑面在设置页「出图」分区（SettingsPage），工作台只做
+ * 当前 profile 的只读摘要 + 跳转入口。
  *
- * 持久化语义：配置永久保存；历史图片是 dataURL（单张 1–2MB），受 localStorage
- * 配额约束 —— 写满时从最旧的任务开始丢图（保留元信息），最后整体放弃写历史。
+ * 任务历史是本页面的「会话」概念：一次生图 = 一条任务；流式时 partial
+ * image 实时写进 pending 任务卡。持久化：profile 永久保存；历史图片是
+ * dataURL（单张 1–2MB），配额满按「最旧优先」丢图重试。
  */
 
 const STORE_KEY = "agent-workbench:image-studio";
@@ -19,12 +27,18 @@ const MAX_TASKS = 30;
 export interface ImageTask {
   readonly id: number;
   readonly ts: number;
+  /** 用的哪个 profile（快照，防 profile 改动后历史失真） */
+  readonly profileName: string;
+  readonly model: string;
+  readonly apiMode: string;
   readonly prompt: string;
   readonly params: ImageGenParams;
   /** 参考图（改图任务的输入） */
   readonly refImages?: readonly string[];
   /** 完成结果（dataURL）；失败任务为空 */
   readonly images: readonly string[];
+  /** 流式过程中的过渡图（仅 pending 任务持有） */
+  readonly partialImage?: string;
   readonly revisedPrompt?: string;
   readonly error?: string;
   /** 请求进行中 */
@@ -32,15 +46,24 @@ export interface ImageTask {
 }
 
 interface PersistedStudio {
-  profile?: Partial<ImageProfile>;
+  profiles?: readonly ImageProfile[];
+  activeProfileId?: string;
   history?: readonly ImageTask[];
 }
 
-const DEFAULT_PROFILE: ImageProfile = {
+export const DEFAULT_PROFILE: ImageProfile = {
+  id: "default-openai",
+  name: "OpenAI 官方",
   baseUrl: "https://api.openai.com/v1",
   apiKey: "",
   model: "gpt-image-2.5-sunburst",
   timeout: 600,
+  apiMode: "images",
+  codexCli: false,
+  responseFormatB64Json: false,
+  streamImages: false,
+  streamPartialImages: 0,
+  transparentBackgroundMethod: "api",
 };
 
 const DEFAULT_PARAMS: ImageGenParams = {
@@ -48,6 +71,9 @@ const DEFAULT_PARAMS: ImageGenParams = {
   quality: "auto",
   n: 1,
   output_format: "png",
+  output_compression: null,
+  moderation: "auto",
+  transparent_output: false,
 };
 
 function readPersisted(): PersistedStudio {
@@ -60,12 +86,26 @@ function readPersisted(): PersistedStudio {
   }
 }
 
+/** 旧单 profile 配置（profile 字段）迁移为 profiles[0] */
+function normalizeProfiles(persisted: PersistedStudio): { profiles: ImageProfile[]; activeProfileId: string } {
+  const raw = persisted.profiles;
+  if (raw && raw.length > 0) {
+    const profiles = raw.map((p, i) => ({ ...DEFAULT_PROFILE, ...p, id: p.id || `profile-${i}` }));
+    const activeProfileId =
+      profiles.find((p) => p.id === persisted.activeProfileId)?.id ?? profiles[0]!.id;
+    return { profiles, activeProfileId };
+  }
+  const legacy = persisted as PersistedStudio & { profile?: Partial<ImageProfile> };
+  const first: ImageProfile = { ...DEFAULT_PROFILE, ...(legacy.profile ?? {}) };
+  return { profiles: [first], activeProfileId: first.id };
+}
+
 /** 写历史：配额满则按「最旧优先」丢掉任务的图片重试，图片全丢仍写不下就只保留元信息 */
-function persist(profile: ImageProfile, history: readonly ImageTask[]): void {
+function persist(profiles: readonly ImageProfile[], activeProfileId: string, history: readonly ImageTask[]): void {
   if (typeof window === "undefined") return;
   const tryWrite = (tasks: readonly ImageTask[]): boolean => {
     try {
-      window.localStorage.setItem(STORE_KEY, JSON.stringify({ profile, history: tasks }));
+      window.localStorage.setItem(STORE_KEY, JSON.stringify({ profiles, activeProfileId, history: tasks }));
       return true;
     } catch {
       return false;
@@ -82,27 +122,37 @@ function persist(profile: ImageProfile, history: readonly ImageTask[]): void {
       }
     }
     if (oldestWithImage === -1) break;
-    tasks = tasks.map((t, i) => (i === oldestWithImage ? { ...t, images: [] } : t));
+    tasks = tasks.map((t, i) => (i === oldestWithImage ? { ...t, images: [], partialImage: undefined } : t));
   }
   if (tryWrite(tasks)) return;
   try {
-    window.localStorage.setItem(STORE_KEY, JSON.stringify({ profile, history: tasks.map(({ images: _images, ...rest }) => rest) }));
+    window.localStorage.setItem(
+      STORE_KEY,
+      JSON.stringify({ profiles, activeProfileId, history: tasks.map(({ images: _i, partialImage: _p, ...rest }) => rest) }),
+    );
   } catch {
     /* 配置也写不下 —— 放弃本轮持久化 */
   }
 }
 
 interface ImageStudioState {
-  profile: ImageProfile;
+  profiles: readonly ImageProfile[];
+  activeProfileId: string;
   params: ImageGenParams;
   /** 输入框草稿 */
   prompt: string;
-  /** 参考图 dataURL（走 edits 改图） */
+  /** 参考图 dataURL（走 edits / responses edit 改图） */
   refImages: readonly string[];
   history: readonly ImageTask[];
   readonly busy: boolean;
 
-  setProfile: (patch: Partial<ImageProfile>) => void;
+  /** 当前生效的 profile（便捷选择器） */
+  activeProfile: () => ImageProfile;
+  setActiveProfile: (id: string) => void;
+  addProfile: () => void;
+  removeProfile: (id: string) => void;
+  updateProfile: (id: string, patch: Partial<ImageProfile>) => void;
+
   setParams: (patch: Partial<ImageGenParams>) => void;
   setPrompt: (v: string) => void;
   addRefImages: (dataUrls: readonly string[]) => void;
@@ -115,39 +165,71 @@ interface ImageStudioState {
 
 export const useImageStudio = create<ImageStudioState>((set, get) => {
   const persisted = readPersisted();
+  const { profiles: initProfiles, activeProfileId: initActive } = normalizeProfiles(persisted);
   let seq = 1 + (persisted.history?.length ?? 0);
 
   const save = () => {
-    const { profile, history } = get();
-    persist(profile, history);
+    const { profiles, activeProfileId, history } = get();
+    persist(profiles, activeProfileId, history);
   };
 
   return {
-    profile: { ...DEFAULT_PROFILE, ...persisted.profile },
+    profiles: initProfiles,
+    activeProfileId: initActive,
     params: DEFAULT_PARAMS,
     prompt: "",
     refImages: [],
     history: persisted.history ?? [],
     busy: false,
 
-    setProfile: (patch) => {
-      const profile = { ...get().profile, ...patch };
-      set({ profile });
+    activeProfile: () => {
+      const { profiles, activeProfileId } = get();
+      return profiles.find((p) => p.id === activeProfileId) ?? profiles[0]!;
+    },
+    setActiveProfile: (id) => {
+      set({ activeProfileId: id });
       save();
     },
+    addProfile: () => {
+      const id = `profile-${Date.now().toString(36)}`;
+      set((st) => ({
+        profiles: [...st.profiles, { ...DEFAULT_PROFILE, id, name: `供应商 ${st.profiles.length + 1}`, apiKey: "" }],
+        activeProfileId: id,
+      }));
+      save();
+    },
+    removeProfile: (id) => {
+      set((st) => {
+        if (st.profiles.length <= 1) return st;
+        const profiles = st.profiles.filter((p) => p.id !== id);
+        return {
+          profiles,
+          activeProfileId: st.activeProfileId === id ? profiles[0]!.id : st.activeProfileId,
+        };
+      });
+      save();
+    },
+    updateProfile: (id, patch) => {
+      set((st) => ({ profiles: st.profiles.map((p) => (p.id === id ? { ...p, ...patch } : p)) }));
+      save();
+    },
+
     setParams: (patch) => set((st) => ({ params: { ...st.params, ...patch } })),
     setPrompt: (prompt) => set({ prompt }),
-    addRefImages: (dataUrls) =>
-      set((st) => ({ refImages: [...st.refImages, ...dataUrls].slice(0, 4) })),
+    addRefImages: (dataUrls) => set((st) => ({ refImages: [...st.refImages, ...dataUrls].slice(0, 4) })),
     removeRefImage: (index) => set((st) => ({ refImages: st.refImages.filter((_, i) => i !== index) })),
 
     generate: async () => {
-      const { prompt, params, refImages, profile, busy } = get();
+      const { prompt, params, refImages, busy } = get();
+      const profile = get().activeProfile();
       if (busy || !prompt.trim() || !profile.apiKey.trim()) return;
       const id = seq++;
       const task: ImageTask = {
         id,
         ts: Date.now(),
+        profileName: profile.name,
+        model: profile.model,
+        apiMode: profile.apiMode,
         prompt: prompt.trim(),
         params: { ...params },
         refImages: refImages.length ? [...refImages] : undefined,
@@ -159,12 +241,20 @@ export const useImageStudio = create<ImageStudioState>((set, get) => {
       const controller = new AbortController();
       cancelCurrent = () => controller.abort();
 
+      // 流式 partial image：实时写进 pending 任务卡
+      const onPartialImage = (partial: PartialImageEvent) => {
+        set((st) => ({
+          history: st.history.map((t) => (t.id === id && t.pending ? { ...t, partialImage: partial.image } : t)),
+        }));
+      };
+
       try {
         const result: ImageCallResult = await callImageApi(profile, {
           prompt: task.prompt,
           params: task.params,
           inputImageDataUrls: task.refImages,
           signal: controller.signal,
+          onPartialImage,
         });
         set((st) => ({
           history: st.history.map((t) =>
@@ -172,6 +262,7 @@ export const useImageStudio = create<ImageStudioState>((set, get) => {
               ? {
                   ...t,
                   pending: false,
+                  partialImage: undefined,
                   images: result.images,
                   revisedPrompt: result.revisedPrompts.find(Boolean),
                 }
@@ -186,7 +277,7 @@ export const useImageStudio = create<ImageStudioState>((set, get) => {
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         set((st) => ({
-          history: st.history.map((t) => (t.id === id ? { ...t, pending: false, error: message } : t)),
+          history: st.history.map((t) => (t.id === id ? { ...t, pending: false, partialImage: undefined, error: message } : t)),
           busy: false,
         }));
         save();
@@ -220,7 +311,8 @@ export const SIZE_OPTIONS_DALLE3: readonly string[] = ["1024x1024", "1792x1024",
 export const SIZE_OPTIONS_DALLE2: readonly string[] = ["256x256", "512x512", "1024x1024"];
 export const QUALITY_OPTIONS_GPT_IMAGE: readonly string[] = ["auto", "low", "medium", "high"];
 export const QUALITY_OPTIONS_DALLE3: readonly string[] = ["standard", "hd"];
-export const FORMAT_OPTIONS: readonly ImageOutputFormat[] = ["png", "jpeg", "webp"];
+export const FORMAT_OPTIONS: readonly ImageOutputFormat2[] = ["png", "jpeg", "webp"];
+type ImageOutputFormat2 = ImageGenParams["output_format"];
 
 export function sizeOptionsFor(model: string): readonly string[] {
   const m = model.toLowerCase();
