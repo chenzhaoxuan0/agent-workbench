@@ -8,7 +8,7 @@ export const SAMPLE_UNITS: readonly WorkUnit[] = [
     id: asUnitId("u-content"),
     rootPath: "C:/Users/chenziyu/project/Agent/content",
     name: "内容创作部",
-    kind: "employee",
+    kind: "bot",
     identity: {
       role: "每日内容创作负责人",
       avatar: "✍️",
@@ -56,7 +56,7 @@ export const SAMPLE_UNITS: readonly WorkUnit[] = [
     id: asUnitId("u-clipping"),
     rootPath: "C:/Users/chenziyu/project/Agent/Clippings",
     name: "剪藏归档",
-    kind: "employee",
+    kind: "bot",
     identity: {
       role: "资料收集与归档",
       avatar: "📥",
@@ -167,7 +167,7 @@ export const SAMPLE_SESSIONS: readonly Session[] = [
 ];
 
 /**
- * 样例自动化 —— 员工模式的时间维度。
+ * 样例自动化 —— bot模式的时间维度。
  * 覆盖了各种 scheduleRule 形态和状态分支，
  * 因为「下次运行」和状态徽章的算法只有在这些分支下才验得出来。
  */

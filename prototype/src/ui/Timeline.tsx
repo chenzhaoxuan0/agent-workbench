@@ -92,10 +92,10 @@ function EmptyState() {
     <div className="flex flex-col items-center">
       <p className="text-caption text-ash">{greeting}</p>
       <p className="mt-1 text-body-lg text-graphite">
-        {unit?.kind === "employee" ? `给「${unit.name}」派活` : `对「${unit?.name}」下任务`}
+        {unit?.kind === "bot" ? `给「${unit.name}」派活` : `对「${unit?.name}」下任务`}
       </p>
       <p className="mt-1 text-body-sm text-ash">
-        {unit?.kind === "employee"
+        {unit?.kind === "bot"
           ? "会先读它的 AGENTS.md 当岗位说明书"
           : "项目模式，可开 worktree 隔离"}
       </p>
@@ -224,7 +224,7 @@ function Row({ event, at }: { event: RuntimeEvent; at: number }) {
     case "subagent.spawned":
       return (
         <div className={`${card} mb-2 flex items-center gap-2 border-l-2 border-l-teal`}>
-          <Package size={13} className="shrink-0 text-teal" />
+          <Package size={12} className="shrink-0 text-teal" />
           <p className="text-body-sm text-graphite">
             派生子代理 · 角色 <span className="text-ink">{event.role}</span> · 经由 {event.runtimeId}
           </p>
@@ -272,7 +272,7 @@ function Row({ event, at }: { event: RuntimeEvent; at: number }) {
     case "file.diff":
       return (
         <div className={`${card} mb-3 flex items-center gap-2`}>
-          <FileDiff size={13} className="shrink-0 text-graphite" />
+          <FileDiff size={12} className="shrink-0 text-graphite" />
           <span className="truncate font-mono text-body-sm text-ink">{event.path}</span>
           <span className="tnum ml-auto shrink-0 font-mono text-caption">
             <span className="text-gain">+{event.additions}</span>{" "}
@@ -296,7 +296,7 @@ function Row({ event, at }: { event: RuntimeEvent; at: number }) {
     case "deliverable":
       return (
         <div className={`${card} mb-3 flex items-center gap-2`}>
-          <Package size={13} className="shrink-0 text-teal" />
+          <Package size={12} className="shrink-0 text-teal" />
           <span className="text-body-sm text-ink">{event.title}</span>
           {event.path && (
             <span className="ml-auto shrink-0 font-mono text-caption text-ash">{event.path}</span>

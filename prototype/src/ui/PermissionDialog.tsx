@@ -169,7 +169,7 @@ export function PermissionDialog() {
               aria-label="关闭"
               className="ml-auto shrink-0 rounded-btn p-1 text-ash hover:bg-line-soft hover:text-ink"
             >
-              <X size={13} />
+              <X size={12} />
             </button>
           </div>
 

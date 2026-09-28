@@ -138,7 +138,7 @@ export function SidePaneOverview({ ownerId, onClose }: { ownerId: string | null;
             aria-label="关闭"
             className="rounded-btn p-1 text-ash hover:bg-line-soft hover:text-ink"
           >
-            <X size={13} />
+            <X size={12} />
           </button>
         </div>
 
@@ -270,12 +270,12 @@ function Row({
           aria-label={`关闭 ${title}`}
           className="shrink-0 rounded p-1 text-ash opacity-0 transition group-hover:opacity-100 hover:text-ink"
         >
-          <X size={11} />
+          <X size={12} />
         </button>
       ) : openIcon ? (
-        <Plus size={11} className="shrink-0 text-ash" aria-hidden />
+        <Plus size={12} className="shrink-0 text-ash" aria-hidden />
       ) : (
-        <RotateCcw size={11} className="shrink-0 text-ash" aria-hidden />
+        <RotateCcw size={12} className="shrink-0 text-ash" aria-hidden />
       )}
     </div>
   );
@@ -298,7 +298,7 @@ export function OverviewTrigger({ onOpen, compact }: { onOpen: () => void; compa
         compact ? "" : "text-caption",
       )}
     >
-      {compact ? <ChevronsDown size={12} /> : <Plus size={11} />}
+      {compact ? <ChevronsDown size={12} /> : <Plus size={12} />}
       {!compact && <span>总览</span>}
     </button>
   );

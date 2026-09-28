@@ -200,7 +200,7 @@ function MoreMenu() {
                 title={placeholder ? "原型占位入口" : undefined}
                 className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-body-sm text-graphite hover:bg-line-soft hover:text-ink disabled:pointer-events-none disabled:opacity-40"
               >
-                <Icon size={13} />
+                <Icon size={12} />
                 {label}
               </button>
             ))}
@@ -256,18 +256,18 @@ function WorkspacePopover() {
             <p className="break-all font-mono text-body-sm text-ink">{unit.rootPath}</p>
             {/* 分支行（ZCode 弹层的 GitBranch 行）：项目会话显示 worktree 分支 */}
             <p className="mt-2 flex items-center gap-1.5 text-caption text-graphite">
-              <GitBranch size={11} className="shrink-0 text-ash" />
+              <GitBranch size={12} className="shrink-0 text-ash" />
               <span className="font-mono">{branch ?? "main"}</span>
             </p>
             <div className="mt-2 flex items-center gap-2 border-t border-line-soft pt-2">
               <span className="text-body-sm text-graphite">
-                {unit.name} · {unit.kind === "employee" ? "员工" : "项目"}
+                {unit.name} · {unit.kind === "bot" ? "bot" : "项目"}
               </span>
               <button
                 onClick={copyPath}
                 className="ml-auto flex items-center gap-1 rounded-btn px-1.5 py-0.5 text-caption text-graphite hover:bg-line-soft hover:text-ink"
               >
-                {copied ? <Check size={11} className="text-gain" /> : <Copy size={11} />}
+                {copied ? <Check size={12} className="text-gain" /> : <Copy size={12} />}
                 {copied ? "已复制" : "复制路径"}
               </button>
             </div>
@@ -323,7 +323,7 @@ function HelpMenu() {
                 title="原型占位入口"
                 className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-body-sm text-graphite hover:bg-line-soft hover:text-ink"
               >
-                <Icon size={13} />
+                <Icon size={12} />
                 {label}
               </button>
             ))}

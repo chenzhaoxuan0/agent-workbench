@@ -30,13 +30,14 @@ export function DesktopTopOverlay() {
         visible && "overflow-hidden transition-[width] duration-200 ease-out",
       )}
     >
-      <div className="pointer-events-auto flex items-center gap-1 pl-3">
-        {/* 侧栏开关：品牌标 ↔ 开关图标的 hover 变形（ZCode 的 logo 复合按钮） */}
+      <div className="pointer-events-auto flex items-center gap-1 pl-3 text-body-sm">
+        {/* 侧栏开关：品牌标 ↔ 开关图标的 hover 变形（ZCode 的 logo 复合按钮）。
+            动作行统一规格：text-body-sm + 14px 图标 + 28px 命中区（与侧栏行、头部按钮同组） */}
         <button
           onClick={() => useShell.getState().toggleSidebar()}
           aria-label={visible ? "收起侧栏" : "展开侧栏"}
           title="切换侧边栏 · ⌘B"
-          className="group relative flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-btn text-graphite hover:bg-line-soft hover:text-ink"
+          className="group relative flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-btn text-body-sm text-graphite hover:bg-line-soft hover:text-ink"
         >
           <span
             aria-hidden
@@ -55,7 +56,7 @@ export function DesktopTopOverlay() {
           disabled={!canBack}
           aria-label="后退"
           title="后退 · ⌘["
-          className="rounded-btn p-1.5 text-graphite hover:bg-line-soft hover:text-ink disabled:opacity-35 disabled:hover:bg-transparent"
+          className="rounded-btn p-1.5 text-body-sm text-graphite hover:bg-line-soft hover:text-ink disabled:opacity-35 disabled:hover:bg-transparent"
         >
           <ArrowLeft size={14} />
         </button>
@@ -64,7 +65,7 @@ export function DesktopTopOverlay() {
           disabled={!canForward}
           aria-label="前进"
           title="前进 · ⌘]"
-          className="rounded-btn p-1.5 text-graphite hover:bg-line-soft hover:text-ink disabled:opacity-35 disabled:hover:bg-transparent"
+          className="rounded-btn p-1.5 text-body-sm text-graphite hover:bg-line-soft hover:text-ink disabled:opacity-35 disabled:hover:bg-transparent"
         >
           <ArrowRight size={14} />
         </button>

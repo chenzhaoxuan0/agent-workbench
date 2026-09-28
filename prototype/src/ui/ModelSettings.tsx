@@ -62,7 +62,7 @@ export function ModelSettingsSection() {
             )}
           >
             <span
-              className="flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded text-[9px] font-medium text-white"
+              className="flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded text-caption leading-none font-medium text-white"
               style={{ background: r.presentation.accent }}
               aria-hidden
             >
@@ -103,6 +103,15 @@ function ProviderModelPanel({ runtimeId, displayName }: { runtimeId: string; dis
   const hiddenDeclared = declared.filter((m) => hiddenSet.has(m.id));
   const isFavoriteGroup = (id: string) => favSet.has(id as never);
 
+  // T3 的 groupModelsForDisplay：收藏 → 全部 → 已隐藏 三组，组标题只做展示
+  const matchesFilter = (m: ModelSpec) => {
+    const q = filter.trim().toLocaleLowerCase();
+    return !q || `${m.displayName} ${m.id} ${m.vendorLabel}`.toLocaleLowerCase().includes(q);
+  };
+  const favShown = shown.filter((m) => isFavoriteGroup(m.id));
+  const plainShown = shown.filter((m) => !isFavoriteGroup(m.id));
+  const hiddenShown = hiddenDeclared.filter(matchesFilter);
+
   const handleAdd = () => {
     const r = addCustomModel(prefs, input);
     if (!r.ok) return setError(r.error);
@@ -111,12 +120,120 @@ function ProviderModelPanel({ runtimeId, displayName }: { runtimeId: string; dis
     setError(null);
   };
 
+  const renderRow = (m: ModelSpec, group: "fav" | "all" | "hidden", groupRows: readonly ModelSpec[], index: number) => {
+    const isCustom = customSet.has(m.id);
+    const fav = favSet.has(m.id);
+    const prev = groupRows[index - 1];
+    const next = groupRows[index + 1];
+    const canUp = Boolean(prev) && isFavoriteGroup(m.id) === isFavoriteGroup(prev!.id);
+    const canDown = Boolean(next) && isFavoriteGroup(m.id) === isFavoriteGroup(next!.id);
+
+    return (
+      <li key={m.id} className="flex items-center gap-2 rounded-btn px-2 py-1.5 hover:bg-line-soft">
+        {group !== "hidden" && (
+          <button
+            onClick={() => apply(runtimeId, [(p) => toggleFavorite(p, m.id)])}
+            aria-label={fav ? `取消收藏 ${m.displayName}` : `收藏 ${m.displayName}`}
+            title={fav ? "取消收藏" : "收藏（置顶显示）"}
+            className={cn("shrink-0 rounded p-0.5", fav ? "text-teal" : "text-ash hover:text-ink")}
+          >
+            <Star size={12} fill={fav ? "currentColor" : "none"} />
+          </button>
+        )}
+
+        <span className="min-w-0 flex-1">
+          {editing === m.id ? (
+            <EditRow
+              spec={m}
+              onCancel={() => setEditing(null)}
+              onSave={(patch) => {
+                apply(runtimeId, [(p) => updateCustomModel(p, m.id as never, patch)]);
+                setEditing(null);
+              }}
+            />
+          ) : (
+            <>
+              <span className="flex items-baseline gap-1.5">
+                <span className={cn("truncate text-body-sm", group === "hidden" ? "text-graphite" : "text-ink")}>
+                  {m.displayName}
+                </span>
+                {isCustom && <span className="shrink-0 text-caption text-teal">自定义</span>}
+                {m.source === "custom" && !isCustom && (
+                  <span className="shrink-0 text-caption text-ash">未核实</span>
+                )}
+              </span>
+              <span className="tnum mt-0.5 block truncate font-mono text-caption text-ash">
+                {m.inputPerMTok > 0
+                  ? `${formatPrice(m.inputPerMTok)}/${formatPrice(m.outputPerMTok)}`
+                  : "价格未知"}
+                {m.contextWindow > 0 ? ` · ${formatContext(m.contextWindow)}` : " · 窗口未知"} · {m.vendorLabel}
+              </span>
+            </>
+          )}
+        </span>
+
+        {editing !== m.id && (
+          <span className="flex shrink-0 items-center gap-0.5">
+            {group !== "hidden" && (
+              <>
+                <IconBtn
+                  label={`上移 ${m.displayName}`}
+                  disabled={!canUp}
+                  onClick={() => apply(runtimeId, [(p) => moveModel(p, m.id, -1, (id) => favSet.has(id))])}
+                >
+                  <ArrowUp size={12} />
+                </IconBtn>
+                <IconBtn
+                  label={`下移 ${m.displayName}`}
+                  disabled={!canDown}
+                  onClick={() => apply(runtimeId, [(p) => moveModel(p, m.id, 1, (id) => favSet.has(id))])}
+                >
+                  <ArrowDown size={12} />
+                </IconBtn>
+              </>
+            )}
+            {isCustom ? (
+              group !== "hidden" && (
+                <>
+                  <IconBtn label={`编辑 ${m.displayName}`} onClick={() => setEditing(m.id)}>
+                    <Check size={12} />
+                  </IconBtn>
+                  <IconBtn
+                    label={`删除 ${m.displayName}`}
+                    onClick={() => apply(runtimeId, [(p) => removeCustomModel(p, m.id as never)])}
+                  >
+                    <Trash2 size={12} />
+                  </IconBtn>
+                </>
+              )
+            ) : (
+              // 内置模型不能删，只能藏/显 —— 目录是我们维护的事实
+              <button
+                onClick={() => apply(runtimeId, [(p) => toggleHidden(p, m.id)])}
+                title={hiddenSet.has(m.id) ? "重新在选择器中显示" : "从选择器中隐藏"}
+                aria-label={hiddenSet.has(m.id) ? `显示 ${m.displayName}` : `隐藏 ${m.displayName}`}
+                className="rounded p-1 text-caption text-ash hover:bg-line hover:text-ink"
+              >
+                {hiddenSet.has(m.id) ? "显示" : "隐藏"}
+              </button>
+            )}
+          </span>
+        )}
+      </li>
+    );
+  };
+
+  const GroupTitle = ({ children, n }: { children: React.ReactNode; n: number }) => (
+    <p className="px-2 pb-0.5 pt-2 text-[11px] text-ash">
+      {children} · {n}
+    </p>
+  );
+
   return (
     <div className="rounded-card border border-line bg-canvas">
       <div className="flex flex-wrap items-center gap-2 border-b border-line px-4 py-3">
-        <p className="text-body-sm text-ink">
-          {displayName} · 可选 {visible.length} / 声明 {declared.length}
-          {prefs.customModels.length > 0 && ` · 自定义 ${prefs.customModels.length}`}
+        <p className="tnum text-body-sm text-ink">
+          {visible.length} 模型 · {prefs.favoriteModels.length} 收藏 · {hiddenDeclared.length} 隐藏
         </p>
         <input
           value={filter}
@@ -133,129 +250,32 @@ function ProviderModelPanel({ runtimeId, displayName }: { runtimeId: string; dis
         </button>
       </div>
 
-      {/* 列表 */}
-      <ul className="px-2 py-1.5">
-        {shown.length === 0 && (
+      {/* 三组列表：收藏 → 全部 → 已隐藏（T3 的 groupModelsForDisplay） */}
+      <ul className="px-2 pb-1.5 pt-1">
+        {favShown.length === 0 && plainShown.length === 0 && hiddenShown.length === 0 && (
           <li className="px-2 py-3 text-body-sm text-ash">
             {filter ? "没有匹配的模型" : "这个 CLI 一个可选模型都没有了 —— 至少要留一个"}
           </li>
         )}
-        {shown.map((m, i) => {
-          const isCustom = customSet.has(m.id);
-          const fav = favSet.has(m.id);
-          // 组内首/末才让上移下移可点：跨组交换会打乱分组，那不是「排序」是「重组」
-          const prev = shown[i - 1];
-          const next = shown[i + 1];
-          const canUp = Boolean(prev) && isFavoriteGroup(m.id) === isFavoriteGroup(prev!.id);
-          const canDown = Boolean(next) && isFavoriteGroup(m.id) === isFavoriteGroup(next!.id);
-
-          return (
-            <li key={m.id} className="flex items-center gap-2 rounded-btn px-2 py-1.5 hover:bg-line-soft">
-              <button
-                onClick={() => apply(runtimeId, [(p) => toggleFavorite(p, m.id)])}
-                aria-label={fav ? `取消收藏 ${m.displayName}` : `收藏 ${m.displayName}`}
-                title={fav ? "取消收藏" : "收藏（置顶显示）"}
-                className={cn("shrink-0 rounded p-0.5", fav ? "text-teal" : "text-ash hover:text-ink")}
-              >
-                <Star size={12} fill={fav ? "currentColor" : "none"} />
-              </button>
-
-              <span className="min-w-0 flex-1">
-                {editing === m.id ? (
-                  <EditRow
-                    spec={m}
-                    onCancel={() => setEditing(null)}
-                    onSave={(patch) => {
-                      apply(runtimeId, [(p) => updateCustomModel(p, m.id as never, patch)]);
-                      setEditing(null);
-                    }}
-                  />
-                ) : (
-                  <>
-                    <span className="flex items-baseline gap-1.5">
-                      <span className="truncate text-body-sm text-ink">{m.displayName}</span>
-                      {isCustom && <span className="shrink-0 text-caption text-teal">自定义</span>}
-                      {m.source === "custom" && !isCustom && (
-                        <span className="shrink-0 text-caption text-ash">未核实</span>
-                      )}
-                    </span>
-                    <span className="tnum mt-0.5 block truncate font-mono text-caption text-ash">
-                      {m.inputPerMTok > 0
-                        ? `${formatPrice(m.inputPerMTok)}/${formatPrice(m.outputPerMTok)}`
-                        : "价格未知"}
-                      {m.contextWindow > 0 ? ` · ${formatContext(m.contextWindow)}` : " · 窗口未知"} · {m.vendorLabel}
-                    </span>
-                  </>
-                )}
-              </span>
-
-              {editing !== m.id && (
-                <span className="flex shrink-0 items-center gap-0.5">
-                  <IconBtn
-                    label={`上移 ${m.displayName}`}
-                    disabled={!canUp}
-                    onClick={() => apply(runtimeId, [(p) => moveModel(p, m.id, -1, (id) => favSet.has(id))])}
-                  >
-                    <ArrowUp size={11} />
-                  </IconBtn>
-                  <IconBtn
-                    label={`下移 ${m.displayName}`}
-                    disabled={!canDown}
-                    onClick={() => apply(runtimeId, [(p) => moveModel(p, m.id, 1, (id) => favSet.has(id))])}
-                  >
-                    <ArrowDown size={11} />
-                  </IconBtn>
-                  {isCustom ? (
-                    <>
-                      <IconBtn
-                        label={`编辑 ${m.displayName}`}
-                        onClick={() => setEditing(m.id)}
-                      >
-                        <Check size={11} />
-                      </IconBtn>
-                      <IconBtn
-                        label={`删除 ${m.displayName}`}
-                        onClick={() => apply(runtimeId, [(p) => removeCustomModel(p, m.id as never)])}
-                      >
-                        <Trash2 size={11} />
-                      </IconBtn>
-                    </>
-                  ) : (
-                    // 内置模型不能删，只能藏 —— 目录是我们维护的事实
-                    <button
-                      onClick={() => apply(runtimeId, [(p) => toggleHidden(p, m.id)])}
-                      title={hiddenSet.has(m.id) ? "已在选择器中隐藏" : "在选择器中显示"}
-                      aria-label={hiddenSet.has(m.id) ? `显示 ${m.displayName}` : `隐藏 ${m.displayName}`}
-                      className="rounded p-1 text-[10px] text-ash hover:bg-line hover:text-ink"
-                    >
-                      {hiddenSet.has(m.id) ? "已隐藏" : "显示中"}
-                    </button>
-                  )}
-                </span>
-              )}
-            </li>
-          );
-        })}
+        {favShown.length > 0 && (
+          <>
+            <GroupTitle n={favShown.length}>收藏</GroupTitle>
+            {favShown.map((m, i) => renderRow(m, "fav", favShown, i))}
+          </>
+        )}
+        {plainShown.length > 0 && (
+          <>
+            <GroupTitle n={plainShown.length}>全部</GroupTitle>
+            {plainShown.map((m, i) => renderRow(m, "all", plainShown, i))}
+          </>
+        )}
+        {hiddenShown.length > 0 && (
+          <>
+            <GroupTitle n={hiddenShown.length}>已隐藏 · 不在选择器中出现</GroupTitle>
+            {hiddenShown.map((m, i) => renderRow(m, "hidden", hiddenShown, i))}
+          </>
+        )}
       </ul>
-
-      {/* 已隐藏的内置模型：单列出来，否则用户会以为「删了就没了」 */}
-      {hiddenDeclared.length > 0 && (
-        <div className="border-t border-line px-4 py-2.5">
-          <p className="mb-1.5 text-caption text-ash">已隐藏的内置模型 · {hiddenDeclared.length}</p>
-          <div className="flex flex-wrap gap-1">
-            {hiddenDeclared.map((m) => (
-              <button
-                key={m.id}
-                onClick={() => apply(runtimeId, [(p) => toggleHidden(p, m.id)])}
-                className="flex items-center gap-1 rounded-chip border border-line px-1.5 py-0.5 text-caption text-graphite hover:border-teal hover:text-ink"
-              >
-                {m.displayName}
-                <X size={9} />
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
 
       {/* 添加自定义模型 */}
       <div className="border-t border-line px-4 py-3">
@@ -282,7 +302,7 @@ function ProviderModelPanel({ runtimeId, displayName }: { runtimeId: string; dis
             disabled={input.trim().length === 0}
             className="flex shrink-0 items-center gap-1 rounded-btn bg-ink px-2.5 py-1.5 text-body-sm text-canvas hover:bg-black disabled:opacity-30"
           >
-            <Plus size={11} />
+            <Plus size={12} />
             添加
           </button>
         </div>
@@ -381,10 +401,10 @@ function EditRow({
         aria-label="保存"
         className="rounded p-1 text-teal hover:bg-line"
       >
-        <Check size={11} />
+        <Check size={12} />
       </button>
       <button onClick={onCancel} aria-label="取消" className="rounded p-1 text-ash hover:bg-line hover:text-ink">
-        <X size={11} />
+        <X size={12} />
       </button>
     </span>
   );

@@ -27,6 +27,7 @@ import { isShellTool, type PlanStepStatus, type RuntimeEvent } from "./events.ts
 export type SidePaneTabType =
   // 工作区级（ZCode: workspace global）
   | "capabilities" // 执行器能力
+  | "workspace-files" // 本项目：浏览当前工作目录的文件
   | "deliverables" // 产出归档
   | "tools" // 开发者工具
   | "terminal" // ZCode: terminal
@@ -65,6 +66,7 @@ const SCOPE: Record<SidePaneTabType, SidePaneScope> = {
   tools: "workspace",
   terminal: "workspace",
   git: "workspace",
+  "workspace-files": "workspace",
   "code-viewer": "workspace",
   whiteboard: "workspace",
   browser: "workspace",
@@ -120,6 +122,7 @@ export const TAB_META: Record<
   "model-trajectory": { title: "模型轨迹", typeLabel: "模型轨迹", hint: "model io trajectory 轨迹" },
   "developer-tools": { title: "开发者工具", typeLabel: "开发者工具", hint: "devtools console 开发者工具" },
 
+  "workspace-files": { title: "工作区文件", typeLabel: "目录浏览", hint: "workspace files folder 目录浏览" },
   files: { title: "文件", typeLabel: "文件变更", hint: "file change diff 文件变更" },
   trace: { title: "轨迹", typeLabel: "运行轨迹", hint: "trace event run 运行轨迹" },
   plan: { title: "计划", typeLabel: "计划详情", hint: "plan ExitPlanMode 计划详情" },
@@ -152,6 +155,7 @@ export function metaOf(type: SidePaneTabType): { readonly title: string; readonl
  */
 const TAB_ORDER = [
   // 工作区级
+  "workspace-files",
   "git",
   "code-viewer",
   "terminal",

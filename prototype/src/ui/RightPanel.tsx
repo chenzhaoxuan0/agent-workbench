@@ -92,9 +92,9 @@ export function RightPanel({ onClose }: { onClose: () => void }) {
                     title={on ? "支持" : "不支持"}
                   >
                     {on ? (
-                      <Check size={11} className="shrink-0 text-teal" />
+                      <Check size={12} className="shrink-0 text-teal" />
                     ) : (
-                      <X size={11} className="shrink-0" />
+                      <X size={12} className="shrink-0" />
                     )}
                     <span className={cn("truncate", !on && "line-through")}>{label}</span>
                   </div>
@@ -142,7 +142,7 @@ function DeliverableRow({ d }: { d: Deliverable }) {
   const Icon = KIND_ICON[d.kind] ?? Package;
   return (
     <div className="-mx-2 flex items-start gap-2 rounded-btn px-2 py-2 hover:bg-line-soft">
-      <Icon size={13} className="mt-0.5 shrink-0 text-ash" />
+      <Icon size={12} className="mt-0.5 shrink-0 text-ash" />
       <div className="min-w-0 flex-1">
         <p className="truncate text-body-sm text-ink">{d.title}</p>
         {d.path && <p className="truncate font-mono text-caption text-ash">{d.path}</p>}

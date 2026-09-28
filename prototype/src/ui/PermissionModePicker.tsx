@@ -1,18 +1,44 @@
 import { useEffect, useRef, useState } from "react";
-import { ChevronDown, ShieldCheck, TriangleAlert } from "lucide-react";
+import {
+  ChevronDown,
+  Check,
+  Hand,
+  NotepadText,
+  ShieldAlert,
+  ShieldCheck,
+  type LucideIcon,
+} from "lucide-react";
 import { PERMISSION_MODES, getMode, type PermissionMode } from "../core/permission.ts";
 import { useWorkbench } from "../store/useWorkbench.ts";
 import { cn } from "./cn.ts";
 
 /**
- * 权限模式选择器 —— 对齐 Claude Code / Codex / ZCode 的 composer 模式开关。
+ * 权限模式选择器 —— 对齐 ZCode chat-input-toolbar 的 ConfigSelect（mode 类目）。
  *
- * 放在 composer **右侧**：它和执行器一样是「这条消息怎么跑」的参数，
- * 而右侧已经聚集了策略、执行器、发送键，所以归在一处最省认知。
+ * ZCode 的做法（display.tsx 的 ConfigSelect）：
+ *  - 每个模式一个**语义图标**：ask=Hand、acceptEdits=ShieldCheck、
+ *    plan=NotepadText、危险档=ShieldAlert；图标随当前模式切换；
+ *  - 菜单行 = 图标 + 标题 + 两行描述（`min-h-13 items-start gap-3`），
+ *    **没有能力标签**——模式的读/写/命令差异用一句话讲清，不铺 tag；
+ *  - 危险档（bypass）在触发器上持续保持警示色，避免用户忽略当前风险级别。
  *
  * 触发器上直接显示模式名，危险档位用警示色 —— 因为 bypass 一旦点下去，
  * 后面所有授权框都不再出现，用户必须当场知道自己关掉了什么。
  */
+
+function modeIcon(id: PermissionMode): LucideIcon {
+  switch (id) {
+    case "acceptEdits":
+      return ShieldCheck;
+    case "plan":
+      return NotepadText;
+    case "bypass":
+      return ShieldAlert;
+    default:
+      return Hand;
+  }
+}
+
 export function PermissionModePicker() {
   const mode = useWorkbench((s) => s.permissionMode);
   const setMode = useWorkbench((s) => s.setPermissionMode);
@@ -36,6 +62,7 @@ export function PermissionModePicker() {
   }, [open]);
 
   const def = getMode(mode);
+  const TriggerIcon = modeIcon(mode);
 
   return (
     <div ref={ref} className="relative shrink-0">
@@ -53,25 +80,19 @@ export function PermissionModePicker() {
               : "text-graphite hover:bg-line-soft hover:text-ink",
         )}
       >
-        {def.danger ? (
-          <TriangleAlert size={12} className="shrink-0" />
-        ) : (
-          <ShieldCheck size={12} className="shrink-0" />
-        )}
+        <TriggerIcon size={13} className="shrink-0" />
         <span className="max-w-[84px] truncate">{def.label}</span>
-        <ChevronDown size={11} className="shrink-0 opacity-60" />
+        <ChevronDown size={12} className="shrink-0 opacity-60" />
       </button>
 
       {open && (
         <div
           role="listbox"
-          className="absolute bottom-full right-0 z-40 mb-1.5 w-[300px] overflow-hidden rounded-input border border-line bg-canvas py-1"
+          className="absolute bottom-full right-0 z-40 mb-1.5 w-64 overflow-hidden rounded-input border border-line bg-canvas py-1"
         >
-          <p className="px-3 pb-1 pt-0.5 text-caption text-ash">
-            本次运行的默认权限策略
-          </p>
           {PERMISSION_MODES.map((m) => {
             const active = m.id === mode;
+            const Icon = modeIcon(m.id);
             return (
               <button
                 key={m.id}
@@ -82,49 +103,26 @@ export function PermissionModePicker() {
                   setOpen(false);
                 }}
                 className={cn(
-                  "flex w-full flex-col gap-0.5 px-3 py-2 text-left",
+                  "flex min-h-[52px] w-full items-start gap-3 py-2 pl-2 pr-8 text-left",
                   active ? "bg-teal-tint" : "hover:bg-line-soft",
                 )}
               >
-                <span className="flex items-center gap-1.5">
-                  {m.danger ? (
-                    <TriangleAlert size={11} className="shrink-0 text-loss" />
-                  ) : (
-                    <ShieldCheck size={11} className={cn("shrink-0", active ? "text-teal" : "text-ash")} />
-                  )}
+                <Icon
+                  size={17}
+                  className={cn("mt-0.5 shrink-0", m.danger ? "text-loss" : "text-ink")}
+                />
+                <span className="flex min-w-0 flex-col gap-0.5">
                   <span
                     className={cn(
-                      "text-body-sm",
+                      "truncate text-body-sm",
                       m.danger ? "font-medium text-loss" : active ? "font-medium text-ink" : "text-graphite",
                     )}
                   >
                     {m.label}
                   </span>
+                  <span className="line-clamp-2 text-caption leading-relaxed text-ash">{m.desc}</span>
                 </span>
-                <span className="text-caption text-ash">{m.desc}</span>
-                <span className="mt-0.5 flex flex-wrap gap-1">
-                  {(
-                    [
-                      ["读", m.reads],
-                      ["写", m.writes],
-                      ["命令", m.shell],
-                    ] as const
-                  ).map(([k, v]) => (
-                    <span
-                      key={k}
-                      className={cn(
-                        "rounded-chip px-1.5 py-0.5 text-[10px]",
-                        v === "自动"
-                          ? "bg-[#1d3a2c] text-[#5fc99a]"
-                          : v === "拦截"
-                            ? "bg-loss/10 text-loss"
-                            : "bg-line-soft text-graphite",
-                      )}
-                    >
-                      {k} {v}
-                    </span>
-                  ))}
-                </span>
+                {active && <Check size={12} className="ml-auto mt-1 shrink-0 text-teal" />}
               </button>
             );
           })}

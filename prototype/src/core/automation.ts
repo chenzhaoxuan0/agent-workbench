@@ -1,5 +1,5 @@
 /**
- * 自动化 / 定时任务 —— 员工模式的时间维度。
+ * 自动化 / 定时任务 —— bot模式的时间维度。
  *
  * 设计对齐 ZCode 的 automation 模型：
  * **权威数据是结构化 scheduleRule，不是裸 cron 字符串。**
@@ -46,7 +46,7 @@ export interface AutomationRun {
 export interface Automation {
   readonly id: string;
   readonly name: string;
-  /** 关联的工作单元 id —— 员工模式下自动化是「谁」在干活 */
+  /** 关联的工作单元 id —— bot模式下自动化是「谁」在干活 */
   readonly unitId: string;
   readonly description?: string;
   /** 跑这条自动化的执行器 */

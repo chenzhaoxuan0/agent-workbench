@@ -73,9 +73,9 @@ export function ComposerAttach() {
               className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-line-soft"
             >
               {p.kind === "image" ? (
-                <ImageIcon size={13} className="shrink-0 text-ash" />
+                <ImageIcon size={12} className="shrink-0 text-ash" />
               ) : (
-                <FileText size={13} className="shrink-0 text-ash" />
+                <FileText size={12} className="shrink-0 text-ash" />
               )}
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-body-sm text-graphite">{p.name}</span>
@@ -115,14 +115,14 @@ export function AttachmentStrip() {
           key={a.id}
           className="flex items-center gap-1.5 rounded-chip bg-line-soft px-2 py-1 text-caption text-graphite"
         >
-          {a.kind === "image" ? <ImageIcon size={11} /> : <FileText size={11} />}
+          {a.kind === "image" ? <ImageIcon size={12} /> : <FileText size={12} />}
           <span className="max-w-[160px] truncate">{a.name}</span>
           <button
             onClick={() => removeAttachment(a.id)}
             aria-label={`移除 ${a.name}`}
             className="rounded p-0.5 text-ash hover:text-ink"
           >
-            <X size={10} />
+            <X size={12} />
           </button>
         </span>
       ))}

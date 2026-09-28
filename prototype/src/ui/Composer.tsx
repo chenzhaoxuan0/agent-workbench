@@ -36,7 +36,7 @@ export function Composer() {
   };
 
   const placeholder =
-    unit?.kind === "employee"
+    unit?.kind === "bot"
       ? `给「${unit.name}」派活…（会先读它的 AGENTS.md 当岗位说明书）`
       : `对「${unit?.name}」下任务…（项目模式，可开 worktree 隔离）`;
 
@@ -87,7 +87,7 @@ export function Composer() {
                   title="停止"
                   className="flex h-8 w-8 shrink-0 items-center justify-center rounded-btn bg-ink text-canvas hover:bg-black"
                 >
-                  <Square size={11} fill="currentColor" />
+                  <Square size={12} fill="currentColor" />
                 </button>
               ) : (
                 <button
@@ -97,7 +97,7 @@ export function Composer() {
                   title="发送 · Enter"
                   className="flex h-8 w-8 shrink-0 items-center justify-center rounded-btn bg-ink text-canvas hover:bg-black disabled:opacity-30"
                 >
-                  <ArrowUp size={15} />
+                  <ArrowUp size={16} />
                 </button>
               )}
             </div>

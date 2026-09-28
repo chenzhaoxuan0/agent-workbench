@@ -49,7 +49,7 @@ const FRAME = "mx-auto w-full max-w-4xl px-8 pb-12 pt-2";
  *   SettingsGroupCard 包裹
  *
  * 与 ZCode 的差异：分区清单按本项目资产重排，
- * 「执行器」进基础设置（六家工具是一等公民），「自动化」是员工模式的心脏故排首位。
+ * 「执行器」进基础设置（六家工具是一等公民），「自动化」是bot模式的心脏故排首位。
  */
 export function SettingsPage() {
   const section = useShell((s) => s.settingsSection);
@@ -66,7 +66,7 @@ export function SettingsPage() {
           onClick={() => useShell.getState().closeSettings()}
           className="mb-2 flex w-full items-center gap-2 rounded-btn px-2.5 py-2 text-body-sm text-graphite hover:bg-line-soft hover:text-ink"
         >
-          <ChevronLeft size={13} />
+          <ChevronLeft size={12} />
           返回工作台
         </button>
         {SETTINGS_GROUPS.map((g) => {
@@ -238,7 +238,7 @@ function RuntimesSection() {
               label={
                 <span className="flex items-center gap-2">
                   <span
-                    className="flex h-4.5 w-4.5 shrink-0 items-center justify-center rounded-btn text-[10px] font-medium text-white"
+                    className="flex h-4.5 w-4.5 shrink-0 items-center justify-center rounded-btn text-caption font-medium text-white"
                     style={{ background: r.presentation.accent }}
                     aria-hidden
                   >

@@ -182,9 +182,9 @@ console.log("\n【9】常驻挂载");
   }
 }
 
-console.log("\n【10】页签类型全集：24 种，元数据 / 作用域 / 目录无缺口");
+console.log("\n【10】页签类型全集：25 种，元数据 / 作用域 / 目录无缺口");
 {
-  eq("类型总数 = 24（ZCode 19 类，一类多形态时逐个展开）", ALL_TAB_TYPES.length, 24);
+  eq("类型总数 = 25（ZCode 19 类 + 本项目 workspace-files，一类多形态时逐个展开）", ALL_TAB_TYPES.length, 25);
   eq("无重复", new Set(ALL_TAB_TYPES).size, ALL_TAB_TYPES.length);
 
   const missingMeta = ALL_TAB_TYPES.filter((t) => !metaOf(t).title || !metaOf(t).typeLabel || !metaOf(t).hint);
@@ -195,7 +195,7 @@ console.log("\n【10】页签类型全集：24 种，元数据 / 作用域 / 目
 
   // 目录（可见集合）必须 = 全集 − 隐藏集合
   const visible = listVisibleTabTypes();
-  eq("目录里 23 种（treemapping 被隐藏）", visible.length, 23);
+  eq("目录里 24 种（treemapping 被隐藏）", visible.length, 24);
   eq("treemapping 是唯一的隐藏类型", [...HIDDEN_TAB_TYPES].join(","), "treemapping");
   ok("隐藏类型不出现在目录里", !visible.includes("treemapping"));
 

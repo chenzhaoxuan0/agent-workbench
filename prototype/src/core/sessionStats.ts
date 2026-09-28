@@ -35,10 +35,16 @@ export interface DerivedStats {
    * 取最后一轮而不是累加 —— 累加会把同一份上下文算多遍。
    */
   readonly contextTokens: number;
+  /** 工具调用总耗时（tool.started → tool.completed 按 callId 配对） */
+  readonly toolMs: number;
+  /** 首 token 平均时延（TTFT）。以 usage 事件为一轮边界、轮内首个
+   * delta 事件为首个 token 的近似 —— pace=0 时为 0，UI 隐藏该行 */
+  readonly ttftMs: number | null;
 }
 
 interface StatSource {
   readonly event: RuntimeEvent;
+  readonly at: number;
 }
 
 /** 没有任何 usage 事件时返回 null —— UI 据此切到「暂无数据」态 */
@@ -53,18 +59,52 @@ export function deriveSessionStats(items: readonly StatSource[]): DerivedStats |
   let decodeMs = 0;
   let last: { readonly inTok: number; readonly outTok: number } | null = null;
 
-  for (const { event } of items) {
-    if (event.type === "usage") {
-      input += event.inputTokens;
-      output += event.outputTokens;
-      cacheRead += event.cacheReadTokens ?? 0;
-      cacheWrite += event.cacheWriteTokens ?? 0;
-      decodeMs += event.decodeMs ?? 0;
-      costUsd += event.costUsd;
-      turns += 1;
-      last = { inTok: event.inputTokens, outTok: event.outputTokens };
-    } else if (event.type === "tool.started") {
-      steps += 1;
+  // 工具配对计时（dsh：pendingCalls 按 callId 配对 tool/call → tool/result）
+  const pendingTools = new Map<string, number>();
+  let toolMs = 0;
+
+  // TTFT 近似：usage 事件视为一轮的结束边界，轮内首个 delta 视为首 token
+  let roundStart: number | null = null;
+  let firstDeltaAt: number | null = null;
+  let ttftSum = 0;
+  let ttftRounds = 0;
+
+  for (const { event, at } of items) {
+    if (roundStart === null) roundStart = at;
+    if (
+      (event.type === "reasoning.delta" || event.type === "message.delta") &&
+      firstDeltaAt === null
+    ) {
+      firstDeltaAt = at;
+    }
+
+    switch (event.type) {
+      case "tool.started":
+        steps += 1;
+        pendingTools.set(event.callId, at);
+        break;
+      case "tool.completed": {
+        const start = pendingTools.get(event.callId);
+        pendingTools.delete(event.callId);
+        if (start !== undefined) toolMs += Math.max(at - start, 0);
+        break;
+      }
+      case "usage":
+        input += event.inputTokens;
+        output += event.outputTokens;
+        cacheRead += event.cacheReadTokens ?? 0;
+        cacheWrite += event.cacheWriteTokens ?? 0;
+        decodeMs += event.decodeMs ?? 0;
+        costUsd += event.costUsd;
+        turns += 1;
+        if (firstDeltaAt !== null && roundStart !== null) {
+          ttftSum += Math.max(firstDeltaAt - roundStart, 0);
+          ttftRounds += 1;
+        }
+        roundStart = at;
+        firstDeltaAt = null;
+        last = { inTok: event.inputTokens, outTok: event.outputTokens };
+        break;
     }
   }
 
@@ -83,6 +123,8 @@ export function deriveSessionStats(items: readonly StatSource[]): DerivedStats |
     decodeMs,
     tokensPerSecond: decodeMs > 0 ? output / (decodeMs / 1000) : null,
     contextTokens: last.inTok + last.outTok,
+    toolMs,
+    ttftMs: ttftRounds > 0 ? Math.round(ttftSum / ttftRounds) : null,
   };
 }
 

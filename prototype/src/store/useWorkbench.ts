@@ -24,7 +24,7 @@ import type { Deliverable, Session, SessionId, UnitId, WorkUnit } from "../core/
 // 注册六家工具。注册表不认识厂商，只认识 RuntimeId 字符串。
 runtimeRegistry.registerAll(mockFactories);
 
-export type ViewMode = "employee" | "project";
+export type ViewMode = "bot" | "project";
 
 interface TimelineItem {
   readonly id: number;
@@ -59,7 +59,7 @@ interface WorkbenchState {
   timeline: readonly TimelineItem[];
   deliverables: readonly Deliverable[];
   busy: boolean;
-  /** 定时任务。员工模式的时间维度 */
+  /** 定时任务。bot模式的时间维度 */
   automations: readonly Automation[];
   /** 输入框草稿。空态建议卡片点一下就能预填 */
   draft: string;
@@ -112,16 +112,21 @@ function declaredOf(s: WorkbenchState, runtimeId: string): readonly ModelSpec[] 
  * 这个坑在无自定义模型时看不见，一添加自定义模型立刻炸。
  *
  * 判据用**输入的引用**（declared / prefs 都是稳定来源），一次比较即可。
+ *
+ * 缓存按 runtimeId 分槽（Map）。曾经是单槽：只要渲染期间有第二个
+ * runtime 来查一遍清单（比如选择器 rail 标题里的计数），订阅者的缓存槽
+ * 就被踩掉，getSnapshot 下一次返回新数组 → React 19 无限循环 → 白屏。
+ * 多槽后每个订阅者各占各的槽位，互不踩踏。
  */
-let modelsMemo: { declared: readonly ModelSpec[]; prefs: ProviderModelPrefs; out: readonly ModelSpec[] } | null = null;
+let modelsMemo = new Map<string, { declared: readonly ModelSpec[]; prefs: ProviderModelPrefs; out: readonly ModelSpec[] }>();
 
 export function visibleModelsFor(s: WorkbenchState, runtimeId: string): readonly ModelSpec[] {
   const declared = declaredOf(s, runtimeId);
   const prefs = prefsOf(s.modelPrefs, runtimeId);
-  const hit = modelsMemo;
+  const hit = modelsMemo.get(runtimeId);
   if (hit && hit.declared === declared && hit.prefs === prefs) return hit.out;
   const out = resolveVisibleModels(declared, prefs);
-  modelsMemo = { declared, prefs, out };
+  modelsMemo.set(runtimeId, { declared, prefs, out });
   return out;
 }
 
@@ -153,7 +158,7 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
   units: SAMPLE_UNITS,
   archivedSessions: SAMPLE_ARCHIVED_SESSIONS,
   activeUnitId: SAMPLE_UNITS[0]!.id,
-  view: "employee",
+  view: "bot",
   runtimes: [],
   activeRuntimeId: "zcode",
   // 注册表订阅到位后由下方 syncRuntimeModels 补齐各执行器的默认模型
@@ -415,6 +420,6 @@ export const selectUnitSessions = (s: WorkbenchState): readonly Session[] =>
 
 export type { SessionId };
 
-/** 当前工作单元的自动化，员工视图下最关心的一组 */
+/** 当前工作单元的自动化，bot视图下最关心的一组 */
 export const selectUnitAutomations = (s: WorkbenchState): readonly Automation[] =>
   s.automations.filter((a) => a.unitId === s.activeUnitId);

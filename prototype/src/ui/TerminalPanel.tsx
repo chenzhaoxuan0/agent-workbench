@@ -22,7 +22,7 @@ export function TerminalPanel() {
 
   const lines: readonly { text: string; tone?: "dim" | "gain" | "teal" }[] = [
     { text: `cwd  ${unit?.rootPath ?? "—"}` },
-    { text: `unit ${unit?.name ?? "—"}${unit?.kind === "employee" ? "  (员工模式)" : "  (项目模式)"}` },
+    { text: `unit ${unit?.name ?? "—"}${unit?.kind === "bot" ? "  (bot模式)" : "  (项目模式)"}` },
     { text: `exec ${runtime?.presentation.displayName ?? "—"}  via ${runtime?.transportKind ?? "—"}` },
     { text: "", tone: "dim" },
     { text: "能力可用性：", tone: "dim" },

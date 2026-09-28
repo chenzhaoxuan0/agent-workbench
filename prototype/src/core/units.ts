@@ -1,7 +1,7 @@
 /**
  * 领域原语：一个文件夹 = 一个工作单元，两种身份。
  *
- * 设计要点：员工模式与项目模式不是两类软件，而是同一个 WorkUnit 的两种 kind。
+ * 设计要点：bot模式与项目模式不是两类软件，而是同一个 WorkUnit 的两种 kind。
  * 运行时原语（目录 / agent 定义 / 会话 / 技能 / 权限）对两者完全一致。
  */
 
@@ -24,10 +24,10 @@ export const asModelId = (v: string): ModelId => v as ModelId;
 
 /**
  * 身份模型。两者共享同一套运行时原语，只是"关注点"不同：
- * - employee 关心：人设、日程、渠道、长期记忆、产出归档（招聘）
+ * - bot 关心：人设、日程、渠道、长期记忆、产出归档（招聘）
  * - project  关心：看板、diff、PR、会话短寿、worktree 隔离（组队施工）
  */
-export type UnitKind = "employee" | "project";
+export type UnitKind = "bot" | "project";
 
 /** 从 AGENTS.md 派生的身份定义。零迁移的关键：文件即数据库。 */
 export interface WorkspaceIdentity {
@@ -60,7 +60,7 @@ export interface RuntimeBinding {
    * 该单元在此运行时下的默认模型。
    *
    * 存在的意义：**同一个执行器，不同岗位该用不同的大脑**。
-   * 写公众号的员工用 Haiku 跑量，写代码的项目用 Opus —— 都是 ZCode，但不该同价。
+   * 写公众号的bot用 Haiku 跑量，写代码的项目用 Opus —— 都是 ZCode，但不该同价。
    *
    * 它是 hint 不是命令：指向一个该 CLI 不接的模型时会被静默忽略，
    * 回落顺序是 用户所选 → 本 hint → 执行器默认。
@@ -84,6 +84,12 @@ export interface WorkUnit {
     readonly agentFiles: readonly string[];
     readonly skillDirs: readonly string[];
   };
+  /**
+   * AGENTS.md 的内容。从磁盘扫描来的单元不带这个字段（文件即数据库，
+   * 内容在 rootPath/AGENTS.md 里）；通过「添加 bot」创建的单元在此
+   * 携带用户写的岗位说明书——真接入运行时后应落盘为 rootPath/AGENTS.md。
+   */
+  readonly agentsMd?: string;
   readonly lastActiveAt?: number;
   readonly tags: readonly string[];
 }

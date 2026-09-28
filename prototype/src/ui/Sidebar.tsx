@@ -17,8 +17,9 @@ import {
 import { useShallow } from "zustand/react/shallow";
 import { useWorkbench, selectUnitSessions, type ViewMode } from "../store/useWorkbench.ts";
 import { useShell } from "../store/useShell.ts";
-import { asUnitId, type Session, type UnitId, type WorkUnit } from "../core/units.ts";
+import { asRuntimeId, asUnitId, type Session, type UnitId, type WorkUnit } from "../core/units.ts";
 import { UNAVAILABLE_UNIT } from "../adapters/mock/fixtures.ts";
+import { AddBotDialog, type AddBotDraft } from "./AddBotDialog.tsx";
 import { cn } from "./cn.ts";
 
 /**
@@ -53,7 +54,7 @@ const SORT_OPTIONS: readonly Sort[] = ["updated", "created"];
 const SORT_LABEL: Record<Sort, string> = { updated: "按更新", created: "按创建" };
 
 const VIEWS: readonly { id: ViewMode; label: string; icon: typeof Bot }[] = [
-  { id: "employee", label: "员工", icon: Bot },
+  { id: "bot", label: "bot", icon: Bot },
   { id: "project", label: "项目", icon: FolderGit2 },
 ];
 
@@ -84,6 +85,7 @@ export function Sidebar() {
   const [unitOrder, setUnitOrder] = useState<string[] | null>(null);
   const [dragUnit, setDragUnit] = useState<string | null>(null);
   const [accountOpen, setAccountOpen] = useState(false);
+  const [addBotOpen, setAddBotOpen] = useState(false);
   const settingsActive = useShell((s) => s.settingsOpen);
 
   // 目录不可用的单元也要列出来（ZCode: unavailableLocalDirectory）
@@ -105,28 +107,6 @@ export function Sidebar() {
       {/* 顶部 48px 占位。ZCode 的侧栏顶部是空的拖拽条 —— 品牌 logo 与侧栏开关
           由左上浮层（DesktopTopOverlay）承载，这里不再重复 */}
       <div className="h-12 shrink-0 border-b border-line/60" />
-
-      {/* 身份视图 —— 本项目特有，ZCode 没有 */}
-      <div className="flex gap-2 px-4 py-3">
-        {VIEWS.map((v) => {
-          const active = v.id === view;
-          const Icon = v.icon;
-          return (
-            <button
-              key={v.id}
-              onClick={() => setView(v.id)}
-              aria-pressed={active}
-              className={cn(
-                "flex items-center gap-1.5 rounded-chip px-3 py-1.5 text-body-sm",
-                active ? "bg-teal font-medium text-white" : "text-graphite hover:bg-line-soft hover:text-ink",
-              )}
-            >
-              <Icon size={13} />
-              {v.label}
-            </button>
-          );
-        })}
-      </div>
 
       {/* 顶部动作区 —— 对齐 ZCode 侧栏顶部：新建任务 → 搜索 → 自动化（无品牌行按钮）
           NewTaskButtonGroup 是 ghost 行而非实心按钮 */}
@@ -162,26 +142,45 @@ export function Sidebar() {
         </button>
       </div>
 
-      {/* 分区标题 + organize / sort（ZCode: organize / sortBy / taskViewOptions） */}
-      <div className="flex items-center gap-1 px-4 pb-2">
-        <p className="flex-1 text-body-sm text-ash">
-          {view === "employee" ? "员工" : "项目"}
-          <span className="ml-1.5 text-caption">{visibleUnits.length}</span>
-        </p>
-        <MenuButton
-          label={ORGANIZE_LABEL[organize]}
-          title="组织方式"
-          options={ORGANIZE_OPTIONS}
-          labels={ORGANIZE_LABEL}
-          onChange={(v) => setOrganize(v as Organize)}
-        />
-        <MenuButton
-          label={SORT_LABEL[sort]}
-          title="排序"
-          options={SORT_OPTIONS}
-          labels={SORT_LABEL}
-          onChange={(v) => setSort(v as Sort)}
-        />
+      {/* 分区行：身份切换（bot/项目）直接在这行完成 —— 吸收原顶部两个大按钮的职能；
+          右侧仍是 organize / sort（ZCode: organize / sortBy / taskViewOptions） */}
+      <div className="flex items-center gap-1.5 px-4 pb-2">
+        <div className="flex shrink-0 items-center rounded-chip bg-line-soft p-0.5" role="tablist" aria-label="身份视图">
+          {VIEWS.map((v) => {
+            const active = v.id === view;
+            return (
+              <button
+                key={v.id}
+                role="tab"
+                aria-selected={active}
+                onClick={() => setView(v.id)}
+                className={cn(
+                  "rounded-chip px-2 py-0.5 text-caption",
+                  active ? "bg-canvas font-medium text-ink" : "text-graphite hover:text-ink",
+                )}
+              >
+                {v.label}
+              </button>
+            );
+          })}
+        </div>
+        <span className="tnum text-caption text-ash">{visibleUnits.length}</span>
+        <div className="ml-auto flex items-center gap-1">
+          <MenuButton
+            label={ORGANIZE_LABEL[organize]}
+            title="组织方式"
+            options={ORGANIZE_OPTIONS}
+            labels={ORGANIZE_LABEL}
+            onChange={(v) => setOrganize(v as Organize)}
+          />
+          <MenuButton
+            label={SORT_LABEL[sort]}
+            title="排序"
+            options={SORT_OPTIONS}
+            labels={SORT_LABEL}
+            onChange={(v) => setSort(v as Sort)}
+          />
+        </div>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-4">
@@ -191,10 +190,10 @@ export function Sidebar() {
             onClick={() => setGroupsOpen((o) => !o)}
             className="flex w-full items-center gap-1.5 rounded-btn px-1 py-1 text-caption text-ash hover:text-graphite"
           >
-            {groupsOpen ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+            {groupsOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
             任务分组
-            <span className="ml-auto rounded-chip bg-line-soft px-1.5 text-[10px]">2</span>
-            <Plus size={11} className="ml-1" />
+            <span className="ml-auto rounded-chip bg-line-soft px-1.5 text-caption">2</span>
+            <Plus size={12} className="ml-1" />
           </button>
           {groupsOpen && (
             <div className="mt-0.5 space-y-0.5">
@@ -217,12 +216,12 @@ export function Sidebar() {
         {/* 工作单元区（ZCode: projectsSection / reorderSection / addProject） */}
         <div className="mb-1 flex items-center gap-1 px-2">
           <p className="flex-1 text-caption text-ash">工作单元</p>
-          <span className="text-[10px] text-ash">可拖拽排序</span>
+          <span className="text-caption text-ash">可拖拽排序</span>
         </div>
 
         {visibleUnits.length === 0 && (
           <p className="px-2 py-6 text-center text-body-sm text-ash">
-            还没有{view === "employee" ? "员工" : "项目"}
+            还没有{view === "bot" ? "bot" : "项目"}
           </p>
         )}
 
@@ -263,24 +262,35 @@ export function Sidebar() {
           );
         })}
 
-        {/* 添加项目 */}
-        <button
-          onClick={() =>
-            addUnit({
-              id: asUnitId(`u-new-${Date.now().toString(36)}`),
-              name: "新工作单元",
-              rootPath: "C:/Users/chenziyu/project/Agent/<待选目录>",
-              kind: view,
-              bindings: [],
-              assets: { agentFiles: [], skillDirs: [] },
-              tags: ["新建"],
-            })
-          }
-          className="mt-1 flex w-full items-center gap-2 rounded-btn px-2 py-2 text-body-sm text-graphite hover:bg-line-soft hover:text-ink"
-        >
-          <FolderPlus size={13} className="shrink-0" />
-          添加{view === "employee" ? "员工" : "项目"}
-        </button>
+        {/* 添加入口：bot 走高度自定义的创建对话框（核心是 AGENTS.md 岗位说明书）；
+            项目保持快速新建 */}
+        {view === "bot" ? (
+          <button
+            onClick={() => setAddBotOpen(true)}
+            className="mt-1 flex w-full items-center gap-2 rounded-btn px-2 py-2 text-body-sm text-graphite hover:bg-line-soft hover:text-ink"
+          >
+            <FolderPlus size={12} className="shrink-0" />
+            添加bot
+          </button>
+        ) : (
+          <button
+            onClick={() =>
+              addUnit({
+                id: asUnitId(`u-new-${Date.now().toString(36)}`),
+                name: "新工作单元",
+                rootPath: "C:/Users/chenziyu/project/Agent/<待选目录>",
+                kind: view,
+                bindings: [],
+                assets: { agentFiles: [], skillDirs: [] },
+                tags: ["新建"],
+              })
+            }
+            className="mt-1 flex w-full items-center gap-2 rounded-btn px-2 py-2 text-body-sm text-graphite hover:bg-line-soft hover:text-ink"
+          >
+            <FolderPlus size={12} className="shrink-0" />
+            添加项目
+          </button>
+        )}
 
         {/* 归档任务（ZCode: toggleArchivedTasks） */}
         <div className="mt-4 border-t border-line pt-2">
@@ -303,15 +313,6 @@ export function Sidebar() {
             ) : (
               archived.map((s) => <SessionRow key={s.id} s={s} muted />)
             ))}
-        </div>
-
-        {/* 远端工作区（ZCode: onConnectRemote / onOpenRemoteWorkspace） */}
-        <div className="mt-2 border-t border-line pt-2">
-          <button className="flex w-full items-center gap-2 rounded-btn px-2 py-1.5 text-body-sm text-graphite hover:bg-line-soft hover:text-ink">
-            <Unplug size={12} className="shrink-0" />
-            连接远端
-            <span className="ml-auto text-caption text-ash">未连接</span>
-          </button>
         </div>
       </div>
 
@@ -363,6 +364,14 @@ export function Sidebar() {
             </>
           )}
         </div>
+        {/* 连接远端 —— 与设置并排（ZCode 的远程连接入口同位级的图标钮） */}
+        <button
+          title="连接远端 · 未连接"
+          aria-label="连接远端"
+          className="shrink-0 rounded-btn p-1.5 text-graphite hover:bg-line-soft hover:text-ink"
+        >
+          <Unplug size={14} />
+        </button>
         <button
           onClick={() => openSettings()}
           aria-label="设置"
@@ -375,6 +384,29 @@ export function Sidebar() {
           <Settings size={14} />
         </button>
       </div>
+
+      {/* 新建 bot 对话框（AGENTS.md 岗位说明书） */}
+      {addBotOpen && (
+        <AddBotDialog
+          open
+          onClose={() => setAddBotOpen(false)}
+          onCreate={(draft) => {
+            addUnit({
+              id: asUnitId(`bot-${Date.now().toString(36)}`),
+              rootPath: draft.rootPath,
+              name: draft.name,
+              kind: "bot",
+              identity: { role: draft.role, sourcePath: "AGENTS.md", loadedAt: Date.now() },
+              bindings: [{ runtimeId: asRuntimeId(draft.runtimeId), primary: true }],
+              assets: { agentFiles: ["AGENTS.md"], skillDirs: [] },
+              agentsMd: draft.agentsMd,
+              tags: ["新建"],
+              lastActiveAt: Date.now(),
+            });
+            setAddBotOpen(false);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -385,6 +417,35 @@ const ACCOUNT_ITEMS: readonly { label: string; value: string }[] = [
 ];
 
 /* ------------------------------------------------------------- 单元行 */
+
+/**
+ * bot 头像的身份色与形状 —— 对齐 GrokBot 的彩色 blob 形态。
+ * 颜色是**身份数据**（与执行器徽标的 accent 同类例外），不是 UI 装饰；
+ * 由单元名哈希出稳定的「颜色 × 形状」组合，同一个 bot 永远长一样。
+ */
+const BOT_COLORS = ["#8b5cf6", "#3b82f6", "#22c55e", "#f59e0b", "#ef4444", "#ec4899", "#14b8a6", "#6366f1"];
+const BOT_SHAPES = ["rounded-full", "rounded-[38%]", "rounded-2xl"] as const;
+
+function botAvatarStyle(name: string): { color: string; shape: string } {
+  const hash = [...name].reduce((a, c) => a + c.codePointAt(0)!, 0);
+  return {
+    color: BOT_COLORS[hash % BOT_COLORS.length]!,
+    shape: BOT_SHAPES[hash % BOT_SHAPES.length]!,
+  };
+}
+
+/** 最后活动时间：今天显示时刻，昨天显示「昨天」，更早显示日期（GrokBot 的相对语义） */
+function lastActivityLabel(at: number): string {
+  const d = new Date(at);
+  const now = new Date();
+  if (d.toDateString() === now.toDateString()) {
+    return d.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false });
+  }
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (d.toDateString() === yesterday.toDateString()) return "昨天";
+  return `${d.getMonth() + 1}月${d.getDate()}日`;
+}
 
 function UnitRow({
   unit,
@@ -399,51 +460,72 @@ function UnitRow({
 }) {
   // ZCode: unavailableLocalDirectory —— 路径不可用要显式说出来，不能当成正常单元
   const unavailable = unit.tags.includes("目录不可用");
+  const isBot = unit.kind === "bot";
+
+  // 副标题 = 在行任务（本单元最新会话标题）优先，其次身份角色（GrokBot 的行结构）
+  const sessions = useWorkbench((s) => s.sessions);
+  const latest = useMemo(
+    () =>
+      sessions
+        .filter((s) => s.unitId === unit.id)
+        .reduce<(typeof sessions)[number] | null>((acc, s) => (acc === null || s.startedAt > acc.startedAt ? s : acc), null),
+    [sessions, unit.id],
+  );
+  const subtitle = latest?.title ?? unit.identity?.role ?? "";
+  const avatar = botAvatarStyle(unit.name);
 
   return (
     <button
       onClick={onSelect}
       aria-current={active}
       className={cn(
-        "flex w-full flex-col gap-1.5 rounded-input px-3 py-2.5 text-left",
+        "flex w-full items-start gap-3 rounded-input px-3 py-2.5 text-left",
         active ? "bg-teal-tint" : "hover:bg-line-soft",
         unavailable && "opacity-60",
       )}
     >
-      <div className="flex items-center gap-2">
-        {unit.identity?.avatar ? (
-          <span className="shrink-0 text-body-lg" aria-hidden>
-            {unit.identity.avatar}
+      {isBot ? (
+        /* 彩色 blob 头像 + 双眼（GrokBot 式吉祥物形态），右下角日程角标 */
+        <span
+          aria-hidden
+          className={cn("relative flex h-11 w-11 shrink-0 items-center justify-center", avatar.shape)}
+          style={{ background: avatar.color }}
+        >
+          <span className="mt-0.5 flex gap-1">
+            <span className="h-2 w-1 rounded-full bg-white/90" />
+            <span className="h-2 w-1 rounded-full bg-white/90" />
           </span>
-        ) : (
-          <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-btn bg-line-soft text-caption font-medium text-graphite">
-            {unit.name.slice(0, 1)}
-          </span>
-        )}
-        <span className="truncate text-body-sm font-medium text-ink">{unit.name}</span>
-        {unavailable && (
-          <span className="ml-auto shrink-0 rounded-chip bg-loss/10 px-1.5 py-0.5 text-[10px] text-loss">
-            目录不可用
-          </span>
-        )}
-      </div>
-
-      {unit.identity?.role && (
-        <p className="truncate pl-7 text-caption text-graphite">{unit.identity.role}</p>
+          {schedule && (
+            <span
+              className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-rail bg-teal"
+              title={schedule}
+            />
+          )}
+        </span>
+      ) : (
+        /* 项目保持方形字母文件夹标 */
+        <span
+          aria-hidden
+          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-btn bg-line-soft text-body font-medium text-graphite"
+        >
+          {unit.name.slice(0, 1)}
+        </span>
       )}
 
-      <div className="flex flex-wrap items-center gap-1.5 pl-7">
-        {schedule && (
-          <span className="rounded-chip bg-teal-tint px-2 py-0.5 text-caption text-teal">● {schedule}</span>
+      <span className="flex min-w-0 flex-1 flex-col gap-0.5 pt-0.5">
+        <span className="flex items-baseline gap-2">
+          <span className="truncate text-body font-medium text-ink">{unit.name}</span>
+          {latest && (
+            <span className="tnum ml-auto shrink-0 text-caption text-ash">{lastActivityLabel(latest.startedAt)}</span>
+          )}
+        </span>
+        <span className="truncate text-body-sm text-graphite">
+          {subtitle || <span className="text-ash">{unit.rootPath}</span>}
+        </span>
+        {unavailable && (
+          <span className="mt-0.5 w-fit rounded-chip bg-loss/10 px-1.5 py-0.5 text-caption text-loss">目录不可用</span>
         )}
-        {unit.tags
-          .filter((t) => t !== "目录不可用")
-          .map((t) => (
-            <span key={t} className="rounded-chip bg-line-soft px-2 py-0.5 text-caption text-graphite">
-              {t}
-            </span>
-          ))}
-      </div>
+      </span>
     </button>
   );
 }
@@ -541,7 +623,7 @@ function MenuButton({
         className="flex items-center gap-0.5 rounded-btn px-1.5 py-1 text-caption text-graphite hover:bg-line-soft hover:text-ink"
       >
         {label}
-        <ChevronDown size={10} />
+        <ChevronDown size={12} />
       </button>
       {open && (
         <>

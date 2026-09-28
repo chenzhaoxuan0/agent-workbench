@@ -70,7 +70,7 @@ export function AutomationsPage() {
             onClick={() => setMainView("chat")}
             className="flex items-center gap-1 rounded-btn px-2 py-1.5 text-body-sm text-graphite hover:bg-line-soft hover:text-ink"
           >
-            <ChevronLeft size={13} />
+            <ChevronLeft size={12} />
             返回工作台
           </button>
           <span className="text-line">/</span>
@@ -140,13 +140,13 @@ export function AutomationsPage() {
         {/* 卡片网格 */}
         {tab === "idle" ? (
           <EmptyPanel
-            icon={<AlarmClock size={15} />}
+            icon={<AlarmClock size={16} />}
             title="闲时尚未实现"
             desc="闲时任务是低优先级后台跑的任务，与定时任务共用同一组筛选与状态口径。接真实调度后这里会出现第二张 tab 的内容。"
           />
         ) : visible.length === 0 ? (
           <EmptyPanel
-            icon={<CircleAlert size={15} />}
+            icon={<CircleAlert size={16} />}
             title={filter === "all" ? "还没有定时任务" : `没有${STATUS_FILTER_LABEL[filter]}的任务`}
             desc={filter === "all" ? "从下面的模板挑一个开始" : "换个筛选看看"}
             templates={filter === "all"}
@@ -199,7 +199,7 @@ function AutomationCard({ a, unitName }: { a: Automation; unitName: string }) {
           aria-label={`${a.name} 更多操作`}
           className="shrink-0 rounded-btn p-1 text-ash hover:bg-line-soft hover:text-ink"
         >
-          <MoreHorizontal size={13} />
+          <MoreHorizontal size={12} />
         </button>
       </div>
 
@@ -208,7 +208,7 @@ function AutomationCard({ a, unitName }: { a: Automation; unitName: string }) {
           {describeSchedule(a)}
         </span>
         <span className={cn("flex items-center gap-1 rounded-chip px-2 py-0.5 text-caption", meta.cls)}>
-          <Icon size={10} />
+          <Icon size={12} />
           {meta.label}
         </span>
         {!a.enabled && (
@@ -243,7 +243,7 @@ function AutomationCard({ a, unitName }: { a: Automation; unitName: string }) {
 
       {a.lastFailure && (
         <p className="flex items-start gap-1.5 rounded-btn bg-loss/5 px-2 py-1.5 text-caption text-loss">
-          <CircleAlert size={11} className="mt-px shrink-0" />
+          <CircleAlert size={12} className="mt-px shrink-0" />
           <span className="min-w-0 break-words">{a.lastFailure.reason}</span>
         </p>
       )}
@@ -251,7 +251,7 @@ function AutomationCard({ a, unitName }: { a: Automation; unitName: string }) {
       <div className="mt-auto flex items-center gap-2 border-t border-line-soft pt-2.5">
         <span className="font-mono text-caption text-ash">{a.runtimeId}</span>
         <button className="flex items-center gap-1 rounded-btn px-1.5 py-1 text-caption text-graphite hover:bg-line-soft hover:text-ink">
-          <Play size={10} />
+          <Play size={12} />
           立即运行
         </button>
         <button

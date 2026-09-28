@@ -107,7 +107,7 @@ export function CommandCenter() {
         id: `unit-${u.id}`,
         scope: "units",
         group: "工作单元",
-        icon: u.kind === "employee" ? Bot : FolderGit2,
+        icon: u.kind === "bot" ? Bot : FolderGit2,
         label: u.name,
         hint: u.rootPath,
         run: () => useWorkbench.getState().selectUnit(u.id),
@@ -207,7 +207,7 @@ export function CommandCenter() {
               aria-label="关闭"
               className="shrink-0 rounded-btn p-0.5 text-ash hover:bg-line-soft hover:text-ink"
             >
-              <X size={13} />
+              <X size={12} />
             </button>
           </div>
 
@@ -227,7 +227,7 @@ export function CommandCenter() {
                       : "border-line text-graphite hover:bg-line-soft hover:text-ink",
                   )}
                 >
-                  <Icon size={11} />
+                  <Icon size={12} />
                   {label}
                 </button>
               );
@@ -263,7 +263,7 @@ export function CommandCenter() {
                         selected ? "bg-teal-tint" : "hover:bg-line-soft",
                       )}
                     >
-                      <Icon size={13} className="shrink-0 text-graphite" />
+                      <Icon size={12} className="shrink-0 text-graphite" />
                       <span className="min-w-0 flex-1">
                         <span className={cn("block truncate text-body-sm", selected ? "text-ink" : "text-ink")}>
                           {it.label}
@@ -311,11 +311,11 @@ function useCommands(): readonly Command[] {
 
     out.push(
       {
-        id: "view-employee",
-        label: "切到员工视图",
+        id: "view-bot",
+        label: "切到 bot 视图",
         hint: "人 · 状态 · 日程",
         group: "视图",
-        run: () => useWorkbench.getState().setView("employee"),
+        run: () => useWorkbench.getState().setView("bot"),
       },
       {
         id: "view-project",

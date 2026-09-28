@@ -57,7 +57,13 @@ const EMPTY: SidePaneState = { tabs: [], activeTabId: "" };
  * 总览弹层也会长到没法看。**功能可见性靠「+」目录保证，不靠预置**——
  * 目录里每一种都在，缺运行时的还标着缺什么。
  */
-const DEFAULT_TABS: readonly SidePaneTabType[] = ["capabilities", "deliverables", "tools", "git"];
+const DEFAULT_TABS: readonly SidePaneTabType[] = [
+  "workspace-files",
+  "capabilities",
+  "deliverables",
+  "tools",
+  "git",
+];
 
 /**
  * 会话激活时按需补齐的页签。

@@ -46,7 +46,7 @@ export function UnitList() {
                   : "text-graphite hover:bg-[#e9e6e0] hover:text-ink",
               )}
             >
-              <Icon size={13} />
+              <Icon size={12} />
               {v.label}
             </button>
           );
@@ -117,6 +117,6 @@ export function UnitList() {
 }
 
 const VIEWS: readonly { id: ViewMode; label: string; icon: typeof Bot }[] = [
-  { id: "employee", label: "员工", icon: Bot },
+  { id: "bot", label: "bot", icon: Bot },
   { id: "project", label: "项目", icon: FolderGit2 },
 ];

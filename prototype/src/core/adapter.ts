@@ -61,7 +61,7 @@ export interface RuntimeCapabilities {
   readonly subagents: boolean;
   /** 是否支持 worktree 隔离（并行 fan-out 必需） */
   readonly worktrees: boolean;
-  /** 是否有沙箱执行（员工模式三件套之一，dsh / ZCode 有，Claude Code 无） */
+  /** 是否有沙箱执行（bot模式三件套之一，dsh / ZCode 有，Claude Code 无） */
   readonly sandbox: boolean;
   /** 是否支持 MCP */
   readonly mcp: boolean;
@@ -124,7 +124,7 @@ export interface ProbeResult {
 
 export interface StartSessionRequest {
   readonly unit: WorkUnit;
-  /** 员工模式：读 AGENTS.md 当岗位说明书。项目模式：当作普通开发上下文 */
+  /** bot模式：读 AGENTS.md 当岗位说明书。项目模式：当作普通开发上下文 */
   readonly prompt: string;
   /**
    * 这次用哪个模型。

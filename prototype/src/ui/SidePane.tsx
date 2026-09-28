@@ -64,6 +64,7 @@ import {
 import { cn } from "./cn.ts";
 import type { RuntimeCapabilities } from "../core/adapter.ts";
 import { OverviewTrigger, SidePaneOverview } from "./SidePaneOverview.tsx";
+import { WorkspaceFilesPane } from "./WorkspaceFilesPane.tsx";
 
 /**
  * 23 种可见页签各配一个图标（另有 treemapping 按 ZCode 口径隐藏，映射仍穷尽）。
@@ -87,6 +88,7 @@ const ICON: Record<SidePaneTabType, typeof Layers> = {
 
   // 会话级
   files: FileDiff,
+  "workspace-files": FolderTree,
   trace: History,
   plan: ListOrdered,
   "selection-chat": MessageSquare,
@@ -282,10 +284,10 @@ export function SidePane({ ownerId }: { ownerId: string | null }) {
                   )}
                 >
                   <span className="relative flex items-center justify-center">
-                    <Icon size={15} />
+                    <Icon size={16} />
                     {badge > 0 && (
                       <span
-                        className="tnum absolute -right-2 -top-1.5 rounded-chip bg-line-soft px-1 text-[9px] leading-3 text-graphite"
+                        className="tnum absolute -right-2 -top-1.5 rounded-chip bg-line-soft px-1 text-caption leading-none leading-3 text-graphite"
                         title={`${badge}`}
                       >
                         {badge}
@@ -298,7 +300,7 @@ export function SidePane({ ownerId }: { ownerId: string | null }) {
                   aria-label={`关闭 ${t.title}`}
                   className="absolute right-0 top-0 hidden rounded p-px text-ash hover:text-loss group-hover:block"
                 >
-                  <X size={9} />
+                  <X size={12} />
                 </button>
               </div>
             );
@@ -412,6 +414,10 @@ function TabContent({ tab, ownerId }: { tab?: SidePaneTab; ownerId: string | nul
       return <CodeViewerPane subject={tab.subject ?? null} />;
     case "model-trajectory":
       return <ModelTrajectoryPane />;
+
+    /* 工作区级 */
+    case "workspace-files":
+      return <WorkspaceFilesPane />;
 
     /* 会话级 */
     case "files":
@@ -920,11 +926,11 @@ function DeveloperToolsPane() {
 }
 
 function StatusDot({ ok }: { ok?: boolean }) {
-  if (ok === undefined) return <CircleDot size={10} className="shrink-0 text-teal" aria-label="进行中" />;
+  if (ok === undefined) return <CircleDot size={12} className="shrink-0 text-teal" aria-label="进行中" />;
   return ok ? (
-    <Check size={10} className="shrink-0 text-gain" aria-label="成功" />
+    <Check size={12} className="shrink-0 text-gain" aria-label="成功" />
   ) : (
-    <X size={10} className="shrink-0 text-loss" aria-label="失败" />
+    <X size={12} className="shrink-0 text-loss" aria-label="失败" />
   );
 }
 
@@ -1241,7 +1247,7 @@ function TracePane({ ownerId }: { ownerId: string | null }) {
         </div>
         {busy && (
           <p className="mt-3 flex items-center gap-2 text-caption text-graphite">
-            <Activity size={11} className="text-teal" />
+            <Activity size={12} className="text-teal" />
             采集中…
           </p>
         )}
@@ -1255,7 +1261,7 @@ function TracePane({ ownerId }: { ownerId: string | null }) {
             aria-pressed={visibleTurns.length > 0 && visibleTurns.every((t) => collapsedTurns.has(t.turn))}
             className="flex shrink-0 items-center gap-1 rounded-btn border border-line px-1.5 py-1 text-caption text-graphite hover:bg-line-soft hover:text-ink aria-pressed:border-teal-edge aria-pressed:bg-teal-tint aria-pressed:text-ink"
           >
-            <ChevronsDownUp size={11} />
+            <ChevronsDownUp size={12} />
             折叠轮次
           </button>
           <input
@@ -1283,7 +1289,7 @@ function TracePane({ ownerId }: { ownerId: string | null }) {
                   aria-expanded={!isCollapsed}
                   className="flex w-full items-center gap-1.5 rounded-btn bg-rail px-1.5 py-1 text-caption text-graphite hover:text-ink"
                 >
-                  <ChevronDown size={11} className={cn("shrink-0 transition-transform", isCollapsed && "-rotate-90")} />
+                  <ChevronDown size={12} className={cn("shrink-0 transition-transform", isCollapsed && "-rotate-90")} />
                   <span className="shrink-0 font-medium text-ink">Turn {turn.turn}</span>
                   <span className="tnum ml-auto shrink-0 text-ash">
                     {trajTokenText(turn.tokens)} · {turn.steps} 步 · 工具×{turn.toolCalls}
@@ -1304,10 +1310,10 @@ function TracePane({ ownerId }: { ownerId: string | null }) {
                               r.detail ? "hover:bg-line-soft" : "cursor-default",
                             )}
                           >
-                            <span className="tnum w-14 shrink-0 text-[10px] text-ash">{r.clock}</span>
+                            <span className="tnum w-14 shrink-0 text-caption text-ash">{r.clock}</span>
                             <span
                               className={cn(
-                                "shrink-0 rounded-chip px-1.5 py-px text-[10px] leading-4",
+                                "shrink-0 rounded-chip px-1.5 py-px text-caption leading-4",
                                 KIND_CLASS[r.kind],
                                 r.isError && "bg-loss/10 text-loss",
                               )}
@@ -1319,10 +1325,10 @@ function TracePane({ ownerId }: { ownerId: string | null }) {
                               {r.result && <span className="text-ash"> → {r.result}</span>}
                             </span>
                             {r.durationMs !== undefined && (
-                              <span className="tnum shrink-0 text-[10px] text-ash">{formatDuration(r.durationMs)}</span>
+                              <span className="tnum shrink-0 text-caption text-ash">{formatDuration(r.durationMs)}</span>
                             )}
                             {r.detail && (
-                              <ChevronDown size={11} className={cn("shrink-0 text-ash", !isOpen && "-rotate-90")} />
+                              <ChevronDown size={12} className={cn("shrink-0 text-ash", !isOpen && "-rotate-90")} />
                             )}
                           </button>
                           {isOpen && r.detail && (
