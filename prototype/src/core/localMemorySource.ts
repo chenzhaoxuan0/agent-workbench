@@ -60,6 +60,11 @@ async function idbPut(id: string, handle: LocalDirHandle): Promise<void> {
   db.close();
 }
 
+/** 外部保存句柄（后端「更换文件夹」用：新句柄存同一键位） */
+export async function saveHandle(id: string, handle: LocalDirHandle): Promise<void> {
+  await idbPut(id, handle);
+}
+
 async function idbGet(id: string): Promise<LocalDirHandle | undefined> {
   const db = await openDb();
   const handle = await new Promise<LocalDirHandle | undefined>((resolve, reject) => {

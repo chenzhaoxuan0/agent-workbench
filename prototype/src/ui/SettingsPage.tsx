@@ -41,6 +41,7 @@ import {
   loadLocalHandle,
   pickLocalFolder,
   requestPermission,
+  saveHandle,
   searchAllLocal,
   sourcePermission,
 } from "../core/localMemorySource.ts";
@@ -475,34 +476,71 @@ function MemorySettingsSection() {
                 </div>
                 {isOpen && (
                   <div className="border-t border-line-soft bg-rail px-4 py-3">
+                    {/* 名称：所有类型都可改 */}
+                    <div className="mb-2.5 grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] items-center gap-3">
+                      <span className="text-caption font-medium text-graphite">名称</span>
+                      <input
+                        value={b.name}
+                        onChange={(e) => updateBackend(b.id, { name: e.target.value })}
+                        className="w-full rounded-input border border-transparent bg-canvas px-2.5 py-1.5 text-body-sm text-ink outline-none focus:border-teal"
+                      />
+                    </div>
                     {b.type === "weknora" && (
                       <div className="space-y-2">
-                        <RowInputLocal
-                          label="API 地址"
-                          value={b.baseUrl ?? ""}
-                          onChange={(v) => updateBackend(b.id, { baseUrl: v })}
-                        />
-                        <RowInputLocal
-                          label="API Key (X-API-Key)"
-                          value={b.apiKey ?? ""}
-                          onChange={(v) => updateBackend(b.id, { apiKey: v })}
-                          password
-                        />
-                        <RowInputLocal
-                          label="知识库 ID"
-                          value={b.kbId ?? ""}
-                          onChange={(v) => updateBackend(b.id, { kbId: v })}
-                        />
+                        <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] items-center gap-3">
+                          <span className="text-caption font-medium text-graphite">API 地址</span>
+                          <input
+                            value={b.baseUrl ?? ""}
+                            onChange={(e) => updateBackend(b.id, { baseUrl: e.target.value })}
+                            spellCheck={false}
+                            className="w-full rounded-input border border-transparent bg-canvas px-2.5 py-1.5 font-mono text-caption text-ink outline-none focus:border-teal"
+                          />
+                        </div>
+                        <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] items-center gap-3">
+                          <span className="text-caption font-medium text-graphite">API Key (X-API-Key)</span>
+                          <input
+                            type="password"
+                            value={b.apiKey ?? ""}
+                            onChange={(e) => updateBackend(b.id, { apiKey: e.target.value })}
+                            className="w-full rounded-input border border-transparent bg-canvas px-2.5 py-1.5 font-mono text-caption text-ink outline-none focus:border-teal"
+                          />
+                        </div>
+                        <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] items-center gap-3">
+                          <span className="text-caption font-medium text-graphite">知识库 ID</span>
+                          <input
+                            value={b.kbId ?? ""}
+                            onChange={(e) => updateBackend(b.id, { kbId: e.target.value })}
+                            spellCheck={false}
+                            className="w-full rounded-input border border-transparent bg-canvas px-2.5 py-1.5 font-mono text-caption text-ink outline-none focus:border-teal"
+                          />
+                        </div>
                         <p className="text-caption text-ash">知识库列表可在「测试连接」中拉取后直接填写 id。</p>
                       </div>
                     )}
                     {b.type === "local-folder" && (
-                      <p className="text-caption text-ash">
-                        本地文件夹来源：重新授权与索引在启用后自动进行（句柄存 IndexedDB）。
-                      </p>
+                      <div className="mt-1 flex items-center gap-2">
+                        <span className="text-caption text-ash">
+                          当前文件夹句柄已保存；换文件夹 = 重新授权新目录（原索引作废重建）。
+                        </span>
+                        <button
+                          onClick={async () => {
+                            try {
+                              const picked = await pickLocalFolder();
+                              if (!picked) return;
+                              await saveHandle(`be-${b.id}`, picked.handle);
+                              updateBackend(b.id, { sourceId: picked.id });
+                            } catch (e) {
+                              setErrors([e instanceof Error ? e.message : String(e)]);
+                            }
+                          }}
+                          className="shrink-0 rounded-btn border border-line px-2 py-1 text-caption text-graphite hover:bg-line-soft hover:text-ink"
+                        >
+                          更换文件夹
+                        </button>
+                      </div>
                     )}
                     {b.type === "sqlite" && (
-                      <p className="text-caption text-ash">本地 SQLite（.waku/state.db 精神）：零配置内置后端。</p>
+                      <p className="text-caption text-ash">本地 SQLite（.waku/state.db 精神）：零配置内置后端，无需配置。</p>
                     )}
                     {!["weknora", "local-folder", "sqlite"].includes(b.type) && (
                       <p className="text-caption text-ash">该后端类型由真运行时提供连接配置。</p>
@@ -616,6 +654,26 @@ function MemorySettingsSection() {
           description="每轮后重新生成 .waku/MEMORY.md，人类可直接打开阅读全部记忆"
           control={<Toggle on={prefs.mirrorMd} onChange={(v) => setGate({ mirrorMd: v })} />}
         />
+      </GroupCard>
+
+      {/* 配置透明化：完整 JSON + 实际存储位置 */}
+      <GroupCard>
+        <div className="px-4 pb-3 pt-3">
+          <details>
+            <summary className="flex cursor-pointer items-center justify-between gap-2 text-caption text-graphite hover:text-ink">
+              <span>配置文件（当前生效的全部编排配置）</span>
+              <span className="font-mono text-ash">localStorage · agent-workbench:memory-orchestration</span>
+            </summary>
+            <pre className="mt-2 max-h-64 overflow-auto rounded-btn bg-rail p-2.5 font-mono text-caption leading-relaxed text-graphite">
+              {JSON.stringify(prefs, null, 2)}
+            </pre>
+            <p className="mt-1.5 text-caption leading-relaxed text-ash">
+              原型期编排配置存浏览器 localStorage（上方键名）；真运行时落
+              .waku/ 目录（state.db / SOUL.md / MEMORY.md / skills/），
+              凭据按 dsh 边界移入独立凭据库、配置只留引用名。
+            </p>
+          </details>
+        </div>
       </GroupCard>
 
       {/* 实测：写入广播 + 检索合并 */}
