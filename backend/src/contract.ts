@@ -18,6 +18,15 @@ export type {
 } from "../../prototype/src/core/events.ts";
 
 export type {
+  ConnectionState,
+  ProbeResult,
+  RuntimeCapabilities,
+  TransportDescriptor,
+  TransportKind,
+} from "../../prototype/src/core/adapter.ts";
+export { FULL_CAPABILITIES } from "../../prototype/src/core/adapter.ts";
+
+export type {
   ModelId,
   RuntimeId,
   Session,

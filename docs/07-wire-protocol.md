@@ -62,9 +62,19 @@
 |---|---|---|
 | `health` | **已实现** | params 无；result 同 `GET /healthz` 响应体 |
 | `daemon.stop` | **已实现** | ack `{ stopping: true }` 后优雅退出（退出码 0） |
-| `session.start` / `session.send` / `session.cancel` / `session.resume` / `session.list` / `permission.resolve` / `adapter.probe` | Phase 1 落地时在此表登记 schema | 命名先占位，避免各起各的 |
+| `adapter.list` | **已实现** | 已注册执行器摘要 `{id, displayName, glyph, models[], capabilities}` |
+| `adapter.probe` | **已实现** | params `{runtimeId}`；result 为契约 ProbeResult |
+| `session.start` | **已实现** | params `{runtimeId, unitId, unitName?, rootPath, prompt, model?, mode?}`；result 为契约 Session；后续事件经事件流推送 |
+| `session.send` | **已实现** | params `{sessionId, text}`；多轮续聊 |
+| `session.cancel` | **已实现** | params `{sessionId}` |
+| `session.list` | **已实现** | result 为契约 Session[]（按开始时间倒序），含累计 stats |
+| `permission.resolve` | **已实现** | params `{sessionId, requestId, decision: allow\|deny\|always}`；`always` 的规则表落盘在 Phase 4 |
+| `session.resume` | Phase 3 | 从 `.waku/` 落盘恢复会话 |
+| 自动化 / Ops / 记忆方法 | Phase 5–7 | 落地时在此表登记 schema |
 
 **为什么有 `daemon.stop`**：Windows 上跨进程 SIGTERM 不可投递（冒烟实证，`child.kill("SIGTERM")` 后子进程无动于衷）。程序化退出一律走协议；SIGINT/SIGTERM 处理器保留给终端 Ctrl+C 与 Unix。这是 Phase 0 的一个硬结论，后续 PTY / 子进程管理会反复遇到，处置口径一致：**能走协议的走协议，信号只当人肉兜底**。
+
+**Phase 1 执行器事实（zcode）**：daemon 首个执行器走 `zcode -p --json`（headless 单轮 + `--resume` 多轮），真实流式 delta / usage / 会话 id 全部落进契约事件。`zcode app-server`（ZCode Protocol NDJSON，能力更全：真流式、工具事件、权限反向流）第一版已跑通到 turn 层，但 standalone 模式的 Provider Registry 依赖 `zcode login` 的独立凭据体系，桌面端 oauth 登录无法喂饱（详见 `backend/src/runtime/adapters/zcode.ts` 头注释）——留作后续升级路径。
 
 ## 五、版本与演进
 

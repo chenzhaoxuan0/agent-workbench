@@ -9,7 +9,11 @@ import { mkdirSync } from "node:fs";
 import { loadConfig } from "./config.ts";
 import { healthPayload, startHttp } from "./httpd.ts";
 import { log, setLogLevel } from "./log.ts";
-import { attachWs, registerMethod } from "./wsd.ts";
+import { attachWs, broadcastEvent, registerMethod } from "./wsd.ts";
+import { RuntimeHost } from "./runtime/host.ts";
+import { TraceSink } from "./runtime/trace.ts";
+import { ZcodeAdapter } from "./runtime/adapters/zcode.ts";
+import { asModelId, asSessionId, asUnitId } from "../../prototype/src/core/units.ts";
 
 const startedAt = Date.now();
 const config = loadConfig();
@@ -19,6 +23,58 @@ mkdirSync(config.homeDir, { recursive: true });
 
 const { server, port } = await startHttp(config, startedAt);
 const wss = attachWs(server, { config, startedAt });
+
+// ---- Runtime Host（Phase 1）------------------------------------------------
+
+const host = new RuntimeHost((event) => broadcastEvent(wss, event), new TraceSink(config.homeDir));
+host.register(new ZcodeAdapter());
+
+registerMethod("adapter.list", () => host.listAdapters());
+registerMethod("adapter.probe", (params) => {
+  const { runtimeId } = params as { runtimeId?: string };
+  if (typeof runtimeId !== "string") throw Object.assign(new Error("runtimeId is required"), { code: "bad_params" });
+  return host.probe(runtimeId);
+});
+registerMethod("session.start", (params) => {
+  const p = params as {
+    runtimeId?: string; unitId?: string; unitName?: string; rootPath?: string;
+    prompt?: string; model?: string; mode?: "plan" | "build" | "edit" | "yolo";
+  };
+  if (typeof p.runtimeId !== "string" || typeof p.unitId !== "string" ||
+      typeof p.rootPath !== "string" || typeof p.prompt !== "string") {
+    throw Object.assign(new Error("runtimeId, unitId, rootPath, prompt are required"), { code: "bad_params" });
+  }
+  return host.startSession({
+    runtimeId: p.runtimeId,
+    unitId: asUnitId(p.unitId),
+    unitName: p.unitName ?? p.unitId,
+    rootPath: p.rootPath,
+    prompt: p.prompt,
+    model: typeof p.model === "string" ? asModelId(p.model) : null,
+    mode: p.mode,
+  });
+});
+registerMethod("session.send", (params) => {
+  const p = params as { sessionId?: string; text?: string };
+  if (typeof p.sessionId !== "string" || typeof p.text !== "string") {
+    throw Object.assign(new Error("sessionId and text are required"), { code: "bad_params" });
+  }
+  return host.sendMessage(asSessionId(p.sessionId), p.text);
+});
+registerMethod("session.cancel", (params) => {
+  const { sessionId } = (params ?? {}) as { sessionId?: string };
+  if (typeof sessionId !== "string") throw Object.assign(new Error("sessionId is required"), { code: "bad_params" });
+  return host.cancelSession(asSessionId(sessionId));
+});
+registerMethod("session.list", () => host.listSessions());
+registerMethod("permission.resolve", (params) => {
+  const p = params as { sessionId?: string; requestId?: string; decision?: "allow" | "deny" | "always" };
+  if (typeof p.sessionId !== "string" || typeof p.requestId !== "string" ||
+      (p.decision !== "allow" && p.decision !== "deny" && p.decision !== "always")) {
+    throw Object.assign(new Error("sessionId, requestId, decision(allow|deny|always) are required"), { code: "bad_params" });
+  }
+  return host.resolvePermission(asSessionId(p.sessionId), p.requestId, p.decision);
+});
 
 registerMethod("health", () => healthPayload(config, startedAt));
 
@@ -45,6 +101,7 @@ function shutdown(signal: string): void {
   if (shuttingDown) return;
   shuttingDown = true;
   log.info("shutting down", { signal });
+  void host.shutdown().catch(() => {});
   for (const client of wss.clients) client.close(1001, "server shutting down");
   wss.close();
   server.close();
