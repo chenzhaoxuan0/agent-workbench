@@ -18,12 +18,16 @@ export interface WeknoraConfig {
   /** 语义事实所在的知识库 id（可通过「测试连接」拉取列表选择） */
   kbId: string;
 }
-export type EpisodicStore = "sqlite" | "notion";
+export type EpisodicStore = "sqlite" | "notion" | "weknora";
 
 export interface MemoryPrefs {
-  /** 语义记忆 · 事实（人/项目/偏好的持久事实，FTS5 检索） */
+  /**
+   * 语义记忆 · 事实（人/项目/偏好的持久事实，FTS5 检索）。
+   * **多后端**：检索 = 全部启用后端的并集；写入 = 广播到全部启用后端
+   * （镜像语义——一个后端挂了记忆不丢）。
+   */
   semanticEnabled: boolean;
-  semanticStore: SemanticStore;
+  semanticStores: readonly SemanticStore[];
   /** 检索条数（waku: WAKU_RETRIEVAL_TOP_K，默认 4） */
   semanticTopK: number;
   /** semanticStore === "weknora" 时的连接配置 */
@@ -34,9 +38,9 @@ export interface MemoryPrefs {
   weknoraEpisodicKbIds: readonly string[];
   /** 本地文件来源（不经 WeKnora 直连的文件夹；句柄存 IndexedDB） */
   localSources: readonly { id: string; name: string }[];
-  /** 情节记忆 · 事件（带日期的“发生过什么”一句话摘要） */
+  /** 情节记忆 · 事件（带日期的“发生过什么”一句话摘要）——多后端同上 */
   episodicEnabled: boolean;
-  episodicStore: EpisodicStore;
+  episodicStores: readonly EpisodicStore[];
   /** 程序性记忆 · 技能（SKILL.md 关键词命中注入，每轮最多 2 个） */
   proceduralEnabled: boolean;
   /** 检索门控：小模型先判断本次是否需要检索；fail-open（门控出错就检索） */
@@ -50,7 +54,7 @@ export interface MemoryPrefs {
 
 const DEFAULTS: MemoryPrefs = {
   semanticEnabled: true,
-  semanticStore: "sqlite",
+  semanticStores: ["sqlite"],
   semanticTopK: 4,
   weknoraBaseUrl: "http://localhost:18080",
   weknoraApiKey: "",
@@ -58,7 +62,7 @@ const DEFAULTS: MemoryPrefs = {
   weknoraEpisodicKbIds: [],
   localSources: [],
   episodicEnabled: true,
-  episodicStore: "sqlite",
+  episodicStores: ["sqlite"],
   proceduralEnabled: true,
   gateEnabled: true,
   gateModel: "claude-haiku-4-5",
@@ -82,6 +86,15 @@ function load(): MemoryPrefs {
     const legacyKb = (prefs as { weknoraKbId?: string }).weknoraKbId;
     if (legacyKb && prefs.weknoraSemanticKbIds.length === 0) {
       prefs.weknoraSemanticKbIds = [legacyKb];
+    }
+    // 旧版单后端 → 多后端
+    const legacySem = (prefs as { semanticStore?: SemanticStore }).semanticStore;
+    if (legacySem && prefs.semanticStores.length === 0) {
+      prefs.semanticStores = [legacySem];
+    }
+    const legacyEpi = (prefs as { episodicStore?: EpisodicStore }).episodicStore;
+    if (legacyEpi && prefs.episodicStores.length === 0) {
+      prefs.episodicStores = [legacyEpi];
     }
     return prefs;
   } catch {

@@ -264,13 +264,13 @@ function MemorySettingsSection() {
           control={<Toggle on={prefs.semanticEnabled} onChange={(v) => update({ semanticEnabled: v })} />}
         />
         <SettingsRow
-          label="存储后端"
-          description="语义事实的存放位置"
+          label="存储后端（可多选）"
+          description="检索合并全部启用后端；写入广播到每一个（镜像——单后端故障不丢记忆）"
           control={
-            <MemorySelect
-              value={prefs.semanticStore}
+            <BackendChips
+              value={prefs.semanticStores}
               choices={["sqlite", "weknora", "supabase", "mem0", "zep", "langmem"] as const}
-              onChange={(v) => update({ semanticStore: v })}
+              onChange={(v) => update({ semanticStores: v })}
             />
           }
         />
@@ -281,7 +281,9 @@ function MemorySettingsSection() {
         />
       </GroupCard>
 
-      {prefs.semanticStore === "weknora" && <WeknoraCard />}
+      {(prefs.semanticStores.includes("weknora") || prefs.episodicStores.includes("weknora")) && (
+        <WeknoraCard />
+      )}
 
       <LocalSourcesCard />
 
@@ -292,13 +294,13 @@ function MemorySettingsSection() {
           control={<Toggle on={prefs.episodicEnabled} onChange={(v) => update({ episodicEnabled: v })} />}
         />
         <SettingsRow
-          label="存储后端"
-          description="情节摘要的存放位置"
+          label="存储后端（可多选）"
+          description="同语义层：检索并集、写入广播"
           control={
-            <MemorySelect
-              value={prefs.episodicStore}
-              choices={["sqlite", "notion"] as const}
-              onChange={(v) => update({ episodicStore: v })}
+            <BackendChips
+              value={prefs.episodicStores}
+              choices={["sqlite", "notion", "weknora"] as const}
+              onChange={(v) => update({ episodicStores: v })}
             />
           }
         />
@@ -377,7 +379,7 @@ function WeknoraCard() {
   const [testing, setTesting] = useState(false);
   const [fact, setFact] = useState("");
   const [query, setQuery] = useState("");
-  const [hits, setHits] = useState<string[] | null>(null);
+  const [hits, setHits] = useState<{ path: string; content: string }[] | null>(null);
 
   const hasSemKb = prefs.weknoraSemanticKbIds.length > 0;
   void hasSemKb;
@@ -397,25 +399,52 @@ function WeknoraCard() {
     }
   };
 
+  // 写入广播：语义层的全部启用后端各写一份（原型期可演示 WeKnora 渠道；
+  // sqlite / supabase 等由真运行时执行，本地来源无需写入——它们是只读镜像）
   const saveFact = async () => {
-    if (prefs.weknoraSemanticKbIds.length === 0 || fact.trim().length === 0) return;
+    if (fact.trim().length === 0) return;
+    const targets: string[] = [];
+    if (prefs.semanticStores.includes("weknora")) {
+      if (prefs.weknoraSemanticKbIds.length === 0) {
+        setStatus("WeKnora 已启用但未勾选知识库 —— 先在上方勾选归属");
+        return;
+      }
+      targets.push("WeKnora");
+    }
+    if (prefs.semanticStores.some((x) => x !== "weknora")) {
+      targets.push("本地/云端后端（真运行时执行）");
+    }
     setStatus("写入中…");
     try {
-      await weknoraSaveFact(cfg, prefs.weknoraSemanticKbIds[0]!, `事实 · ${new Date().toLocaleString("zh-CN")}`, fact.trim());
-      setStatus("已写入 WeKnora（异步解析入库）");
+      if (prefs.semanticStores.includes("weknora")) {
+        await weknoraSaveFact(cfg, prefs.weknoraSemanticKbIds[0]!, `事实 · ${new Date().toLocaleString("zh-CN")}`, fact.trim());
+      }
+      setStatus(`已广播写入：${targets.join(" + ")}`);
       setFact("");
     } catch (e) {
       setStatus(`写入失败：${e instanceof Error ? e.message : String(e)}`);
     }
   };
 
+  // 检索合并：WeKnora（若启用）+ 本地文件来源，跨渠道并集
   const doSearch = async () => {
-    if (prefs.weknoraSemanticKbIds.length === 0 || query.trim().length === 0) return;
+    if (query.trim().length === 0) return;
     setStatus("检索中…");
     try {
-      const list = await weknoraSearch(cfg, prefs.weknoraSemanticKbIds, query.trim(), prefs.semanticTopK);
-      setHits(list.map((h) => h.content));
-      setStatus(`检索到 ${list.length} 条`);
+      let merged: { path?: string; content: string }[] = [];
+      if (prefs.semanticStores.includes("weknora") && prefs.weknoraSemanticKbIds.length > 0) {
+        const wk = await weknoraSearch(cfg, prefs.weknoraSemanticKbIds, query.trim(), prefs.semanticTopK);
+        merged.push(...wk.map((h) => ({ content: `[WeKnora] ${h.content}` })));
+      }
+      const localIds = useMemoryPrefs.getState().prefs.localSources.filter((s) => isIndexed(s.id)).map((s) => s.id);
+      merged.push(
+        ...searchAllLocal(localIds, query.trim(), prefs.semanticTopK).map((h) => ({
+          path: h.path,
+          content: `[本地] ${h.path} · ${h.excerpt}`,
+        })),
+      );
+      setHits(merged.map((h) => ({ path: h.path ?? "", content: h.content })));
+      setStatus(`合并检索到 ${merged.length} 条`);
     } catch (e) {
       setStatus(`检索失败：${e instanceof Error ? e.message : String(e)}`);
     }
@@ -537,7 +566,12 @@ function WeknoraCard() {
               {hits.length === 0 && <li className="text-caption text-ash">没有命中的内容。</li>}
               {hits.map((h, i) => (
                 <li key={i} className="text-caption leading-relaxed text-graphite">
-                  · {h}
+                  {h.path ? (
+                    <>
+                      <span className="font-mono text-ash">{h.path}</span> ·{" "}
+                    </>
+                  ) : null}
+                  {h.content}
                 </li>
               ))}
             </ul>
@@ -728,30 +762,37 @@ function LocalSourcesCard() {
   );
 }
 
-function MemorySelect<T extends string>({
+/** 存储后端多选 chips —— 一个记忆层可同时镜像到多个后端 */
+function BackendChips<T extends string>({
   value,
   choices,
   onChange,
 }: {
-  value: T;
+  value: readonly T[];
   choices: readonly T[];
-  onChange: (v: T) => void;
+  onChange: (v: readonly T[]) => void;
 }) {
   return (
-    <div className="relative w-44">
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value as T)}
-        aria-label="存储后端"
-        className="w-full appearance-none rounded-input border border-line bg-rail px-2.5 py-1.5 text-body-sm text-ink outline-none focus:border-teal"
-      >
-        {choices.map((c) => (
-          <option key={c} value={c}>
+    <div className="flex flex-wrap justify-end gap-1">
+      {choices.map((c) => {
+        const on = value.includes(c);
+        return (
+          <button
+            key={c}
+            onClick={() => onChange(on ? value.filter((x) => x !== c) : [...value, c])}
+            aria-pressed={on}
+            className={cn(
+              "flex items-center gap-1 rounded-chip border px-2 py-1 text-caption",
+              on
+                ? "border-teal-edge bg-teal-tint font-medium text-ink"
+                : "border-line text-graphite hover:bg-line-soft hover:text-ink",
+            )}
+          >
+            {on && <Check size={10} className="text-teal" />}
             {c}
-          </option>
-        ))}
-      </select>
-      <ChevronDown size={12} className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-ash" />
+          </button>
+        );
+      })}
     </div>
   );
 }
