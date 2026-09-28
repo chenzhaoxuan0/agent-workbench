@@ -372,3 +372,11 @@ pi 仓库已更新克隆至 Agent/pi-latest（6f75515），其 models.json schem
 
 store：`useWorkbench.runtimePrefs`（enabled / displayName / endpoint /
 launchArgs / envVars / lastCheckedAt）+ `probeAll()` 全量重探测。
+
+### 设置分区合并：执行器并入「执行器与模型」（2026-09-28，用户决策）
+
+独立「执行器」分区撤销（其内容单薄、与模型管理同域）：
+`SettingsSectionId` 收敛为 chat 之外的 general / appearance / models /
+shortcuts / skills / memory / hooks / permissions / usage / trace / track；
+「模型」分区更名**「执行器与模型」**，构成 = 执行器实例面板（T3 逻辑）+
+默认执行器与探测策略（原执行器分区并入）+ API 供应商（pi 目录）。

@@ -26,7 +26,6 @@ export type MainView = "chat" | "automations";
 export type SettingsSectionId =
   | "general"
   | "appearance"
-  | "runtimes"
   | "models"
   | "shortcuts"
   | "skills"
@@ -63,8 +62,7 @@ export const SETTINGS_GROUPS: readonly { id: SettingsGroupId; title: string }[] 
 export const SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
   { id: "general", title: "通用", desc: "工作区、启动行为、语言", groupId: "basics", icon: "settings" },
   { id: "appearance", title: "外观", desc: "主题、字号、动效", groupId: "basics", icon: "palette" },
-  { id: "runtimes", title: "执行器", desc: "六家工具的安装、路径与优先级", groupId: "basics", icon: "package" },
-  { id: "models", title: "模型", desc: "每个 CLI 能用哪些模型、顺序与自定义模型", groupId: "basics", icon: "brain" },
+  { id: "models", title: "执行器与模型", desc: "执行器实例、供应商与每个 CLI 的模型清单", groupId: "basics", icon: "brain" },
   { id: "shortcuts", title: "快捷键", desc: "全局与工作区级键位", groupId: "basics", icon: "keyboard" },
 
   { id: "skills", title: "技能", desc: "SKILL.md 目录，跨工具共享", groupId: "agentCapabilities", icon: "wand" },

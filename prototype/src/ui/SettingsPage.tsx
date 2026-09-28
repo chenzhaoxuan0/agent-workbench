@@ -199,13 +199,15 @@ function Badge({ children }: { children: ReactNode }) {
 
 function SectionBody({ section }: { section: SettingsSectionDef }) {
   switch (section.id) {
-    case "runtimes":
-      return <RuntimesSection />;
     case "models":
       return (
         <div className="space-y-6">
           {/* 执行器实例面板（T3 Providers 逻辑：左列表+开关 / 右编辑器含 Models 管理） */}
           <ProviderInstancesPanel />
+
+          {/* 默认执行器 + 探测策略（原「执行器」分区并入） */}
+          <DefaultRuntimeSection />
+
           {/* API 供应商（pi 目录 + 兼容协议）—— dsh ModelsSection 形态 */}
           <ProviderSettingsSection />
         </div>
@@ -226,8 +228,8 @@ function SectionBody({ section }: { section: SettingsSectionDef }) {
   }
 }
 
-/** 执行器 —— 本项目最该显眼的一节 */
-function RuntimesSection() {
+/** 默认执行器 + 探测策略（原「执行器」分区并入本页） */
+function DefaultRuntimeSection() {
   const runtimes = useWorkbench((s) => s.runtimes);
   const activeId = useWorkbench((s) => s.activeRuntimeId);
   const select = useWorkbench((s) => s.selectRuntime);
