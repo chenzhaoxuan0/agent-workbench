@@ -13,6 +13,7 @@ import { attachWs, broadcastEvent, registerMethod } from "./wsd.ts";
 import { RuntimeHost } from "./runtime/host.ts";
 import { TraceSink } from "./runtime/trace.ts";
 import { ZcodeAdapter } from "./runtime/adapters/zcode.ts";
+import { CodexAdapter } from "./runtime/adapters/codex.ts";
 import { asModelId, asSessionId, asUnitId } from "../../prototype/src/core/units.ts";
 
 const startedAt = Date.now();
@@ -28,6 +29,7 @@ const wss = attachWs(server, { config, startedAt });
 
 const host = new RuntimeHost((event) => broadcastEvent(wss, event), new TraceSink(config.homeDir));
 host.register(new ZcodeAdapter());
+host.register(new CodexAdapter());
 
 registerMethod("adapter.list", () => host.listAdapters());
 registerMethod("adapter.probe", (params) => {

@@ -96,6 +96,9 @@ export function spawnLines(cmd: ResolvedCommand, args: readonly string[], opts: 
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
   });
+  // 一次性 CLI：prompt 都在 argv 里，立即关 stdin——
+  // 否则 codex 这类会停在「读 stdin / 目录信任确认」上永远不跑（冒烟实证）
+  child.stdin?.end();
   createInterface({ input: child.stdout! }).on("line", opts.onLine);
   if (opts.onStderrLine) {
     createInterface({ input: child.stderr! }).on("line", opts.onStderrLine);

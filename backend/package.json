@@ -12,7 +12,8 @@
     "start": "tsx src/index.ts",
     "typecheck": "tsc --noEmit",
     "smoke": "tsx scripts/smoke-health.ts",
-    "smoke:phase1": "tsx scripts/smoke-phase1.ts"
+    "smoke:phase1": "tsx scripts/smoke-phase1.ts",
+    "smoke:phase1b": "tsx scripts/smoke-phase1b.ts"
   },
   "dependencies": {
     "ws": "^8.22.0"
