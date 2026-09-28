@@ -82,6 +82,28 @@ export class Store {
         decision TEXT NOT NULL,
         created_at INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS automations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        unit_id TEXT NOT NULL,
+        unit_name TEXT NOT NULL,
+        runtime_id TEXT NOT NULL,
+        root_path TEXT NOT NULL,
+        prompt TEXT NOT NULL,
+        model TEXT,
+        mode TEXT,
+        cron TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        created_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS automation_runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        automation_id INTEGER NOT NULL,
+        session_id TEXT,
+        status TEXT NOT NULL,
+        started_at INTEGER NOT NULL,
+        finished_at INTEGER,
+        detail TEXT
+      );
     `);
     log.info("store opened", { db: path.join(homeDir, "state.db") });
   }
@@ -180,6 +202,111 @@ export class Store {
   deletePermissionRule(id: number): boolean {
     const result = this.db.prepare(`DELETE FROM permissions WHERE id = ?`).run(id);
     return Number(result.changes) > 0;
+  }
+
+  // ---- 自动化（Phase 5）------------------------------------------------------
+
+  createAutomation(a: {
+    unitId: string;
+    unitName: string;
+    runtimeId: string;
+    rootPath: string;
+    prompt: string;
+    model: string | null;
+    mode: string | null;
+    cron: string;
+  }): number {
+    const result = this.db
+      .prepare(
+        `INSERT INTO automations (unit_id, unit_name, runtime_id, root_path, prompt, model, mode, cron, enabled, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+      )
+      .run(a.unitId, a.unitName, a.runtimeId, a.rootPath, a.prompt, a.model, a.mode, a.cron, Date.now());
+    return Number(result.lastInsertRowid);
+  }
+
+  listAutomations(): Array<{
+    id: number;
+    unitId: string;
+    unitName: string;
+    runtimeId: string;
+    rootPath: string;
+    prompt: string;
+    model: string | null;
+    mode: string | null;
+    cron: string;
+    enabled: boolean;
+    createdAt: number;
+  }> {
+    const rows = this.db.prepare(`SELECT * FROM automations ORDER BY id DESC`).all() as Array<Record<string, unknown>>;
+    return rows.map((r) => ({
+      id: Number(r["id"]),
+      unitId: String(r["unit_id"]),
+      unitName: String(r["unit_name"]),
+      runtimeId: String(r["runtime_id"]),
+      rootPath: String(r["root_path"]),
+      prompt: String(r["prompt"]),
+      model: r["model"] === null ? null : String(r["model"]),
+      mode: r["mode"] === null ? null : String(r["mode"]),
+      cron: String(r["cron"]),
+      enabled: Number(r["enabled"]) === 1,
+      createdAt: Number(r["created_at"]),
+    }));
+  }
+
+  getAutomation(id: number): { automation: ReturnType<Store["listAutomations"]>[number] } | undefined {
+    const hit = this.listAutomations().find((a) => a.id === id);
+    return hit === undefined ? undefined : { automation: hit };
+  }
+
+  setAutomationEnabled(id: number, enabled: boolean): boolean {
+    const result = this.db.prepare(`UPDATE automations SET enabled = ? WHERE id = ?`).run(enabled ? 1 : 0, id);
+    return Number(result.changes) > 0;
+  }
+
+  deleteAutomation(id: number): boolean {
+    const result = this.db.prepare(`DELETE FROM automations WHERE id = ?`).run(id);
+    return Number(result.changes) > 0;
+  }
+
+  startAutomationRun(automationId: number, sessionId: string | null): number {
+    const result = this.db
+      .prepare(`INSERT INTO automation_runs (automation_id, session_id, status, started_at) VALUES (?, ?, 'running', ?)`)
+      .run(automationId, sessionId, Date.now());
+    return Number(result.lastInsertRowid);
+  }
+
+  setAutomationRunSession(runId: number, sessionId: string): void {
+    this.db.prepare(`UPDATE automation_runs SET session_id = ? WHERE id = ?`).run(sessionId, runId);
+  }
+
+  finishAutomationRun(runId: number, status: "done" | "failed", detail: string | null): void {
+    this.db
+      .prepare(`UPDATE automation_runs SET status = ?, finished_at = ?, detail = ? WHERE id = ?`)
+      .run(status, Date.now(), detail, runId);
+  }
+
+  listAutomationRuns(automationId: number, limit = 20): Array<{
+    id: number;
+    automationId: number;
+    sessionId: string | null;
+    status: string;
+    startedAt: number;
+    finishedAt: number | null;
+    detail: string | null;
+  }> {
+    const rows = this.db
+      .prepare(`SELECT * FROM automation_runs WHERE automation_id = ? ORDER BY id DESC LIMIT ?`)
+      .all(automationId, limit) as Array<Record<string, unknown>>;
+    return rows.map((r) => ({
+      id: Number(r["id"]),
+      automationId: Number(r["automation_id"]),
+      sessionId: r["session_id"] === null ? null : String(r["session_id"]),
+      status: String(r["status"]),
+      startedAt: Number(r["started_at"]),
+      finishedAt: r["finished_at"] === null ? null : Number(r["finished_at"]),
+      detail: r["detail"] === null ? null : String(r["detail"]),
+    }));
   }
 
   private toRow(r: Record<string, unknown>): SessionRow {

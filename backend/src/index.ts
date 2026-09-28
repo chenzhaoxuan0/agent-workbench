@@ -18,6 +18,8 @@ import { ZcodeAdapter } from "./runtime/adapters/zcode.ts";
 import { CodexAdapter } from "./runtime/adapters/codex.ts";
 import { TerminalManager } from "./terminal/terminals.ts";
 import { Store } from "./store/db.ts";
+import { AutomationScheduler } from "./automation/scheduler.ts";
+import { parseCron } from "./automation/cron.ts";
 import { asModelId, asSessionId, asUnitId } from "../../prototype/src/core/units.ts";
 
 const startedAt = Date.now();
@@ -30,7 +32,18 @@ mkdirSync(config.homeDir, { recursive: true });
 
 const store = new Store(config.homeDir);
 const gate = new PermissionGate(store);
-const host = new RuntimeHost((event) => broadcastEvent(wss, event), new TraceSink(config.homeDir), config.homeDir, store, gate);
+const host = new RuntimeHost((event) => {
+  broadcastEvent(wss, event);
+  // 自动化运行记录的终态回灌（Phase 5）
+  if (event.type === "session.ended") {
+    const runId = automationRunBySession.get(event.sessionId);
+    if (runId !== undefined) {
+      automationRunBySession.delete(event.sessionId);
+      const failed = event.reason === "error" || event.reason === "executor_exited";
+      store.finishAutomationRun(runId, failed ? "failed" : "done", `ended: ${event.reason}`);
+    }
+  }
+}, new TraceSink(config.homeDir), config.homeDir, store, gate);
 host.register(new ZcodeAdapter());
 host.register(new CodexAdapter());
 host.register(new MockPermAdapter());
@@ -41,6 +54,46 @@ host.loadPersisted();
 const terminals = new TerminalManager((frame) =>
   broadcastTerminal(wss, { v: WIRE_VERSION, type: "terminal", ...frame }),
 );
+
+// ---- 自动化调度（Phase 5）---------------------------------------------------
+
+/** sessionId → runId：会话结束态回灌运行记录 */
+const automationRunBySession = new Map<string, number>();
+
+async function runAutomation(a: {
+  id: number;
+  unitId: string;
+  unitName: string;
+  runtimeId: string;
+  rootPath: string;
+  prompt: string;
+  model: string | null;
+  mode: string | null;
+}): Promise<{ runId: number; sessionId: string }> {
+  const runId = store.startAutomationRun(a.id, null);
+  try {
+    const session = await host.startSession({
+      runtimeId: a.runtimeId,
+      unitId: asUnitId(a.unitId),
+      unitName: a.unitName,
+      rootPath: a.rootPath,
+      prompt: a.prompt,
+      model: a.model === null ? null : asModelId(a.model),
+      mode: (a.mode as "plan" | "build" | "edit" | "yolo" | undefined) ?? undefined,
+    });
+    store.finishAutomationRun(runId, "done", `session ${session.id} started`);
+    store.setAutomationRunSession(runId, session.id);
+    automationRunBySession.set(session.id, runId);
+    log.info("automation session launched", { automationId: a.id, runId, sessionId: session.id });
+    return { runId, sessionId: session.id };
+  } catch (err: unknown) {
+    store.finishAutomationRun(runId, "failed", err instanceof Error ? err.message : String(err));
+    throw err;
+  }
+}
+
+const scheduler = new AutomationScheduler(store, runAutomation);
+scheduler.start();
 
 // ---- REST 管理面（权限闸的决策入口，docs/07 §六）----------------------------
 
@@ -113,6 +166,67 @@ registerMethod("terminal.kill", (params) => {
   return { killed: true };
 });
 registerMethod("terminal.list", () => terminals.list());
+
+// ---- 自动化方法（Phase 5）---------------------------------------------------
+
+registerMethod("automation.create", (params) => {
+  const p = (params ?? {}) as {
+    unitId?: string; unitName?: string; runtimeId?: string; rootPath?: string;
+    prompt?: string; model?: string; mode?: string; cron?: string;
+  };
+  if (typeof p.unitId !== "string" || typeof p.runtimeId !== "string" ||
+      typeof p.rootPath !== "string" || typeof p.prompt !== "string" || typeof p.cron !== "string") {
+    throw Object.assign(new Error("unitId, runtimeId, rootPath, prompt, cron are required"), { code: "bad_params" });
+  }
+  parseCron(p.cron); // 坏表达式在创建时就拒，不等 tick 才发现
+  const id = store.createAutomation({
+    unitId: p.unitId,
+    unitName: p.unitName ?? p.unitId,
+    runtimeId: p.runtimeId,
+    rootPath: p.rootPath,
+    prompt: p.prompt,
+    model: typeof p.model === "string" ? p.model : null,
+    mode: typeof p.mode === "string" ? p.mode : null,
+    cron: p.cron,
+  });
+  return { id };
+});
+registerMethod("automation.list", (params) => {
+  const p = (params ?? {}) as { runsFor?: number };
+  const list = store.listAutomations();
+  const wantRuns = typeof p.runsFor === "number";
+  return list.map((a) => ({
+    ...a,
+    runs: wantRuns && a.id === p.runsFor ? store.listAutomationRuns(a.id) : undefined,
+  }));
+});
+registerMethod("automation.setEnabled", (params) => {
+  const p = (params ?? {}) as { id?: number; enabled?: boolean };
+  if (typeof p.id !== "number" || typeof p.enabled !== "boolean") {
+    throw Object.assign(new Error("id and enabled are required"), { code: "bad_params" });
+  }
+  const changed = store.setAutomationEnabled(p.id, p.enabled);
+  scheduler.invalidate(p.id);
+  return { changed };
+});
+registerMethod("automation.delete", (params) => {
+  const p = (params ?? {}) as { id?: number };
+  if (typeof p.id !== "number") throw Object.assign(new Error("id is required"), { code: "bad_params" });
+  scheduler.invalidate(p.id);
+  return { deleted: store.deleteAutomation(p.id) };
+});
+registerMethod("automation.runs", (params) => {
+  const p = (params ?? {}) as { id?: number };
+  if (typeof p.id !== "number") throw Object.assign(new Error("id is required"), { code: "bad_params" });
+  return store.listAutomationRuns(p.id);
+});
+registerMethod("automation.runNow", (params) => {
+  const p = (params ?? {}) as { id?: number };
+  if (typeof p.id !== "number") throw Object.assign(new Error("id is required"), { code: "bad_params" });
+  const hit = store.getAutomation(p.id);
+  if (hit === undefined) throw Object.assign(new Error(`no such automation: ${p.id}`), { code: "unknown_automation" });
+  return runAutomation(hit.automation);
+});
 
 registerMethod("adapter.list", () => host.listAdapters());
 registerMethod("adapter.probe", (params) => {
@@ -196,6 +310,7 @@ function shutdown(signal: string): void {
   if (shuttingDown) return;
   shuttingDown = true;
   log.info("shutting down", { signal });
+  scheduler.stop();
   void host.shutdown().catch(() => {});
   terminals.shutdown();
   for (const client of wss.clients) client.close(1001, "server shutting down");

@@ -76,6 +76,10 @@
 | `terminal.resize` | **已实现** | params `{terminalId, cols, rows}`（多窗格各自独立 resize） |
 | `terminal.kill` | **已实现** | params `{terminalId}`；exit 帧随后到达 |
 | `terminal.list` | **已实现** | 活跃终端清单 |
+| `automation.create` | **已实现** | params `{unitId, unitName?, runtimeId, rootPath, prompt, model?, mode?, cron}`（5 字段 cron，创建时即校验） |
+| `automation.list` / `automation.runs` | **已实现** | 定义清单 / 指定 id 的运行记录（一行一次，含 session_id 与终态） |
+| `automation.setEnabled` / `automation.delete` | **已实现** | 启停与删除 |
+| `automation.runNow` | **已实现** | 立即起一次（runId + sessionId），会话结束态回灌运行记录 |
 | `session.resume` | **已实现** | params `{sessionId}`；从 state.db 的 cli_ref 接回执行器，之后 send/cancel 照常 |
 | `session.messages` | **已实现** | params `{sessionId}`；落盘的对话流（user/assistant），前端重载会话用 |
 | 自动化 / Ops / 记忆方法 | Phase 5–7 | 落地时在此表登记 schema |
