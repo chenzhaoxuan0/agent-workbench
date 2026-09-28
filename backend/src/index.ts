@@ -9,11 +9,12 @@ import { mkdirSync } from "node:fs";
 import { loadConfig } from "./config.ts";
 import { healthPayload, startHttp } from "./httpd.ts";
 import { log, setLogLevel } from "./log.ts";
-import { attachWs, broadcastEvent, registerMethod } from "./wsd.ts";
+import { attachWs, broadcastEvent, broadcastTerminal, registerMethod, WIRE_VERSION } from "./wsd.ts";
 import { RuntimeHost } from "./runtime/host.ts";
 import { TraceSink } from "./runtime/trace.ts";
 import { ZcodeAdapter } from "./runtime/adapters/zcode.ts";
 import { CodexAdapter } from "./runtime/adapters/codex.ts";
+import { TerminalManager } from "./terminal/terminals.ts";
 import { asModelId, asSessionId, asUnitId } from "../../prototype/src/core/units.ts";
 
 const startedAt = Date.now();
@@ -30,6 +31,39 @@ const wss = attachWs(server, { config, startedAt });
 const host = new RuntimeHost((event) => broadcastEvent(wss, event), new TraceSink(config.homeDir));
 host.register(new ZcodeAdapter());
 host.register(new CodexAdapter());
+
+// ---- 终端（Phase 2）--------------------------------------------------------
+
+const terminals = new TerminalManager((frame) =>
+  broadcastTerminal(wss, { v: WIRE_VERSION, type: "terminal", ...frame }),
+);
+registerMethod("terminal.create", (params) => {
+  const p = (params ?? {}) as { cwd?: string; shell?: string; cols?: number; rows?: number };
+  return terminals.create({ cwd: p.cwd, shell: p.shell, cols: p.cols, rows: p.rows });
+});
+registerMethod("terminal.input", (params) => {
+  const p = (params ?? {}) as { terminalId?: string; data?: string };
+  if (typeof p.terminalId !== "string" || typeof p.data !== "string") {
+    throw Object.assign(new Error("terminalId and data are required"), { code: "bad_params" });
+  }
+  terminals.write(p.terminalId, p.data);
+  return { written: true };
+});
+registerMethod("terminal.resize", (params) => {
+  const p = (params ?? {}) as { terminalId?: string; cols?: number; rows?: number };
+  if (typeof p.terminalId !== "string" || typeof p.cols !== "number" || typeof p.rows !== "number") {
+    throw Object.assign(new Error("terminalId, cols, rows are required"), { code: "bad_params" });
+  }
+  terminals.resize(p.terminalId, p.cols, p.rows);
+  return { resized: true };
+});
+registerMethod("terminal.kill", (params) => {
+  const p = (params ?? {}) as { terminalId?: string };
+  if (typeof p.terminalId !== "string") throw Object.assign(new Error("terminalId is required"), { code: "bad_params" });
+  terminals.kill(p.terminalId);
+  return { killed: true };
+});
+registerMethod("terminal.list", () => terminals.list());
 
 registerMethod("adapter.list", () => host.listAdapters());
 registerMethod("adapter.probe", (params) => {
@@ -104,6 +138,7 @@ function shutdown(signal: string): void {
   shuttingDown = true;
   log.info("shutting down", { signal });
   void host.shutdown().catch(() => {});
+  terminals.shutdown();
   for (const client of wss.clients) client.close(1001, "server shutting down");
   wss.close();
   server.close();

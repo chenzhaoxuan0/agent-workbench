@@ -43,9 +43,11 @@
 ```json
 { "v": 1, "type": "hello", "daemon": { "version": "0.1.0", "pid": 1234, "uptimeMs": 42 } }
 { "v": 1, "type": "event", "event": { "type": "message.delta", "…": "…RuntimeEvent…" } }
+{ "v": 1, "type": "terminal", "terminalId": "term_…", "kind": "data", "data": "…" }
 ```
 
 - 客户端 TCP 连上即收到 `hello`，之后 `event` 帧里的 `event` 就是 `events.ts` 的 union 原样序列化。
+- `terminal` 帧是终端数据流（`kind: "data" | "exit"`，exit 带 `exitCode`）——高频且非契约事件，独立于 `event` 流，不落轨迹。
 - **解析不出 `id` 的帧**（非 JSON / envelope 不合法）回 `id: null` 的错误帧——这是唯一允许 `id` 为 null 的场景。
 
 ## 三、错误码
@@ -69,6 +71,11 @@
 | `session.cancel` | **已实现** | params `{sessionId}` |
 | `session.list` | **已实现** | result 为契约 Session[]（按开始时间倒序），含累计 stats |
 | `permission.resolve` | **已实现** | params `{sessionId, requestId, decision: allow\|deny\|always}`；`always` 的规则表落盘在 Phase 4 |
+| `terminal.create` | **已实现** | params `{cwd?, shell?, cols?, rows?}`；result `{terminalId, shell}`；数据经 `terminal` 帧推送 |
+| `terminal.input` | **已实现** | params `{terminalId, data}` |
+| `terminal.resize` | **已实现** | params `{terminalId, cols, rows}`（多窗格各自独立 resize） |
+| `terminal.kill` | **已实现** | params `{terminalId}`；exit 帧随后到达 |
+| `terminal.list` | **已实现** | 活跃终端清单 |
 | `session.resume` | Phase 3 | 从 `.waku/` 落盘恢复会话 |
 | 自动化 / Ops / 记忆方法 | Phase 5–7 | 落地时在此表登记 schema |
 

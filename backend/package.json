@@ -13,9 +13,11 @@
     "typecheck": "tsc --noEmit",
     "smoke": "tsx scripts/smoke-health.ts",
     "smoke:phase1": "tsx scripts/smoke-phase1.ts",
-    "smoke:phase1b": "tsx scripts/smoke-phase1b.ts"
+    "smoke:phase1b": "tsx scripts/smoke-phase1b.ts",
+    "smoke:phase2": "tsx scripts/smoke-phase2.ts"
   },
   "dependencies": {
+    "node-pty": "^1.1.0",
     "ws": "^8.22.0"
   },
   "devDependencies": {

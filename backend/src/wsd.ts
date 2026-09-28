@@ -36,6 +36,16 @@ export interface EventFrame {
   readonly event: RuntimeEvent;
 }
 
+/** 终端数据帧 —— 高频且非契约事件，独立于 event 流（docs/07 §二） */
+export interface TerminalFrame {
+  readonly v: typeof WIRE_VERSION;
+  readonly type: "terminal";
+  readonly terminalId: string;
+  readonly kind: "data" | "exit";
+  readonly data?: string;
+  readonly exitCode?: number;
+}
+
 export type ResponseFrame =
   | { readonly v: typeof WIRE_VERSION; readonly id: string | null; readonly ok: true; readonly result: unknown }
   | {
@@ -111,8 +121,16 @@ export function attachWs(
   return wss;
 }
 
-function send(ws: WebSocket, frame: HelloFrame | EventFrame | ResponseFrame): void {
+function send(ws: WebSocket, frame: HelloFrame | EventFrame | TerminalFrame | ResponseFrame): void {
   if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame));
+}
+
+/** 向所有在线客户端广播一条终端帧（data 高频，无订阅者就丢弃） */
+export function broadcastTerminal(wss: WebSocketServer, frame: TerminalFrame): void {
+  const payload = JSON.stringify(frame);
+  for (const ws of wss.clients) {
+    if (ws.readyState === ws.OPEN) ws.send(payload);
+  }
 }
 
 function handleRaw(ws: WebSocket, data: unknown): void {
