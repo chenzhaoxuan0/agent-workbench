@@ -29,7 +29,9 @@ export interface MemoryPrefs {
   /** semanticStore === "weknora" 时的连接配置 */
   weknoraBaseUrl: string;
   weknoraApiKey: string;
-  weknoraKbId: string;
+  /** 各记忆层绑定的 WeKnora 知识库（多选：检索跨库并集；语义写入进第一个勾选库） */
+  weknoraSemanticKbIds: readonly string[];
+  weknoraEpisodicKbIds: readonly string[];
   /** 情节记忆 · 事件（带日期的“发生过什么”一句话摘要） */
   episodicEnabled: boolean;
   episodicStore: EpisodicStore;
@@ -50,7 +52,8 @@ const DEFAULTS: MemoryPrefs = {
   semanticTopK: 4,
   weknoraBaseUrl: "http://localhost:18080",
   weknoraApiKey: "",
-  weknoraKbId: "",
+  weknoraSemanticKbIds: [],
+  weknoraEpisodicKbIds: [],
   episodicEnabled: true,
   episodicStore: "sqlite",
   proceduralEnabled: true,
@@ -71,6 +74,11 @@ function load(): MemoryPrefs {
     // 默认值迁移：旧版默认 8080（WeKnora 实际 docker 映射 18080）
     if (prefs.weknoraBaseUrl === "http://localhost:8080") {
       prefs.weknoraBaseUrl = DEFAULTS.weknoraBaseUrl;
+    }
+    // 旧版单库绑定 → 语义层多选（weknoraKbId 已废）
+    const legacyKb = (prefs as { weknoraKbId?: string }).weknoraKbId;
+    if (legacyKb && prefs.weknoraSemanticKbIds.length === 0) {
+      prefs.weknoraSemanticKbIds = [legacyKb];
     }
     return prefs;
   } catch {

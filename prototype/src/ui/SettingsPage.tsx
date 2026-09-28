@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { ReactNode } from "react";
 import {
   AlarmClock,
+  Check,
   ChevronDown,
   Anchor,
   Brain,
@@ -365,7 +366,8 @@ function WeknoraCard() {
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<string[] | null>(null);
 
-  const hasKb = prefs.weknoraKbId.length > 0;
+  const hasSemKb = prefs.weknoraSemanticKbIds.length > 0;
+  void hasSemKb;
 
   const test = async () => {
     setTesting(true);
@@ -383,10 +385,10 @@ function WeknoraCard() {
   };
 
   const saveFact = async () => {
-    if (!hasKb || fact.trim().length === 0) return;
+    if (prefs.weknoraSemanticKbIds.length === 0 || fact.trim().length === 0) return;
     setStatus("写入中…");
     try {
-      await weknoraSaveFact(cfg, prefs.weknoraKbId, `事实 · ${new Date().toLocaleString("zh-CN")}`, fact.trim());
+      await weknoraSaveFact(cfg, prefs.weknoraSemanticKbIds[0]!, `事实 · ${new Date().toLocaleString("zh-CN")}`, fact.trim());
       setStatus("已写入 WeKnora（异步解析入库）");
       setFact("");
     } catch (e) {
@@ -395,10 +397,10 @@ function WeknoraCard() {
   };
 
   const doSearch = async () => {
-    if (!hasKb || query.trim().length === 0) return;
+    if (prefs.weknoraSemanticKbIds.length === 0 || query.trim().length === 0) return;
     setStatus("检索中…");
     try {
-      const list = await weknoraSearch(cfg, prefs.weknoraKbId, query.trim(), prefs.semanticTopK);
+      const list = await weknoraSearch(cfg, prefs.weknoraSemanticKbIds, query.trim(), prefs.semanticTopK);
       setHits(list.map((h) => h.content));
       setStatus(`检索到 ${list.length} 条`);
     } catch (e) {
@@ -447,24 +449,37 @@ function WeknoraCard() {
         {status && <p className="text-caption text-ash">{status}</p>}
 
         {kbs.length > 0 && (
-          <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] items-center gap-3">
-            <span className="text-caption font-medium text-graphite">知识库</span>
-            <div className="relative w-44">
-              <select
-                value={prefs.weknoraKbId}
-                onChange={(e) => update({ weknoraKbId: e.target.value })}
-                aria-label="知识库"
-                className="w-full appearance-none rounded-input border border-line bg-rail px-2.5 py-1.5 text-body-sm text-ink outline-none focus:border-teal"
-              >
-                <option value="">选择知识库…</option>
-                {kbs.map((k) => (
-                  <option key={k.id} value={k.id}>
-                    {k.name}
-                  </option>
-                ))}
-              </select>
-              <ChevronDown size={12} className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-ash" />
-            </div>
+          <div>
+            <p className="mb-1 text-caption font-medium text-graphite">
+              知识库归属（勾选该库喂给哪层记忆；可多选）
+            </p>
+            <ul className="divide-y divide-line-soft rounded-btn border border-line">
+              {kbs.map((k) => {
+                const sem = prefs.weknoraSemanticKbIds.includes(k.id);
+                const epi = prefs.weknoraEpisodicKbIds.includes(k.id);
+                const toggle = (list: readonly string[], v: boolean) =>
+                  v ? [...list, k.id] : list.filter((x) => x !== k.id);
+                return (
+                  <li key={k.id} className="flex items-center gap-2 px-2.5 py-1.5">
+                    <span className="min-w-0 flex-1 truncate text-caption text-ink">{k.name || k.id}</span>
+                    <KbCheck
+                      label={`语义 · ${k.name}`}
+                      checked={sem}
+                      onChange={(v) => update({ weknoraSemanticKbIds: toggle(prefs.weknoraSemanticKbIds, v) })}
+                    />
+                    <KbCheck
+                      label={`情节 · ${k.name}`}
+                      checked={epi}
+                      onChange={(v) => update({ weknoraEpisodicKbIds: toggle(prefs.weknoraEpisodicKbIds, v) })}
+                    />
+                  </li>
+                );
+              })}
+            </ul>
+            <p className="mt-1 text-caption text-ash">
+              语义事实写入第一个勾选的语义库；检索跨全部勾选库（WeKnora knowledge_base_ids 原生支持）。
+              个人文件夹 / 文件在 WeKnora 里传成一个知识库后勾到这里即可。
+            </p>
           </div>
         )}
       </div>
@@ -482,7 +497,7 @@ function WeknoraCard() {
             />
             <button
               onClick={() => void saveFact()}
-              disabled={!hasKb || fact.trim().length === 0}
+              disabled={prefs.weknoraSemanticKbIds.length === 0 || fact.trim().length === 0}
               className="shrink-0 rounded-btn border border-line px-2 py-1 text-caption text-graphite hover:bg-line-soft hover:text-ink disabled:opacity-40"
             >
               写入
@@ -498,7 +513,7 @@ function WeknoraCard() {
             />
             <button
               onClick={() => void doSearch()}
-              disabled={!hasKb || query.trim().length === 0}
+              disabled={prefs.weknoraSemanticKbIds.length === 0 || query.trim().length === 0}
               className="shrink-0 rounded-btn border border-line px-2 py-1 text-caption text-graphite hover:bg-line-soft hover:text-ink disabled:opacity-40"
             >
               检索
@@ -517,6 +532,27 @@ function WeknoraCard() {
         </div>
       </div>
     </GroupCard>
+  );
+}
+
+/** 知识库归属复选（语义 / 情节） */
+function KbCheck({
+  label,
+  checked,
+  onChange,
+}: {
+  label: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <label className="flex shrink-0 cursor-pointer items-center gap-1 rounded-chip border px-1.5 py-0.5 text-caption"
+      style={{ borderColor: checked ? "var(--color-teal-edge)" : "var(--color-line)", background: checked ? "var(--color-teal-tint)" : "transparent" }}
+    >
+      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} className="sr-only" />
+      {checked && <Check size={10} className="text-teal" />}
+      <span className={checked ? "text-ink" : "text-ash"}>{label}</span>
+    </label>
   );
 }
 

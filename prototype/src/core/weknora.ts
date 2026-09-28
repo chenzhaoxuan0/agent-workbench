@@ -95,20 +95,24 @@ export interface WeknoraHit {
   source?: string;
 }
 
-/** 语义 + 关键词混合检索（SearchParams 的安全子集） */
+/** 语义 + 关键词混合检索。多来源：knowledge_base_ids 一次跨多库（WeKnora SearchParams 原生支持） */
 export async function weknoraSearch(
   cfg: WeknoraConfig,
-  kbId: string,
+  kbIds: readonly string[],
   query: string,
   topK = 4,
 ): Promise<WeknoraHit[]> {
-  const json = await request<unknown>(cfg, `/knowledge-bases/${kbId}/hybrid-search`, {
+  const primary = kbIds[0];
+  if (!primary) return [];
+  const json = await request<unknown>(cfg, `/knowledge-bases/${primary}/hybrid-search`, {
     method: "POST",
     body: JSON.stringify({
       query_text: query,
       match_count: topK,
       vector_threshold: 0,
       keyword_threshold: 0,
+      // 跨库检索：空数组 = 仅主库
+      ...(kbIds.length > 1 ? { knowledge_base_ids: kbIds } : {}),
     }),
   });
   return pickArray<WeknoraHit>(json)

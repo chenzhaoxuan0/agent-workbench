@@ -427,3 +427,16 @@ per-bot 只声明「接哪几类」。真运行时据此接 SQLite FTS5 / 远端
 
 接真运行时后：bot 会话中 waku 检索门控命中的事实查询走 weknoraSearch，
 整理（consolidation）产出的 facts 走 weknoraSaveFact。
+
+### WeKnora 知识库按记忆层归属（2026-09-28，用户需求）
+
+WeKnora 里的知识库并非都做语义记忆——**每个记忆层独立勾选各自的
+WeKnora 知识库（多选）**：
+
+- 数据：`weknoraSemanticKbIds / weknoraEpisodicKbIds`（旧单 `weknoraKbId`
+  自动迁移为语义层单选）；
+- 检索跨库：`hybrid-search` 的 `knowledge_base_ids` 数组（WeKnora
+  SearchParams 原生支持一次跨多库），语义检索 = 全部勾选库的并集；
+- 写入：语义事实进**第一个勾选的语义库**（主库）；
+- 多来源：个人文件夹 / 文件在 WeKnora 里传成一个知识库（WeKnora 本身
+  支持 KB 内文件夹结构），勾选到语义层即成为 personal 记忆来源之一。
