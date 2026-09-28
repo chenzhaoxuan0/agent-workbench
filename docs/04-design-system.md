@@ -408,3 +408,22 @@ shortcuts / skills / memory / hooks / permissions / usage / trace / track；
 
 与每 bot 的 `WorkUnit.memory` 接入开关互补：这里是全局后端与策略，
 per-bot 只声明「接哪几类」。真运行时据此接 SQLite FTS5 / 远端后端。
+
+### 语义记忆后端接入 WeKnora（2026-09-28，用户本地 Docker 部署）
+
+语义记忆存储后端新增 **weknora** 渠道（`core/weknora.ts` HTTP 客户端 +
+设置记忆分区的连接卡与实测面板）：
+
+- **API 面**（对齐 WeKnora internal/router）：`X-API-Key` 头鉴权；
+  `GET /knowledge-bases` 拉取列表；`POST /knowledge-bases/:id/knowledge/manual`
+  写入事实（ManualKnowledgePayload {title, content}，异步解析入库）；
+  `POST /knowledge-bases/:id/hybrid-search` 语义+关键词混合检索
+  （SearchParams {query_text, match_count, thresholds}）；
+- **CORS**：WeKnora 服务端 AllowOrigins \* 且放行 X-API-Key，浏览器可直连；
+- **本地部署实况**：docker 映射 18080（非 8080），默认值已改并做旧默认迁移；
+  实测 401 → 服务连通，仅待用户在 WeKnora 前端生成 API Key 填入
+  （key 加密存 tenants.api_key，不从环境变量挖取——安全边界正确）；
+- 实测面板：写入一条事实 / hybrid-search 检索，直接打真服务。
+
+接真运行时后：bot 会话中 waku 检索门控命中的事实查询走 weknoraSearch，
+整理（consolidation）产出的 facts 走 weknoraSaveFact。

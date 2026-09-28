@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { ReactNode } from "react";
 import {
   AlarmClock,
@@ -25,6 +26,7 @@ import {
 } from "../store/useShell.ts";
 import { useWorkbench, selectActiveUnit } from "../store/useWorkbench.ts";
 import { useMemoryPrefs } from "../store/useMemoryPrefs.ts";
+import { weknoraListKb, weknoraPing, weknoraSaveFact, weknoraSearch, type WeknoraConfig, type WeknoraKb } from "../core/weknora.ts";
 import { ProviderInstancesPanel } from "./ProviderInstancesPanel.tsx";
 import { ProviderSettingsSection } from "./ProviderSettingsSection.tsx";
 import { cn } from "./cn.ts";
@@ -255,7 +257,7 @@ function MemorySettingsSection() {
           control={
             <MemorySelect
               value={prefs.semanticStore}
-              choices={["sqlite", "supabase", "mem0", "zep", "langmem"] as const}
+              choices={["sqlite", "weknora", "supabase", "mem0", "zep", "langmem"] as const}
               onChange={(v) => update({ semanticStore: v })}
             />
           }
@@ -266,6 +268,8 @@ function MemorySettingsSection() {
           control={<Stepper value={prefs.semanticTopK} min={1} max={12} step={1} onChange={(v) => update({ semanticTopK: v })} />}
         />
       </GroupCard>
+
+      {prefs.semanticStore === "weknora" && <WeknoraCard />}
 
       <GroupCard>
         <SettingsRow
@@ -343,6 +347,176 @@ function MemorySettingsSection() {
         />
       </GroupCard>
     </div>
+  );
+}
+
+/** WeKnora 连接配置 + 语义记忆实测（写一条事实 / 检索测试） */
+function WeknoraCard() {
+  const prefs = useMemoryPrefs((s) => s.prefs);
+  const update = useMemoryPrefs((s) => s.update);
+  const cfg: WeknoraConfig = {
+    baseUrl: prefs.weknoraBaseUrl,
+    apiKey: prefs.weknoraApiKey,
+  };
+  const [kbs, setKbs] = useState<WeknoraKb[]>([]);
+  const [status, setStatus] = useState<string | null>(null);
+  const [testing, setTesting] = useState(false);
+  const [fact, setFact] = useState("");
+  const [query, setQuery] = useState("");
+  const [hits, setHits] = useState<string[] | null>(null);
+
+  const hasKb = prefs.weknoraKbId.length > 0;
+
+  const test = async () => {
+    setTesting(true);
+    setStatus(null);
+    try {
+      await weknoraPing(cfg);
+      const list = await weknoraListKb(cfg);
+      setKbs(list);
+      setStatus(`连接成功 · ${list.length} 个知识库`);
+    } catch (e) {
+      setStatus(`连接失败：${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const saveFact = async () => {
+    if (!hasKb || fact.trim().length === 0) return;
+    setStatus("写入中…");
+    try {
+      await weknoraSaveFact(cfg, prefs.weknoraKbId, `事实 · ${new Date().toLocaleString("zh-CN")}`, fact.trim());
+      setStatus("已写入 WeKnora（异步解析入库）");
+      setFact("");
+    } catch (e) {
+      setStatus(`写入失败：${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
+  const doSearch = async () => {
+    if (!hasKb || query.trim().length === 0) return;
+    setStatus("检索中…");
+    try {
+      const list = await weknoraSearch(cfg, prefs.weknoraKbId, query.trim(), prefs.semanticTopK);
+      setHits(list.map((h) => h.content));
+      setStatus(`检索到 ${list.length} 条`);
+    } catch (e) {
+      setStatus(`检索失败：${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
+  return (
+    <GroupCard>
+      <div className="px-4 pb-1 pt-3">
+        <p className="text-caption font-medium text-graphite">WeKnora 连接</p>
+        <p className="mt-0.5 text-caption text-ash">
+          本地 / 自部署的 WeKnora 服务（语义检索后端）。纯本地授权，X-API-Key 直连。
+        </p>
+      </div>
+      <div className="space-y-2.5 px-4 pb-3">
+        <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] items-center gap-3">
+          <span className="text-caption font-medium text-graphite">API 地址</span>
+          <input
+            value={prefs.weknoraBaseUrl}
+            onChange={(e) => update({ weknoraBaseUrl: e.target.value })}
+            placeholder="http://localhost:8080"
+            spellCheck={false}
+            className="w-full rounded-input border border-transparent bg-rail px-2.5 py-1.5 font-mono text-caption text-ink outline-none placeholder:text-ash focus:border-teal"
+          />
+        </div>
+        <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] items-center gap-3">
+          <span className="text-caption font-medium text-graphite">API Key</span>
+          <input
+            type="password"
+            value={prefs.weknoraApiKey}
+            onChange={(e) => update({ weknoraApiKey: e.target.value })}
+            placeholder="X-API-Key（本地部署可留空）"
+            className="w-full rounded-input border border-transparent bg-rail px-2.5 py-1.5 text-caption text-ink outline-none placeholder:text-ash focus:border-teal"
+          />
+        </div>
+        <div className="flex items-center justify-end gap-2">
+          <button
+            onClick={() => void test()}
+            disabled={testing}
+            className="rounded-btn border border-line px-2.5 py-1 text-caption text-graphite hover:bg-line-soft hover:text-ink disabled:opacity-40"
+          >
+            {testing ? "测试中…" : "测试连接并拉取知识库"}
+          </button>
+        </div>
+        {status && <p className="text-caption text-ash">{status}</p>}
+
+        {kbs.length > 0 && (
+          <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] items-center gap-3">
+            <span className="text-caption font-medium text-graphite">知识库</span>
+            <div className="relative w-44">
+              <select
+                value={prefs.weknoraKbId}
+                onChange={(e) => update({ weknoraKbId: e.target.value })}
+                aria-label="知识库"
+                className="w-full appearance-none rounded-input border border-line bg-rail px-2.5 py-1.5 text-body-sm text-ink outline-none focus:border-teal"
+              >
+                <option value="">选择知识库…</option>
+                {kbs.map((k) => (
+                  <option key={k.id} value={k.id}>
+                    {k.name}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown size={12} className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-ash" />
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="border-t border-line-soft px-4 pb-3.5 pt-3">
+        <p className="text-caption font-medium text-graphite">语义记忆实测</p>
+        <div className="mt-2 space-y-1.5">
+          <div className="flex items-center gap-1.5">
+            <input
+              value={fact}
+              onChange={(e) => setFact(e.target.value)}
+              placeholder="写入一条事实，例如：甲方喜欢简报不用长文"
+              aria-label="写入事实"
+              className="min-w-0 flex-1 rounded-input border border-transparent bg-rail px-2 py-1 text-caption text-ink outline-none placeholder:text-ash focus:border-teal"
+            />
+            <button
+              onClick={() => void saveFact()}
+              disabled={!hasKb || fact.trim().length === 0}
+              className="shrink-0 rounded-btn border border-line px-2 py-1 text-caption text-graphite hover:bg-line-soft hover:text-ink disabled:opacity-40"
+            >
+              写入
+            </button>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="检索测试：甲方偏好"
+              aria-label="语义检索测试"
+              className="min-w-0 flex-1 rounded-input border border-transparent bg-rail px-2 py-1 text-caption text-ink outline-none placeholder:text-ash focus:border-teal"
+            />
+            <button
+              onClick={() => void doSearch()}
+              disabled={!hasKb || query.trim().length === 0}
+              className="shrink-0 rounded-btn border border-line px-2 py-1 text-caption text-graphite hover:bg-line-soft hover:text-ink disabled:opacity-40"
+            >
+              检索
+            </button>
+          </div>
+          {hits !== null && (
+            <ul className="space-y-1 rounded-btn bg-rail p-2">
+              {hits.length === 0 && <li className="text-caption text-ash">没有命中的内容。</li>}
+              {hits.map((h, i) => (
+                <li key={i} className="text-caption leading-relaxed text-graphite">
+                  · {h}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+    </GroupCard>
   );
 }
 

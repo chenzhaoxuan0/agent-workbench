@@ -9,7 +9,15 @@ import { create } from "zustand";
  * 这里的全局值作为未显式声明时的默认。
  */
 
-export type SemanticStore = "sqlite" | "supabase" | "mem0" | "zep" | "langmem";
+export type SemanticStore = "sqlite" | "weknora" | "supabase" | "mem0" | "zep" | "langmem";
+
+/** WeKnora 连接配置（本地 Docker 部署，默认 8080） */
+export interface WeknoraConfig {
+  baseUrl: string;
+  apiKey: string;
+  /** 语义事实所在的知识库 id（可通过「测试连接」拉取列表选择） */
+  kbId: string;
+}
 export type EpisodicStore = "sqlite" | "notion";
 
 export interface MemoryPrefs {
@@ -18,6 +26,10 @@ export interface MemoryPrefs {
   semanticStore: SemanticStore;
   /** 检索条数（waku: WAKU_RETRIEVAL_TOP_K，默认 4） */
   semanticTopK: number;
+  /** semanticStore === "weknora" 时的连接配置 */
+  weknoraBaseUrl: string;
+  weknoraApiKey: string;
+  weknoraKbId: string;
   /** 情节记忆 · 事件（带日期的“发生过什么”一句话摘要） */
   episodicEnabled: boolean;
   episodicStore: EpisodicStore;
@@ -36,6 +48,9 @@ const DEFAULTS: MemoryPrefs = {
   semanticEnabled: true,
   semanticStore: "sqlite",
   semanticTopK: 4,
+  weknoraBaseUrl: "http://localhost:18080",
+  weknoraApiKey: "",
+  weknoraKbId: "",
   episodicEnabled: true,
   episodicStore: "sqlite",
   proceduralEnabled: true,
@@ -51,7 +66,13 @@ function load(): MemoryPrefs {
   if (typeof window === "undefined") return DEFAULTS;
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
-    return raw ? { ...DEFAULTS, ...(JSON.parse(raw) as Partial<MemoryPrefs>) } : DEFAULTS;
+    if (!raw) return DEFAULTS;
+    const prefs = { ...DEFAULTS, ...(JSON.parse(raw) as Partial<MemoryPrefs>) };
+    // 默认值迁移：旧版默认 8080（WeKnora 实际 docker 映射 18080）
+    if (prefs.weknoraBaseUrl === "http://localhost:8080") {
+      prefs.weknoraBaseUrl = DEFAULTS.weknoraBaseUrl;
+    }
+    return prefs;
   } catch {
     return DEFAULTS;
   }
