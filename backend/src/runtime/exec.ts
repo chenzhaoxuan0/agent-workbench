@@ -33,13 +33,16 @@ async function locateOnPath(name: string): Promise<string[]> {
   return out.stdout.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0);
 }
 
-/** npm 的 .cmd shim 里藏着真实的 node 调用行："…node.exe" "…\script.js" %* */
+/** npm 的 .cmd shim 里藏着真实的 node 调用行。两种形态：
+ *  1) "C:\...\node.exe" "C:\...\script.js" %*   （完整路径式）
+ *  2) node "C:\...\script.cjs" %*              （裸 node 式，zcode 的 shim 长这样） */
 function parseCmdShim(shimPath: string): { node: string; script: string } | null {
   try {
     const text = readFileSync(shimPath, "utf8");
-    const m = text.match(/"([^"]*node(?:\.exe)?)"\s+"([^"]+\.(?:c|m)?js)"/i)
-      ?? text.match(/^\s*node\s+"?([^"\r\n]+\.(?:c|m)?js)"?/im);
-    if (m?.[1] && m?.[2]) return { node: m[1], script: m[2] };
+    const full = text.match(/"([^"]*node(?:\.exe)?)"\s+"([^"]+\.(?:c|m)?js)"/i);
+    if (full?.[1] && full?.[2]) return { node: full[1], script: full[2] };
+    const bare = text.match(/^\s*node(?:\.exe)?\s+"?([^"\r\n]+\.(?:c|m)?js)"?/im);
+    if (bare?.[1]) return { node: process.execPath, script: bare[1] };
   } catch {
     // 读不了就走 fallback
   }

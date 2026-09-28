@@ -60,6 +60,8 @@ interface HostSession {
   readonly adapter: ExecutorAdapter;
   /** 最近一次 tool.started 的工具名 —— "always" 规则的 pattern 来源 */
   lastTool: string | null;
+  /** 会话事件环（上限 500），eval 断言与前端重放共用 */
+  readonly events: RuntimeEvent[];
 }
 
 export interface StartSessionInput {
@@ -87,6 +89,38 @@ export class RuntimeHost {
   /** 挂起中的权限上下文（"always" 落规则时取 kind/detail 用） */
   private readonly pendingPerms = new Map<string, { kind: string; detail: string }>();
 
+  /** 会话结束等待者（Ops 的 eval/arena 用它等轮次跑完） */
+  private readonly endWaiters = new Map<SessionId, Array<(info: { reason: string }) => void>>();
+
+  /** 等一个会话结束（已结束则立即返回） */
+  waitForSessionEnd(sessionId: SessionId, timeoutMs: number): Promise<{ reason: string }> {
+    const h = this.sessions.get(sessionId);
+    if (h === undefined) return Promise.reject(adapterError("unknown_session", `no such session: ${sessionId}`));
+    if (h.endedAt !== undefined) return Promise.resolve({ reason: "already" });
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        const list = this.endWaiters.get(sessionId);
+        const i = list?.indexOf(waiter) ?? -1;
+        if (list !== undefined && i >= 0) list.splice(i, 1);
+        reject(adapterError("session_end_timeout", `session ${sessionId} did not end within ${timeoutMs}ms`));
+      }, timeoutMs);
+      const waiter = (info: { reason: string }): void => {
+        clearTimeout(timer);
+        resolve(info);
+      };
+      const list = this.endWaiters.get(sessionId) ?? [];
+      list.push(waiter);
+      this.endWaiters.set(sessionId, list);
+    });
+  }
+
+  /** 会话事件环读取（eval 断言用；上限 500 条） */
+  sessionEvents(sessionId: SessionId): readonly RuntimeEvent[] {
+    const h = this.sessions.get(sessionId);
+    if (h === undefined) throw adapterError("unknown_session", `no such session: ${sessionId}`);
+    return h.events;
+  }
+
   /** 适配器全部注册完之后调用一次：把盘里的会话装进台账（跨重启 listSessions 成立） */
   loadPersisted(): void {
     for (const row of this.store.listSessions()) {
@@ -106,6 +140,7 @@ export class RuntimeHost {
         impl: null,
         adapter,
         lastTool: null,
+        events: [],
       });
     }
     if (this.sessions.size > 0) log.info("sessions loaded from store", { count: this.sessions.size });
@@ -195,6 +230,7 @@ export class RuntimeHost {
       impl,
       adapter,
       lastTool: null,
+      events: [],
     };
     this.sessions.set(h.id, h);
     sinkRef = this.makeSink(h);
@@ -344,6 +380,8 @@ export class RuntimeHost {
     return (event: RuntimeEvent): void => {
       const cur = this.sessions.get(event.sessionId);
       if (cur === undefined) return;
+      cur.events.push(event);
+      if (cur.events.length > 500) cur.events.splice(0, cur.events.length - 500);
       this.track(cur, event);
       this.persistOnEvent(cur, event);
       void this.trace.append({
@@ -356,6 +394,13 @@ export class RuntimeHost {
       }).catch(() => {});
       this.broadcast(event);
       if (event.type === "permission.requested") this.evaluateGate(cur, event);
+      if (event.type === "session.ended") {
+        const waiters = this.endWaiters.get(cur.id);
+        if (waiters !== undefined) {
+          this.endWaiters.delete(cur.id);
+          for (const w of waiters) w({ reason: event.reason });
+        }
+      }
     };
   }
 

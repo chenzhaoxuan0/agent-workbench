@@ -20,6 +20,8 @@ import { TerminalManager } from "./terminal/terminals.ts";
 import { Store } from "./store/db.ts";
 import { AutomationScheduler } from "./automation/scheduler.ts";
 import { parseCron } from "./automation/cron.ts";
+import { OpsRunner } from "./ops/eval.ts";
+import { ArenaRunner } from "./ops/arena.ts";
 import { asModelId, asSessionId, asUnitId } from "../../prototype/src/core/units.ts";
 
 const startedAt = Date.now();
@@ -94,6 +96,11 @@ async function runAutomation(a: {
 
 const scheduler = new AutomationScheduler(store, runAutomation);
 scheduler.start();
+
+// ---- Ops（Phase 6）----------------------------------------------------------
+
+const ops = new OpsRunner(host, config.homeDir);
+const arena = new ArenaRunner(host, config.homeDir);
 
 // ---- REST 管理面（权限闸的决策入口，docs/07 §六）----------------------------
 
@@ -226,6 +233,46 @@ registerMethod("automation.runNow", (params) => {
   const hit = store.getAutomation(p.id);
   if (hit === undefined) throw Object.assign(new Error(`no such automation: ${p.id}`), { code: "unknown_automation" });
   return runAutomation(hit.automation);
+});
+
+// ---- Ops 方法（Phase 6）-----------------------------------------------------
+
+registerMethod("ops.evalRun", (params) => {
+  const p = (params ?? {}) as {
+    datasetName?: string; rows?: Array<{ id?: string; input?: string; expect_tool?: string; expect_in_args?: string }>;
+    runtimeId?: string; model?: string;
+    judgeMetrics?: Array<{ name?: string; steps?: string[]; threshold?: number }>;
+    turnTimeoutMs?: number;
+  };
+  if (typeof p.datasetName !== "string" || !Array.isArray(p.rows) || p.rows.length === 0 || typeof p.runtimeId !== "string") {
+    throw Object.assign(new Error("datasetName, rows(non-empty), runtimeId are required"), { code: "bad_params" });
+  }
+  return ops.runGate({
+    datasetName: p.datasetName,
+    runtimeId: p.runtimeId,
+    rows: p.rows.map((r, i) => ({ id: r.id ?? `row_${i}`, input: r.input ?? "", expect_tool: r.expect_tool, expect_in_args: r.expect_in_args })),
+    model: typeof p.model === "string" ? p.model : null,
+    judgeMetrics: p.judgeMetrics?.map((m) => ({ name: m.name ?? "metric", steps: m.steps ?? [], threshold: m.threshold ?? 0.6 })),
+    turnTimeoutMs: p.turnTimeoutMs,
+  });
+});
+registerMethod("ops.arenaRun", (params) => {
+  const p = (params ?? {}) as {
+    prompt?: string; runtimeIds?: string[];
+    judgeMetric?: { name?: string; steps?: string[]; threshold?: number };
+    turnTimeoutMs?: number;
+  };
+  if (typeof p.prompt !== "string" || !Array.isArray(p.runtimeIds) || p.runtimeIds.length === 0) {
+    throw Object.assign(new Error("prompt and runtimeIds(non-empty) are required"), { code: "bad_params" });
+  }
+  return arena.runMatch({
+    prompt: p.prompt,
+    runtimeIds: p.runtimeIds,
+    judgeMetric: p.judgeMetric === undefined
+      ? undefined
+      : { name: p.judgeMetric.name ?? "metric", steps: p.judgeMetric.steps ?? [], threshold: p.judgeMetric.threshold ?? 0.6 },
+    turnTimeoutMs: p.turnTimeoutMs,
+  });
 });
 
 registerMethod("adapter.list", () => host.listAdapters());
