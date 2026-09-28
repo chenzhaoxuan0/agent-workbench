@@ -1,0 +1,25 @@
+{
+  "name": "agent-workbench-backend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Runtime Host daemon —— 把 prototype 里「UI 完整、执行是模拟」的插槽换成真实执行",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "smoke": "tsx scripts/smoke-health.ts"
+  },
+  "dependencies": {
+    "ws": "^8.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}
