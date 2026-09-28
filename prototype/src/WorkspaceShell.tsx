@@ -13,6 +13,8 @@ import { Sidebar } from "./ui/Sidebar.tsx";
 import { TerminalPanel } from "./ui/TerminalPanel.tsx";
 import { Timeline } from "./ui/Timeline.tsx";
 import { WorkspaceHeader } from "./ui/WorkspaceHeader.tsx";
+import { TrajectoryView } from "./ui/TrajectoryView.tsx";
+import { cn } from "./ui/cn.ts";
 import { bindNavRecorder } from "./store/useNav.ts";
 import { SIDEBAR_DEFAULT, useShell, bindShellShortcuts } from "./store/useShell.ts";
 
@@ -130,6 +132,8 @@ function SidebarSlot() {
 function ConversationSlot() {
   const terminalOpen = useShell((s) => s.terminalOpen);
   const mainView = useShell((s) => s.mainView);
+  const conversationView = useShell((s) => s.conversationView);
+  const setConversationView = useShell((s) => s.setConversationView);
 
   return (
     <Panel defaultSize="62%" minSize="30%" className="min-w-0">
@@ -146,7 +150,36 @@ function ConversationSlot() {
               {/* 工作区头部 —— 只挂在会话视图（ZCode 的 WorkspaceHeader 是 task 级的，
                   automations 自带面包屑头） */}
               <WorkspaceHeader />
-              <Timeline />
+              {/* 会话内页签（dsh ConversationSession tabs：对话 / 轨迹与 Chat 并列，
+                  激活后占据整个会话视口，composer 保持在底部） */}
+              <div className="flex shrink-0 items-center gap-1 border-b border-line px-6">
+                {(["chat", "trajectory"] as const).map((v) => {
+                  const label = v === "chat" ? "对话" : "轨迹";
+                  const active = conversationView === v;
+                  return (
+                    <button
+                      key={v}
+                      onClick={() => setConversationView(v)}
+                      role="tab"
+                      aria-selected={active}
+                      className={cn(
+                        "-mb-px border-b-2 px-3 py-2 text-body-sm",
+                        active
+                          ? "border-teal font-medium text-ink"
+                          : "border-transparent text-graphite hover:text-ink",
+                      )}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+              {conversationView === "trajectory" ? (
+                /* 轨迹视图（dsh TrajectoryView：占据会话视口，composer 保持底部） */
+                <TrajectoryView />
+              ) : (
+                <Timeline />
+              )}
               {/* 权限卡片 —— 对齐 ZCode 的 V4InteractionDialogs：作为 composer 上方的
                   bottom dock 卡片打断，而不是居中模态 */}
               <PermissionDialog />

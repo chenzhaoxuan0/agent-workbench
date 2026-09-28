@@ -71,7 +71,7 @@ const DEFAULT_TABS: readonly SidePaneTabType[] = [
  * 会话级与会话树根级都不在这里预置成无主的 —— 它们的 ownerId 必须绑定到
  * 具体会话，对齐 ZCode：这些页签由会话事件按需开出来，不存在「无主」形态。
  */
-const SESSION_TABS: readonly SidePaneTabType[] = ["files", "plan", "trace", "subagent", "bash-output"];
+const SESSION_TABS: readonly SidePaneTabType[] = ["files", "plan", "subagent", "bash-output"];
 
 const SIZE_KEY = "agent-workbench:side-pane-size";
 

@@ -515,3 +515,15 @@ WeKnora 知识库（多选）**：
 SQLite 后端展开配置新增**数据库文件路径**输入（默认 `.waku/state.db`，
 可指向任意自定义文件如 `D:/memories/state.db`），旁有「默认」一键恢复。
 写入 `MemoryBackend.dbPath`，真运行时接入后按此路径打开 / 迁移数据库。
+
+### 轨迹升格为会话头页签（2026-09-28 第二轮，认知 0 成本）
+
+轨迹入口从右侧栏页签**移到会话头部「对话 | 轨迹」页签**
+（对齐 dsh ConversationSession tabs + view-selection）：激活轨迹后
+占据整个会话视口，composer 与权限卡保持在底部（composer-overlay 语义）。
+
+- `useShell.conversationView: "chat" | "trajectory"`（dsh view-selection 同构）；
+- `ui/TrajectoryView.tsx`：工具栏（折叠轮次 + 搜索）+ 轮次 sticky 头 +
+  类型色标账本行（展开详情），数据从 timeline 派生（core/trajectory.ts）；
+- 右栏 TracePane 移除（trace 从 SESSION_TABS / TabContent 退出，
+  类型与 TAB_META 保留供迁移）。

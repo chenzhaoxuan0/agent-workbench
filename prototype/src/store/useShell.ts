@@ -121,6 +121,8 @@ interface ShellState {
   mainView: MainView;
   settingsOpen: boolean;
   settingsSection: SettingsSectionId;
+  /** 会话内视图（dsh view-selection：对话 / 轨迹 与 Chat 并列的页签） */
+  conversationView: "chat" | "trajectory";
 
   setSidebarWidth: (w: number) => void;
   toggleSidebar: () => void;
@@ -134,6 +136,7 @@ interface ShellState {
   closeSettings: () => void;
   /** 新建任务：回 chat 主视图并清空草稿（对齐 ZCode 的 newTask，⌘N） */
   newTask: () => void;
+  setConversationView: (v: "chat" | "trajectory") => void;
 
   setCommandOpen: (open: boolean) => void;
 }
@@ -148,6 +151,7 @@ export const useShell = create<ShellState>((set, get) => ({
   mainView: "chat",
   settingsOpen: false,
   settingsSection: "general",
+  conversationView: "chat",
 
   setMainView: (mainView) => set({ mainView }),
 
@@ -163,6 +167,8 @@ export const useShell = create<ShellState>((set, get) => ({
     set({ mainView: "chat" });
     useWorkbench.getState().setDraft("");
   },
+
+  setConversationView: (conversationView) => set({ conversationView }),
 
   setSidebarWidth: (w) => {
     const clamped = Math.max(SIDEBAR_MIN, Math.round(w));
