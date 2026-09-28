@@ -44,6 +44,12 @@ export interface AdapterSession {
   send(text: string): Promise<void>;
   cancel(): Promise<void>;
   resolvePermission(requestId: string, decision: "allow" | "deny" | "always"): Promise<void>;
+  /**
+   * 执行器侧的原生会话引用（zcode 的 --resume id / codex 的 thread id）。
+   * daemon 把它存进 state.db，重启后 reattach 用 —— 会话续命的关键。
+   * 首轮结束前是 null。
+   */
+  externalRef(): string | null;
 }
 
 export interface ExecutorAdapter {
@@ -58,6 +64,11 @@ export interface ExecutorAdapter {
   probe(): Promise<ProbeResult>;
   /** 建会话并开始把翻译好的事件喂给 sink；返回后 host 补发 session.started */
   start(req: StartRequest, sink: AdapterSink): Promise<AdapterSession>;
+  /**
+   * 把一个已存在的外部会话接回 daemon（Phase 3 resumeSession 的执行器侧）。
+   * sessionId 是 daemon 侧稳定 id（事件全用它），ref 是 externalRef 存的值。
+   */
+  reattach(sessionId: SessionId, ref: string, sink: AdapterSink): AdapterSession;
   /** daemon 关停时回收子进程 */
   disconnect(): Promise<void>;
 }

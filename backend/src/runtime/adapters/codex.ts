@@ -144,8 +144,37 @@ export class CodexAdapter implements ExecutorAdapter {
       resolvePermission: async () => {
         log.warn("resolvePermission called on codex exec session (approvals are never)");
       },
+      externalRef: () => state.threadId,
     };
     return impl;
+  }
+
+  reattach(sessionId: SessionId, ref: string, sink: AdapterSink): AdapterSession {
+    const state: SessionState = {
+      sessionId,
+      rootPath: process.cwd(),
+      threadId: ref,
+      sink,
+      running: false,
+      cancelled: false,
+      child: null,
+      turnTexts: [],
+    };
+    this.sessions.set(sessionId, state);
+    return {
+      id: sessionId,
+      send: async (text: string) => {
+        await this.spawnTurn(state, text);
+      },
+      cancel: async () => {
+        state.cancelled = true;
+        state.child?.kill();
+      },
+      resolvePermission: async () => {
+        log.warn("resolvePermission called on codex exec session (approvals are never)");
+      },
+      externalRef: () => state.threadId,
+    };
   }
 
   async disconnect(): Promise<void> {

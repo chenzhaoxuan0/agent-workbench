@@ -15,6 +15,7 @@ import { TraceSink } from "./runtime/trace.ts";
 import { ZcodeAdapter } from "./runtime/adapters/zcode.ts";
 import { CodexAdapter } from "./runtime/adapters/codex.ts";
 import { TerminalManager } from "./terminal/terminals.ts";
+import { Store } from "./store/db.ts";
 import { asModelId, asSessionId, asUnitId } from "../../prototype/src/core/units.ts";
 
 const startedAt = Date.now();
@@ -28,9 +29,10 @@ const wss = attachWs(server, { config, startedAt });
 
 // ---- Runtime Host（Phase 1）------------------------------------------------
 
-const host = new RuntimeHost((event) => broadcastEvent(wss, event), new TraceSink(config.homeDir));
+const host = new RuntimeHost((event) => broadcastEvent(wss, event), new TraceSink(config.homeDir), config.homeDir, new Store(config.homeDir));
 host.register(new ZcodeAdapter());
 host.register(new CodexAdapter());
+host.loadPersisted();
 
 // ---- 终端（Phase 2）--------------------------------------------------------
 
@@ -103,6 +105,16 @@ registerMethod("session.cancel", (params) => {
   return host.cancelSession(asSessionId(sessionId));
 });
 registerMethod("session.list", () => host.listSessions());
+registerMethod("session.resume", (params) => {
+  const { sessionId } = (params ?? {}) as { sessionId?: string };
+  if (typeof sessionId !== "string") throw Object.assign(new Error("sessionId is required"), { code: "bad_params" });
+  return host.resumeSession(asSessionId(sessionId));
+});
+registerMethod("session.messages", (params) => {
+  const { sessionId } = (params ?? {}) as { sessionId?: string };
+  if (typeof sessionId !== "string") throw Object.assign(new Error("sessionId is required"), { code: "bad_params" });
+  return host.sessionMessages(asSessionId(sessionId));
+});
 registerMethod("permission.resolve", (params) => {
   const p = params as { sessionId?: string; requestId?: string; decision?: "allow" | "deny" | "always" };
   if (typeof p.sessionId !== "string" || typeof p.requestId !== "string" ||

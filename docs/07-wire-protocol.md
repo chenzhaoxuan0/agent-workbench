@@ -76,7 +76,8 @@
 | `terminal.resize` | **已实现** | params `{terminalId, cols, rows}`（多窗格各自独立 resize） |
 | `terminal.kill` | **已实现** | params `{terminalId}`；exit 帧随后到达 |
 | `terminal.list` | **已实现** | 活跃终端清单 |
-| `session.resume` | Phase 3 | 从 `.waku/` 落盘恢复会话 |
+| `session.resume` | **已实现** | params `{sessionId}`；从 state.db 的 cli_ref 接回执行器，之后 send/cancel 照常 |
+| `session.messages` | **已实现** | params `{sessionId}`；落盘的对话流（user/assistant），前端重载会话用 |
 | 自动化 / Ops / 记忆方法 | Phase 5–7 | 落地时在此表登记 schema |
 
 **为什么有 `daemon.stop`**：Windows 上跨进程 SIGTERM 不可投递（冒烟实证，`child.kill("SIGTERM")` 后子进程无动于衷）。程序化退出一律走协议；SIGINT/SIGTERM 处理器保留给终端 Ctrl+C 与 Unix。这是 Phase 0 的一个硬结论，后续 PTY / 子进程管理会反复遇到，处置口径一致：**能走协议的走协议，信号只当人肉兜底**。

@@ -14,7 +14,8 @@
     "smoke": "tsx scripts/smoke-health.ts",
     "smoke:phase1": "tsx scripts/smoke-phase1.ts",
     "smoke:phase1b": "tsx scripts/smoke-phase1b.ts",
-    "smoke:phase2": "tsx scripts/smoke-phase2.ts"
+    "smoke:phase2": "tsx scripts/smoke-phase2.ts",
+    "smoke:phase3": "tsx scripts/smoke-phase3.ts"
   },
   "dependencies": {
     "node-pty": "^1.1.0",

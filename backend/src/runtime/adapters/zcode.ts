@@ -149,8 +149,37 @@ export class ZcodeAdapter implements ExecutorAdapter {
         // capabilities.permissions=false，永远不该被调到
         log.warn("resolvePermission called on zcode -p session (no permission stream)");
       },
+      externalRef: () => state.cliSessionId,
     };
     return impl;
+  }
+
+  reattach(sessionId: SessionId, ref: string, sink: AdapterSink): AdapterSession {
+    // resume：daemon id 保持不变，CLI 引用接回来续命
+    const state: SessionState = {
+      sessionId,
+      rootPath: process.cwd(),
+      cliSessionId: ref,
+      sink,
+      running: false,
+      cancelled: false,
+      child: null,
+    };
+    this.sessions.set(sessionId, state);
+    return {
+      id: sessionId,
+      send: async (text: string) => {
+        await this.spawnTurn(state, text);
+      },
+      cancel: async () => {
+        state.cancelled = true;
+        state.child?.kill();
+      },
+      resolvePermission: async () => {
+        log.warn("resolvePermission called on zcode -p session (no permission stream)");
+      },
+      externalRef: () => state.cliSessionId,
+    };
   }
 
   async disconnect(): Promise<void> {
