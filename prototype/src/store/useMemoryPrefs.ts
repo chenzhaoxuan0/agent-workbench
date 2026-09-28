@@ -36,6 +36,8 @@ export interface MemoryBackend {
   kbId?: string;
   /** local-folder（句柄本体在 IndexedDB，见 core/localMemorySource.ts） */
   sourceId?: string;
+  /** sqlite：数据库文件路径（默认 .waku/state.db，可指向任意自定义文件） */
+  dbPath?: string;
 }
 
 export interface MemoryRoutes {

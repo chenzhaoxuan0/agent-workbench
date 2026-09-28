@@ -540,7 +540,33 @@ function MemorySettingsSection() {
                       </div>
                     )}
                     {b.type === "sqlite" && (
-                      <p className="text-caption text-ash">本地 SQLite（.waku/state.db 精神）：零配置内置后端，无需配置。</p>
+                      <div className="space-y-2">
+                        <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] items-center gap-3">
+                          <span className="text-caption font-medium text-graphite">数据库文件路径</span>
+                          <div className="flex items-center gap-1.5">
+                            <input
+                              value={b.dbPath ?? ".waku/state.db"}
+                              onChange={(e) => updateBackend(b.id, { dbPath: e.target.value })}
+                              placeholder=".waku/state.db"
+                              spellCheck={false}
+                              className="min-w-0 flex-1 rounded-input border border-transparent bg-canvas px-2.5 py-1.5 font-mono text-caption text-ink outline-none placeholder:text-ash focus:border-teal"
+                            />
+                            {b.dbPath && b.dbPath !== ".waku/state.db" && (
+                              <button
+                                onClick={() => updateBackend(b.id, { dbPath: undefined })}
+                                title="恢复默认 .waku/state.db"
+                                className="shrink-0 rounded-btn border border-line px-1.5 py-1 text-caption text-ash hover:bg-line-soft hover:text-ink"
+                              >
+                                默认
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                        <p className="text-caption leading-relaxed text-ash">
+                          语义 / 情节记忆的落盘文件（单文件 SQLite，含 facts / episodes / chat_log 表）。
+                          相对路径基于工作目录；真运行时接入后自动创建并迁移。
+                        </p>
+                      </div>
                     )}
                     {!["weknora", "local-folder", "sqlite"].includes(b.type) && (
                       <p className="text-caption text-ash">该后端类型由真运行时提供连接配置。</p>

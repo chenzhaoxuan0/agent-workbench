@@ -509,3 +509,9 @@ WeKnora 知识库（多选）**：
 （localStorage · agent-workbench:memory-orchestration），正文渲染当前
 生效的完整 JSON（后端注册表 + 三层路由 + 门控）。真运行时落 .waku/ 后
 此面板改为展示同一文件的路径与内容。
+
+### SQLite 后端数据库路径可配置（2026-09-28，用户需求）
+
+SQLite 后端展开配置新增**数据库文件路径**输入（默认 `.waku/state.db`，
+可指向任意自定义文件如 `D:/memories/state.db`），旁有「默认」一键恢复。
+写入 `MemoryBackend.dbPath`，真运行时接入后按此路径打开 / 迁移数据库。
