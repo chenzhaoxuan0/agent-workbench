@@ -27,7 +27,7 @@ import {
   type SettingsSectionDef,
   type SettingsSectionId,
 } from "../store/useShell.ts";
-import { useWorkbench, selectActiveUnit } from "../store/useWorkbench.ts";
+import { useWorkbench, visibleModelsFor, selectActiveUnit } from "../store/useWorkbench.ts";
 import {
   useMemoryOrchestration,
   type MemoryBackend,
@@ -276,6 +276,23 @@ function MemorySettingsSection() {
   const [lfBusy, setLfBusy] = useState(false);
 
   const enabledBackends = useMemo(() => prefs.backends.filter((b) => b.enabled), [prefs.backends]);
+
+  // 门控模型选项：已启用执行器的可见模型聚合（跨执行器按模型 id 去重）
+  const runtimes = useWorkbench((s) => s.runtimes);
+  const runtimePrefs = useWorkbench((s) => s.runtimePrefs);
+  const gateModelOptions = useMemo(() => {
+    const out: { id: string; label: string }[] = [];
+    const seen = new Set<string>();
+    for (const r of runtimes) {
+      if (runtimePrefs[r.id]?.enabled === false) continue;
+      for (const m of visibleModelsFor(useWorkbench.getState(), r.id)) {
+        if (seen.has(m.id)) continue;
+        seen.add(m.id);
+        out.push({ id: m.id, label: `${m.displayName} · ${r.presentation.displayName}` });
+      }
+    }
+    return out;
+  }, [runtimes, runtimePrefs]);
 
   const backendTag: Record<BackendType, string> = {
     sqlite: "SQLite",
@@ -554,14 +571,26 @@ function MemorySettingsSection() {
         />
         <SettingsRow
           label="门控模型"
-          description="执行门控判断的便宜模型"
+          description="执行门控判断的便宜模型（从已接入执行器的模型中选择）"
           control={
-            <input
-              value={prefs.gateModel}
-              onChange={(e) => setGate({ gateModel: e.target.value })}
-              spellCheck={false}
-              className="w-52 rounded-input border border-transparent bg-rail px-2.5 py-1.5 font-mono text-caption text-ink outline-none focus:border-teal"
-            />
+            <div className="relative w-64">
+              <select
+                value={prefs.gateModel}
+                onChange={(e) => setGate({ gateModel: e.target.value })}
+                aria-label="门控模型"
+                className="w-full appearance-none rounded-input border border-line bg-rail px-2.5 py-1.5 text-body-sm text-ink outline-none focus:border-teal"
+              >
+                {gateModelOptions.some((o) => o.id === prefs.gateModel) ? null : (
+                  <option value={prefs.gateModel}>{prefs.gateModel}（当前值不在已接入清单）</option>
+                )}
+                {gateModelOptions.map((o) => (
+                  <option key={o.id} value={o.id}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown size={12} className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-ash" />
+            </div>
           }
         />
         <SettingsRow
