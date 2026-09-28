@@ -14,6 +14,7 @@ import { TerminalPanel } from "./ui/TerminalPanel.tsx";
 import { Timeline } from "./ui/Timeline.tsx";
 import { WorkspaceHeader } from "./ui/WorkspaceHeader.tsx";
 import { TrajectoryView } from "./ui/TrajectoryView.tsx";
+import { OpsView } from "./ui/OpsView.tsx";
 import { cn } from "./ui/cn.ts";
 import { bindNavRecorder } from "./store/useNav.ts";
 import { SIDEBAR_DEFAULT, useShell, bindShellShortcuts } from "./store/useShell.ts";
@@ -150,11 +151,13 @@ function ConversationSlot() {
               {/* 工作区头部 —— 只挂在会话视图（ZCode 的 WorkspaceHeader 是 task 级的，
                   automations 自带面包屑头） */}
               <WorkspaceHeader />
-              {/* 会话内页签（dsh ConversationSession tabs：对话 / 轨迹与 Chat 并列，
-                  激活后占据整个会话视口，composer 保持在底部） */}
+              {/* 会话内页签（dsh ConversationSession tabs：对话 / 轨迹与 Chat 并列；
+                  Ops 是 LLM-Ops 仪表盘页签，对齐 waku dashboard 的 Ops 页签。
+                  前两者是同一会话的两种读法，composer 保持在底部；
+                  Ops 是运营视图，占据整个会话视口且不渲染 composer） */}
               <div className="flex shrink-0 items-center gap-1 border-b border-line px-6">
-                {(["chat", "trajectory"] as const).map((v) => {
-                  const label = v === "chat" ? "对话" : "轨迹";
+                {(["chat", "trajectory", "ops"] as const).map((v) => {
+                  const label = v === "chat" ? "对话" : v === "trajectory" ? "轨迹" : "Ops";
                   const active = conversationView === v;
                   return (
                     <button
@@ -177,13 +180,16 @@ function ConversationSlot() {
               {conversationView === "trajectory" ? (
                 /* 轨迹视图（dsh TrajectoryView：占据会话视口，composer 保持底部） */
                 <TrajectoryView />
+              ) : conversationView === "ops" ? (
+                /* Ops 视图（waku dashboard 的 Ops 页签：发布门 / 两类 eval / Arena / 花费账本） */
+                <OpsView />
               ) : (
                 <Timeline />
               )}
               {/* 权限卡片 —— 对齐 ZCode 的 V4InteractionDialogs：作为 composer 上方的
-                  bottom dock 卡片打断，而不是居中模态 */}
-              <PermissionDialog />
-              <Composer />
+                  bottom dock 卡片打断，而不是居中模态。Ops 是运营视图，不打断 */}
+              {conversationView !== "ops" && <PermissionDialog />}
+              {conversationView !== "ops" && <Composer />}
             </main>
           </Panel>
 

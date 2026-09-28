@@ -22,6 +22,14 @@ import { useWorkbench } from "./useWorkbench.ts";
  */
 export type MainView = "chat" | "automations";
 
+/**
+ * 会话内视图 —— 对齐 dsh 的 view-selection（ConversationSession tabs）。
+ * - chat / trajectory：同一个会话的两种读法，composer 都保持在底部；
+ * - ops：LLM-Ops 仪表盘（对齐 waku dashboard 的 Ops 页签），占据整个
+ *   会话视口且**不渲染 composer**——它是运营视图，不是会话的另一种读法。
+ */
+export type ConversationView = "chat" | "trajectory" | "ops";
+
 /** 设置分区 id，集合对齐 ZCode 的 SettingsSectionId */
 export type SettingsSectionId =
   | "general"
@@ -121,8 +129,8 @@ interface ShellState {
   mainView: MainView;
   settingsOpen: boolean;
   settingsSection: SettingsSectionId;
-  /** 会话内视图（dsh view-selection：对话 / 轨迹 与 Chat 并列的页签） */
-  conversationView: "chat" | "trajectory";
+  /** 会话内视图（dsh view-selection：对话 / 轨迹 / Ops 与 Chat 并列的页签） */
+  conversationView: ConversationView;
 
   setSidebarWidth: (w: number) => void;
   toggleSidebar: () => void;
@@ -136,7 +144,7 @@ interface ShellState {
   closeSettings: () => void;
   /** 新建任务：回 chat 主视图并清空草稿（对齐 ZCode 的 newTask，⌘N） */
   newTask: () => void;
-  setConversationView: (v: "chat" | "trajectory") => void;
+  setConversationView: (v: ConversationView) => void;
 
   setCommandOpen: (open: boolean) => void;
 }

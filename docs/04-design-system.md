@@ -527,3 +527,26 @@ SQLite 后端展开配置新增**数据库文件路径**输入（默认 `.waku/s
   类型色标账本行（展开详情），数据从 timeline 派生（core/trajectory.ts）；
 - 右栏 TracePane 移除（trace 从 SESSION_TABS / TabContent 退出，
   类型与 TAB_META 保留供迁移）。
+
+### Ops 页签 —— LLM-Ops 支柱（2026-09-28，对齐 waku-agent）
+
+会话头第三个页签「Ops」（对话 | 轨迹 | Ops），整体对照 waku-agent 的
+`waku/ops/` + `evals/`（docs/evals.md 的四条铁律逐一落地）：
+
+- **两类 eval 永不混合**：确定性 eval 卡（dataset.jsonl 行形态：
+  id/input/expect_tool/expect_in_args，0 或 1，无模型裁判）与
+  LLM-as-judge 卡（GEval 形态：命名指标 + 评分步骤 + 阈值 0.60，
+  0–1 打分，每次评分是一次真实 LLM 调用）分开两张卡；
+- **发布门（make gate）**：确定性必须 100% 且 judge 全过阈值；
+  verdict 横幅 + 分阶段进度（staged setTimeout 模拟，数据形态与真实一致）；
+- **追加只写账本**：gate 历史（eval_runs.jsonl 语义）、Arena 记分板
+  （compare/history.jsonl 语义）、花费账本（usage.jsonl 语义，每次
+  LLM 调用一行、美元由 token 估算）统一落 `agent-workbench:ops`
+  localStorage 键，页脚标注键名（透明化原则）；
+- **Arena**：同一 prompt × N 个启用执行器（各取当前模型），
+  Completion / Quality 双分分开记，记分板一场一行；
+- **与轨迹的关系 = 轻叠加**：Ops 是运营仪表盘（waku dashboard Ops
+  页签同构），占据会话视口且不渲染 composer / 权限卡；工具栏
+  「打开轨迹」一键跳回轨迹页签看原始 trace。
+
+flaky 用例（draft-message，18% 失败率）让 gate 的 FAIL 态在演示中可见。
