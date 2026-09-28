@@ -83,10 +83,11 @@ function ProviderModelPanel({ runtimeId, displayName }: { runtimeId: string; dis
   const prefs = useWorkbench((s) => prefsOf(s.modelPrefs, runtimeId));
   const apply = useWorkbench((s) => s.applyModelPrefs);
 
-  const [input, setInput] = useState("");
-  const [error, setError] = useState<ModelPrefError | null>(null);
   const [filter, setFilter] = useState("");
   const [editing, setEditing] = useState<string | null>(null);
+  // 多行草稿 —— 对齐 dsh CustomProviderCard 的 models 数组形态：一次可连加多个
+  const [drafts, setDrafts] = useState<DraftRow[]>([emptyDraft(nextDraftKey())]);
+  const [draftErrors, setDraftErrors] = useState<Record<number, string>>({});
 
   const visible = useMemo(() => resolveVisibleModels(declared, prefs, { groupFavorites: true }), [declared, prefs]);
   const hiddenSet = useMemo(() => new Set<string>(prefs.hiddenModels), [prefs.hiddenModels]);
@@ -112,12 +113,74 @@ function ProviderModelPanel({ runtimeId, displayName }: { runtimeId: string; dis
   const plainShown = shown.filter((m) => !isFavoriteGroup(m.id));
   const hiddenShown = hiddenDeclared.filter(matchesFilter);
 
-  const handleAdd = () => {
-    const r = addCustomModel(prefs, input);
-    if (!r.ok) return setError(r.error);
-    apply(runtimeId, [() => r.prefs]);
-    setInput("");
-    setError(null);
+  // 配置预览 —— 展示成 pi models.json 的 providers 形态（dsh 同源），
+  // 强化「加模型 = 往配置里写一条」的直觉；仅作预览，实际写入走 store。
+  const draftsJson = useMemo(
+    () =>
+      JSON.stringify(
+        {
+          providers: {
+            [runtimeId]: {
+              models: drafts
+                .filter((r) => r.id.trim().length > 0)
+                .map((r) => ({
+                  id: r.id.trim(),
+                  ...(r.name.trim() ? { name: r.name.trim() } : {}),
+                  ...(parseCapacity(r.ctx) ? { contextWindow: parseCapacity(r.ctx) } : {}),
+                })),
+            },
+          },
+        },
+        null,
+        2,
+      ),
+    [drafts, runtimeId],
+  );
+
+  const submitDrafts = () => {
+    const declaredIds = new Set<string>(declared.map((m) => m.id));
+    const existing = new Set<string>(prefs.customModels.map((c) => c.slug));
+    const errors: Record<number, string> = {};
+    const valid: DraftRow[] = [];
+    const seen = new Set<string>();
+    for (const r of drafts) {
+      const id = r.id.trim();
+      if (id.length === 0) {
+        errors[r.key] = "模型 id 不能为空";
+        continue;
+      }
+      if (declaredIds.has(id) || existing.has(id) || seen.has(id)) {
+        errors[r.key] = `${id} 已存在（内置或已添加）`;
+        continue;
+      }
+      const ctx = r.ctx.trim() ? parseCapacity(r.ctx) : 0;
+      if (r.ctx.trim() && ctx === undefined) {
+        errors[r.key] = "窗口格式非法（支持 256K / 1M 速记）";
+        continue;
+      }
+      seen.add(id);
+      valid.push(r);
+    }
+    if (valid.length === 0) {
+      setDraftErrors(errors);
+      return;
+    }
+    apply(
+      runtimeId,
+      valid.map((r) => (p: ProviderModelPrefs) => {
+        const res = addCustomModel(p, r.id.trim());
+        if (!res.ok) return p;
+        return updateCustomModel(res.prefs, r.id.trim() as never, {
+          name: r.name.trim() || undefined,
+          contextWindow: parseCapacity(r.ctx) ?? undefined,
+          inputPerMTok: numOrUndef(r.priceIn),
+          outputPerMTok: numOrUndef(r.priceOut),
+        });
+      }),
+    );
+    const failedKeys = Object.keys(errors).map(Number);
+    setDraftErrors(errors);
+    setDrafts(failedKeys.length > 0 ? drafts.filter((r) => failedKeys.includes(r.key)) : [emptyDraft(nextDraftKey())]);
   };
 
   const renderRow = (m: ModelSpec, group: "fav" | "all" | "hidden", groupRows: readonly ModelSpec[], index: number) => {
@@ -277,39 +340,131 @@ function ProviderModelPanel({ runtimeId, displayName }: { runtimeId: string; dis
         )}
       </ul>
 
-      {/* 添加自定义模型 */}
+      {/* 添加自定义模型 —— dsh CustomProviderCard 的多行形态 + pi models.json 配置预览 */}
       <div className="border-t border-line px-4 py-3">
-        <p className="mb-1.5 text-caption text-ash">
-          添加这个 CLI 认、内置目录里没有的模型。填 id 即可；价格与窗口不填就显示「未知」，
-          不会被算进成本。
-        </p>
-        <div className="flex items-center gap-2">
-          <input
-            value={input}
-            onChange={(e) => {
-              setInput(e.target.value);
-              setError(null);
-            }}
-            onKeyDown={(e) => e.key === "Enter" && handleAdd()}
-            placeholder="模型 id，例如 qwen3-max"
-            aria-label="自定义模型 id"
-            maxLength={MAX_CUSTOM_MODEL_SLUG_LENGTH}
-            spellCheck={false}
-            className="min-w-0 flex-1 rounded-input bg-rail px-2 py-1.5 font-mono text-body-sm text-ink outline-none placeholder:font-sans placeholder:text-ash"
-          />
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-caption text-ash">
+            添加这个 CLI 认、内置目录里没有的模型。id 必填；窗口支持 256K / 1M 速记；价格不填显示「未知」。
+          </p>
           <button
-            onClick={handleAdd}
-            disabled={input.trim().length === 0}
-            className="flex shrink-0 items-center gap-1 rounded-btn bg-ink px-2.5 py-1.5 text-body-sm text-canvas hover:bg-black disabled:opacity-30"
+            onClick={() => setDrafts((d) => [...d, emptyDraft(nextDraftKey())])}
+            className="flex shrink-0 items-center gap-1 rounded-btn border border-line px-2 py-1 text-caption text-graphite hover:bg-line-soft hover:text-ink"
           >
             <Plus size={12} />
-            添加
+            添加一行
           </button>
         </div>
-        {error && <p className="mt-1.5 text-caption text-loss">{error.message}</p>}
+
+        <div className="mt-2 space-y-1.5">
+          {drafts.map((r, i) => (
+            <div key={r.key} className="flex flex-wrap items-center gap-1.5">
+              <span className="tnum w-5 shrink-0 text-caption text-ash">{i + 1}.</span>
+              <input
+                value={r.id}
+                onChange={(e) => setDrafts((d) => d.map((x) => (x.key === r.key ? { ...x, id: e.target.value } : x)))}
+                placeholder="模型 id *"
+                aria-label={`第 ${i + 1} 行模型 id`}
+                maxLength={MAX_CUSTOM_MODEL_SLUG_LENGTH}
+                spellCheck={false}
+                className={cn(
+                  "w-44 rounded-input border bg-rail px-2 py-1 font-mono text-caption text-ink outline-none placeholder:font-sans placeholder:text-ash",
+                  draftErrors[r.key] ? "border-loss" : "border-transparent focus:border-teal",
+                )}
+              />
+              <input
+                value={r.name}
+                onChange={(e) => setDrafts((d) => d.map((x) => (x.key === r.key ? { ...x, name: e.target.value } : x)))}
+                placeholder="显示名（可选）"
+                aria-label={`第 ${i + 1} 行显示名`}
+                className="w-32 rounded-input border border-transparent bg-rail px-2 py-1 text-caption text-ink outline-none placeholder:text-ash focus:border-teal"
+              />
+              <input
+                value={r.ctx}
+                onChange={(e) => setDrafts((d) => d.map((x) => (x.key === r.key ? { ...x, ctx: e.target.value } : x)))}
+                placeholder="窗口 256K"
+                aria-label={`第 ${i + 1} 行上下文窗口`}
+                className="w-24 rounded-input border border-transparent bg-rail px-2 py-1 font-mono text-caption text-ink outline-none placeholder:text-ash focus:border-teal"
+              />
+              <input
+                value={r.priceIn}
+                onChange={(e) => setDrafts((d) => d.map((x) => (x.key === r.key ? { ...x, priceIn: e.target.value } : x)))}
+                placeholder="输入价"
+                aria-label={`第 ${i + 1} 行输入单价`}
+                inputMode="decimal"
+                className="w-20 rounded-input border border-transparent bg-rail px-2 py-1 text-caption text-ink outline-none placeholder:text-ash focus:border-teal"
+              />
+              <input
+                value={r.priceOut}
+                onChange={(e) => setDrafts((d) => d.map((x) => (x.key === r.key ? { ...x, priceOut: e.target.value } : x)))}
+                placeholder="输出价"
+                aria-label={`第 ${i + 1} 行输出单价`}
+                inputMode="decimal"
+                className="w-20 rounded-input border border-transparent bg-rail px-2 py-1 text-caption text-ink outline-none placeholder:text-ash focus:border-teal"
+              />
+              {draftErrors[r.key] && <span className="text-caption text-loss">{draftErrors[r.key]}</span>}
+              <button
+                onClick={() => setDrafts((d) => (d.length > 1 ? d.filter((x) => x.key !== r.key) : d))}
+                aria-label={`移除第 ${i + 1} 行`}
+                title="移除这一行"
+                className="shrink-0 rounded p-0.5 text-ash hover:bg-line hover:text-loss"
+              >
+                <X size={12} />
+              </button>
+            </div>
+          ))}
+        </div>
+
+        <details className="mt-2">
+          <summary className="cursor-pointer text-caption text-ash hover:text-graphite">
+            配置预览（pi models.json 形态）
+          </summary>
+          <pre className="mt-1.5 max-h-40 overflow-auto rounded-btn bg-rail p-2 font-mono text-caption leading-relaxed text-graphite">
+            {draftsJson}
+          </pre>
+        </details>
+
+        <div className="mt-2 flex items-center justify-end gap-2">
+          {Object.keys(draftErrors).length > 0 && (
+            <p className="text-caption text-loss">
+              有 {Object.keys(draftErrors).length} 行未通过校验，修正后再添加
+            </p>
+          )}
+          <button
+            onClick={submitDrafts}
+            disabled={drafts.every((r) => r.id.trim().length === 0)}
+            className="flex items-center gap-1 rounded-btn bg-ink px-2.5 py-1.5 text-body-sm text-canvas hover:bg-black disabled:opacity-30"
+          >
+            <Plus size={12} />
+            全部添加（{drafts.filter((r) => r.id.trim().length > 0).length}）
+          </button>
+        </div>
       </div>
     </div>
   );
+}
+
+/** 多行草稿的一行（dsh CustomProviderCard 的 models 数组形态） */
+interface DraftRow {
+  key: number;
+  id: string;
+  name: string;
+  ctx: string;
+  priceIn: string;
+  priceOut: string;
+}
+
+let draftKeySeq = 0;
+const emptyDraft = (key?: number): DraftRow => ({ key: key ?? ++draftKeySeq, id: "", name: "", ctx: "", priceIn: "", priceOut: "" });
+const nextDraftKey = () => ++draftKeySeq;
+
+/** 容量速记解析：256K / 1M / 4096（dsh parseCapacity 同款，1K=1000、1M=1_000_000） */
+export function parseCapacity(raw: string): number | undefined {
+  const m = raw.trim().match(/^(\d+(?:\.\d+)?)([km])?$/i);
+  if (!m) return undefined;
+  const n = Number.parseFloat(m[1]!);
+  const unit = m[2]?.toLowerCase();
+  const mult = unit === "m" ? 1_000_000 : unit === "k" ? 1_000 : 1;
+  return Math.round(n * mult);
 }
 
 const EMPTY_SPECS: readonly ModelSpec[] = [];

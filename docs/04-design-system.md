@@ -324,3 +324,14 @@ waku 要点备忘：SOUL.md 可由 agent 用 update_soul 追加规则（append-o
 上限 8000 字符）；记忆门控 fail-open；整理（consolidation）攒 N 次交换
 由 small_model 提取 facts + episode；技能 = SKILL.md frontmatter 常驻扫描、
 正文按关键词命中注入（每次最多 2 个）——这些是接入真运行时后的行为契约。
+
+### 添加自定义模型：dsh 多行表单 + pi 配置预览（2026-09-28 第九轮）
+
+设置页的「添加自定义模型」从单输入框升级为 **dsh `CustomProviderCard` 的
+models 数组形态**：多行草稿（模型 id* / 显示名 / 窗口 / 输入价 / 输出价），
+「添加一行」连加、「全部添加」批量入库；逐行校验（id 必填 + 查重，
+窗口支持 256K / 1M 速记解析——dsh parseCapacity 同款，1K=1000、1M=1_000_000），
+错误按行定位。附 **pi models.json 形态的配置预览**（providers → models 条目，
+contextWindow 展开为精确数值），强化「加模型 = 往配置写一条」的直觉。
+pi 仓库已更新克隆至 Agent/pi-latest（6f75515），其 models.json schema
+（providers 字典 + ModelDefinition）是 dsh 与本项目自定义模型的共同源头。
