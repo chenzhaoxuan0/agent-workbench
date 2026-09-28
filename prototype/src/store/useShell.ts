@@ -27,10 +27,12 @@ export type MainView = "chat" | "automations" | "image";
 /**
  * 会话内视图 —— 对齐 dsh 的 view-selection（ConversationSession tabs）。
  * - chat / trajectory：同一个会话的两种读法，composer 都保持在底部；
- * - ops：LLM-Ops 仪表盘（对齐 waku dashboard 的 Ops 页签），占据整个
- *   会话视口且**不渲染 composer**——它是运营视图，不是会话的另一种读法。
+ * - terminal：全屏终端页签（与底部 dock 终端同组件不同实例），
+ *   大屏下全屏使用各 provider CLI 的 TUI；
+ * - ops：LLM-Ops 仪表盘（对齐 waku dashboard 的 Ops 页签）。
+ * 后两者占据整个会话视口且**不渲染 composer**——它们不是会话的另一种读法。
  */
-export type ConversationView = "chat" | "trajectory" | "ops";
+export type ConversationView = "chat" | "terminal" | "trajectory" | "ops";
 
 /** 设置分区 id，集合对齐 ZCode 的 SettingsSectionId */
 export type SettingsSectionId =

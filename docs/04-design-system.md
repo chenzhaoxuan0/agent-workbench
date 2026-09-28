@@ -634,3 +634,17 @@ e2e 限制说明：headless Chromium（shell 与 full 构建）在「从 Indexed
 应用路径（restore → 生成 → autoSave → 命名落盘捕获 → UI 状态），
 零 pageerror。原生句柄 roundtrip 是真 Chrome 的标准模式
 （gpt_image_playground 同款），真实浏览器手测无碍。
+
+### 终端页签 —— 会话头第四页签（2026-09-28）
+
+会话头页签条从「对话 | 轨迹 | Ops」扩为**「对话 | 终端 | 轨迹 | Ops」**
+（终端紧跟对话右侧）。与底部 dock 终端（AnimatedTerminalPanel，30% 高
+可开关）是**同组件不同实例的两个入口**：dock 服务小屏/伴随会话，
+page 变体占据整个会话视口，大屏下全屏使用各 provider CLI 的 TUI。
+
+- `TerminalPanel` 增加 `variant: "dock" | "page"`：page 无 dock 顶边框、
+  带「全屏页签」徽标，X = 切回对话页签（dock 的 X = toggleTerminal）；
+- conversationView 扩为 chat | terminal | trajectory | ops；terminal 与
+  ops 同类：非会话读法，不渲染 composer / 权限卡；
+- 原型期无真 PTY，两实例各自独立状态；接真 PTY 后同一会话的终端
+  状态可考虑共享（xterm 多视口 attach 同一 PTY）。

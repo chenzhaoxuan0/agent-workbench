@@ -4,17 +4,23 @@ import { useWorkbench } from "../store/useWorkbench.ts";
 import { useShell } from "../store/useShell.ts";
 
 /**
- * 底部终端面板 —— 对应 ZCode 的 AnimatedTerminalPanel（默认 30% 高，可开关）。
+ * 终端面板 —— 对应 ZCode 的 AnimatedTerminalPanel。
  *
- * 原型期还没有真 PTY，这里给一个可信的只读终端外观：
- * 展示当前工作单元、执行器和可用能力，让面板不是个空壳。
+ * 两个入口共用本组件（原型期还没有真 PTY，各挂各的实例、各自独立状态）：
+ * - dock（默认）：会话下方的可开关面板（默认 30% 高，X = toggleTerminal）；
+ * - page：会话头「终端」页签，占据整个会话视口（X = 切回对话页签），
+ *   大屏下方便全屏使用各 provider CLI 的 TUI 界面。
  */
-export function TerminalPanel() {
+export function TerminalPanel({ variant = "dock" }: { variant?: "dock" | "page" } = {}) {
   const unit = useWorkbench((s) => s.units.find((u) => u.id === s.activeUnitId));
   const runtime = useWorkbench((s) => s.runtimes.find((r) => r.id === s.activeRuntimeId));
   const toggleTerminal = useShell((s) => s.toggleTerminal);
+  const setConversationView = useShell((s) => s.setConversationView);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [echo, setEcho] = useState<string[]>([]);
+
+  const isPage = variant === "page";
+  const closeTerminal = isPage ? () => setConversationView("chat") : toggleTerminal;
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
@@ -34,14 +40,21 @@ export function TerminalPanel() {
   ];
 
   return (
-    <div className="flex h-full min-h-0 flex-col border-t border-line bg-canvas">
+    <div
+      className={
+        isPage
+          ? "flex h-full min-h-0 flex-col bg-canvas"
+          : "flex h-full min-h-0 flex-col border-t border-line bg-canvas"
+      }
+    >
       <div className="flex h-9 shrink-0 items-center gap-2 border-b border-line px-3">
         <SquareTerminal size={12} className="text-ash" />
         <span className="text-body-sm text-graphite">终端</span>
+        {isPage && <span className="rounded-chip bg-teal-tint px-1.5 py-0.5 text-[10px] text-teal">全屏页签</span>}
         <span className="ml-auto font-mono text-caption text-ash">{unit?.name ?? ""}</span>
         <button
-          onClick={toggleTerminal}
-          aria-label="关闭终端"
+          onClick={closeTerminal}
+          aria-label={isPage ? "关闭终端页签" : "关闭终端"}
           className="rounded-btn p-1 text-ash hover:bg-line-soft hover:text-ink"
         >
           <X size={12} />
