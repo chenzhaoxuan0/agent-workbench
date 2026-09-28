@@ -12,6 +12,7 @@ import { useSidePane } from "./store/useSidePane.ts";
 import { useWorkbench } from "./store/useWorkbench.ts";
 import { Sidebar } from "./ui/Sidebar.tsx";
 import { TerminalPanel } from "./ui/TerminalPanel.tsx";
+import { TerminalPage } from "./ui/TerminalPage.tsx";
 import { Timeline } from "./ui/Timeline.tsx";
 import { WorkspaceHeader } from "./ui/WorkspaceHeader.tsx";
 import { TrajectoryView } from "./ui/TrajectoryView.tsx";
@@ -189,10 +190,8 @@ function ConversationSlot() {
                 /* 轨迹视图（dsh TrajectoryView：占据会话视口，composer 保持底部） */
                 <TrajectoryView />
               ) : conversationView === "terminal" ? (
-                /* 终端页签（与底部 dock 终端同组件不同实例；关闭 = 切回对话） */
-                <div className="flex min-h-0 flex-1 flex-col">
-                  <TerminalPanel variant="page" />
-                </div>
+                /* 终端页签（多窗格并开工作台；与底部 dock 终端同组件不同实例，可同屏共存） */
+                <TerminalPage />
               ) : conversationView === "ops" ? (
                 /* Ops 视图（waku dashboard 的 Ops 页签：发布门 / 两类 eval / Arena / 花费账本） */
                 <OpsView />

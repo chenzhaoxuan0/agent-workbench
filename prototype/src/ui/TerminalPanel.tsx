@@ -4,14 +4,24 @@ import { useWorkbench } from "../store/useWorkbench.ts";
 import { useShell } from "../store/useShell.ts";
 
 /**
- * 终端面板 —— 对应 ZCode 的 AnimatedTerminalPanel。
+ * 终端面板（单窗格）—— 对应 ZCode 的 AnimatedTerminalPanel。
  *
- * 两个入口共用本组件（原型期还没有真 PTY，各挂各的实例、各自独立状态）：
+ * 入口共用本组件（原型期还没有真 PTY，各实例独立状态）：
  * - dock（默认）：会话下方的可开关面板（默认 30% 高，X = toggleTerminal）；
- * - page：会话头「终端」页签，占据整个会话视口（X = 切回对话页签），
- *   大屏下方便全屏使用各 provider CLI 的 TUI 界面。
+ * - page：会话头「终端」页签的窗格（TerminalPage 可多窗格并开），
+ *   X = onClose（由宿主决定：关窗格 / 切回对话页签）。
  */
-export function TerminalPanel({ variant = "dock" }: { variant?: "dock" | "page" } = {}) {
+export function TerminalPanel({
+  variant = "dock",
+  onClose,
+  label,
+}: {
+  variant?: "dock" | "page";
+  /** 覆盖关闭行为（TerminalPage 的多窗格：关自己的窗格 / 最后一格切回对话） */
+  onClose?: () => void;
+  /** 窗格标题（多窗格时显示 终端 #n） */
+  label?: string;
+} = {}) {
   const unit = useWorkbench((s) => s.units.find((u) => u.id === s.activeUnitId));
   const runtime = useWorkbench((s) => s.runtimes.find((r) => r.id === s.activeRuntimeId));
   const toggleTerminal = useShell((s) => s.toggleTerminal);
@@ -20,7 +30,7 @@ export function TerminalPanel({ variant = "dock" }: { variant?: "dock" | "page" 
   const [echo, setEcho] = useState<string[]>([]);
 
   const isPage = variant === "page";
-  const closeTerminal = isPage ? () => setConversationView("chat") : toggleTerminal;
+  const closeTerminal = onClose ?? (isPage ? () => setConversationView("chat") : toggleTerminal);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
@@ -49,12 +59,13 @@ export function TerminalPanel({ variant = "dock" }: { variant?: "dock" | "page" 
     >
       <div className="flex h-9 shrink-0 items-center gap-2 border-b border-line px-3">
         <SquareTerminal size={12} className="text-ash" />
-        <span className="text-body-sm text-graphite">终端</span>
+        <span className="text-body-sm text-graphite">{label ?? "终端"}</span>
         {isPage && <span className="rounded-chip bg-teal-tint px-1.5 py-0.5 text-[10px] text-teal">全屏页签</span>}
         <span className="ml-auto font-mono text-caption text-ash">{unit?.name ?? ""}</span>
         <button
           onClick={closeTerminal}
-          aria-label={isPage ? "关闭终端页签" : "关闭终端"}
+          aria-label={isPage ? "关闭终端窗格" : "关闭终端"}
+          title={isPage ? undefined : "关闭终端"}
           className="rounded-btn p-1 text-ash hover:bg-line-soft hover:text-ink"
         >
           <X size={12} />
