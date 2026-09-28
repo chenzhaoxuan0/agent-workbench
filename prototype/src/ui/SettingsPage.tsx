@@ -202,12 +202,9 @@ function SectionBody({ section }: { section: SettingsSectionDef }) {
     case "models":
       return (
         <div className="space-y-6">
-          {/* 执行器实例面板（T3 Providers 逻辑：左列表+开关 / 右编辑器含 Models 管理） */}
+          {/* 执行器实例面板（T3 Providers 逻辑：左列表+开关 / 右编辑器含 Models 管理；
+              默认执行器与探测策略均已并入面板内部） */}
           <ProviderInstancesPanel />
-
-          {/* 默认执行器 + 探测策略（原「执行器」分区并入） */}
-          <DefaultRuntimeSection />
-
           {/* API 供应商（pi 目录 + 兼容协议）—— dsh ModelsSection 形态 */}
           <ProviderSettingsSection />
         </div>
@@ -226,84 +223,6 @@ function SectionBody({ section }: { section: SettingsSectionDef }) {
     default:
       return <GenericSection section={section} />;
   }
-}
-
-/** 默认执行器 + 探测策略（原「执行器」分区并入本页） */
-function DefaultRuntimeSection() {
-  const runtimes = useWorkbench((s) => s.runtimes);
-  const activeId = useWorkbench((s) => s.activeRuntimeId);
-  const select = useWorkbench((s) => s.selectRuntime);
-
-  return (
-    <div className="space-y-6">
-      <GroupCard>
-        {runtimes.map((r) => {
-          const caps = Object.values(r.capabilities);
-          const on = caps.filter(Boolean).length;
-          const active = r.id === activeId;
-          const notInstalled = r.state.status === "not_installed";
-          return (
-            <SettingsRow
-              key={r.id}
-              label={
-                <span className="flex items-center gap-2">
-                  <span
-                    className="flex h-4.5 w-4.5 shrink-0 items-center justify-center rounded-btn text-caption font-medium text-white"
-                    style={{ background: r.presentation.accent }}
-                    aria-hidden
-                  >
-                    {r.presentation.glyph}
-                  </span>
-                  {r.presentation.displayName}
-                  {active && <Badge>默认</Badge>}
-                </span>
-              }
-              description={
-                <span className="block">
-                  {r.presentation.tagline}
-                  <span className="mt-0.5 block font-mono text-caption text-ash">
-                    {r.transportKind} · 能力 {on}/{caps.length} · {r.state.status}
-                  </span>
-                </span>
-              }
-              control={
-                notInstalled ? (
-                  <button className="shrink-0 rounded-btn border border-line bg-card px-3 py-1.5 text-body-sm text-graphite hover:border-ash hover:text-ink">
-                    安装
-                  </button>
-                ) : (
-                  <button
-                    onClick={() => select(r.id)}
-                    className={cn(
-                      "shrink-0 rounded-btn px-3 py-1.5 text-body-sm",
-                      active
-                        ? "bg-ink text-canvas"
-                        : "border border-line bg-card text-graphite hover:border-ash hover:text-ink",
-                    )}
-                  >
-                    {active ? "使用中" : "设为默认"}
-                  </button>
-                )
-              }
-            />
-          );
-        })}
-      </GroupCard>
-
-      <GroupCard>
-        <SettingsRow
-          label="能力探测"
-          description="启动时检查每家工具是否可连。探测失败的工具会在执行器条上标灰，而不是隐藏"
-          control={<Toggle on onChange={() => {}} />}
-        />
-        <SettingsRow
-          label="未安装工具"
-          description="在执行器条上显示并提供安装入口，还是直接隐藏"
-          control={<Toggle on onChange={() => {}} />}
-        />
-      </GroupCard>
-    </div>
-  );
 }
 
 /** 自动化相关只剩两条全局策略，具体的任务管理已独立成主视图 */

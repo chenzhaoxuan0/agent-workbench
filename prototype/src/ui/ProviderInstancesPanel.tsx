@@ -1,5 +1,6 @@
-import { useState } from "react";
-import { Minus, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { useMemo, useState } from "react";
+import { ChevronDown, ChevronRight, Minus, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { prefsOf, resolveVisibleModels } from "../core/modelPrefs.ts";
 import { useProviderProfiles } from "../store/useProviderProfiles.ts";
 import { useWorkbench } from "../store/useWorkbench.ts";
 import { ProviderModelPanel } from "./ModelSettings.tsx";
@@ -27,6 +28,8 @@ export function ProviderInstancesPanel() {
   const [checkedLabel, setCheckedLabel] = useState("刚刚");
   const [checking, setChecking] = useState(false);
   const [selectedId, setSelectedId] = useState<string>(runtimes[0]?.id ?? "");
+  const activeId = useWorkbench((s) => s.activeRuntimeId);
+  const selectRuntime = useWorkbench((s) => s.selectRuntime);
 
   const selected = runtimes.find((r) => r.id === selectedId) ?? runtimes[0];
 
@@ -97,6 +100,11 @@ export function ProviderInstancesPanel() {
                       <span className="truncate text-body-sm font-medium text-ink">
                         {p.displayName ?? r.presentation.displayName}
                       </span>
+                      {activeId === r.id && (
+                        <span className="shrink-0 rounded-chip bg-ink px-1.5 py-px text-[10px] leading-4 text-canvas">
+                          默认
+                        </span>
+                      )}
                       {r.state.status === "ready" && r.state.version && (
                         <span className="tnum shrink-0 text-caption text-ash">v{r.state.version}</span>
                       )}
@@ -118,7 +126,11 @@ export function ProviderInstancesPanel() {
 
         {/* 右列：选中实例的编辑器 */}
         <div className="min-w-0 space-y-4">
-          <InstanceEditor runtimeId={selected.id} />
+          <InstanceEditor
+            runtimeId={selected.id}
+            isDefault={activeId === selected.id}
+            onSetDefault={() => selectRuntime(selected.id)}
+          />
 
           <Details title="API 供应商（兼容协议 · pi 目录）">
             <p className="text-caption leading-relaxed text-ash">
@@ -130,7 +142,74 @@ export function ProviderInstancesPanel() {
           <AdvancedSection onChange={() => setPref(selected.id, { lastCheckedAt: Date.now() })} />
         </div>
       </div>
+
+      {/* 探测策略（全局）—— 原执行器分区的两个策略开关并入此处 */}
+      <ProbeStrategyCard />
     </div>
+  );
+}
+
+function ProbeStrategyCard() {
+  const [probe, setProbe] = useState(true);
+  const [showUninstalled, setShowUninstalled] = useState(true);
+  return (
+    <section className="rounded-card border border-line bg-canvas px-3.5 py-3">
+      <p className="text-caption font-medium text-graphite">探测策略</p>
+      <div className="mt-2 space-y-2">
+        <ToggleRow
+          label="能力探测"
+          desc="启动时检查每家工具是否可连。探测失败的工具会在执行器条上标灰，而不是隐藏"
+          checked={probe}
+          onChange={setProbe}
+        />
+        <ToggleRow
+          label="未安装工具"
+          desc="在执行器条上显示并提供安装入口，还是直接隐藏"
+          checked={showUninstalled}
+          onChange={setShowUninstalled}
+        />
+      </div>
+    </section>
+  );
+}
+
+function ToggleRow({
+  label,
+  desc,
+  checked,
+  onChange,
+}: {
+  label: string;
+  desc: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <button
+      onClick={() => onChange(!checked)}
+      role="switch"
+      aria-checked={checked}
+      className="flex w-full items-center gap-3 rounded-btn px-1 py-1 text-left hover:bg-line-soft"
+    >
+      <span className="min-w-0 flex-1">
+        <span className="block text-caption font-medium text-ink">{label}</span>
+        <span className="block text-caption text-ash">{desc}</span>
+      </span>
+      <span
+        className={cn(
+          "relative h-5 w-9 shrink-0 rounded-full transition-colors",
+          checked ? "bg-teal" : "bg-line",
+        )}
+        aria-hidden
+      >
+        <span
+          className={cn(
+            "absolute top-0.5 h-4 w-4 rounded-full bg-canvas transition-[left]",
+            checked ? "left-[18px]" : "left-0.5",
+          )}
+        />
+      </span>
+    </button>
   );
 }
 
@@ -184,11 +263,31 @@ function InstanceSwitch({
 
 /* ------------------------------------------------------------- 编辑器 */
 
-function InstanceEditor({ runtimeId }: { runtimeId: string }) {
+function InstanceEditor({
+  runtimeId,
+  isDefault,
+  onSetDefault,
+}: {
+  runtimeId: string;
+  isDefault: boolean;
+  onSetDefault: () => void;
+}) {
   const runtime = useWorkbench((s) => s.runtimes.find((r) => r.id === runtimeId));
   const pref = useWorkbench((s) => s.runtimePrefs[runtimeId]) ?? { enabled: true };
   const setPref = useWorkbench((s) => s.setRuntimePref);
   const [editingName, setEditingName] = useState(false);
+  const [modelsOpen, setModelsOpen] = useState(false);
+  const modelPrefsMap = useWorkbench((s) => s.modelPrefs);
+  const counts = useMemo(() => {
+    if (!runtime) return { visible: 0, fav: 0, hidden: 0 };
+    const p = prefsOf(modelPrefsMap, runtimeId);
+    const visible = resolveVisibleModels(runtime.models, p);
+    return {
+      visible: visible.length,
+      fav: visible.filter((m) => p.favoriteModels.includes(m.id)).length,
+      hidden: runtime.models.filter((m) => p.hiddenModels.includes(m.id)).length,
+    };
+  }, [runtime, modelPrefsMap, runtimeId]);
 
   if (!runtime) return null;
   const name = pref.displayName ?? runtime.presentation.displayName;
@@ -221,6 +320,24 @@ function InstanceEditor({ runtimeId }: { runtimeId: string }) {
         )}
       </div>
 
+      {/* 默认执行器 —— T3 无此概念（本项目的 activeRuntimeId 是 composer 新任务默认） */}
+      <div className="flex items-center gap-3 border-b border-line px-3.5 py-3">
+        <span className="min-w-0 flex-1">
+          <span className="block text-caption font-medium text-graphite">默认执行器</span>
+          <span className="block text-caption text-ash">composer 的新任务默认由它执行。</span>
+        </span>
+        {isDefault ? (
+          <span className="shrink-0 rounded-chip bg-teal-tint px-1.5 py-0.5 text-caption text-teal">当前默认</span>
+        ) : (
+          <button
+            onClick={onSetDefault}
+            className="shrink-0 rounded-btn border border-line px-2 py-1 text-caption text-graphite hover:bg-line-soft hover:text-ink"
+          >
+            设为默认
+          </button>
+        )}
+      </div>
+
       {/* Runtime 区（T3：Binary path / HOME / Launch arguments → 本项目映射为端点与启动参数） */}
       <div className="border-b border-line px-3.5 py-3">
         <p className="mb-2 text-caption font-medium text-graphite">Runtime</p>
@@ -248,11 +365,23 @@ function InstanceEditor({ runtimeId }: { runtimeId: string }) {
         <EnvVars runtimeId={runtimeId} />
       </div>
 
-      {/* Models 区：该 CLI 的模型清单管理（收藏 / 排序 / 显隐 / 自定义模型） */}
-      <div className="px-3.5 py-3">
-        <p className="mb-2 text-caption font-medium text-graphite">Models</p>
-        <ProviderModelPanel runtimeId={runtimeId} displayName={name} />
-      </div>
+      {/* Models 区：默认折叠（清单管理较长），summary 带计数 */}
+      <button
+        onClick={() => setModelsOpen((o) => !o)}
+        aria-expanded={modelsOpen}
+        className="flex w-full items-center gap-1.5 border-b border-line px-3.5 py-2.5 text-left text-caption font-medium text-graphite hover:text-ink"
+      >
+        <ChevronDown size={11} className={cn("-rotate-90 transition-transform", modelsOpen && "rotate-0")} />
+        Models
+        <span className="ml-auto font-normal text-ash">
+          {counts.visible} 模型 · {counts.fav} 收藏 · {counts.hidden} 隐藏
+        </span>
+      </button>
+      {modelsOpen && (
+        <div className="border-t border-line-soft px-3.5 pb-3 pt-2">
+          <ProviderModelPanel runtimeId={runtimeId} displayName={name} />
+        </div>
+      )}
     </section>
   );
 }
