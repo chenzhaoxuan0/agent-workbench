@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { Group, Panel, Separator, type PanelImperativeHandle } from "react-resizable-panels";
 import { Composer } from "./ui/Composer.tsx";
 import { AutomationsPage } from "./ui/AutomationsPage.tsx";
+import { ImageStudioPage } from "./ui/ImageStudioPage.tsx";
 import { CommandCenter } from "./ui/CommandCenter.tsx";
 import { DesktopTopOverlay } from "./ui/DesktopTopOverlay.tsx";
 import { PermissionDialog } from "./ui/PermissionDialog.tsx";
@@ -143,6 +144,11 @@ function ConversationSlot() {
       {mainView === "automations" ? (
         <main className="h-full min-h-0" aria-label="自动化">
           <AutomationsPage />
+        </main>
+      ) : mainView === "image" ? (
+        /* 出图工作台 —— gpt_image_playground 逻辑移植的落点（独立功能主视图） */
+        <main className="h-full min-h-0" aria-label="出图">
+          <ImageStudioPage />
         </main>
       ) : (
         <Group orientation="vertical" id="workbench-conversation">

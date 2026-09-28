@@ -550,3 +550,32 @@ SQLite 后端展开配置新增**数据库文件路径**输入（默认 `.waku/s
   「打开轨迹」一键跳回轨迹页签看原始 trace。
 
 flaky 用例（draft-message，18% 失败率）让 gate 的 FAIL 态在演示中可见。
+
+### 出图工作台 —— gpt_image_playground 移植（2026-09-28）
+
+侧栏顶部动作区新增「出图」入口（新建任务/搜索/自动化/出图），
+独立功能主视图 `ui/ImageStudioPage.tsx`（与自动化页同构：
+h-12 面包屑顶带 + 卡片输入区 + 结果画廊）。
+
+生成逻辑移植自 CookSleep/gpt_image_playground（MIT，核心是
+`openaiCompatibleImageApi.ts` + `imageApiShared.ts`）：
+
+- `core/imageApi.ts`：OpenAI 兼容 images API 客户端 —— 纯文本
+  `POST /v1/images/generations`（JSON body）、参考图
+  `POST /v1/images/edits`（FormData `image[]`）；b64_json / url
+  双路径解析为 dataURL；防御式错误提取（error.message 优先）；
+  AbortController 超时（600s，同仓库 DEFAULT_API_TIMEOUT）。
+- 参数按模型族切换（paramCompatibility 本质规则）：gpt-image*
+  走 size/quality(auto|low|medium|high)/output_format，dall-e-3
+  走 standard|hd + response_format=b64_json；模型选择器内置
+  gpt-image-2.5-sunburst（仓库默认）/ gpt-image-2 / 1 / dall-e-3，
+  也可手填任意兼容模型名。
+- `store/useImageStudio.ts`：ApiProfile（baseUrl/apiKey/model/timeout）
+  + 任务历史（一次生图 = 一条任务），落 `agent-workbench:image-studio`
+  localStorage 键；图片是 dataURL，配额满按「最旧优先」丢图重试。
+- 未移植（原型不需要）：流式 partial_images、/responses 工具模式、
+  fal.ai、自定义 HTTP 服务商映射、遮罩编辑。
+
+验证：gpt_image_playground 自带 mock-image-api（b64 模式，CORS 全开）
+起本地服务，浏览器端到端走通 配置→生成→画廊→持久化→刷新恢复，
+无 key 时生成按钮禁用。

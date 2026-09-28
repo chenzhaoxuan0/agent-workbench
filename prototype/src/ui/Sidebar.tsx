@@ -8,6 +8,7 @@ import {
   FolderGit2,
   FolderPlus,
   GripVertical,
+  ImagePlus,
   MessageCirclePlus,
   Plus,
   Search,
@@ -139,6 +140,20 @@ export function Sidebar() {
         >
           <AlarmClock size={14} className="shrink-0" />
           自动化
+        </button>
+        {/* 出图工作台 —— gpt_image_playground 的移植落点（OpenAI 兼容 images API） */}
+        <button
+          onClick={() => useShell.getState().setMainView("image")}
+          aria-pressed={mainView === "image"}
+          className={cn(
+            "flex h-8 w-full items-center gap-2 rounded-btn px-2.5 text-body-sm",
+            mainView === "image"
+              ? "bg-teal-tint font-medium text-ink"
+              : "text-graphite hover:bg-line-soft hover:text-ink",
+          )}
+        >
+          <ImagePlus size={14} className="shrink-0" />
+          出图
         </button>
       </div>
 

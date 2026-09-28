@@ -19,8 +19,10 @@ import { useWorkbench } from "./useWorkbench.ts";
  * - 设置页**不是主视图**，是全屏覆盖层（WorkspaceSettingsLayer：absolute inset-0，
  *   shell 压暗不卸载），所以这里用 settingsOpen 布尔而不是 "settings" 视图；
  * - 搜索**也不是主视图**，是 ⌘K 命令中心浮层（CommandCenterDialog）。
+ * - image（出图工作台）是本项目的扩展：与自动化同级的独立功能视图
+ *   （gpt_image_playground 的移植落点）。
  */
-export type MainView = "chat" | "automations";
+export type MainView = "chat" | "automations" | "image";
 
 /**
  * 会话内视图 —— 对齐 dsh 的 view-selection（ConversationSession tabs）。
