@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import {
   AlarmClock,
@@ -17,6 +17,7 @@ import {
   Settings2,
   Shield,
   Wand,
+  Trash2,
 } from "lucide-react";
 import {
   SETTINGS_GROUPS,
@@ -28,6 +29,16 @@ import {
 import { useWorkbench, selectActiveUnit } from "../store/useWorkbench.ts";
 import { useMemoryPrefs } from "../store/useMemoryPrefs.ts";
 import { weknoraListKb, weknoraPing, weknoraSaveFact, weknoraSearch, type WeknoraConfig, type WeknoraKb } from "../core/weknora.ts";
+import {
+  dropLocalHandle,
+  indexLocalSource,
+  isIndexed,
+  loadLocalHandle,
+  pickLocalFolder,
+  requestPermission,
+  searchAllLocal,
+  sourcePermission,
+} from "../core/localMemorySource.ts";
 import { ProviderInstancesPanel } from "./ProviderInstancesPanel.tsx";
 import { ProviderSettingsSection } from "./ProviderSettingsSection.tsx";
 import { cn } from "./cn.ts";
@@ -271,6 +282,8 @@ function MemorySettingsSection() {
       </GroupCard>
 
       {prefs.semanticStore === "weknora" && <WeknoraCard />}
+
+      <LocalSourcesCard />
 
       <GroupCard>
         <SettingsRow
@@ -553,6 +566,165 @@ function KbCheck({
       {checked && <Check size={10} className="text-teal" />}
       <span className={checked ? "text-ink" : "text-ash"}>{label}</span>
     </label>
+  );
+}
+
+/** 本地文件来源 —— 文件夹直连为语义记忆来源（不经 WeKnora；句柄存 IndexedDB） */
+function LocalSourcesCard() {
+  const sources = useMemoryPrefs((s) => s.prefs.localSources);
+  const addSource = useMemoryPrefs((s) => s.addLocalSource);
+  const removeSource = useMemoryPrefs((s) => s.removeLocalSource);
+  const semanticTopK = useMemoryPrefs((s) => s.prefs.semanticTopK);
+
+  const [rows, setRows] = useState<Record<string, { files: number; status: string; needsPerm: boolean }>>({});
+  const [query, setQuery] = useState("");
+  const [hits, setHits] = useState<{ path: string; excerpt: string }[] | null>(null);
+  const [status, setStatus] = useState<string | null>(null);
+  const supported = typeof window !== "undefined" && "showDirectoryPicker" in window;
+
+  // 载入时恢复句柄并自动索引已授权的来源
+  useEffect(() => {
+    void (async () => {
+      for (const src of sources) {
+        const handle = await loadLocalHandle(src.id);
+        if (!handle) continue;
+        const perm = await sourcePermission(handle);
+        if (perm === "granted") {
+          const n = await indexLocalSource(src.id, handle);
+          setRows((r) => ({ ...r, [src.id]: { files: n, status: "已索引", needsPerm: false } }));
+        } else {
+          setRows((r) => ({ ...r, [src.id]: { files: 0, status: "需重新授权", needsPerm: true } }));
+        }
+      }
+    })();
+    // eslint 需求：sources 变化时恢复（增删来源都会触发）
+  }, [sources]);
+
+  const add = async () => {
+    try {
+      const picked = await pickLocalFolder();
+      if (!picked) return;
+      addSource({ id: picked.id, name: picked.name });
+      const n = await indexLocalSource(picked.id, picked.handle);
+      setRows((r) => ({ ...r, [picked.id]: { files: n, status: "已索引", needsPerm: false } }));
+    } catch (e) {
+      setStatus(`添加失败：${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
+  const reauthorize = async (id: string) => {
+    const handle = await loadLocalHandle(id);
+    if (!handle) return;
+    if (await requestPermission(handle)) {
+      const n = await indexLocalSource(id, handle);
+      setRows((r) => ({ ...r, [id]: { files: n, status: "已索引", needsPerm: false } }));
+    }
+  };
+
+  const remove = async (id: string) => {
+    await dropLocalHandle(id);
+    removeSource(id);
+  };
+
+  const doSearch = () => {
+    const ids = sources.filter((s) => isIndexed(s.id)).map((s) => s.id);
+    setHits(searchAllLocal(ids, query, semanticTopK));
+  };
+
+  return (
+    <GroupCard>
+      <div className="flex items-center justify-between gap-2 px-4 pb-1 pt-3">
+        <span className="text-caption font-medium text-graphite">本地文件来源</span>
+        <button
+          onClick={() => void add()}
+          disabled={!supported}
+          title={supported ? undefined : "需 Chrome / Edge"}
+          className="flex shrink-0 items-center gap-1 rounded-btn border border-line px-2 py-1 text-caption text-graphite hover:bg-line-soft hover:text-ink disabled:opacity-40"
+        >
+          <Plus size={10} />
+          添加本地文件夹
+        </button>
+      </div>
+      <div className="px-4 pb-3">
+        <p className="text-caption leading-relaxed text-ash">
+          不经 WeKnora，把本地文件夹（markdown / 文本）直连为语义记忆来源：
+          关键词检索命中后随路径注入。句柄存本地 IndexedDB，纯本地授权。
+        </p>
+
+        {!supported && (
+          <p className="mt-2 text-caption text-loss">当前浏览器不支持目录读取，请使用 Chrome / Edge。</p>
+        )}
+
+        <ul className="mt-2 space-y-1">
+          {sources.length === 0 && (
+            <li className="rounded-btn border border-dashed border-line px-3 py-3 text-center text-caption text-ash">
+              还没有本地来源 —— 点右上角「添加本地文件夹」。
+            </li>
+          )}
+          {sources.map((src) => {
+            const st = rows[src.id];
+            return (
+              <li key={src.id} className="flex items-center gap-2 rounded-btn border border-line px-2.5 py-1.5">
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-body-sm text-ink">{src.name}</span>
+                  <span className="block text-caption text-ash">
+                    {st ? (st.needsPerm ? "需重新授权" : `已索引 · ${st.files} 个文件`) : "读取中…"}
+                  </span>
+                </span>
+                {st?.needsPerm && (
+                  <button
+                    onClick={() => void reauthorize(src.id)}
+                    className="shrink-0 rounded-btn border border-line px-2 py-0.5 text-caption text-graphite hover:bg-line-soft hover:text-ink"
+                  >
+                    重新授权
+                  </button>
+                )}
+                <button
+                  onClick={() => void remove(src.id)}
+                  aria-label={`移除 ${src.name}`}
+                  className="shrink-0 rounded p-0.5 text-ash hover:bg-line hover:text-loss"
+                >
+                  <Trash2 size={11} />
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+
+        {sources.some((s) => isIndexed(s.id)) && (
+          <div className="mt-2 space-y-1.5">
+            <div className="flex items-center gap-1.5">
+              <input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && doSearch()}
+                placeholder="检索测试：跨全部本地来源"
+                aria-label="本地来源检索测试"
+                className="min-w-0 flex-1 rounded-input border border-transparent bg-rail px-2 py-1 text-caption text-ink outline-none placeholder:text-ash focus:border-teal"
+              />
+              <button
+                onClick={doSearch}
+                disabled={query.trim().length === 0}
+                className="shrink-0 rounded-btn border border-line px-2 py-1 text-caption text-graphite hover:bg-line-soft hover:text-ink disabled:opacity-40"
+              >
+                检索
+              </button>
+            </div>
+            {status && <p className="text-caption text-ash">{status}</p>}
+            {hits !== null && (
+              <ul className="space-y-1 rounded-btn bg-rail p-2">
+                {hits.length === 0 && <li className="text-caption text-ash">没有命中的内容。</li>}
+                {hits.map((h) => (
+                  <li key={h.path} className="text-caption leading-relaxed text-graphite">
+                    <span className="font-mono text-ash">{h.path}</span> · {h.excerpt}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+      </div>
+    </GroupCard>
   );
 }
 

@@ -32,6 +32,8 @@ export interface MemoryPrefs {
   /** 各记忆层绑定的 WeKnora 知识库（多选：检索跨库并集；语义写入进第一个勾选库） */
   weknoraSemanticKbIds: readonly string[];
   weknoraEpisodicKbIds: readonly string[];
+  /** 本地文件来源（不经 WeKnora 直连的文件夹；句柄存 IndexedDB） */
+  localSources: readonly { id: string; name: string }[];
   /** 情节记忆 · 事件（带日期的“发生过什么”一句话摘要） */
   episodicEnabled: boolean;
   episodicStore: EpisodicStore;
@@ -54,6 +56,7 @@ const DEFAULTS: MemoryPrefs = {
   weknoraApiKey: "",
   weknoraSemanticKbIds: [],
   weknoraEpisodicKbIds: [],
+  localSources: [],
   episodicEnabled: true,
   episodicStore: "sqlite",
   proceduralEnabled: true,
@@ -97,6 +100,8 @@ function save(prefs: MemoryPrefs): void {
 interface MemoryPrefsState {
   prefs: MemoryPrefs;
   update: (patch: Partial<MemoryPrefs>) => void;
+  addLocalSource: (source: { id: string; name: string }) => void;
+  removeLocalSource: (id: string) => void;
   reset: () => void;
 }
 
@@ -104,6 +109,16 @@ export const useMemoryPrefs = create<MemoryPrefsState>()((set, get) => ({
   prefs: load(),
   update: (patch) => {
     const next = { ...get().prefs, ...patch };
+    save(next);
+    set({ prefs: next });
+  },
+  addLocalSource: (source) => {
+    const next = { ...get().prefs, localSources: [...get().prefs.localSources, source] };
+    save(next);
+    set({ prefs: next });
+  },
+  removeLocalSource: (id) => {
+    const next = { ...get().prefs, localSources: get().prefs.localSources.filter((x) => x.id !== id) };
     save(next);
     set({ prefs: next });
   },
