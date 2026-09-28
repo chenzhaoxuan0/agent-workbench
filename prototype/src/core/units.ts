@@ -90,6 +90,15 @@ export interface WorkUnit {
    * 携带用户写的岗位说明书——真接入运行时后应落盘为 rootPath/AGENTS.md。
    */
   readonly agentsMd?: string;
+  /**
+   * 记忆接入策略（对齐 waku 的记忆三柱，创建 bot 时声明）。
+   * 真实运行时据此接入对应后端；原型期仅作为声明保存。
+   */
+  readonly memory?: {
+    readonly semantic: boolean;
+    readonly episodic: boolean;
+    readonly procedural: boolean;
+  };
   readonly lastActiveAt?: number;
   readonly tags: readonly string[];
 }

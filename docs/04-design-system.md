@@ -304,3 +304,23 @@ bot = **圆形大头像**（identity.emoji / 首字母 + teal-tint 兜底），
 
 「读/写/命令」能力矩阵保留在 `core/permission.ts` 数据层（needsDialog 等
 判定仍用），只是不再以 tag 形式塞进菜单行。
+
+### 新建 bot 对话框分区化（2026-09-28 第二轮，对齐 waku-agent 定制面）
+
+对照 waku-agent（Harness·Loop·Memory·Eval 四支柱）的配置全景，
+对话框从双栏扩展为**分区导航式**（身份 / 系统提示词 / 记忆 / AGENTS.md）：
+
+- **系统提示词**（新增）：对应 waku 的 SOUL.md——「agent 的人设在 SOUL、
+  规矩在 AGENTS.md」是其刻意区分；落到 `identity.persona`
+  （字段原本就预留）。留空则用运行时默认语气。
+- **记忆接入**（新增，可选开关组）：语义记忆·事实 / 情节记忆·事件 /
+  程序性记忆·技能 三开关（waku 的 semantic / episodic / procedural 三柱），
+  落到 `WorkUnit.memory` 声明字段——真实运行时据此接入对应后端。
+- **默认模型（可选）**：主执行器切换后给出该 CLI 有效清单的模型 hint
+  （T3 的 modelSelection 语义），不选即「自动」。
+- AGENTS.md 分区保持模板同步 + 段落插入；touched 后不被覆盖。
+
+waku 要点备忘：SOUL.md 可由 agent 用 update_soul 追加规则（append-only，
+上限 8000 字符）；记忆门控 fail-open；整理（consolidation）攒 N 次交换
+由 small_model 提取 facts + episode；技能 = SKILL.md frontmatter 常驻扫描、
+正文按关键词命中注入（每次最多 2 个）——这些是接入真运行时后的行为契约。

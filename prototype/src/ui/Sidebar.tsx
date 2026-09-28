@@ -396,10 +396,22 @@ export function Sidebar() {
               rootPath: draft.rootPath,
               name: draft.name,
               kind: "bot",
-              identity: { role: draft.role, sourcePath: "AGENTS.md", loadedAt: Date.now() },
-              bindings: [{ runtimeId: asRuntimeId(draft.runtimeId), primary: true }],
+              identity: {
+                role: draft.role,
+                persona: draft.persona || undefined,
+                sourcePath: "AGENTS.md",
+                loadedAt: Date.now(),
+              },
+              bindings: [
+                {
+                  runtimeId: asRuntimeId(draft.runtimeId),
+                  modelHint: (draft.modelHint ?? undefined) as Parameters<typeof addUnit>[0]["bindings"][number]["modelHint"],
+                  primary: true,
+                },
+              ],
               assets: { agentFiles: ["AGENTS.md"], skillDirs: [] },
               agentsMd: draft.agentsMd,
+              memory: draft.memory,
               tags: ["新建"],
               lastActiveAt: Date.now(),
             });

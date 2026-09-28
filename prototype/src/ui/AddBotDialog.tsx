@@ -1,26 +1,55 @@
 import { useEffect, useMemo, useState } from "react";
-import { FileText, Plus, Wand2, X } from "lucide-react";
-import { useWorkbench } from "../store/useWorkbench.ts";
+import {
+  Brain,
+  FileText,
+  Plus,
+  Wand2,
+  X,
+  type LucideIcon,
+} from "lucide-react";
+import { useWorkbench, selectVisibleModels } from "../store/useWorkbench.ts";
 import { cn } from "./cn.ts";
 
 /**
- * 新建 bot 对话框 —— 高度自定义的创建流程，核心是 AGENTS.md：
- * 「这个 bot 被设计用来做什么」的岗位说明书（agents.md 开放标准的
- * markdown 约定：职责 / 环境提示 / 工作方式 / 交付与验收 等段落）。
+ * 新建 bot 对话框 —— 高度自定义的创建流程。
  *
- * 布局：左侧表单（名称 / 一句话角色 / 工作目录 / 主执行器），
- * 右侧 AGENTS.md 编辑器。名称与角色在**用户未手动编辑**说明书前
- * 会自动同步进模板（touched 标记，一旦动过就不再覆盖）；工具条提供
- * agents.md 规范段落的插入按钮与一键重新生成。
+ * 可定制面对齐 waku-agent 的四个正交旋钮（SOUL.md 人设 / 记忆三柱 /
+ * 模型 / 技能），映射到本项目的数据模型：
+ *
+ * - **身份**：名称（决定头像色形）/ 一句话角色 / 工作目录 / 主执行器 + 默认模型
+ * - **系统提示词**：persona 人设与语气（对应 waku 的 SOUL.md——运行时
+ *   拼进 system prompt 的部分，与 AGENTS.md 岗位说明书刻意分开：
+ *   「agent 的人设在 SOUL，规矩在 AGENTS.md」是 waku 的教学要点）
+ * - **记忆接入**（可选开关）：语义事实 / 情节记忆 / 程序性技能
+ *   （waku 的 semantic / episodic / procedural 三柱；真运行时据此接后端）
+ * - **AGENTS.md**：岗位说明书本体（agents.md 开放约定的 markdown 段落）
  */
+
+export interface BotMemoryPolicy {
+  readonly semantic: boolean;
+  readonly episodic: boolean;
+  readonly procedural: boolean;
+}
 
 export interface AddBotDraft {
   readonly name: string;
   readonly role: string;
   readonly rootPath: string;
   readonly runtimeId: string;
+  readonly modelHint: string | null;
+  readonly persona: string;
+  readonly memory: BotMemoryPolicy;
   readonly agentsMd: string;
 }
+
+type Section = "identity" | "persona" | "memory" | "agentsmd";
+
+const SECTIONS: readonly { id: Section; label: string; icon: LucideIcon; hint: string }[] = [
+  { id: "identity", label: "身份", icon: FileText, hint: "名称、角色、目录、执行器" },
+  { id: "persona", label: "系统提示词", icon: Wand2, hint: "人设与语气（SOUL）" },
+  { id: "memory", label: "记忆", icon: Brain, hint: "接入哪几类记忆" },
+  { id: "agentsmd", label: "AGENTS.md", icon: FileText, hint: "岗位说明书本体" },
+];
 
 const SECTION_LIBRARY: readonly { label: string; snippet: (name: string) => string }[] = [
   {
@@ -45,6 +74,9 @@ const SECTION_LIBRARY: readonly { label: string; snippet: (name: string) => stri
   },
 ];
 
+const PERSONA_TEMPLATE = (name: string, role: string) =>
+  `你是「${name}」——${role || "一个领域专属助手"}。\n\n语气与风格：\n- 简洁、务实、不堆砌客套\n- 结论先行，细节按需展开\n\n原则：\n- 不确定先问，不要猜\n- 交付前自检一遍\n`;
+
 function agentsMdTemplate(name: string, role: string, rootPath: string): string {
   return `# ${name}\n\n> ${role || "（一句话说清这个 bot 被设计用来做什么）"}\n\n## 这个 bot 负责什么\n- 边界：\n- 产出物：\n\n## 工作目录\n- 根目录：\`${rootPath}\`\n- 动手前先读目录里已有的文件，长期记忆与产出都落在这里\n\n## 工作方式\n- 接到任务先列 3 步以内的计划，再执行\n- 不确定的地方先提问，不要猜\n\n## 交付与验收\n- 每次交付一个可检查的产物（文件 / 清单 / 报告）\n- 完成后汇报：做了什么、产出在哪、下一步建议\n`;
 }
@@ -59,31 +91,51 @@ export function AddBotDialog({
   onCreate: (draft: AddBotDraft) => void;
 }) {
   const runtimes = useWorkbench((s) => s.runtimes);
+  const [section, setSection] = useState<Section>("identity");
   const [name, setName] = useState("");
   const [role, setRole] = useState("");
   const [rootPath, setRootPath] = useState("C:/Users/chenziyu/project/Agent/bots/");
   const [agentsMd, setAgentsMd] = useState("");
   const [mdTouched, setMdTouched] = useState(false);
+  const [persona, setPersona] = useState("");
+  const [personaTouched, setPersonaTouched] = useState(false);
+  const [memory, setMemory] = useState<BotMemoryPolicy>({ semantic: true, episodic: true, procedural: true });
   const [error, setError] = useState<string | null>(null);
   const [runtimeId, setRuntimeId] = useState<string>("zcode");
+  const [modelHint, setModelHint] = useState<string | null>(null);
 
-  // 名称 / 角色 → 模板自动同步，直到用户亲手编辑说明书
+  // selectVisibleModels 引用稳定（visibleModelsFor 按 runtimeId 分槽缓存），
+  // 不能在此处 .map() 出新对象——那会回到 getSnapshot 无限循环的老坑
+  const runtimeModelSpecs = useWorkbench(selectVisibleModels(runtimeId));
+
+  // 打开时重置：rail 落到当前执行器、模板按当前名称/角色重新生成
+  useEffect(() => {
+    if (!open) return;
+    setName("");
+    setRole("");
+    setRootPath("C:/Users/chenziyu/project/Agent/bots/");
+    setAgentsMd("");
+    setMdTouched(false);
+    setPersona("");
+    setPersonaTouched(false);
+    setMemory({ semantic: true, episodic: true, procedural: true });
+    setError(null);
+    const s = useWorkbench.getState();
+    setRuntimeId(s.activeRuntimeId);
+    setModelHint(null);
+    setSection("identity");
+  }, [open]);
+
+  // 名称 / 角色 → 模板自动同步，直到用户亲手编辑（AGENTS.md 与 persona 各自独立）
   useEffect(() => {
     if (!open || mdTouched) return;
     setAgentsMd(agentsMdTemplate(name, role, rootPath));
   }, [open, mdTouched, name, role, rootPath]);
 
   useEffect(() => {
-    if (open) {
-      setName("");
-      setRole("");
-      setRootPath("C:/Users/chenziyu/project/Agent/bots/");
-      setAgentsMd("");
-      setMdTouched(false);
-      setError(null);
-      setRuntimeId(useWorkbench.getState().activeRuntimeId);
-    }
-  }, [open]);
+    if (!open || personaTouched) return;
+    setPersona(PERSONA_TEMPLATE(name, role));
+  }, [open, personaTouched, name, role]);
 
   useEffect(() => {
     if (!open) return;
@@ -92,10 +144,7 @@ export function AddBotDialog({
     return () => document.removeEventListener("keydown", onKey);
   }, [open, onClose]);
 
-  const runtimeOptions = useMemo(
-    () => runtimes.map((r) => ({ id: r.id, label: r.presentation.displayName, ok: r.state.status !== "not_installed" })),
-    [runtimes],
-  );  const create = () => {
+  const create = () => {
     if (name.trim().length === 0) return setError("给 bot 起个名字");
     if (rootPath.trim().length === 0) return setError("工作目录不能为空");
     if (agentsMd.trim().length === 0) return setError("AGENTS.md 不能为空 —— 它就是这个 bot 的岗位说明书");
@@ -104,6 +153,9 @@ export function AddBotDialog({
       role: role.trim(),
       rootPath: rootPath.trim().replace(/\/+$/, ""),
       runtimeId,
+      modelHint,
+      persona: persona.trim(),
+      memory,
       agentsMd: agentsMd,
     });
   };
@@ -122,7 +174,7 @@ export function AddBotDialog({
         aria-modal="true"
         aria-label="新建 bot"
         onClick={(e) => e.stopPropagation()}
-        className="flex h-[600px] max-h-[92vh] w-[880px] max-w-[94vw] flex-col overflow-hidden rounded-card border border-line bg-canvas shadow-subtle"
+        className="flex h-[620px] max-h-[92vh] w-[920px] max-w-[94vw] flex-col overflow-hidden rounded-card border border-line bg-canvas shadow-subtle"
       >
         {/* 头部 */}
         <div className="flex h-12 shrink-0 items-center gap-2 border-b border-line px-4">
@@ -133,109 +185,238 @@ export function AddBotDialog({
           </button>
         </div>
 
-        {/* 双栏：左表单 / 右 AGENTS.md */}
         <div className="flex min-h-0 flex-1">
-          <div className="w-[320px] shrink-0 space-y-3 overflow-y-auto border-r border-line p-4">
-            <Field label="名称" hint="名字决定头像的颜色与形状">
-              <input
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="例如：竞品分析师"
-                autoFocus
-                className="w-full rounded-input bg-rail px-2.5 py-1.5 text-body-sm text-ink outline-none placeholder:text-ash focus:border-teal border border-transparent"
-              />
-            </Field>
-            <Field label="一句话角色" hint="做什么，一句话讲清">
-              <input
-                value={role}
-                onChange={(e) => setRole(e.target.value)}
-                placeholder="例如：每天跟踪竞品动态并产出对比简报"
-                className="w-full rounded-input bg-rail px-2.5 py-1.5 text-body-sm text-ink outline-none placeholder:text-ash focus:border-teal border border-transparent"
-              />
-            </Field>
-            <Field label="工作目录" hint="这个 bot 的根文件夹（AGENTS.md 与产出都放这里）">
-              <input
-                value={rootPath}
-                onChange={(e) => setRootPath(e.target.value)}
-                spellCheck={false}
-                className="w-full rounded-input bg-rail px-2.5 py-1.5 font-mono text-caption text-ink outline-none placeholder:text-ash focus:border-teal border border-transparent"
-              />
-            </Field>
-            <Field label="主执行器" hint="这条绑定是默认模型的 hint">
-              <div className="flex flex-wrap gap-1">
-                {runtimeOptions.map((r) => (
-                  <button
-                    key={r.id}
-                    onClick={() => !r.ok && undefined}
-                    disabled={!r.ok}
-                    title={r.ok ? r.label : "未安装，不可选"}
-                    aria-pressed={runtimeId === r.id}
-                    className={cn(
-                      "rounded-btn border px-2 py-1 text-caption",
-                      runtimeId === r.id
-                        ? "border-teal-edge bg-teal-tint font-medium text-ink"
-                        : "border-line text-graphite hover:bg-line-soft hover:text-ink",
-                      !r.ok && "cursor-not-allowed opacity-50",
-                    )}
-                  >
-                    {r.label}
-                  </button>
-                ))}
-              </div>
-            </Field>
-            <p className="text-caption leading-relaxed text-ash">
-              AGENTS.md 是 agent 圈的开放约定：给 agent 看的 README。
-              它就是这个 bot 的岗位说明书——被设计来做什么、怎么工作、怎么交付。
-            </p>
-          </div>
+          {/* 分区导航 */}
+          <nav className="flex w-40 shrink-0 flex-col gap-0.5 border-r border-line bg-rail p-2">
+            {SECTIONS.map(({ id, label, icon: Icon, hint }) => (
+              <button
+                key={id}
+                onClick={() => setSection(id)}
+                aria-current={section === id}
+                className={cn(
+                  "flex items-start gap-2 rounded-btn px-2 py-2 text-left",
+                  section === id ? "bg-teal-tint" : "hover:bg-line-soft",
+                )}
+              >
+                <Icon size={13} className={cn("mt-0.5 shrink-0", section === id ? "text-teal" : "text-ash")} />
+                <span className="min-w-0">
+                  <span className={cn("block truncate text-body-sm", section === id ? "font-medium text-ink" : "text-graphite")}>
+                    {label}
+                  </span>
+                  <span className="block truncate text-caption text-ash">{hint}</span>
+                </span>
+              </button>
+            ))}
+          </nav>
 
-          <div className="flex min-w-0 flex-1 flex-col border-l border-line">
-            <div className="flex shrink-0 items-center gap-1 border-b border-line px-3 py-1.5">
-              <span className="flex items-center gap-1 text-caption text-ash">
-                <FileText size={11} />
-                AGENTS.md
-              </span>
-              <div className="ml-auto flex items-center gap-1">
-                {SECTION_LIBRARY.map((s) => (
-                  <button
-                    key={s.label}
-                    onClick={() => insertSection(s.snippet(name || "这个 bot"))}
-                    title={`插入「${s.label}」段落`}
-                    className="flex items-center gap-0.5 rounded-btn px-1.5 py-0.5 text-caption text-ash hover:bg-line-soft hover:text-ink"
-                  >
-                    <Plus size={9} />
-                    {s.label}
-                  </button>
-                ))}
-                <button
-                  onClick={() => {
-                    setMdTouched(false);
-                    setAgentsMd(agentsMdTemplate(name, role, rootPath));
-                  }}
-                  title="按名称与角色重新生成模板"
-                  className="flex items-center gap-0.5 rounded-btn px-1.5 py-0.5 text-caption text-ash hover:bg-line-soft hover:text-ink"
-                >
-                  <Wand2 size={9} />
-                  重新生成
-                </button>
+          {/* 内容区 */}
+          <div className="min-w-0 flex-1 overflow-y-auto p-4">
+            {section === "identity" && (
+              <div className="space-y-4">
+                <Field label="名称" hint="名字决定头像的颜色与形状">
+                  <input
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    placeholder="例如：竞品分析师"
+                    className="w-full rounded-input border border-transparent bg-rail px-2.5 py-1.5 text-body-sm text-ink outline-none placeholder:text-ash focus:border-teal"
+                  />
+                </Field>
+                <Field label="一句话角色" hint="做什么，一句话讲清">
+                  <input
+                    value={role}
+                    onChange={(e) => setRole(e.target.value)}
+                    placeholder="例如：每天跟踪竞品动态并产出对比简报"
+                    className="w-full rounded-input border border-transparent bg-rail px-2.5 py-1.5 text-body-sm text-ink outline-none placeholder:text-ash focus:border-teal"
+                  />
+                </Field>
+                <Field label="工作目录" hint="这个 bot 的根文件夹（AGENTS.md 与产出都放这里）">
+                  <input
+                    value={rootPath}
+                    onChange={(e) => setRootPath(e.target.value)}
+                    spellCheck={false}
+                    className="w-full rounded-input border border-transparent bg-rail px-2.5 py-1.5 font-mono text-caption text-ink outline-none placeholder:text-ash focus:border-teal"
+                  />
+                </Field>
+                <Field label="主执行器" hint="这个 bot 主要由哪家 CLI 执行">
+                  <div className="flex flex-wrap gap-1">
+                    {runtimes.map((r) => {
+                      const notInstalled = r.state.status === "not_installed";
+                      return (
+                        <button
+                          key={r.id}
+                          onClick={() => {
+                            setRuntimeId(r.id);
+                            setModelHint(null);
+                          }}
+                          disabled={notInstalled}
+                          title={notInstalled ? "未安装，不可选" : r.presentation.displayName}
+                          aria-pressed={runtimeId === r.id}
+                          className={cn(
+                            "rounded-btn border px-2 py-1 text-caption",
+                            runtimeId === r.id
+                              ? "border-teal-edge bg-teal-tint font-medium text-ink"
+                              : "border-line text-graphite hover:bg-line-soft hover:text-ink",
+                            notInstalled && "cursor-not-allowed opacity-50",
+                          )}
+                        >
+                          {r.presentation.displayName}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </Field>
+                <Field label="默认模型（可选）" hint="不选就用执行器的默认；同样只是 hint">
+                  <div className="flex flex-wrap gap-1">
+                    <button
+                      onClick={() => setModelHint(null)}
+                      aria-pressed={modelHint === null}
+                      className={cn(
+                        "rounded-btn border px-2 py-1 text-caption",
+                        modelHint === null
+                          ? "border-teal-edge bg-teal-tint font-medium text-ink"
+                          : "border-line text-graphite hover:bg-line-soft hover:text-ink",
+                      )}
+                    >
+                      自动
+                    </button>
+                    {runtimeModelSpecs.map((m) => (
+                      <button
+                        key={m.id}
+                        onClick={() => setModelHint(m.id)}
+                        aria-pressed={modelHint === m.id}
+                        className={cn(
+                          "rounded-btn border px-2 py-1 text-caption",
+                          modelHint === m.id
+                            ? "border-teal-edge bg-teal-tint font-medium text-ink"
+                            : "border-line text-graphite hover:bg-line-soft hover:text-ink",
+                        )}
+                      >
+                        {m.displayName}
+                      </button>
+                    ))}
+                  </div>
+                </Field>
               </div>
-            </div>
-            <textarea
-              value={agentsMd}
-              onChange={(e) => {
-                setMdTouched(true);
-                setAgentsMd(e.target.value);
-              }}
-              spellCheck={false}
-              aria-label="AGENTS.md 内容"
-              className="min-h-0 flex-1 resize-none bg-canvas p-3 font-mono text-caption leading-relaxed text-ink outline-none"
-            />
+            )}
+
+            {section === "persona" && (
+              <div className="flex h-full min-h-0 flex-col gap-2">
+                <Field
+                  label="系统提示词 · 人设与语气"
+                  hint="对应 waku 的 SOUL.md：运行时拼进 system prompt 的「你是谁、什么语气、什么原则」。与 AGENTS.md（岗位说明书）分开维护。"
+                >
+                  <span />
+                </Field>
+                <textarea
+                  value={persona}
+                  onChange={(e) => {
+                    setPersonaTouched(true);
+                    setPersona(e.target.value);
+                  }}
+                  spellCheck={false}
+                  aria-label="系统提示词"
+                  placeholder="留空则使用默认语气：简洁、务实、结论先行。"
+                  className="min-h-0 flex-1 resize-none rounded-card border border-line bg-canvas p-3 font-mono text-caption leading-relaxed text-ink outline-none placeholder:text-ash focus:border-teal"
+                />
+                {!personaTouched && (
+                  <button
+                    onClick={() => {
+                      setPersonaTouched(true);
+                      setPersona(PERSONA_TEMPLATE(name, role));
+                    }}
+                    className="flex w-fit items-center gap-1 rounded-btn border border-line px-2 py-1 text-caption text-graphite hover:bg-line-soft hover:text-ink"
+                  >
+                    <Wand2 size={10} />
+                    按名称与角色生成人设
+                  </button>
+                )}
+              </div>
+            )}
+
+            {section === "memory" && (
+              <div className="space-y-2">
+                <p className="text-caption leading-relaxed text-ash">
+                  对齐 waku 的记忆三柱：选择这个 bot 接入哪几类记忆。
+                  真实运行时据此接入对应后端；原型期仅作为声明保存。
+                </p>
+                <MemoryToggle
+                  label="语义记忆 · 事实"
+                  desc="关于人、项目、偏好的持久事实（“甲方喜欢简报不用长文”）"
+                  checked={memory.semantic}
+                  onChange={(v) => setMemory((m) => ({ ...m, semantic: v }))}
+                />
+                <MemoryToggle
+                  label="情节记忆 · 事件"
+                  desc="带日期的“发生过什么”（对话蒸馏出的一句话摘要）"
+                  checked={memory.episodic}
+                  onChange={(v) => setMemory((m) => ({ ...m, episodic: v }))}
+                />
+                <MemoryToggle
+                  label="程序性记忆 · 技能"
+                  desc="怎么做事的流程（SKILL.md，命中关键词时注入）"
+                  checked={memory.procedural}
+                  onChange={(v) => setMemory((m) => ({ ...m, procedural: v }))}
+                />
+              </div>
+            )}
+
+            {section === "agentsmd" && (
+              <div className="flex h-full min-h-0 flex-col gap-2">
+                <div className="flex shrink-0 items-center gap-1">
+                  <span className="flex items-center gap-1 text-caption text-ash">
+                    <FileText size={11} />
+                    AGENTS.md · 岗位说明书
+                  </span>
+                  <div className="ml-auto flex items-center gap-1">
+                    {SECTION_LIBRARY.map((s) => (
+                      <button
+                        key={s.label}
+                        onClick={() => {
+                          setMdTouched(true);
+                          setAgentsMd((md) => `${md.trimEnd()}\n\n${s.snippet(name || "这个 bot")}`);
+                        }}
+                        title={`插入「${s.label}」段落`}
+                        className="flex items-center gap-0.5 rounded-btn px-1.5 py-0.5 text-caption text-ash hover:bg-line-soft hover:text-ink"
+                      >
+                        <Plus size={9} />
+                        {s.label}
+                      </button>
+                    ))}
+                    <button
+                      onClick={() => {
+                        setMdTouched(false);
+                        setAgentsMd(agentsMdTemplate(name, role, rootPath));
+                      }}
+                      title="按名称与角色重新生成模板"
+                      className="flex items-center gap-0.5 rounded-btn px-1.5 py-0.5 text-caption text-ash hover:bg-line-soft hover:text-ink"
+                    >
+                      <Wand2 size={9} />
+                      重新生成
+                    </button>
+                  </div>
+                </div>
+                <textarea
+                  value={agentsMd}
+                  onChange={(e) => {
+                    setMdTouched(true);
+                    setAgentsMd(e.target.value);
+                  }}
+                  spellCheck={false}
+                  aria-label="AGENTS.md 内容"
+                  className="min-h-0 flex-1 resize-none rounded-card border border-line bg-canvas p-3 font-mono text-caption leading-relaxed text-ink outline-none focus:border-teal"
+                />
+              </div>
+            )}
           </div>
         </div>
 
         {/* 底部 */}
         <div className="flex h-12 shrink-0 items-center gap-3 border-t border-line px-4">
-          {error ? <p className="text-caption text-loss">{error}</p> : <p className="text-caption text-ash">创建后可随时在编辑器里改 AGENTS.md</p>}
+          {error ? (
+            <p className="text-caption text-loss">{error}</p>
+          ) : (
+            <p className="text-caption text-ash">创建后可随时在编辑器里改 AGENTS.md 与人设</p>
+          )}
           <div className="ml-auto flex items-center gap-2">
             <button onClick={onClose} className="rounded-btn px-3 py-1.5 text-body-sm text-graphite hover:bg-line-soft hover:text-ink">
               取消
@@ -251,6 +432,49 @@ export function AddBotDialog({
         </div>
       </div>
     </div>
+  );
+}
+
+function MemoryToggle({
+  label,
+  desc,
+  checked,
+  onChange,
+}: {
+  label: string;
+  desc: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <button
+      onClick={() => onChange(!checked)}
+      role="switch"
+      aria-checked={checked}
+      className={cn(
+        "flex w-full items-center gap-3 rounded-card border px-3 py-2.5 text-left",
+        checked ? "border-teal-edge bg-teal-tint/60" : "border-line hover:bg-line-soft",
+      )}
+    >
+      <span className="min-w-0 flex-1">
+        <span className="block text-body-sm font-medium text-ink">{label}</span>
+        <span className="mt-0.5 block text-caption leading-relaxed text-ash">{desc}</span>
+      </span>
+      <span
+        className={cn(
+          "relative h-5 w-9 shrink-0 rounded-full transition-colors",
+          checked ? "bg-teal" : "bg-line",
+        )}
+        aria-hidden
+      >
+        <span
+          className={cn(
+            "absolute top-0.5 h-4 w-4 rounded-full bg-canvas transition-[left]",
+            checked ? "left-[18px]" : "left-0.5",
+          )}
+        />
+      </span>
+    </button>
   );
 }
 
