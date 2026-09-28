@@ -43,9 +43,39 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.end(payload);
 }
 
+export interface HttpRouteContext {
+  readonly url: URL;
+  /** POST/DELETE 的 JSON body；无 body 或解析失败为 null */
+  readonly body: unknown;
+}
+
+export interface HttpRoute {
+  readonly method: "GET" | "POST" | "DELETE";
+  /** 精确路径（无通配；够用就不写路由匹配器） */
+  readonly path: string;
+  readonly handle: (ctx: HttpRouteContext) => unknown | Promise<unknown>;
+}
+
+async function readBody(req: IncomingMessage): Promise<unknown> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += (chunk as Buffer).length;
+    if (size > 1_000_000) throw Object.assign(new Error("body too large"), { code: "bad_request" });
+    chunks.push(chunk as Buffer);
+  }
+  if (chunks.length === 0) return null;
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    return null;
+  }
+}
+
 async function route(
   config: DaemonConfig,
   startedAt: number,
+  routes: readonly HttpRoute[],
   req: IncomingMessage,
   res: ServerResponse,
 ): Promise<void> {
@@ -54,6 +84,14 @@ async function route(
 
   if (req.method === "GET" && url.pathname === "/healthz") {
     sendJson(res, 200, healthPayload(config, startedAt));
+    return;
+  }
+
+  const hit = routes.find((r) => r.method === req.method && r.path === url.pathname);
+  if (hit !== undefined) {
+    const body = req.method === "GET" ? null : await readBody(req);
+    const result = await hit.handle({ url, body });
+    sendJson(res, 200, result ?? { ok: true });
     return;
   }
 
@@ -69,12 +107,21 @@ export interface HttpHandle {
   readonly port: number;
 }
 
-export function startHttp(config: DaemonConfig, startedAt: number): Promise<HttpHandle> {
+export function startHttp(
+  config: DaemonConfig,
+  startedAt: number,
+  routes: readonly HttpRoute[] = [],
+): Promise<HttpHandle> {
   const server = createServer((req, res) => {
-    void route(config, startedAt, req, res).catch((err: unknown) => {
-      log.error("http handler crashed", { error: err instanceof Error ? err.message : String(err) });
-      if (!res.headersSent) sendJson(res, 500, { ok: false, error: { code: "internal", message: "internal error" } });
-      else res.destroy();
+    void route(config, startedAt, routes, req, res).catch((err: unknown) => {
+      const code = err instanceof Error && "code" in err ? String(err.code) : "internal";
+      log.error("http handler failed", { error: err instanceof Error ? err.message : String(err) });
+      if (!res.headersSent) {
+        sendJson(res, code === "bad_request" ? 400 : 500, {
+          ok: false,
+          error: { code, message: err instanceof Error ? err.message : "internal error" },
+        });
+      } else res.destroy();
     });
   });
 

@@ -7,9 +7,11 @@
 
 import { mkdirSync } from "node:fs";
 import { loadConfig } from "./config.ts";
-import { healthPayload, startHttp } from "./httpd.ts";
+import { healthPayload, startHttp, type HttpRoute } from "./httpd.ts";
 import { log, setLogLevel } from "./log.ts";
 import { attachWs, broadcastEvent, broadcastTerminal, registerMethod, WIRE_VERSION } from "./wsd.ts";
+import { PermissionGate } from "./permissions/gate.ts";
+import { MockPermAdapter } from "./runtime/adapters/mockperm.ts";
 import { RuntimeHost } from "./runtime/host.ts";
 import { TraceSink } from "./runtime/trace.ts";
 import { ZcodeAdapter } from "./runtime/adapters/zcode.ts";
@@ -24,14 +26,14 @@ setLogLevel(config.logLevel);
 
 mkdirSync(config.homeDir, { recursive: true });
 
-const { server, port } = await startHttp(config, startedAt);
-const wss = attachWs(server, { config, startedAt });
+// ---- 服务与执行器（先建好，REST 路由要引用）---------------------------------
 
-// ---- Runtime Host（Phase 1）------------------------------------------------
-
-const host = new RuntimeHost((event) => broadcastEvent(wss, event), new TraceSink(config.homeDir), config.homeDir, new Store(config.homeDir));
+const store = new Store(config.homeDir);
+const gate = new PermissionGate(store);
+const host = new RuntimeHost((event) => broadcastEvent(wss, event), new TraceSink(config.homeDir), config.homeDir, store, gate);
 host.register(new ZcodeAdapter());
 host.register(new CodexAdapter());
+host.register(new MockPermAdapter());
 host.loadPersisted();
 
 // ---- 终端（Phase 2）--------------------------------------------------------
@@ -39,6 +41,51 @@ host.loadPersisted();
 const terminals = new TerminalManager((frame) =>
   broadcastTerminal(wss, { v: WIRE_VERSION, type: "terminal", ...frame }),
 );
+
+// ---- REST 管理面（权限闸的决策入口，docs/07 §六）----------------------------
+
+const httpRoutes: HttpRoute[] = [
+  {
+    method: "GET",
+    path: "/api/permissions/rules",
+    handle: () => ({ rules: gate.listRules() }),
+  },
+  {
+    method: "POST",
+    path: "/api/permissions/rules",
+    handle: ({ body }) => {
+      const p = (body ?? {}) as { runtimeId?: string; kind?: string; pattern?: string; decision?: string };
+      if (typeof p.pattern !== "string" || (p.decision !== "allow" && p.decision !== "deny")) {
+        throw Object.assign(new Error("pattern and decision(allow|deny) are required"), { code: "bad_params" });
+      }
+      return { id: gate.addRule({ runtimeId: p.runtimeId ?? null, kind: p.kind ?? null, pattern: p.pattern, decision: p.decision }) };
+    },
+  },
+  {
+    method: "DELETE",
+    path: "/api/permissions/rules",
+    handle: ({ url }) => {
+      const id = Number.parseInt(url.searchParams.get("id") ?? "", 10);
+      if (!Number.isFinite(id)) throw Object.assign(new Error("id query param is required"), { code: "bad_params" });
+      return { deleted: gate.deleteRule(id) };
+    },
+  },
+  {
+    method: "POST",
+    path: "/api/permissions/resolve",
+    handle: ({ body }) => {
+      const p = (body ?? {}) as { sessionId?: string; requestId?: string; decision?: string };
+      if (typeof p.sessionId !== "string" || typeof p.requestId !== "string" ||
+          (p.decision !== "allow" && p.decision !== "deny" && p.decision !== "always")) {
+        throw Object.assign(new Error("sessionId, requestId, decision(allow|deny|always) are required"), { code: "bad_params" });
+      }
+      return host.resolvePermission(asSessionId(p.sessionId), p.requestId, p.decision).then(() => ({ resolved: true }));
+    },
+  },
+];
+
+const { server, port } = await startHttp(config, startedAt, httpRoutes);
+const wss = attachWs(server, { config, startedAt });
 registerMethod("terminal.create", (params) => {
   const p = (params ?? {}) as { cwd?: string; shell?: string; cols?: number; rows?: number };
   return terminals.create({ cwd: p.cwd, shell: p.shell, cols: p.cols, rows: p.rows });

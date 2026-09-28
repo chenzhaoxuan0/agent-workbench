@@ -74,6 +74,14 @@ export class Store {
       );
       CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, id);
       CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS permissions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        runtime_id TEXT,
+        kind TEXT,
+        pattern TEXT NOT NULL,
+        decision TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      );
     `);
     log.info("store opened", { db: path.join(homeDir, "state.db") });
   }
@@ -139,6 +147,39 @@ export class Store {
   kvGet(key: string): string | undefined {
     const row = this.db.prepare(`SELECT value FROM kv WHERE key = ?`).get(key) as { value?: unknown } | undefined;
     return row === undefined ? undefined : String(row["value"]);
+  }
+
+  // ---- 权限规则表（Phase 4）-------------------------------------------------
+
+  addPermissionRule(rule: { runtimeId: string | null; kind: string | null; pattern: string; decision: "allow" | "deny" }): number {
+    const result = this.db
+      .prepare(`INSERT INTO permissions (runtime_id, kind, pattern, decision, created_at) VALUES (?, ?, ?, ?, ?)`)
+      .run(rule.runtimeId, rule.kind, rule.pattern, rule.decision, Date.now());
+    return Number(result.lastInsertRowid);
+  }
+
+  listPermissionRules(): Array<{
+    id: number;
+    runtimeId: string | null;
+    kind: string | null;
+    pattern: string;
+    decision: string;
+    createdAt: number;
+  }> {
+    const rows = this.db.prepare(`SELECT * FROM permissions ORDER BY id DESC`).all() as Array<Record<string, unknown>>;
+    return rows.map((r) => ({
+      id: Number(r["id"]),
+      runtimeId: r["runtime_id"] === null ? null : String(r["runtime_id"]),
+      kind: r["kind"] === null ? null : String(r["kind"]),
+      pattern: String(r["pattern"]),
+      decision: String(r["decision"]),
+      createdAt: Number(r["created_at"]),
+    }));
+  }
+
+  deletePermissionRule(id: number): boolean {
+    const result = this.db.prepare(`DELETE FROM permissions WHERE id = ?`).run(id);
+    return Number(result.changes) > 0;
   }
 
   private toRow(r: Record<string, unknown>): SessionRow {

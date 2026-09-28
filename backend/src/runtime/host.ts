@@ -26,6 +26,7 @@ import type {
 import { log } from "../log.ts";
 import type { TraceSink } from "./trace.ts";
 import type { Store } from "../store/db.ts";
+import type { PermissionGate } from "../permissions/gate.ts";
 import { appendJournal } from "../store/journals.ts";
 
 /** 对 WS 暴露的适配器摘要 */
@@ -57,6 +58,8 @@ interface HostSession {
   /** null = 从盘装载的死会话，resume 后才活 */
   impl: AdapterSession | null;
   readonly adapter: ExecutorAdapter;
+  /** 最近一次 tool.started 的工具名 —— "always" 规则的 pattern 来源 */
+  lastTool: string | null;
 }
 
 export interface StartSessionInput {
@@ -78,7 +81,11 @@ export class RuntimeHost {
     private readonly trace: TraceSink,
     private readonly homeDir: string,
     private readonly store: Store,
+    private readonly gate: PermissionGate,
   ) {}
+
+  /** 挂起中的权限上下文（"always" 落规则时取 kind/detail 用） */
+  private readonly pendingPerms = new Map<string, { kind: string; detail: string }>();
 
   /** 适配器全部注册完之后调用一次：把盘里的会话装进台账（跨重启 listSessions 成立） */
   loadPersisted(): void {
@@ -98,6 +105,7 @@ export class RuntimeHost {
         seq: 0,
         impl: null,
         adapter,
+        lastTool: null,
       });
     }
     if (this.sessions.size > 0) log.info("sessions loaded from store", { count: this.sessions.size });
@@ -159,22 +167,9 @@ export class RuntimeHost {
   async startSession(input: StartSessionInput): Promise<Session> {
     const adapter = this.getAdapter(input.runtimeId);
 
-    const sink = (event: RuntimeEvent): void => {
-      const h = this.sessions.get(event.sessionId);
-      if (h === undefined) return;
-      this.track(h, event);
-      this.persistOnEvent(h, event, input.prompt);
-      void this.trace.append({
-        seq: ++h.seq,
-        at: Date.now(),
-        sessionId: h.id,
-        unitId: h.unitId,
-        runtimeId: h.runtimeId,
-        event,
-      }).catch((err: unknown) => log.warn("trace append failed", { error: err instanceof Error ? err.message : String(err) }));
-      this.broadcast(event);
-    };
-
+    // 晚绑定 sink：adapter.start 需要一个 sink，而台账行要等 start 返回才知道 id。
+    // 适配器契约保证 start() 期间不发事件（turn 由 send 驱动），这里只是双保险。
+    let sinkRef: ((event: RuntimeEvent) => void) | null = null;
     const impl = await adapter.start(
       {
         unitId: input.unitId,
@@ -184,7 +179,7 @@ export class RuntimeHost {
         model: input.model,
         mode: input.mode,
       },
-      sink,
+      (event) => sinkRef?.(event),
     );
 
     const h: HostSession = {
@@ -199,8 +194,10 @@ export class RuntimeHost {
       seq: 0,
       impl,
       adapter,
+      lastTool: null,
     };
     this.sessions.set(h.id, h);
+    sinkRef = this.makeSink(h);
 
     this.store.upsertSession({
       id: h.id,
@@ -220,18 +217,28 @@ export class RuntimeHost {
       .catch(() => {});
     this.broadcast(started);
 
-    // 首轮 prompt
-    await impl.send(input.prompt);
+    // 首轮 prompt：受理即返回，turn 进展全走事件流
+    //（mockperm 这类会在权限处挂起整轮，await 会把 session.start 卡死——冒烟实证）
+    void impl.send(input.prompt).catch((err: unknown) => {
+      log.error("first turn failed", { sessionId: h.id, error: err instanceof Error ? err.message : String(err) });
+      const errorEvent: RuntimeEvent = { type: "error", sessionId: h.id, message: err instanceof Error ? err.message : String(err), recoverable: false };
+      this.broadcast(errorEvent);
+      this.broadcast({ type: "session.ended", sessionId: h.id, reason: "error" });
+    });
     log.info("session started", { sessionId: h.id, runtimeId: adapter.id, unitId: h.unitId });
     return this.toSession(h);
   }
 
   /** 事件驱动的持久化钩子：assistant 消息 / usage 账本 / 终态与会话引用 */
-  private persistOnEvent(h: HostSession, event: RuntimeEvent, firstPrompt: string): void {
+  private persistOnEvent(h: HostSession, event: RuntimeEvent): void {
     try {
       switch (event.type) {
         case "message.completed": {
           this.store.insertMessage(h.id, Date.now(), "assistant", event.text);
+          break;
+        }
+        case "tool.started": {
+          h.lastTool = event.toolName;
           break;
         }
         case "usage": {
@@ -256,10 +263,13 @@ export class RuntimeHost {
           if (ref !== null && ref !== undefined) this.store.setSessionCliRef(h.id, ref);
           break;
         }
+        case "permission.resolved": {
+          this.pendingPerms.delete(`${h.id}:${event.requestId}`);
+          break;
+        }
         default:
           break;
       }
-      void firstPrompt;
     } catch (err: unknown) {
       log.warn("persist failed", { sessionId: h.id, error: err instanceof Error ? err.message : String(err) });
     }
@@ -305,7 +315,12 @@ export class RuntimeHost {
     h.status = "running";
     this.broadcast({ type: "session.status", sessionId, status: "running" });
     this.store.insertMessage(sessionId, Date.now(), "user", text);
-    await h.impl.send(text);
+    void h.impl.send(text).catch((err: unknown) => {
+      log.error("turn failed", { sessionId, error: err instanceof Error ? err.message : String(err) });
+      const errorEvent: RuntimeEvent = { type: "error", sessionId, message: err instanceof Error ? err.message : String(err), recoverable: false };
+      this.broadcast(errorEvent);
+      this.broadcast({ type: "session.ended", sessionId, reason: "error" });
+    });
   }
 
   /** Phase 3：把盘里的会话接回执行器（cli_ref 续命），之后 send/cancel 照常 */
@@ -324,13 +339,13 @@ export class RuntimeHost {
     return this.toSession(h);
   }
 
-  /** sink 工厂：resume 与 start 共用同一套盖章/落盘/广播路径 */
+  /** sink 工厂：start 与 resume 共用同一套盖章/落盘/广播/闸路径 */
   private makeSink(h: HostSession): (event: RuntimeEvent) => void {
     return (event: RuntimeEvent): void => {
       const cur = this.sessions.get(event.sessionId);
       if (cur === undefined) return;
       this.track(cur, event);
-      this.persistOnEvent(cur, event, "");
+      this.persistOnEvent(cur, event);
       void this.trace.append({
         seq: ++cur.seq,
         at: Date.now(),
@@ -340,7 +355,19 @@ export class RuntimeHost {
         event,
       }).catch(() => {});
       this.broadcast(event);
+      if (event.type === "permission.requested") this.evaluateGate(cur, event);
     };
+  }
+
+  /** 权限闸（Phase 4）：规则命中就自动决策，不命中保持挂起等人 */
+  private evaluateGate(h: HostSession, event: Extract<RuntimeEvent, { type: "permission.requested" }>): void {
+    this.pendingPerms.set(`${h.id}:${event.requestId}`, { kind: event.kind, detail: event.detail });
+    const decision = this.gate.evaluate(h.runtimeId, event.kind, h.lastTool ?? "", event.detail);
+    if (decision === null) return;
+    log.info("permission auto-resolved by rule", { sessionId: h.id, requestId: event.requestId, decision });
+    void h.impl?.resolvePermission(event.requestId, decision).catch((err: unknown) =>
+      log.warn("gate auto-resolve failed", { error: err instanceof Error ? err.message : String(err) }),
+    );
   }
 
   async cancelSession(sessionId: SessionId): Promise<void> {
@@ -354,6 +381,18 @@ export class RuntimeHost {
     const h = this.sessions.get(sessionId);
     if (h === undefined) throw adapterError("unknown_session", `no such session: ${sessionId}`);
     if (h.impl === null) throw adapterError("session_not_live", `session ${sessionId} is not live`);
+    // always：落规则表，同类请求下次不再问（pattern 用最近工具名，detail 兜底）
+    if (decision === "always") {
+      const meta = this.pendingPerms.get(`${sessionId}:${requestId}`);
+      const pattern = h.lastTool ?? meta?.detail ?? requestId;
+      const id = this.gate.addRule({
+        runtimeId: h.runtimeId,
+        kind: meta?.kind ?? null,
+        pattern,
+        decision: "allow",
+      });
+      log.info("permission rule added (always)", { id, runtimeId: h.runtimeId, pattern });
+    }
     await h.impl.resolvePermission(requestId, decision);
   }
 
