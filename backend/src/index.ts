@@ -22,6 +22,7 @@ import { AutomationScheduler } from "./automation/scheduler.ts";
 import { parseCron } from "./automation/cron.ts";
 import { OpsRunner } from "./ops/eval.ts";
 import { ArenaRunner } from "./ops/arena.ts";
+import { MemoryService } from "./memory/memory.ts";
 import { asModelId, asSessionId, asUnitId } from "../../prototype/src/core/units.ts";
 
 const startedAt = Date.now();
@@ -101,6 +102,10 @@ scheduler.start();
 
 const ops = new OpsRunner(host, config.homeDir);
 const arena = new ArenaRunner(host, config.homeDir);
+
+// ---- 记忆编排（Phase 7）-----------------------------------------------------
+
+const memory = new MemoryService(store, config.homeDir);
 
 // ---- REST 管理面（权限闸的决策入口，docs/07 §六）----------------------------
 
@@ -274,6 +279,42 @@ registerMethod("ops.arenaRun", (params) => {
     turnTimeoutMs: p.turnTimeoutMs,
   });
 });
+
+// ---- 记忆方法（Phase 7）-----------------------------------------------------
+
+registerMethod("memory.save", (params) => {
+  const p = (params ?? {}) as { pillar?: string; content?: string; source?: string; backends?: string[] };
+  if (typeof p.pillar !== "string" || typeof p.content !== "string") {
+    throw Object.assign(new Error("pillar and content are required"), { code: "bad_params" });
+  }
+  return memory.save({ pillar: p.pillar as never, content: p.content, source: p.source, backends: p.backends as never });
+});
+registerMethod("memory.search", (params) => {
+  const p = (params ?? {}) as { query?: string; pillars?: string[]; backends?: string[]; topK?: number };
+  if (typeof p.query !== "string") throw Object.assign(new Error("query is required"), { code: "bad_params" });
+  return memory.search({ query: p.query, pillars: p.pillars as never, backends: p.backends as never, topK: p.topK });
+});
+registerMethod("memory.list", (params) => {
+  const p = (params ?? {}) as { pillar?: string };
+  if (typeof p.pillar !== "string") throw Object.assign(new Error("pillar is required"), { code: "bad_params" });
+  return memory.list(p.pillar as never);
+});
+registerMethod("memory.routing.get", () => memory.getRouting());
+registerMethod("memory.routing.set", (params) => {
+  const p = (params ?? {}) as { routing?: Record<string, string[]> };
+  if (p.routing === undefined || typeof p.routing !== "object") {
+    throw Object.assign(new Error("routing is required"), { code: "bad_params" });
+  }
+  return memory.setRouting(p.routing as never);
+});
+registerMethod("memory.weknora.config.get", () => memory.weknoraGetConfig());
+registerMethod("memory.weknora.config.set", (params) => {
+  const p = (params ?? {}) as { baseUrl?: string; apiKey?: string; kbIds?: string[] };
+  if (typeof p.baseUrl !== "string") throw Object.assign(new Error("baseUrl is required"), { code: "bad_params" });
+  memory.weknoraSetConfig({ baseUrl: p.baseUrl, apiKey: p.apiKey, kbIds: p.kbIds });
+  return memory.weknoraGetConfig();
+});
+registerMethod("memory.mirror", () => memory.readMirror());
 
 registerMethod("adapter.list", () => host.listAdapters());
 registerMethod("adapter.probe", (params) => {

@@ -80,6 +80,12 @@
 | `automation.list` / `automation.runs` | **已实现** | 定义清单 / 指定 id 的运行记录（一行一次，含 session_id 与终态） |
 | `automation.setEnabled` / `automation.delete` | **已实现** | 启停与删除 |
 | `automation.runNow` | **已实现** | 立即起一次（runId + sessionId），会话结束态回灌运行记录 |
+| `ops.evalRun` | **已实现** | params `{datasetName, rows[{id,input,expect_tool?,expect_in_args?}], runtimeId, judgeMetrics?}`；确定性 0/1 + GEval judge（真 LLM 调用，缺裁判整层跳过）；落 eval_runs.jsonl（50 滚动） |
+| `ops.arenaRun` | **已实现** | params `{prompt, runtimeIds[], judgeMetric?}`；Completion 机械分 / Quality 裁判分；落 compare/history.jsonl（50 滚动） |
+| `memory.save` / `memory.search` / `memory.list` | **已实现** | 三柱（semantic/episodic/procedural）写入广播、检索并集、逐柱清单；sqlite 后端 LIKE 兜底，WeKnora 语义增强不可达时记错误不炸 |
+| `memory.routing.get/set` | **已实现** | pillar → backends[] 路由表（kv 落盘，调用时可 per-bot 覆盖） |
+| `memory.weknora.config.get/set` | **已实现** | WeKnora baseUrl/apiKey（读取掩码）/kbIds |
+| `memory.mirror` | **已实现** | 读 `.waku/memory/MEMORY.md`（语义柱写入时自动重生成） |
 | `session.resume` | **已实现** | params `{sessionId}`；从 state.db 的 cli_ref 接回执行器，之后 send/cancel 照常 |
 | `session.messages` | **已实现** | params `{sessionId}`；落盘的对话流（user/assistant），前端重载会话用 |
 | 自动化 / Ops / 记忆方法 | Phase 5–7 | 落地时在此表登记 schema |
@@ -94,11 +100,15 @@
 - 只加方法、只加可选字段不算不兼容，`v` 不动。
 - `RuntimeEvent` 本体的演进仍走 `events.ts`（契约纪律见 `docs/06` §一/§九），本文只管封包层。
 
-## 六、REST（Phase 0 现状）
+## 六、REST（管理面）
 
 | 端点 | 说明 |
 |---|---|
 | `GET /healthz` | `{ ok, name, version, pid, uptimeMs }` |
+| `GET /api/permissions/rules` | 权限规则清单 |
+| `POST /api/permissions/rules` | 新增规则 `{pattern, decision, runtimeId?, kind?}` → `{id}` |
+| `DELETE /api/permissions/rules?id=N` | 删除规则 |
+| `POST /api/permissions/resolve` | 审批决策 `{sessionId, requestId, decision}`（与 WS `permission.resolve` 同义） |
 | 其他 | JSON 404 `{ ok:false, error:{ code:"not_found", … } }` |
 
-会话管理类 REST 端点在需要时随 Phase 落地并回填本节。
+会话数据不走 REST（都在 WS 事件流），管理面只放配置与审批类端点。

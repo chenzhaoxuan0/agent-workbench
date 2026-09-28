@@ -104,6 +104,14 @@ export class Store {
         finished_at INTEGER,
         detail TEXT
       );
+      CREATE TABLE IF NOT EXISTS memory (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        pillar TEXT NOT NULL,
+        content TEXT NOT NULL,
+        source TEXT,
+        created_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_memory_pillar ON memory(pillar, id);
     `);
     log.info("store opened", { db: path.join(homeDir, "state.db") });
   }
@@ -306,6 +314,41 @@ export class Store {
       startedAt: Number(r["started_at"]),
       finishedAt: r["finished_at"] === null ? null : Number(r["finished_at"]),
       detail: r["detail"] === null ? null : String(r["detail"]),
+    }));
+  }
+
+  // ---- 记忆三柱（Phase 7，sqlite 后端）---------------------------------------
+
+  insertMemory(pillar: string, content: string, source: string | null): number {
+    const result = this.db
+      .prepare(`INSERT INTO memory (pillar, content, source, created_at) VALUES (?, ?, ?, ?)`)
+      .run(pillar, content, source, Date.now());
+    return Number(result.lastInsertRowid);
+  }
+
+  listMemory(pillar: string, limit = 200): Array<{ id: number; pillar: string; content: string; source: string | null; createdAt: number }> {
+    const rows = this.db
+      .prepare(`SELECT * FROM memory WHERE pillar = ? ORDER BY id DESC LIMIT ?`)
+      .all(pillar, limit) as Array<Record<string, unknown>>;
+    return rows.map((r) => ({
+      id: Number(r["id"]),
+      pillar: String(r["pillar"]),
+      content: String(r["content"]),
+      source: r["source"] === null ? null : String(r["source"]),
+      createdAt: Number(r["created_at"]),
+    }));
+  }
+
+  searchMemory(pillar: string, query: string, limit = 10): Array<{ id: number; content: string; source: string | null; createdAt: number }> {
+    // sqlite 端的检索就是 LIKE 兜底（语义检索是 WeKnora 的事；sqlite 后端保"永远可用"）
+    const rows = this.db
+      .prepare(`SELECT * FROM memory WHERE pillar = ? AND content LIKE ? ORDER BY id DESC LIMIT ?`)
+      .all(pillar, `%${query}%`, limit) as Array<Record<string, unknown>>;
+    return rows.map((r) => ({
+      id: Number(r["id"]),
+      content: String(r["content"]),
+      source: r["source"] === null ? null : String(r["source"]),
+      createdAt: Number(r["created_at"]),
     }));
   }
 
