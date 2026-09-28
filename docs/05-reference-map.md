@@ -7,23 +7,29 @@
 > - `02-reference-audit.md` 是**工程调研**（许可证 / 活跃度 / 工程结构），
 >   只覆盖项目起步时的四家；
 > - `04-design-system.md` 是**决策时间线**（每轮改动的取舍与理由）；
-> - 本文是**功能 → 参照来源 → 落点**的静态地图，随功能演进更新。
+> - 本文是**功能 → 参照来源 → 落点**的静态地图，随功能演进更新；
+>   第十三节起兼作**后端开工指路**（契约指针 / 各仓库服务端入口 / 接真顺序）——契约细节一律指向定义处，不在本文复述。
 
 ---
 
 ## 一、总览
 
-| 参照来源 | 类型 | 参照领域 | 主要落点 |
-|---|---|---|---|
-| ZCode | 桌面客户端（本机安装 + 本地克隆） | 整个外壳骨架与交互习惯 | `WorkspaceShell.tsx` `useShell.ts` `SettingsPage.tsx` `AutomationsPage.tsx` `PermissionDialog.tsx` |
-| deepseekharness（dsh） | 本地克隆（MIT） | 轨迹视图、会话内页签 | `TrajectoryView.tsx` `core/trajectory.ts` 会话页签条 |
-| waku-agent | 本地克隆 | 记忆三柱与编排、LLM-Ops 支柱 | `useMemoryPrefs.ts` `useOps.ts` `OpsView.tsx` |
-| t3code（T3） | 本地克隆（MIT） | 供应商实例管理、模型偏好 | `ProviderInstancesPanel.tsx` `ModelSettings.tsx` |
-| pi | 本地克隆（MIT） | 供应商目录、models.json 配置形态 | `core/providerCatalog.ts` `ModelSettings.tsx` |
-| gpt_image_playground | 开源（CookSleep，MIT，本地克隆） | 出图全链路 | `core/imageApi.ts` `useImageStudio.ts` `ImageStudioPage.tsx` `ImageSettingsSection.tsx` |
-| WeKnora | 开源（本地 Docker 部署） | 记忆后端渠道之一 | `core/weknora.ts` |
-| agents.md 规范 | 规范文档（本地克隆） | bot 的岗位说明书 | `AddBotDialog.tsx` |
-| GrokBot | 视觉参照 | 侧栏 bot 头像形态 | `Sidebar.tsx` `UnitRow` |
+| 参照来源 | 类型 | 参照领域 | 主要落点 | 本机位置 | 后端契约指针 |
+|---|---|---|---|---|---|
+| ZCode | 桌面客户端（本机安装 + 本地克隆） | 整个外壳骨架与交互习惯 | `WorkspaceShell.tsx` `useShell.ts` `SettingsPage.tsx` `AutomationsPage.tsx` `PermissionDialog.tsx` | `C:\Users\chenziyu\project\Agent\zocdeusually\ZCode` | `core/adapter.ts` SPI 的语义蓝本（六种 TransportKind）；壳层 localStorage 键为纯前端，后端无涉 |
+| deepseekharness（dsh） | 本地克隆（MIT） | 轨迹视图、会话内页签 | `TrajectoryView.tsx` `core/trajectory.ts` 会话页签条 | `C:\Users\chenziyu\project\Agent\deepseek-harness` | `core/events.ts` RuntimeEvent 流 + `core/trajectory.ts` 账本行形态，须由事件流喂饱 |
+| waku-agent | 本地克隆 | 记忆三柱与编排、LLM-Ops 支柱 | `useMemoryPrefs.ts` `useOps.ts` `OpsView.tsx` | `C:\Users\chenziyu\project\Agent\waku-agent` | localStorage `agent-workbench:ops` `:memory-prefs` `:memory-orchestration` 三键待换后端落盘 |
+| t3code（T3） | 本地克隆（MIT） | 供应商实例管理、模型偏好 | `ProviderInstancesPanel.tsx` `ModelSettings.tsx` | `C:\Users\chenziyu\project\Agent\t3code` | localStorage `agent-workbench:provider-profiles` `:model-prefs` 两键待落盘 |
+| pi | 本地克隆（MIT） | 供应商目录、models.json 配置形态 | `core/providerCatalog.ts` `ModelSettings.tsx` | `C:\Users\chenziyu\project\Agent\pi-latest`（badlogic/pi-mono） | `core/providerCatalog.ts` 只读常量，后端无涉 |
+| gpt_image_playground | 开源（CookSleep，MIT，本地克隆） | 出图全链路 | `core/imageApi.ts` `useImageStudio.ts` `ImageStudioPage.tsx` `ImageSettingsSection.tsx` | `C:\Users\chenziyu\project\Agent\gpt_image_playground` | `core/imageApi.ts` 请求体 / SSE 解析契约（现为客户端直连） |
+| WeKnora | 开源（本地 Docker 部署） | 记忆后端渠道之一 | `core/weknora.ts` | 源码克隆 `C:\Users\chenziyu\project\WeKnora\WeKnora`（Tencent/WeKnora，参照用）；部署根目录 `C:\Users\chenziyu\project\WeKnora`（Docker 容器 + update 脚本） | `core/weknora.ts` 三接口 listKb / saveFact / search（已是真 API 客户端） |
+| agents.md 规范 | 规范文档（本地克隆） | bot 的岗位说明书 | `AddBotDialog.tsx` | `C:\Users\chenziyu\project\Agent\zocdeusually\agents.md` | 无 |
+| GrokBot | 视觉参照 | 侧栏 bot 头像形态 | `Sidebar.tsx` `UnitRow` | 无本地克隆（仅视觉参照） | 无 |
+
+> 上述 git 克隆（含 WeKnora 源码）已于 2026-09-29 全量 `git pull --ff-only` 同步至各自上游 HEAD；
+> WeKnora 源码带一处本地定制（docker-compose.yml 将 neo4j 端口映射改为 17474/17687，
+> 规避 Windows Hyper-V 动态保留端口），pull 时用 `--autostash` 保留，勿还原；
+> 同名备选目录（`dsh`、`dshwork`、`t3codeuse`、`pi`）均非上游克隆，真正的克隆以上表为准。
 
 ---
 
@@ -43,6 +49,8 @@ ZCode 是工作台布局与交互习惯的**总参照**，几乎每个壳层文�
 | 命令中心 / newTask / Esc 退出 | `useShell.ts` 快捷键层 | ⌘K 命令中心；⌘F 并入同一入口（ZCode 无独立搜索视图）；⌘N 新任务；Esc 关设置回 chat |
 | 消息 id 常驻原则 | 侧栏等全部空态 | ZCode 每个功能都有 message id → 本项目"功能不能因为当前为空就消失" |
 
+**服务端参照入口**：通道抽象 `packages/rpc/src/channels.ts`（`channelServer.ts` / `channelClient.ts`）——`RuntimeAdapter` 事件流的后端对应物；执行端服务化看 `packages/server/`、`packages/provider-node/`、`packages/services/`。
+
 ---
 
 ## 三、deepseekharness（dsh）—— 轨迹与会话内页签
@@ -57,6 +65,8 @@ ZCode 是工作台布局与交互习惯的**总参照**，几乎每个壳层文�
 | view-selection（ConversationSession tabs） | `useShell.conversationView` + 页签条 | 轨迹与 Chat 并列为会话头页签；激活占据整个会话视口、composer 保持底部（composer-overlay 语义） |
 | models 配置文件方式 | `ModelSettings.tsx` | 自定义模型多行表单录入（id / 显示名 / 窗口 / 价格），叠加 pi models.json 预览 |
 | 三泳道时间轴（TrajectoryTimeline） | **未移植** | 待真实运行时的精确计时接入后再补 |
+
+**服务端参照入口**：会话账本落盘 `packages/session/session-persistence-jsonl/`，格式版本化与迁移 `packages/session/session-format*/`（v1→v4 的演进现场），投影层 `session-projection/`；ACP 协议实现 `packages/acp/`；轨迹 UI 对照面 `packages/client/ui-trajectory/`。
 
 ---
 
@@ -86,6 +96,8 @@ ZCode 是工作台布局与交互习惯的**总参照**，几乎每个壳层文�
 | dashboard 的 Ops 页签 | 会话头「Ops」页签 | 运营视图不渲染 composer；「打开轨迹」直连轨迹页签（trace 内联的轻量替代） |
 | 三泳道时间轴 | **未移植** | 同 dsh，待真运行时 |
 
+**服务端参照入口**：`waku/memory/`（semantic / episodic / procedural 三目录 + `retrieval_gate.py` + `consolidation.py`）；`waku/ops/`（`arena.py` `judge.py` `release_gate.py` `compare_history.py` `pricing.py` `dashboard.py`）；编排入口 `waku/app.py`，状态库 `waku/db.py`，会话运行时 `waku/runtime/session.py`。
+
 **刻意偏离**：waku 的确定性套件是 83 个 pytest 文件 + coding.jsonl 沙箱 verify，原型只移植了 dataset.jsonl 的 5 行形态；Arena 无 SSE 直播（错峰 setTimeout 模拟）也无 throwaway home 沙箱；judge 缺 key 时整层跳过而非计 0 分（沿用 waku 语义）。接真运行时只换执行端。
 
 ---
@@ -98,6 +110,8 @@ ZCode 是工作台布局与交互习惯的**总参照**，几乎每个壳层文�
 | Checked 全量刷新 | `probeAll()` | 执行器实例偏好 `runtimePrefs`（enabled/displayName/endpoint/launchArgs/envVars/lastCheckedAt） |
 | `providerModelPreferences` + `customModels` | `modelPrefs` + `visibleModelsFor` | 每个 CLI 各自记住模型（全局单模型在切执行器时必然非法）；隐藏 / 排序 / 收藏 / 自定义模型；可见性判定唯一入口，含 getSnapshot 引用稳定的分槽缓存注释（React 19 无限循环踩坑记录） |
 
+**服务端参照入口**：协议契约 `packages/contracts/`，Effect 化执行器连接 `packages/effect-acp/` 与 `packages/effect-codex-app-server/`，连接层 `packages/client-runtime/src/connection/`。
+
 ---
 
 ## 六、pi —— 供应商目录与模型配置
@@ -106,6 +120,8 @@ ZCode 是工作台布局与交互习惯的**总参照**，几乎每个壳层文�
 |---|---|---|
 | providers 目录 41 家（id / name / baseUrl / api / keyEnv） | `core/providerCatalog.ts` | 脚本生成常量；`ProviderSettingsSection` 的第三方目录选型 |
 | models.json 的 providers 字典 | `ModelSettings.tsx` | 自定义模型表单 + pi models.json 配置预览（配置透明化） |
+
+**服务端参照入口**：`packages/protocol/` + `packages/server/` + `packages/session-backends/`；模型目录 `packages/ai/src/model-catalog.ts`（自定义模型经 `models-store.ts` 合并）；models.json 读取在 `packages/coding-agent/src/config.ts`。
 
 ---
 
@@ -124,6 +140,8 @@ ZCode 是工作台布局与交互习惯的**总参照**，几乎每个壳层文�
 | b64_json / url 双路径解析 + 防御式报错 | `parseImagesApiResponse` / `getApiErrorMessage` | error.message 优先；流式 / 透明背景不支持 hint 文案原文 |
 | mock-image-api | e2e 验证端点 | b64 模式 + CORS 全开，headless 走通全链路 |
 
+**服务端参照入口**：无——原仓库为纯客户端直连，参照价值全在 API 客户端三文件（见本节首行）。后端若收代理，请求体 / SSE 解析契约以 `core/imageApi.ts` 现状为准。
+
 **未移植**（接真时再补）：fal.ai 供应商族、自定义 HTTP 服务商映射、透明背景 local 方法的 canvas 抠图后处理、遮罩编辑器。
 
 ---
@@ -134,6 +152,8 @@ ZCode 是工作台布局与交互习惯的**总参照**，几乎每个壳层文�
 |---|---|---|
 | `X-API-Key` 直连 | `core/weknora.ts` | listKb / saveFact（manual knowledge）/ search（hybrid-search 跨库，`knowledge_base_ids` 数组） |
 | 部署形态 | 记忆编排的一种后端类型 | 本地 Docker 18080；baseUrl/apiKey/kbId 三字段；401 属预期（需在 WeKnora 前端生成 API Key） |
+
+**服务端参照入口**：hybrid-search 处理器 `internal/handler/knowledgebase.go`，服务入口 `cmd/server/`，Go 客户端参照 `client/retrieval.go`。
 
 ---
 
@@ -167,3 +187,16 @@ ZCode 是工作台布局与交互习惯的**总参照**，几乎每个壳层文�
 ## 十二、许可证状况
 
 参照仓库均满足「只接受 Apache-2.0 / MIT」的硬约束：ZCode（Apache-2.0）、t3code / deepseek-harness / pi / gpt_image_playground / waku-agent（MIT）、WeKnora（Apache-2.0）。逐仓库的 HEAD 与活跃度证据见 `02-reference-audit.md`（waku-agent、gpt_image_playground、WeKnora 三家为后期引入，尚未补入该审计表）。
+
+---
+
+## 十三、接真顺序 —— 后端开工清单
+
+> 契约的唯一事实源在仓库内：`prototype/src/core/adapter.ts`（`RuntimeAdapter` SPI：probe / connect / listSessions / startSession / resumeSession / sendMessage / cancel / resolvePermission / events / exportTrace；`TransportKind` = acp | jsonrpc | rpc | http | process | internal；能力开关见 `RuntimeCapabilities`）与 `prototype/src/core/events.ts`（归一化事件流）。本节只放指针与顺序，不复述契约。
+
+1. **一个真实执行器走通全链路**——把 `adapters/mock/` 换成一个真进程适配器：startSession → sendMessage → events → exportTrace 端到端。协议建议 ACP 先行，参照有两份：dsh `packages/acp/`、t3code `packages/effect-acp/`。
+2. **会话持久化对齐 dsh 账本形态**——`session-persistence-jsonl` 的落盘方式 + `session-format` 的版本迁移思路，替掉内存态；轨迹视图（`core/trajectory.ts`）从同一条账本读，前后端天然同构。
+3. **Ops 执行端换真**——dataset runner / judge / gate / usage 落盘照 `waku/ops/` 实现，替掉 mock 的错峰 setTimeout 与 localStorage `agent-workbench:ops`；`eval_runs.jsonl`、`usage.jsonl` 行形态已在 §四写明。
+4. **记忆编排后端**——三柱路由 + weknora / local-folder / sqlite 三后端连通；`core/weknora.ts` 已是真 API 客户端可直接复用，SQLite 后端对齐 waku 的 `.waku/state.db` 语义（§四）。
+5. **出图代理（可缓）**——原型已客户端直连真 API；仅在需要隐藏 key / 统一计费 / 服务端落盘时再收进后端，届时以 `core/imageApi.ts` 为契约。
+6. **补齐各节未移植清单**——三泳道时间轴（§三/§四）、Arena SSE 直播与 throwaway home 沙箱（§四）、waku 83 项 pytest verify 形态（§四）、fal.ai 供应商族 / 遮罩编辑器 / 透明背景 canvas 后处理（§七）。
