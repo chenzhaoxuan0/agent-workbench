@@ -68,6 +68,12 @@ const ICONS: Record<string, typeof Settings2> = {
 
 /** 对齐 ZCode 的 SETTINGS_FRAME_CONTENT_CLASSNAME：max-w-4xl 居中内容列 */
 const FRAME = "mx-auto w-full max-w-4xl px-8 pb-12 pt-2";
+/**
+ * 头部行专用：只有水平规格。FRAME 的 pt-2/pb-12 是给可滚动内容列的，
+ * 混进固定 h-12 的面包屑行会把内容盒压塌（8+48=56px padding > 48px 高），
+ * 文字被顶出/裁掉在顶缘 —— 面包屑上顶格的根因。
+ */
+const FRAME_HEAD = "mx-auto w-full max-w-4xl px-8";
 
 /**
  * 设置页 —— 骨架对齐 ZCode 的 settingsPageConfig + SettingsPageParts：
@@ -133,7 +139,7 @@ export function SettingsPage() {
         {/* 面包屑头，对齐 ZCode 的 SettingsHeaderBreadcrumb —— 只呈现路径，
             返回动作在左导航列顶部。h-12 与内容列顶带同高 */}
         <div className="sticky top-0 z-10 border-b border-line bg-rail/95 backdrop-blur">
-          <div className={cn(FRAME, "flex h-12 items-center gap-2")}>
+          <div className={cn(FRAME_HEAD, "flex h-12 items-center gap-2")}>
             <span className="text-body-sm text-ink">设置</span>
             <span className="text-line">/</span>
             <span className="text-body-sm font-medium text-ink">{current.title}</span>

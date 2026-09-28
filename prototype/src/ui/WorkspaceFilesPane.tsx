@@ -140,7 +140,10 @@ export function WorkspaceFilesPane() {
   }
 
   return (
-    <div className="space-y-2">
+    // px-3：TabContent 容器不带内边距（兄弟面板靠 PaneSection 的 px-4），
+    // 这里自己补齐 —— 否则路径行 / 授权卡 / 文件树全部左贴边。
+    // 树行 -mx-1 + paddingLeft:4 的缩进公式在此刚好与路径行 12px 对齐。
+    <div className="space-y-2 px-3 py-3">
       <div className="flex items-center gap-1.5">
         <span className="min-w-0 flex-1 truncate font-mono text-caption text-graphite" title={rootPath}>
           {rootPath}
