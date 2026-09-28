@@ -335,3 +335,22 @@ models 数组形态**：多行草稿（模型 id* / 显示名 / 窗口 / 输入�
 contextWindow 展开为精确数值），强化「加模型 = 往配置写一条」的直觉。
 pi 仓库已更新克隆至 Agent/pi-latest（6f75515），其 models.json schema
 （providers 字典 + ModelDefinition）是 dsh 与本项目自定义模型的共同源头。
+
+### 模型供应商管理（2026-09-28 第十轮，对齐 dsh ModelsSection + pi 目录）
+
+设置模型分区顶部新增**供应商管理层**（`ProviderSettingsSection` +
+`useProviderProfiles` store，localStorage 持久化）：
+
+- **目录数据来自 pi**（pi-latest packages/ai/src/providers/*.ts 的
+  createProvider 声明，脚本提取 41 家 → `core/providerCatalog.ts`：
+  id / name / baseUrl / api / keyEnv）；
+- **添加卡双模式**（dsh SegmentedControl 同款切换）：
+  「第三方模型提供商」= 目录选一家 + API 密钥（留空走环境认证，
+  hint 显示约定的 keyEnv 名）+ 自定义设置折叠（显示名 / 端点覆盖）；
+  「自定义模型 API」= Provider ID（小写连字符正则 + 查重）/ 显示名 /
+  API 地址 / 协议三选（openai-completions / openai-responses /
+  anthropic-messages）/ 密钥 / 模型目录多行（id / 显示名 / 窗口 256K 速记）；
+- **行列表**：凭据状态点（实心已配 / 空心缺）+ Custom 标 + 编辑 / 删除
+  （两段确认）；「打开配置文件」以配置预览折叠面板等价呈现；
+- ⚠ 凭据边界：原型期 key 明文存 localStorage（本地单用户妥协）；
+  dsh 是 secret 入凭据库、配置只留 apiKeyEnv 引用名——接真运行时须照做。

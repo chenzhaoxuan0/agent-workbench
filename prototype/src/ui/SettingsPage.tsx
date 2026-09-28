@@ -22,6 +22,7 @@ import {
 } from "../store/useShell.ts";
 import { useWorkbench, selectActiveUnit } from "../store/useWorkbench.ts";
 import { ModelSettingsSection } from "./ModelSettings.tsx";
+import { ProviderSettingsSection } from "./ProviderSettingsSection.tsx";
 import { cn } from "./cn.ts";
 
 const ICONS: Record<string, typeof Settings2> = {
@@ -201,7 +202,12 @@ function SectionBody({ section }: { section: SettingsSectionDef }) {
     case "runtimes":
       return <RuntimesSection />;
     case "models":
-      return <ModelSettingsSection />;
+      return (
+        <div className="space-y-6">
+          <ProviderSettingsSection />
+          <ModelSettingsSection />
+        </div>
+      );
     case "shortcuts":
       return <ShortcutsSection />;
     case "usage":
