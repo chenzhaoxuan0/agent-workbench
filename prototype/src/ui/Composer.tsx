@@ -1,9 +1,10 @@
 import { useEffect, useRef } from "react";
-import { Send } from "lucide-react";
+import { ArrowUp, Square } from "lucide-react";
 import { useWorkbench, selectActiveUnit } from "../store/useWorkbench.ts";
 import { AttachmentStrip, ComposerAttach } from "./ComposerAttach.tsx";
 import { PermissionModePicker } from "./PermissionModePicker.tsx";
 import { RuntimePicker } from "./RuntimePicker.tsx";
+import { StatsDock } from "./StatsDock.tsx";
 import { cn } from "./cn.ts";
 
 /**
@@ -77,20 +78,34 @@ export function Composer() {
               <PermissionModePicker />
               <RuntimePicker />
 
-              <button
-                onClick={submit}
-                disabled={!draft.trim() || busy}
-                aria-label="发送"
-                className="flex items-center gap-1.5 rounded-input bg-ink px-3 py-2 text-body-sm text-canvas hover:bg-black disabled:opacity-30"
-              >
-                <Send size={12} />
-                发送
-              </button>
+              {/* 主按钮 —— ZCode：发送是 brand 底图标钮（ArrowUp），运行中变停止（实心方块）。
+                  mock 没有取消通道，停止只翻 busy 位 */}
+              {busy ? (
+                <button
+                  onClick={() => useWorkbench.getState().cancelRun()}
+                  aria-label="停止"
+                  title="停止"
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-btn bg-ink text-canvas hover:bg-black"
+                >
+                  <Square size={11} fill="currentColor" />
+                </button>
+              ) : (
+                <button
+                  onClick={submit}
+                  disabled={!draft.trim()}
+                  aria-label="发送"
+                  title="发送 · Enter"
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-btn bg-ink text-canvas hover:bg-black disabled:opacity-30"
+                >
+                  <ArrowUp size={15} />
+                </button>
+              )}
             </div>
           </div>
         </div>
 
-        <p className="mt-2 text-center text-caption text-ash">Enter 发送 · Shift + Enter 换行</p>
+        {/* 统计坞 —— dsh 的真实挂位：卡片正下方。快捷键提示 + token/缓存/速度/成本 pills */}
+        <StatsDock />
       </div>
     </div>
   );

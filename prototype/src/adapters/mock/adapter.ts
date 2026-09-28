@@ -481,21 +481,30 @@ class MockAdapter implements RuntimeAdapter {
         // 否则「换个模型成本纹丝不动」，这个功能就等于没做 ——
         // 用户要的正是「换模型」能看出代价差别。
         const spec = modelById(model);
-        const inTok = 4210;
-        const outTok = 1180;
-        const cost =
-          spec === undefined ? 0.031 : (inTok / 1e6) * spec.inputPerMTok + (outTok / 1e6) * spec.outputPerMTok;
-        await sleep(PACE_MS);
-        this.#emit({ type: "usage", sessionId: id, inputTokens: inTok, outputTokens: outTok, costUsd: cost, model });
-        await sleep(PACE_MS);
-        this.#emit({
-          type: "usage",
-          sessionId: id,
-          inputTokens: 1860,
-          outputTokens: 640,
-          costUsd: cost * 0.28,
-          model,
-        });
+        // inputTokens 是**本轮重发的上下文表面**（dsh 的 pressureTokens 口径），
+        // 所以第二轮比第一轮大 —— 底栏的上下文占用环靠它才会涨。
+        const rounds = [
+          { inTok: 48_200, outTok: 1_180, cacheRead: 38_400, cacheWrite: 1_200, decodeMs: 4_200 },
+          { inTok: 61_400, outTok: 640, cacheRead: 52_000, cacheWrite: 2_400, decodeMs: 1_650 },
+        ];
+        for (const r of rounds) {
+          const cost =
+            spec === undefined
+              ? 0.031
+              : (r.inTok / 1e6) * spec.inputPerMTok + (r.outTok / 1e6) * spec.outputPerMTok;
+          await sleep(PACE_MS);
+          this.#emit({
+            type: "usage",
+            sessionId: id,
+            inputTokens: r.inTok,
+            outputTokens: r.outTok,
+            cacheReadTokens: r.cacheRead,
+            cacheWriteTokens: r.cacheWrite,
+            decodeMs: r.decodeMs,
+            costUsd: cost,
+            model,
+          });
+        }
       }
 
       await sleep(PACE_MS);

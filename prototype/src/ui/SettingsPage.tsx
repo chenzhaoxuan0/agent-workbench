@@ -54,14 +54,21 @@ const FRAME = "mx-auto w-full max-w-4xl px-8 pb-12 pt-2";
 export function SettingsPage() {
   const section = useShell((s) => s.settingsSection);
   const openSettings = useShell((s) => s.openSettings);
-  const setMainView = useShell((s) => s.setMainView);
 
   const current = SETTINGS_SECTIONS.find((s) => s.id === section) ?? SETTINGS_SECTIONS[0]!;
 
   return (
     <div className="flex h-full min-h-0">
-      {/* 左导航 */}
-      <nav className="w-[212px] shrink-0 overflow-y-auto border-r border-line bg-rail px-3 py-4">
+      {/* 左导航。ZCode lg 以上是 268px，窄屏收 68px icon rail。
+          返回按钮在导航列顶部（ZCode 的 TID_SETTINGS_BACK_BUTTON 挂位） */}
+      <nav className="w-[268px] shrink-0 overflow-y-auto border-r border-line bg-rail px-3 pb-4 pt-3">
+        <button
+          onClick={() => useShell.getState().closeSettings()}
+          className="mb-2 flex w-full items-center gap-2 rounded-btn px-2.5 py-2 text-body-sm text-graphite hover:bg-line-soft hover:text-ink"
+        >
+          <ChevronLeft size={13} />
+          返回工作台
+        </button>
         {SETTINGS_GROUPS.map((g) => {
           const items = SETTINGS_SECTIONS.filter((s) => s.groupId === g.id);
           if (items.length === 0) return null;
@@ -95,17 +102,10 @@ export function SettingsPage() {
 
       {/* 内容列 */}
       <div className="min-w-0 flex-1 overflow-y-auto">
-        {/* 面包屑头，对齐 ZCode 的 SettingsHeaderBreadcrumb */}
+        {/* 面包屑头，对齐 ZCode 的 SettingsHeaderBreadcrumb —— 只呈现路径，
+            返回动作在左导航列顶部。h-12 与内容列顶带同高 */}
         <div className="sticky top-0 z-10 border-b border-line bg-rail/95 backdrop-blur">
-          <div className={cn(FRAME, "flex items-center gap-2 pb-0 pt-3")}>
-            <button
-              onClick={() => setMainView("chat")}
-              className="flex items-center gap-1 rounded-btn px-2 py-1.5 text-body-sm text-graphite hover:bg-line-soft hover:text-ink"
-            >
-              <ChevronLeft size={13} />
-              返回工作台
-            </button>
-            <span className="text-line">/</span>
+          <div className={cn(FRAME, "flex h-12 items-center gap-2")}>
             <span className="text-body-sm text-ink">设置</span>
             <span className="text-line">/</span>
             <span className="text-body-sm font-medium text-ink">{current.title}</span>

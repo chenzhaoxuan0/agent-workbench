@@ -83,9 +83,15 @@ function EmptyState() {
   const setDraft = useWorkbench((s) => s.setDraft);
   const unit = useWorkbench((s) => s.units.find((u) => u.id === s.activeUnitId));
 
+  // 时段问候（ZCode: chat.empty.greeting.*，5/9/12/14/18/23 点换档）
+  const hour = new Date().getHours();
+  const greeting =
+    hour < 5 ? "夜深了" : hour < 9 ? "早上好" : hour < 12 ? "上午好" : hour < 14 ? "中午好" : hour < 18 ? "下午好" : "晚上好";
+
   return (
     <div className="flex flex-col items-center">
-      <p className="text-body-lg text-graphite">
+      <p className="text-caption text-ash">{greeting}</p>
+      <p className="mt-1 text-body-lg text-graphite">
         {unit?.kind === "employee" ? `给「${unit.name}」派活` : `对「${unit?.name}」下任务`}
       </p>
       <p className="mt-1 text-body-sm text-ash">
@@ -183,6 +189,18 @@ function Row({ event, at }: { event: RuntimeEvent; at: number }) {
       );
     }
 
+    case "message.delta": {
+      // 用户消息 —— ZCode 的用户行右对齐、带气泡（rounded-tr 切角是它的识别特征）
+      if (event.role !== "user") return null;
+      return (
+        <div className="mb-4 flex flex-col items-end">
+          <div className="max-w-[85%] rounded-[14px] rounded-tr-[4px] border border-line bg-card px-4 py-3">
+            <p className="whitespace-pre-wrap text-body leading-relaxed text-ink">{event.text}</p>
+          </div>
+        </div>
+      );
+    }
+
     case "reasoning.delta":
       return (
         <p className="my-2 flex items-baseline gap-2 pl-1 text-body-sm text-ash">
@@ -192,9 +210,10 @@ function Row({ event, at }: { event: RuntimeEvent; at: number }) {
       );
 
     case "message.completed":
+      // ZCode 的助手行没有气泡：正文直接落在画布上，来源标识弱化为前缀行
       return (
-        <div className={`${card} mb-3`}>
-          <p className="mb-1.5 flex items-center gap-1.5 text-caption text-graphite">
+        <div className="group/assistant mb-3">
+          <p className="mb-1 flex items-center gap-1.5 text-caption text-ash">
             <Bot size={12} />
             assistant
           </p>

@@ -3,6 +3,7 @@ import { mockFactories } from "../adapters/mock/adapter.ts";
 import { SAMPLE_ARCHIVED_SESSIONS, SAMPLE_AUTOMATIONS, SAMPLE_DELIVERABLES, SAMPLE_SESSIONS, SAMPLE_UNITS } from "../adapters/mock/fixtures.ts";
 import type { Automation } from "../core/automation.ts";
 import { asModelId, canRuntimeUse, modelById, type ModelId, type ModelSpec } from "../core/models.ts";
+import { asSessionId } from "../core/units.ts";
 import {
   normalizePrefs,
   parsePrefsMap,
@@ -86,6 +87,8 @@ interface WorkbenchState {
   removeAttachment: (id: string) => void;
   toggleAutomation: (id: string) => void;
   run: (prompt: string) => Promise<void>;
+  /** 停止当前运行。mock 适配器没有真正的取消通道，只翻 busy 位 */
+  cancelRun: () => void;
   resolvePermission: (requestId: string, decision: PermissionDecision) => void;
 }
 
@@ -241,6 +244,8 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
       return { modelPrefs: map, modelPrefsVersion: s.modelPrefsVersion + 1 };
     }),
 
+  cancelRun: () => set({ busy: false }),
+
   resolvePermission: (requestId, decision) => {
     const sessions = get().sessions;
     const session = sessions.at(-1);
@@ -282,6 +287,25 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
     });
 
     set((s) => ({ sessions: [...s.sessions, session], activeSessionId: session.id }));
+
+    // 用户消息是时间线的第一行（ZCode：右对齐的用户气泡）。
+    // sessionId 必须是真实会话 —— 右栏轨迹按会话过滤归档，占位 id 会被滤掉
+    set((s) => ({
+      timeline: [
+        {
+          id: ++seq,
+          event: {
+            type: "message.delta",
+            sessionId: session.id,
+            messageId: `u${++seq}`,
+            role: "user" as const,
+            text: prompt,
+          } as const,
+          at: Date.now(),
+        },
+        ...s.timeline,
+      ],
+    }));
 
     // 归一化事件流：UI 唯一的数据入口
     void (async () => {

@@ -149,6 +149,15 @@ export type RuntimeEvent =
       readonly outputTokens: number;
       readonly costUsd: number;
       readonly model: string;
+      /**
+       * 缓存读 / 缓存写（可缺省 = 该执行器没报缓存）。
+       * 计费口径对齐 dsh 的 TokenUsageProjection：
+       * billedInput = uncachedInput + cacheRead + cacheWrite。
+       */
+      readonly cacheReadTokens?: number;
+      readonly cacheWriteTokens?: number;
+      /** 本轮解码耗时（ms），速度 = outputTokens / (decodeMs / 1000)。缺省表示没报 */
+      readonly decodeMs?: number;
     }
 
   // ---- 产出 ----

@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { useWorkbench } from "./useWorkbench.ts";
 
 /**
  * 外壳状态 —— 和业务状态（工作单元 / 会话 / 事件流）分离。
@@ -12,13 +13,14 @@ import { create } from "zustand";
  */
 
 /**
- * 主视图 —— 对齐 ZCode 的 workspaceMainView。
+ * 主视图 —— 对齐 ZCode 的 WorkspaceMainView（app-shell/types.ts）。
  *
- * 注意：ZCode 在 settingsNavigation 里明确把 automations 排除在设置页之外，
- * 注释写的是「定时任务是 workspace 主视图，不能再作为设置页分区出现」。
- * 这里照做 —— 自动化是独立主视图，不是设置分区。
+ * ZCode 只有 chat / automations / plugin-store 三种主视图：
+ * - 设置页**不是主视图**，是全屏覆盖层（WorkspaceSettingsLayer：absolute inset-0，
+ *   shell 压暗不卸载），所以这里用 settingsOpen 布尔而不是 "settings" 视图；
+ * - 搜索**也不是主视图**，是 ⌘K 命令中心浮层（CommandCenterDialog）。
  */
-export type MainView = "chat" | "settings" | "automations" | "search";
+export type MainView = "chat" | "automations";
 
 /** 设置分区 id，集合对齐 ZCode 的 SettingsSectionId */
 export type SettingsSectionId =
@@ -119,6 +121,7 @@ interface ShellState {
 
   commandOpen: boolean;
   mainView: MainView;
+  settingsOpen: boolean;
   settingsSection: SettingsSectionId;
 
   setSidebarWidth: (w: number) => void;
@@ -127,7 +130,12 @@ interface ShellState {
   setTerminalHeight: (h: number) => void;
 
   setMainView: (v: MainView) => void;
+  /** 打开设置覆盖层（ZCode 的 WorkspaceSettingsLayer），可直落某个分区 */
   openSettings: (section?: SettingsSectionId) => void;
+  /** 关闭设置覆盖层。对齐 ZCode：退出设置统一回到 chat 主视图 */
+  closeSettings: () => void;
+  /** 新建任务：回 chat 主视图并清空草稿（对齐 ZCode 的 newTask，⌘N） */
+  newTask: () => void;
 
   setCommandOpen: (open: boolean) => void;
 }
@@ -140,15 +148,23 @@ export const useShell = create<ShellState>((set, get) => ({
 
   commandOpen: false,
   mainView: "chat",
+  settingsOpen: false,
   settingsSection: "general",
 
   setMainView: (mainView) => set({ mainView }),
 
   openSettings: (section) =>
     set((s) => ({
-      mainView: "settings",
+      settingsOpen: true,
       settingsSection: section ?? s.settingsSection,
     })),
+
+  closeSettings: () => set({ settingsOpen: false, mainView: "chat" }),
+
+  newTask: () => {
+    set({ mainView: "chat" });
+    useWorkbench.getState().setDraft("");
+  },
 
   setSidebarWidth: (w) => {
     const clamped = Math.max(SIDEBAR_MIN, Math.round(w));
@@ -170,20 +186,40 @@ export const useShell = create<ShellState>((set, get) => ({
 export function bindShellShortcuts(): () => void {
   const onKey = (e: KeyboardEvent) => {
     const mod = e.metaKey || e.ctrlKey;
+    const shell = useShell.getState();
     if (mod && e.key.toLowerCase() === "k") {
       e.preventDefault();
-      useShell.getState().setCommandOpen(!useShell.getState().commandOpen);
+      shell.setCommandOpen(!shell.commandOpen);
       return;
     }
+    // 搜索也是命令中心（ZCode 没有独立搜索视图，⌘F 并入同一入口）
     if (mod && e.key.toLowerCase() === "f") {
       e.preventDefault();
-      useShell.getState().setMainView("search");
+      shell.setCommandOpen(true);
+      return;
+    }
+    // ZCode：toggleSidebar 默认 Cmd/Ctrl+B
+    if (mod && e.key.toLowerCase() === "b") {
+      e.preventDefault();
+      shell.toggleSidebar();
+      return;
+    }
+    // ZCode：newTask 默认 Cmd/Ctrl+N（浏览器可能吞掉，能拦则拦）
+    if (mod && e.key.toLowerCase() === "n") {
+      e.preventDefault();
+      shell.newTask();
+      return;
+    }
+    // ZCode：openSettings 默认 Cmd/Ctrl+,
+    if (mod && e.key === ",") {
+      e.preventDefault();
+      shell.openSettings();
       return;
     }
     if (e.key === "Escape") {
       const s = useShell.getState();
       if (s.commandOpen) s.setCommandOpen(false);
-      else if (s.mainView !== "chat") s.setMainView("chat");
+      else if (s.settingsOpen) s.closeSettings();
       return;
     }
     if (mod && e.key === "`") {

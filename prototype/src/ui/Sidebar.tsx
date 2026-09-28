@@ -8,11 +8,10 @@ import {
   FolderGit2,
   FolderPlus,
   GripVertical,
-  PanelLeftClose,
+  MessageCirclePlus,
   Plus,
   Search,
   Settings,
-  SquarePen,
   Unplug,
 } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
@@ -75,7 +74,6 @@ export function Sidebar() {
   const selectUnit = useWorkbench((s) => s.selectUnit);
   const archived = useWorkbench((s) => s.archivedSessions);
   const addUnit = useWorkbench((s) => s.addUnit);
-  const toggleSidebar = useShell((s) => s.toggleSidebar);
   const mainView = useShell((s) => s.mainView);
   const openSettings = useShell((s) => s.openSettings);
 
@@ -85,6 +83,8 @@ export function Sidebar() {
   const [groupsOpen, setGroupsOpen] = useState(true);
   const [unitOrder, setUnitOrder] = useState<string[] | null>(null);
   const [dragUnit, setDragUnit] = useState<string | null>(null);
+  const [accountOpen, setAccountOpen] = useState(false);
+  const settingsActive = useShell((s) => s.settingsOpen);
 
   // 目录不可用的单元也要列出来（ZCode: unavailableLocalDirectory）
   const allUnits = useMemo<readonly WorkUnit[]>(
@@ -102,20 +102,9 @@ export function Sidebar() {
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-rail">
-      {/* 品牌 + 收起（ZCode: Sidebar Brand Mark / collapsed rail） */}
-      <div className="flex h-[60px] shrink-0 items-center gap-2.5 border-b border-line px-4">
-        <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-btn bg-ink text-caption font-medium text-canvas">
-          A
-        </span>
-        <span className="min-w-0 flex-1 truncate text-body font-medium text-ink">Agent Workbench</span>
-        <button
-          onClick={toggleSidebar}
-          aria-label="收起侧栏"
-          className="rounded-btn p-1.5 text-ash hover:bg-line-soft hover:text-ink"
-        >
-          <PanelLeftClose size={14} />
-        </button>
-      </div>
+      {/* 顶部 48px 占位。ZCode 的侧栏顶部是空的拖拽条 —— 品牌 logo 与侧栏开关
+          由左上浮层（DesktopTopOverlay）承载，这里不再重复 */}
+      <div className="h-12 shrink-0 border-b border-line/60" />
 
       {/* 身份视图 —— 本项目特有，ZCode 没有 */}
       <div className="flex gap-2 px-4 py-3">
@@ -139,18 +128,37 @@ export function Sidebar() {
         })}
       </div>
 
-      {/* 新建任务（ZCode: newConversation） */}
-      <div className="px-4 pb-3">
+      {/* 顶部动作区 —— 对齐 ZCode 侧栏顶部：新建任务 → 搜索 → 自动化（无品牌行按钮）
+          NewTaskButtonGroup 是 ghost 行而非实心按钮 */}
+      <div className="flex flex-col gap-0.5 px-4 pb-2">
         <button
-          onClick={() => {
-            useShell.getState().setMainView("chat");
-            useWorkbench.getState().setDraft("");
-          }}
-          className="flex w-full items-center gap-2 rounded-btn bg-ink px-3 py-2 text-body-sm text-canvas hover:bg-black"
+          onClick={() => useShell.getState().newTask()}
+          className="flex h-8 w-full items-center gap-2 rounded-btn px-2.5 text-body-sm text-graphite hover:bg-line-soft hover:text-ink"
         >
-          <SquarePen size={12} />
+          <MessageCirclePlus size={14} className="shrink-0" />
           新建任务
-          <span className="ml-auto font-mono text-caption text-canvas/60">⌘N</span>
+          <span className="ml-auto font-mono text-caption text-ash">⌘N</span>
+        </button>
+        <button
+          onClick={() => useShell.getState().setCommandOpen(true)}
+          className="flex h-8 w-full items-center gap-2 rounded-btn px-2.5 text-body-sm text-graphite hover:bg-line-soft hover:text-ink"
+        >
+          <Search size={14} className="shrink-0" />
+          搜索
+          <span className="ml-auto font-mono text-caption text-ash">⌘K</span>
+        </button>
+        <button
+          onClick={() => useShell.getState().setMainView("automations")}
+          aria-pressed={mainView === "automations"}
+          className={cn(
+            "flex h-8 w-full items-center gap-2 rounded-btn px-2.5 text-body-sm",
+            mainView === "automations"
+              ? "bg-teal-tint font-medium text-ink"
+              : "text-graphite hover:bg-line-soft hover:text-ink",
+          )}
+        >
+          <AlarmClock size={14} className="shrink-0" />
+          自动化
         </button>
       </div>
 
@@ -307,36 +315,74 @@ export function Sidebar() {
         </div>
       </div>
 
-      {/* 底部：搜索 / 自动化 / 设置 / 命令面板 */}
-      <div className="shrink-0 border-t border-line px-3 py-2">
-        <FooterButton
-          icon={<Search size={12} />}
-          label="搜索"
-          hint="⌘F"
-          onClick={() => useShell.getState().setMainView("search")}
-        />
-        <FooterButton
-          active={mainView === "automations"}
-          icon={<AlarmClock size={12} />}
-          label="自动化"
-          onClick={() => useShell.getState().setMainView("automations")}
-        />
-        <FooterButton
-          active={mainView === "settings"}
-          icon={<Settings size={12} />}
-          label="设置"
+      {/* 底部：账号 + 设置（ZCode: WorkspaceSidebarFooter —— 账号菜单 + 齿轮，
+          搜索/自动化在顶部区，不重复出现） */}
+      <div className="flex shrink-0 items-center gap-1.5 border-t border-line px-4 py-2.5">
+        <div className="relative min-w-0 flex-1">
+          <button
+            onClick={() => setAccountOpen((o) => !o)}
+            aria-expanded={accountOpen}
+            className={cn(
+              "flex w-full min-w-0 items-center gap-2 rounded-btn p-1 -m-1 text-left",
+              accountOpen ? "bg-line-soft" : "hover:bg-line-soft",
+            )}
+          >
+            <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-chip bg-teal text-caption font-medium text-white">
+              陈
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-body-sm font-medium text-ink">陈子渔</span>
+              <span className="block truncate text-caption text-ash">个人版 · Pro</span>
+            </span>
+          </button>
+          {accountOpen && (
+            <>
+              <span className="fixed inset-0 z-30" onClick={() => setAccountOpen(false)} aria-hidden />
+              <div className="absolute bottom-full left-0 z-40 mb-1.5 w-52 rounded-card border border-line bg-canvas py-1 shadow-subtle">
+                {ACCOUNT_ITEMS.map((row) => (
+                  <button
+                    key={row.label}
+                    onClick={() => setAccountOpen(false)}
+                    title="原型占位入口"
+                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-body-sm text-graphite hover:bg-line-soft hover:text-ink"
+                  >
+                    {row.label}
+                    <span className="ml-auto text-caption text-ash">{row.value}</span>
+                  </button>
+                ))}
+                <div className="mt-1 border-t border-line-soft pt-1">
+                  <button
+                    onClick={() => setAccountOpen(false)}
+                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-body-sm text-graphite hover:bg-line-soft hover:text-ink"
+                  >
+                    <Unplug size={12} />
+                    连接使用
+                  </button>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+        <button
           onClick={() => openSettings()}
-        />
-        <FooterButton
-          icon={<Plus size={12} />}
-          label="命令面板"
-          hint="⌘K"
-          onClick={() => useShell.getState().setCommandOpen(true)}
-        />
+          aria-label="设置"
+          title="设置 · ⌘,"
+          className={cn(
+            "shrink-0 rounded-btn p-1.5",
+            settingsActive ? "bg-teal-tint text-teal" : "text-graphite hover:bg-line-soft hover:text-ink",
+          )}
+        >
+          <Settings size={14} />
+        </button>
       </div>
     </div>
   );
 }
+
+const ACCOUNT_ITEMS: readonly { label: string; value: string }[] = [
+  { label: "界面语言", value: "简体中文" },
+  { label: "界面主题", value: "浅色" },
+];
 
 /* ------------------------------------------------------------- 单元行 */
 
@@ -520,34 +566,5 @@ function MenuButton({
         </>
       )}
     </div>
-  );
-}
-
-function FooterButton({
-  icon,
-  label,
-  hint,
-  active,
-  onClick,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  hint?: string;
-  active?: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      aria-current={active}
-      className={cn(
-        "flex w-full items-center gap-2 rounded-btn px-2 py-1.5 text-body-sm",
-        active ? "bg-teal-tint font-medium text-ink" : "text-graphite hover:bg-line-soft hover:text-ink",
-      )}
-    >
-      {icon}
-      {label}
-      {hint && <span className="ml-auto font-mono text-caption text-ash">{hint}</span>}
-    </button>
   );
 }

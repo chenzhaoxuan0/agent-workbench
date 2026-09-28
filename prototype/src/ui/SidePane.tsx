@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Activity,
   Braces,
   Boxes,
   Check,
   ChevronDown,
+  ChevronsDownUp,
   Circle,
   CircleDot,
   FileCode,
@@ -23,6 +24,7 @@ import {
   Network,
   PenTool,
   Plus,
+  PanelRightClose,
   Radio,
   RotateCcw,
   Square,
@@ -39,7 +41,6 @@ import {
   groupTabTypesByScope,
   metaOf,
   NEEDS_RUNTIME,
-  resolveTabsOverflow,
   scopeOf,
   SCOPE_LABEL,
   shouldKeepMounted,
@@ -49,6 +50,9 @@ import {
 } from "../core/sidepane.ts";
 import { isShellTool, type PlanStep, type PlanStepStatus } from "../core/events.ts";
 import { formatContext, formatPrice, modelById } from "../core/models.ts";
+import { formatDuration, formatTokensPerSecond } from "../core/sessionStats.ts";
+import { deriveTrajectory, trajTokenText, type TrajKind } from "../core/trajectory.ts";
+import { useShallow } from "zustand/react/shallow";
 import { useSidePane } from "../store/useSidePane.ts";
 import {
   selectVisibleModels,
@@ -98,9 +102,6 @@ const ICON: Record<SidePaneTabType, typeof Layers> = {
   "bash-output": Square,
 };
 
-const ADD_BTN = 26;
-const BAR_PAD = 8;
-
 /**
  * 右侧标签面板 —— 对齐 ZCode 的 `AnimatedSidePanePanel` + `SidePaneTabTrigger`。
  *
@@ -132,35 +133,15 @@ export function SidePane({ ownerId }: { ownerId: string | null }) {
   const [catalog, setCatalog] = useState(false);
   const [dragId, setDragId] = useState<string | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
-  const [barWidth, setBarWidth] = useState(0);
-  const barRef = useRef<HTMLDivElement>(null);
 
   // 切会话时按新归属修正激活页
   useEffect(() => {
     useSidePane.getState().syncOwner(ownerId);
   }, [ownerId]);
 
-  // 测量标签栏宽度，用于溢出判定
-  useEffect(() => {
-    const el = barRef.current;
-    if (!el) return;
-    const ro = new ResizeObserver(() => setBarWidth(el.clientWidth));
-    ro.observe(el);
-    setBarWidth(el.clientWidth);
-    return () => ro.disconnect();
-  }, []);
-
   const visible = useMemo(() => getVisibleTabs(state, ownerId), [state, ownerId]);
   const activeTab = visible.find((t) => t.id === state?.activeTabId);
   const badges = useTabBadges(ownerId);
-
-  // 溢出判定 —— 对齐 resolveSidePaneTabsOverflow
-  const tabsOverflow = resolveTabsOverflow({
-    addButtonInside: true,
-    addButtonWidth: ADD_BTN,
-    tabCount: visible.length,
-    viewportWidth: barWidth - BAR_PAD,
-  });
 
   // 常驻挂载：面板收起时，keepMounted 的 tab 内容仍然渲染
   const keepMounted = shouldKeepMounted(open, state?.tabs ?? []);
@@ -182,17 +163,76 @@ export function SidePane({ ownerId }: { ownerId: string | null }) {
 
   return (
     <div className="relative flex h-full min-h-0 flex-col bg-rail">
-      {/* 标签栏 */}
-      <div className="flex h-11 shrink-0 items-center gap-0.5 border-b border-line px-2">
-        {/* ⚠ 标签条必须自己裁剪。
-            父级 overflow-hidden 只裁到「标签栏 + 右侧按钮」整块，
-            标签条内部的溢出页签会直接盖住右侧的「清空 / ＋ / 总览」三个按钮 ——
-            表现是「点 ＋ 打开了变更页」。
-            overflow-x-auto 让它变成可横向滚动的独立区域，滚动条藏掉不占 44px 的高度。 */}
-        <div
-          ref={barRef}
-          className="no-scrollbar flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto"
+      {/* 顶条：只放当前页签名 + 动作按钮。页签本体已移到右缘竖排任务栏，
+          顶部不再被一排页签占满 */}
+      <div className="flex h-12 shrink-0 items-center gap-0.5 border-b border-line/60 px-2">
+        <span className="min-w-0 flex-1 truncate text-body-sm font-medium text-ink">
+          {activeTab ? activeTab.title : "面板"}
+        </span>
+        {recentlyClosed.length > 0 && (
+          <button
+            onClick={reopen}
+            title="恢复最近关闭的标签"
+            aria-label="恢复最近关闭的标签"
+            className="shrink-0 rounded-btn p-1.5 text-ash hover:bg-line-soft hover:text-ink"
+          >
+            <RotateCcw size={12} />
+          </button>
+        )}
+        {visible.length > 1 && (
+          <button
+            onClick={closeAll}
+            title="关闭全部标签页"
+            className="shrink-0 whitespace-nowrap rounded-btn px-2 py-1 text-caption text-ash hover:bg-line-soft hover:text-ink"
+          >
+            清空
+          </button>
+        )}
+        <button
+          onClick={() => setCatalog(true)}
+          title="打开面板标签"
+          aria-label="打开面板标签"
+          className="shrink-0 rounded-btn p-1.5 text-ash hover:bg-line-soft hover:text-ink"
         >
+          <Plus size={12} />
+        </button>
+        <span className="mx-0.5 h-4 w-px bg-line" aria-hidden />
+        <button
+          onClick={() => useSidePane.getState().setOpen(false)}
+          title="收起右栏"
+          aria-label="收起右栏"
+          className="shrink-0 rounded-btn p-1.5 text-ash hover:bg-line-soft hover:text-ink"
+        >
+          <PanelRightClose size={12} />
+        </button>
+      </div>
+
+      {catalog && <TabCatalog ownerId={ownerId} onClose={() => setCatalog(false)} />}
+
+      <div className="flex min-h-0 flex-1">
+        {/* 内容 */}
+        <div className="min-w-0 flex-1 overflow-y-auto">
+          {visible.length === 0 ? (
+            <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
+              <p className="text-body-sm text-graphite">当前会话下没有可见标签</p>
+              <p className="max-w-[260px] text-caption text-ash">
+                会话级标签只在它归属的那条会话里出现。工作区级标签可以随时打开。
+              </p>
+              <button
+                onClick={() => useSidePane.getState().openTabType("capabilities", ownerId)}
+                className="mt-1 rounded-btn bg-ink px-3 py-1.5 text-body-sm text-canvas hover:bg-black"
+              >
+                打开工作区级标签
+              </button>
+            </div>
+          ) : keepMounted ? (
+            <TabContent tab={activeTab} ownerId={ownerId} />
+          ) : null}
+        </div>
+
+        {/* 右缘竖排任务栏 —— 页签本体。图标竖排、激活高亮 + 左侧 teal 指示条，
+            badge 挂图标角上，hover 露出关闭钮；拖拽纵向重排 */}
+        <div className="flex w-11 shrink-0 flex-col items-center gap-0.5 border-l border-line bg-rail py-1.5">
           {visible.map((t) => {
             const Icon = ICON[t.type];
             const active = t.id === state.activeTabId;
@@ -217,11 +257,17 @@ export function SidePane({ ownerId }: { ownerId: string | null }) {
                   setOverId(null);
                 }}
                 className={cn(
-                  "group relative flex shrink-0 cursor-grab items-center active:cursor-grabbing",
+                  "group relative flex cursor-grab items-center justify-center active:cursor-grabbing",
                   dragId === t.id && "opacity-40",
                   overId === t.id && dragId !== t.id && "ring-1 ring-teal",
                 )}
               >
+                {active && (
+                  <span
+                    className="absolute left-0 top-1/2 h-6 w-0.5 -translate-y-1/2 rounded-full bg-teal"
+                    aria-hidden
+                  />
+                )}
                 <button
                   onClick={() => activate(t.id)}
                   onContextMenu={(e) => {
@@ -231,88 +277,36 @@ export function SidePane({ ownerId }: { ownerId: string | null }) {
                   title={`${t.title} · ${SCOPE_LABEL[t.scope]}\n${metaOf(t.type).typeLabel} — ${metaOf(t.type).hint}\n拖拽重排 · 右键关闭其他`}
                   aria-pressed={active}
                   className={cn(
-                    "flex items-center gap-1.5 whitespace-nowrap rounded-t-btn px-2.5 py-1.5 text-body-sm",
-                    active ? "bg-canvas font-medium text-ink" : "text-graphite hover:bg-line-soft hover:text-ink",
+                    "flex h-10 w-10 items-center justify-center rounded-btn",
+                    active ? "bg-teal-tint text-teal" : "text-graphite hover:bg-line-soft hover:text-ink",
                   )}
                 >
-                  <Icon size={12} />
-                  {t.title}
-                  {badge > 0 && (
-                    <span
-                      className="tnum rounded-chip bg-line-soft px-1.5 text-caption text-graphite"
-                      title={`${badge}`}
-                    >
-                      {badge}
-                    </span>
-                  )}
+                  <span className="relative flex items-center justify-center">
+                    <Icon size={15} />
+                    {badge > 0 && (
+                      <span
+                        className="tnum absolute -right-2 -top-1.5 rounded-chip bg-line-soft px-1 text-[9px] leading-3 text-graphite"
+                        title={`${badge}`}
+                      >
+                        {badge}
+                      </span>
+                    )}
+                  </span>
                 </button>
                 <button
                   onClick={() => closeTab(t.id)}
                   aria-label={`关闭 ${t.title}`}
-                  className="absolute right-0.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-ash opacity-0 transition group-hover:opacity-100 hover:bg-line hover:text-ink focus-visible:opacity-100"
+                  className="absolute right-0 top-0 hidden rounded p-px text-ash hover:text-loss group-hover:block"
                 >
-                  <X size={11} />
+                  <X size={9} />
                 </button>
-                {active && <span className="absolute inset-x-0 -bottom-px h-px bg-canvas" />}
               </div>
             );
           })}
-        </div>
-
-        <div className="flex shrink-0 items-center gap-0.5">
-          {recentlyClosed.length > 0 && (
-            <button
-              onClick={reopen}
-              title="恢复最近关闭的标签"
-              aria-label="恢复最近关闭的标签"
-              className="rounded-btn p-1 text-ash hover:bg-line-soft hover:text-ink"
-            >
-              <RotateCcw size={12} />
-            </button>
-          )}
-          {visible.length > 1 && (
-            <button
-              onClick={closeAll}
-              title="关闭全部标签页"
-              className="whitespace-nowrap rounded-btn px-2 py-1 text-caption text-ash hover:bg-line-soft hover:text-ink"
-            >
-              清空
-            </button>
-          )}
-          {/* 「+」= ZCode 的 add button，常驻在 tab 条内。标签放不下时它也不挪走，
-              挪的是总览入口的体积 —— 溢出判定的是 add button 放条内还是条外 */}
-          <button
-            onClick={() => setCatalog(true)}
-            title="打开面板标签"
-            aria-label="打开面板标签"
-            className="shrink-0 rounded-btn p-1.5 text-ash hover:bg-line-soft hover:text-ink"
-          >
-            <Plus size={12} />
-          </button>
-          <OverviewTrigger onOpen={() => setOverview(true)} compact={tabsOverflow} />
-        </div>
-      </div>
-
-      {catalog && <TabCatalog ownerId={ownerId} onClose={() => setCatalog(false)} />}
-
-      {/* 内容 */}
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        {visible.length === 0 ? (
-          <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
-            <p className="text-body-sm text-graphite">当前会话下没有可见标签</p>
-            <p className="max-w-[260px] text-caption text-ash">
-              会话级标签只在它归属的那条会话里出现。工作区级标签可以随时打开。
-            </p>
-            <button
-              onClick={() => useSidePane.getState().openTabType("capabilities", ownerId)}
-              className="mt-1 rounded-btn bg-ink px-3 py-1.5 text-body-sm text-canvas hover:bg-black"
-            >
-              打开工作区级标签
-            </button>
+          <div className="mt-auto">
+            <OverviewTrigger onOpen={() => setOverview(true)} compact />
           </div>
-        ) : keepMounted ? (
-          <TabContent tab={activeTab} ownerId={ownerId} />
-        ) : null}
+        </div>
       </div>
 
       {overview && <SidePaneOverview ownerId={ownerId} onClose={() => setOverview(false)} />}
@@ -660,7 +654,9 @@ function CapabilitiesPane() {
 
 function DeliverablesPane() {
   const unit = useWorkbench(selectActiveUnit);
-  const deliverables = useWorkbench(selectUnitDeliverables);
+  // selectUnitDeliverables 每次返回新数组 —— 必须 useShallow（旧 RightPanel 踩过这个坑），
+  // 裸用会在 React 19 触发 getSnapshot 无限循环 → 整页白屏
+  const deliverables = useWorkbench(useShallow(selectUnitDeliverables));
   if (!unit) return null;
   return (
     <PaneSection title={`产出归档 · ${deliverables.length}`}>
@@ -1161,25 +1157,87 @@ function PlanPane({ ownerId }: { ownerId: string | null }) {
   );
 }
 
+/* ------------------------------------------------------------- 轨迹 */
+
+const KIND_LABEL: Record<TrajKind, string> = {
+  system: "系统",
+  user: "用户",
+  assistant: "助手",
+  tool: "工具",
+  plan: "计划",
+  permission: "权限",
+  subagent: "子代理",
+  diff: "变更",
+  deliverable: "产出",
+};
+
+/** 类型色标。设计系统只许 teal 一个彩色：用户行墨色反白，助手青色浅底，其余灰阶 */
+const KIND_CLASS: Record<TrajKind, string> = {
+  system: "bg-line-soft text-graphite",
+  user: "bg-ink text-canvas",
+  assistant: "bg-teal-tint text-teal",
+  tool: "bg-line-soft text-graphite",
+  plan: "bg-line-soft text-graphite",
+  permission: "bg-line-soft text-graphite",
+  subagent: "bg-line-soft text-graphite",
+  diff: "bg-line-soft text-graphite",
+  deliverable: "bg-teal-tint text-teal",
+};
+
+/**
+ * 轨迹页签 —— 对齐 dsh 的 TrajectoryView（ui-trajectory）。
+ *
+ * dsh 是「工具栏 → 三泳道时间轴 → 账本表格 + 详情面板」三层；面板宽度内
+ * 取其骨架：会话统计（session-stats 投影口径）→ 折叠/搜索工具栏 →
+ * Turn 分组账本（轮头带 token/步数/工具直方图，行带类型色标、内联结果、
+ * 可展开详情）。时间轴泳道待真实运行时的精确计时接入后再补。
+ */
 function TracePane({ ownerId }: { ownerId: string | null }) {
   const timeline = useOwnEvents(ownerId);
   const busy = useWorkbench((s) => s.busy);
-  const total = useMemo(
-    () => ({
-      events: timeline.length,
-      tools: timeline.filter((t) => t.event.type.startsWith("tool.")).length,
-      cost: timeline.reduce((s, t) => (t.event.type === "usage" ? s + t.event.costUsd : s), 0),
-    }),
-    [timeline],
-  );
+  const traj = useMemo(() => deriveTrajectory(timeline), [timeline]);
+  const stats = traj.stats;
+
+  const [query, setQuery] = useState("");
+  const [collapsedTurns, setCollapsedTurns] = useState<ReadonlySet<number>>(new Set());
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
+
+  const needle = query.trim().toLowerCase();
+  const visibleTurns = traj.turns
+    .map((t) => ({ ...t, records: t.records.filter((r) => !needle || r.text.toLowerCase().includes(needle) || r.label.toLowerCase().includes(needle)) }))
+    .filter((t) => t.records.length > 0);
+
+  const toggleTurn = (turn: number) =>
+    setCollapsedTurns((s) => {
+      const next = new Set(s);
+      if (next.has(turn)) next.delete(turn);
+      else next.add(turn);
+      return next;
+    });
+  const toggleAll = () => {
+    const allCollapsed = visibleTurns.length > 0 && visibleTurns.every((t) => collapsedTurns.has(t.turn));
+    setCollapsedTurns(allCollapsed ? new Set() : new Set(visibleTurns.map((t) => t.turn)));
+  };
+  const toggleRecord = (id: string) =>
+    setExpanded((s) => {
+      const next = new Set(s);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
 
   return (
     <>
-      <PaneSection title="本会话">
-        <div className="grid grid-cols-3 gap-2">
-          <Stat label="事件" value={String(total.events)} />
-          <Stat label="工具调用" value={String(total.tools)} />
-          <Stat label="成本" value={`$${total.cost.toFixed(3)}`} />
+      <PaneSection title="会话统计">
+        <div className="grid grid-cols-2 gap-2">
+          <Stat label="轮次" value={String(stats.turns)} />
+          <Stat label="步数" value={String(stats.steps)} />
+          <Stat label="LLM 耗时" value={stats.llmMs > 0 ? formatDuration(stats.llmMs) : "—"} />
+          <Stat label="工具耗时" value={stats.toolMs > 0 ? formatDuration(stats.toolMs) : "—"} />
+          <Stat label="输出速度" value={stats.tokensPerSecond === null ? "—" : `${formatTokensPerSecond(stats.tokensPerSecond)} tok/s`} />
+          <Stat label="tokens" value={trajTokenText(stats.tokens)} />
+          <Stat label="成本" value={`$${stats.costUsd.toFixed(3)}`} />
+          <Stat label="事件" value={String(stats.eventCount)} />
         </div>
         {busy && (
           <p className="mt-3 flex items-center gap-2 text-caption text-graphite">
@@ -1189,23 +1247,97 @@ function TracePane({ ownerId }: { ownerId: string | null }) {
         )}
       </PaneSection>
 
-      <PaneSection title={`原始事件流 · ${timeline.length}`}>
-        {timeline.length === 0 ? (
-          <Empty text="本会话还没有事件。" sub="每条事件都带 sessionId，只有归属本会话的会进这一页。" />
+      <PaneSection title={`轨迹账本 · ${stats.eventCount} 事件`}>
+        {/* 工具栏（dsh TrajectoryToolbar：折叠轮次 + 搜索） */}
+        <div className="mb-2 flex items-center gap-1.5">
+          <button
+            onClick={toggleAll}
+            aria-pressed={visibleTurns.length > 0 && visibleTurns.every((t) => collapsedTurns.has(t.turn))}
+            className="flex shrink-0 items-center gap-1 rounded-btn border border-line px-1.5 py-1 text-caption text-graphite hover:bg-line-soft hover:text-ink aria-pressed:border-teal-edge aria-pressed:bg-teal-tint aria-pressed:text-ink"
+          >
+            <ChevronsDownUp size={11} />
+            折叠轮次
+          </button>
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="搜索轨迹…"
+            aria-label="搜索轨迹"
+            className="min-w-0 flex-1 rounded-btn border border-line bg-canvas px-2 py-1 text-caption text-ink outline-none placeholder:text-ash focus:border-teal"
+          />
+        </div>
+
+        {visibleTurns.length === 0 ? (
+          <Empty
+            text={needle ? "没有匹配的轨迹记录。" : "本会话还没有轨迹。"}
+            sub={needle ? "换个关键词试试。" : "发一次任务，这里的账本会按轮次折叠出完整因果链。"}
+          />
         ) : (
-          timeline.map(({ id, event, at }) => (
-            <details key={id} className="-mx-2 rounded-btn px-2 py-1 hover:bg-line-soft">
-              <summary className="flex cursor-pointer items-center gap-2 text-caption">
-                <span className="tnum shrink-0 text-ash">
-                  {new Date(at).toLocaleTimeString("zh-CN", { hour12: false })}
-                </span>
-                <span className="truncate font-mono text-graphite">{event.type}</span>
-              </summary>
-              <pre className="mt-1.5 overflow-x-auto whitespace-pre-wrap break-all rounded bg-canvas p-2 font-mono text-caption leading-relaxed text-ash">
-                {JSON.stringify(event, null, 1)}
-              </pre>
-            </details>
-          ))
+          visibleTurns.map((turn) => {
+            const isCollapsed = collapsedTurns.has(turn.turn);
+            return (
+              <div key={turn.turn} className="mb-2">
+                {/* 轮头（dsh TrajectoryTurnHeader：Turn N + token/步数/工具摘要） */}
+                <button
+                  onClick={() => toggleTurn(turn.turn)}
+                  aria-expanded={!isCollapsed}
+                  className="flex w-full items-center gap-1.5 rounded-btn bg-rail px-1.5 py-1 text-caption text-graphite hover:text-ink"
+                >
+                  <ChevronDown size={11} className={cn("shrink-0 transition-transform", isCollapsed && "-rotate-90")} />
+                  <span className="shrink-0 font-medium text-ink">Turn {turn.turn}</span>
+                  <span className="tnum ml-auto shrink-0 text-ash">
+                    {trajTokenText(turn.tokens)} · {turn.steps} 步 · 工具×{turn.toolCalls}
+                  </span>
+                </button>
+
+                {!isCollapsed && (
+                  <div className="mt-0.5 space-y-px">
+                    {turn.records.map((r) => {
+                      const isOpen = expanded.has(r.id);
+                      return (
+                        <div key={r.id}>
+                          <button
+                            onClick={() => r.detail && toggleRecord(r.id)}
+                            aria-expanded={r.detail ? isOpen : undefined}
+                            className={cn(
+                              "flex w-full items-center gap-1.5 rounded-btn px-1 py-1 text-left",
+                              r.detail ? "hover:bg-line-soft" : "cursor-default",
+                            )}
+                          >
+                            <span className="tnum w-14 shrink-0 text-[10px] text-ash">{r.clock}</span>
+                            <span
+                              className={cn(
+                                "shrink-0 rounded-chip px-1.5 py-px text-[10px] leading-4",
+                                KIND_CLASS[r.kind],
+                                r.isError && "bg-loss/10 text-loss",
+                              )}
+                            >
+                              {r.label}
+                            </span>
+                            <span className="min-w-0 flex-1 truncate text-caption text-ink">
+                              {r.text}
+                              {r.result && <span className="text-ash"> → {r.result}</span>}
+                            </span>
+                            {r.durationMs !== undefined && (
+                              <span className="tnum shrink-0 text-[10px] text-ash">{formatDuration(r.durationMs)}</span>
+                            )}
+                            {r.detail && (
+                              <ChevronDown size={11} className={cn("shrink-0 text-ash", !isOpen && "-rotate-90")} />
+                            )}
+                          </button>
+                          {isOpen && r.detail && (
+                            <pre className="mb-1 ml-6 overflow-x-auto whitespace-pre-wrap break-all rounded bg-canvas p-2 font-mono text-caption leading-relaxed text-ash">
+                              {r.detail}
+                            </pre>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })
         )}
       </PaneSection>
     </>

@@ -33,12 +33,14 @@ interface Option {
 }
 
 /**
- * 权限对话框 —— 对齐 ZCode 的 PermissionDialog。
+ * 权限卡片 —— 对齐 ZCode 的 PermissionDialog + V4InteractionDialogs。
  *
  * 照搬的三点，每一条都有理由：
  *
- * 1. **模态而非时间线内联卡片。** 待裁决请求必须打断当前操作，
- *    内联卡要滚动才看得见。
+ * 1. **bottom dock 卡片而非居中模态。** ZCode 把待裁决请求作为
+ *    composer 正上方的 dock 卡片渲染（V4InteractionDialogs）——
+ *    它必须被打断，但不遮住时间线上下文。挂载点在会话列
+ *    Timeline 与 Composer 之间，与 ZCode 同位。
  *
  * 2. **先选中、再统一确认。** 不是每个选项一个按钮 —— 底部只有一个
  *    「确定」。这让「点错了」和「确认授权」成为两个不同的动作。
@@ -132,14 +134,16 @@ export function PermissionDialog() {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/20 p-6">
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label={title}
-        className="w-[460px] max-w-full overflow-hidden rounded-card border border-line bg-canvas shadow-subtle"
-      >
-        <div className="flex flex-col gap-3 p-3">
+    // bottom dock 卡片 —— 挂在 composer 正上方（ZCode 的 V4InteractionDialogs 同位），
+    // 不遮时间线、不打断输入焦点
+    <div className="shrink-0">
+      <div className="mx-auto w-full max-w-[900px] px-8 pb-1">
+        <div
+          role="dialog"
+          aria-label={title}
+          className="overflow-hidden rounded-card border border-line bg-canvas shadow-subtle"
+        >
+          <div className="flex flex-col gap-3 p-3">
           {/* 头部：工具类型 + 风险 + 原因 */}
           <div className="flex flex-wrap items-center gap-2">
             <ShieldAlert size={14} className="shrink-0 text-teal" />
@@ -236,6 +240,7 @@ export function PermissionDialog() {
               {confirmLabel}
             </button>
           </div>
+        </div>
         </div>
       </div>
     </div>
