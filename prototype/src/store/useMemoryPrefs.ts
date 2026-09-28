@@ -1,104 +1,171 @@
 import { create } from "zustand";
 
 /**
- * 记忆偏好 —— 全局默认，对齐 waku-agent 的记忆三柱与门控/整理参数
- * （waku: WAKU_SEMANTIC_STORE / WAKU_EPISODIC_STORE / WAKU_RETRIEVAL_TOP_K /
- *  WAKU_CONSOLIDATE_EVERY / small_model 门控）。
+ * 记忆编排 —— 后端注册表 + 三层路由（对齐 T3 的 provider instance 逻辑，
+ * 数据模型对齐 waku 的记忆三柱）。
  *
- * 每 bot 的接入开关在「添加 bot」时单独声明（WorkUnit.memory），
- * 这里的全局值作为未显式声明时的默认。
+ * 分三层解耦：
+ * 1. **后端注册表**：每个后端是一条实例（类型 / 名称 / 启停 / 连接配置），
+ *    同类型可注册多个（两个 WeKnora KB = 两个后端）；
+ * 2. **全局路由**：语义 / 情节 / 程序性各路由到一组启用的后端
+ *    （检索 = 并集，写入 = 广播）；
+ * 3. **每 bot 路由覆盖**（WorkUnit.memory.routes）：分开用 = 指向不同
+ *    后端子集，合起来用 = 全部指向同一组；未声明 = 跟随全局。
+ *
+ * 凭据边界同 dsh：真运行时后 key 应移入凭据库，配置只留引用名。
  */
 
-export type SemanticStore = "sqlite" | "weknora" | "supabase" | "mem0" | "zep" | "langmem";
+export type BackendType =
+  | "sqlite"
+  | "weknora"
+  | "supabase"
+  | "mem0"
+  | "zep"
+  | "langmem"
+  | "notion"
+  | "local-folder";
 
-/** WeKnora 连接配置（本地 Docker 部署，默认 8080） */
-export interface WeknoraConfig {
-  baseUrl: string;
-  apiKey: string;
-  /** 语义事实所在的知识库 id（可通过「测试连接」拉取列表选择） */
-  kbId: string;
+export interface MemoryBackend {
+  id: string;
+  type: BackendType;
+  name: string;
+  enabled: boolean;
+  /** weknora */
+  baseUrl?: string;
+  apiKey?: string;
+  kbId?: string;
+  /** local-folder（句柄本体在 IndexedDB，见 core/localMemorySource.ts） */
+  sourceId?: string;
 }
-export type EpisodicStore = "sqlite" | "notion" | "weknora";
+
+export interface MemoryRoutes {
+  semantic: readonly string[];
+  episodic: readonly string[];
+  procedural: readonly string[];
+}
 
 export interface MemoryPrefs {
-  /**
-   * 语义记忆 · 事实（人/项目/偏好的持久事实，FTS5 检索）。
-   * **多后端**：检索 = 全部启用后端的并集；写入 = 广播到全部启用后端
-   * （镜像语义——一个后端挂了记忆不丢）。
-   */
-  semanticEnabled: boolean;
-  semanticStores: readonly SemanticStore[];
-  /** 检索条数（waku: WAKU_RETRIEVAL_TOP_K，默认 4） */
-  semanticTopK: number;
-  /** semanticStore === "weknora" 时的连接配置 */
-  weknoraBaseUrl: string;
-  weknoraApiKey: string;
-  /** 各记忆层绑定的 WeKnora 知识库（多选：检索跨库并集；语义写入进第一个勾选库） */
-  weknoraSemanticKbIds: readonly string[];
-  weknoraEpisodicKbIds: readonly string[];
-  /** 本地文件来源（不经 WeKnora 直连的文件夹；句柄存 IndexedDB） */
-  localSources: readonly { id: string; name: string }[];
-  /** 情节记忆 · 事件（带日期的“发生过什么”一句话摘要）——多后端同上 */
-  episodicEnabled: boolean;
-  episodicStores: readonly EpisodicStore[];
-  /** 程序性记忆 · 技能（SKILL.md 关键词命中注入，每轮最多 2 个） */
-  proceduralEnabled: boolean;
-  /** 检索门控：小模型先判断本次是否需要检索；fail-open（门控出错就检索） */
+  backends: readonly MemoryBackend[];
+  routes: MemoryRoutes;
+  /** 检索门控：小模型先判断本次是否需要检索；fail-open */
   gateEnabled: boolean;
   gateModel: string;
   /** 记忆整理：每 N 次交换由小模型提取 facts + episode（waku 默认 6） */
   consolidateEvery: number;
   /** 人读镜像：每轮后重新生成 MEMORY.md */
   mirrorMd: boolean;
+  /** 语义检索条数（waku: WAKU_RETRIEVAL_TOP_K，默认 4） */
+  semanticTopK: number;
 }
 
 const DEFAULTS: MemoryPrefs = {
-  semanticEnabled: true,
-  semanticStores: ["sqlite"],
-  semanticTopK: 4,
-  weknoraBaseUrl: "http://localhost:18080",
-  weknoraApiKey: "",
-  weknoraSemanticKbIds: [],
-  weknoraEpisodicKbIds: [],
-  localSources: [],
-  episodicEnabled: true,
-  episodicStores: ["sqlite"],
-  proceduralEnabled: true,
+  backends: [{ id: "be-sqlite", type: "sqlite", name: "本地 SQLite", enabled: true }],
+  routes: {
+    semantic: ["be-sqlite"],
+    episodic: ["be-sqlite"],
+    procedural: ["be-sqlite"],
+  },
   gateEnabled: true,
   gateModel: "claude-haiku-4-5",
   consolidateEvery: 6,
   mirrorMd: true,
+  semanticTopK: 4,
 };
 
-const STORAGE_KEY = "agent-workbench:memory-prefs";
+const STORAGE_KEY = "agent-workbench:memory-orchestration";
+
+/* ------------------------------------------------------------- 持久化 */
 
 function load(): MemoryPrefs {
   if (typeof window === "undefined") return DEFAULTS;
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return DEFAULTS;
-    const prefs = { ...DEFAULTS, ...(JSON.parse(raw) as Partial<MemoryPrefs>) };
-    // 默认值迁移：旧版默认 8080（WeKnora 实际 docker 映射 18080）
-    if (prefs.weknoraBaseUrl === "http://localhost:8080") {
-      prefs.weknoraBaseUrl = DEFAULTS.weknoraBaseUrl;
+    if (raw) {
+      const parsed = JSON.parse(raw) as Partial<MemoryPrefs>;
+      return {
+        backends: parsed.backends ?? DEFAULTS.backends,
+        routes: { ...DEFAULTS.routes, ...(parsed.routes ?? {}) },
+        gateEnabled: parsed.gateEnabled ?? DEFAULTS.gateEnabled,
+        gateModel: parsed.gateModel ?? DEFAULTS.gateModel,
+        consolidateEvery: parsed.consolidateEvery ?? DEFAULTS.consolidateEvery,
+        mirrorMd: parsed.mirrorMd ?? DEFAULTS.mirrorMd,
+        semanticTopK: parsed.semanticTopK ?? DEFAULTS.semanticTopK,
+      };
     }
-    // 旧版单库绑定 → 语义层多选（weknoraKbId 已废）
-    const legacyKb = (prefs as { weknoraKbId?: string }).weknoraKbId;
-    if (legacyKb && prefs.weknoraSemanticKbIds.length === 0) {
-      prefs.weknoraSemanticKbIds = [legacyKb];
-    }
-    // 旧版单后端 → 多后端
-    const legacySem = (prefs as { semanticStore?: SemanticStore }).semanticStore;
-    if (legacySem && prefs.semanticStores.length === 0) {
-      prefs.semanticStores = [legacySem];
-    }
-    const legacyEpi = (prefs as { episodicStore?: EpisodicStore }).episodicStore;
-    if (legacyEpi && prefs.episodicStores.length === 0) {
-      prefs.episodicStores = [legacyEpi];
-    }
-    return prefs;
+    return migrateLegacy();
   } catch {
-    return DEFAULTS;
+    return migrateLegacy();
+  }
+}
+
+/**
+ * 旧版单选 / weknora 散字段的迁移：
+ * semanticStore(s) / episodicStore(s) / weknora 三件套 / localSources
+ * → 后端注册表 + 路由。幂等：新结构存在即跳过。
+ */
+function migrateLegacy(): MemoryPrefs {
+  const prefs = DEFAULTS;
+  try {
+    const legacy = JSON.parse(
+      window.localStorage.getItem("agent-workbench:memory-prefs") ?? "null",
+    ) as
+      | {
+          semanticEnabled?: boolean;
+          semanticStores?: string[];
+          semanticStore?: string;
+          episodicEnabled?: boolean;
+          episodicStores?: string[];
+          episodicStore?: string;
+          weknoraBaseUrl?: string;
+          weknoraApiKey?: string;
+          weknoraSemanticKbIds?: string[];
+          weknoraEpisodicKbIds?: string[];
+          localSources?: { id: string; name: string }[];
+        }
+      | null;
+    if (!legacy) return prefs;
+
+    const backends: MemoryBackend[] = [...prefs.backends];
+    const semantic = [...prefs.routes.semantic];
+    const episodic = [...prefs.routes.episodic];
+
+    if (legacy.weknoraBaseUrl) {
+      for (const kbId of legacy.weknoraSemanticKbIds ?? []) {
+        const id = `be-weknora-${kbId}`;
+        backends.push({
+          id,
+          type: "weknora",
+          name: `WeKnora · ${kbId}`,
+          enabled: legacy.semanticEnabled !== false,
+          baseUrl: legacy.weknoraBaseUrl,
+          apiKey: legacy.weknoraApiKey,
+          kbId,
+        });
+        semantic.push(id);
+      }
+      for (const kbId of legacy.weknoraEpisodicKbIds ?? []) {
+        const id = `be-weknora-epi-${kbId}`;
+        backends.push({
+          id,
+          type: "weknora",
+          name: `WeKnora · ${kbId}（情节）`,
+          enabled: legacy.episodicEnabled !== false,
+          baseUrl: legacy.weknoraBaseUrl,
+          apiKey: legacy.weknoraApiKey,
+          kbId,
+        });
+        episodic.push(id);
+      }
+    }
+    for (const src of legacy.localSources ?? []) {
+      const id = `be-local-${src.id}`;
+      backends.push({ id, type: "local-folder", name: `本地 · ${src.name}`, enabled: true, sourceId: src.id });
+      semantic.push(id);
+    }
+
+    return { ...prefs, backends, routes: { semantic, episodic, procedural: prefs.routes.procedural } };
+  } catch {
+    return prefs;
   }
 }
 
@@ -110,33 +177,75 @@ function save(prefs: MemoryPrefs): void {
   }
 }
 
-interface MemoryPrefsState {
+/* ------------------------------------------------------------- store */
+
+interface MemoryOrchestrationState {
   prefs: MemoryPrefs;
-  update: (patch: Partial<MemoryPrefs>) => void;
-  addLocalSource: (source: { id: string; name: string }) => void;
-  removeLocalSource: (id: string) => void;
-  reset: () => void;
+  addBackend: (backend: Omit<MemoryBackend, "id"> & { id?: string }) => string;
+  updateBackend: (id: string, patch: Partial<Omit<MemoryBackend, "id">>) => void;
+  removeBackend: (id: string) => void;
+  /** 启停同时从路由中摘除/加回（停用 = 该层暂时不查不写，配置保留） */
+  toggleBackend: (id: string, enabled: boolean) => void;
+  setRoute: (layer: keyof MemoryRoutes, ids: readonly string[]) => void;
+  setGate: (
+    patch: Partial<
+      Pick<MemoryPrefs, "gateEnabled" | "gateModel" | "consolidateEvery" | "mirrorMd" | "semanticTopK">
+    >,
+  ) => void;
 }
 
-export const useMemoryPrefs = create<MemoryPrefsState>()((set, get) => ({
+export const useMemoryOrchestration = create<MemoryOrchestrationState>()((set, get) => ({
   prefs: load(),
-  update: (patch) => {
-    const next = { ...get().prefs, ...patch };
-    save(next);
-    set({ prefs: next });
+
+  addBackend: (backend) => {
+    const id = backend.id ?? `be-${backend.type}-${Date.now().toString(36)}`;
+    set((s) => ({ prefs: { ...s.prefs, backends: [...s.prefs.backends, { ...backend, id }] } }));
+    save(get().prefs);
+    return id;
   },
-  addLocalSource: (source) => {
-    const next = { ...get().prefs, localSources: [...get().prefs.localSources, source] };
-    save(next);
-    set({ prefs: next });
+
+  updateBackend: (id, patch) => {
+    set((s) => ({
+      prefs: {
+        ...s.prefs,
+        backends: s.prefs.backends.map((b) => (b.id === id ? { ...b, ...patch, id } : b)),
+      },
+    }));
+    save(get().prefs);
   },
-  removeLocalSource: (id) => {
-    const next = { ...get().prefs, localSources: get().prefs.localSources.filter((x) => x.id !== id) };
-    save(next);
-    set({ prefs: next });
+
+  removeBackend: (id) => {
+    set((s) => ({
+      prefs: {
+        ...s.prefs,
+        backends: s.prefs.backends.filter((b) => b.id !== id),
+        routes: {
+          semantic: s.prefs.routes.semantic.filter((x) => x !== id),
+          episodic: s.prefs.routes.episodic.filter((x) => x !== id),
+          procedural: s.prefs.routes.procedural.filter((x) => x !== id),
+        },
+      },
+    }));
+    save(get().prefs);
   },
-  reset: () => {
-    save(DEFAULTS);
-    set({ prefs: DEFAULTS });
+
+  toggleBackend: (id, enabled) => {
+    set((s) => ({
+      prefs: {
+        ...s.prefs,
+        backends: s.prefs.backends.map((b) => (b.id === id ? { ...b, enabled } : b)),
+      },
+    }));
+    save(get().prefs);
+  },
+
+  setRoute: (layer, ids) => {
+    set((s) => ({ prefs: { ...s.prefs, routes: { ...s.prefs.routes, [layer]: ids } } }));
+    save(get().prefs);
+  },
+
+  setGate: (patch) => {
+    set((s) => ({ prefs: { ...s.prefs, ...patch } }));
+    save(get().prefs);
   },
 }));

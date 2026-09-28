@@ -471,3 +471,21 @@ WeKnora 知识库（多选）**：
   sqlite/supabase 等由真运行时执行，原型期演示 WeKnora 渠道）；
 - UI：后端行从下拉改为多选 chips（Check + teal-tint 点亮）；
   WeKnora 连接卡在任一层启用 weknora 时出现。
+
+### 记忆编排重构：后端注册表 + 三层路由（2026-09-28，waku 落地完成）
+
+设置记忆分区重写为 waku 三柱的**编排模型**（`useMemoryOrchestration`）：
+
+- **后端注册表**：每个后端是独立实例（类型 / 名称 / 启停 / 连接配置），
+  同类型可注册多个（两个 WeKnora KB = 两个后端实例）；添加入口按类型
+  展开（weknora = 地址+Key+测试连接拉 KB；local-folder = 文件夹选择器；
+  sqlite 内置；云端类型真运行时接入后开放）；
+- **三层路由**：语义 / 情节 / 程序性各路由到一组启用的后端
+  （chips 多选；写入广播 / 检索并集）；
+- **门控与整理**：检索门控（fail-open）/ 门控模型 / 整理频率 /
+  语义检索条数 / MEMORY.md 镜像 全部落位；
+- **实测卡**：写入广播（全部启用的 weknora 后端）+ 检索合并
+  （weknora hybrid-search + 本地文件夹关键词，跨渠道并集）。
+
+旧 MemorySelect 单后端、WeknoraCard 散卡、LocalSourcesCard 独立卡全部
+被注册表 + 路由的统一模型吸收删除。

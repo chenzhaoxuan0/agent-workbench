@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import {
   AlarmClock,
@@ -18,6 +18,7 @@ import {
   Shield,
   Wand,
   Trash2,
+  X,
 } from "lucide-react";
 import {
   SETTINGS_GROUPS,
@@ -27,7 +28,11 @@ import {
   type SettingsSectionId,
 } from "../store/useShell.ts";
 import { useWorkbench, selectActiveUnit } from "../store/useWorkbench.ts";
-import { useMemoryPrefs } from "../store/useMemoryPrefs.ts";
+import {
+  useMemoryOrchestration,
+  type MemoryBackend,
+  type BackendType,
+} from "../store/useMemoryPrefs.ts";
 import { weknoraListKb, weknoraPing, weknoraSaveFact, weknoraSearch, type WeknoraConfig, type WeknoraKb } from "../core/weknora.ts";
 import {
   dropLocalHandle,
@@ -245,85 +250,307 @@ function SectionBody({ section }: { section: SettingsSectionDef }) {
   }
 }
 
-/** 记忆分区 —— 对齐 waku-agent 的记忆三柱（semantic / episodic / procedural） */
+/** 记忆分区 —— 后端注册表 + 三层路由 + 门控整理（waku 三柱 / T3 实例逻辑） */
 function MemorySettingsSection() {
-  const prefs = useMemoryPrefs((s2) => s2.prefs);
-  const update = useMemoryPrefs((s2) => s2.update);
+  const prefs = useMemoryOrchestration((s) => s.prefs);
+  const addBackend = useMemoryOrchestration((s) => s.addBackend);
+  const updateBackend = useMemoryOrchestration((s) => s.updateBackend);
+  const removeBackend = useMemoryOrchestration((s) => s.removeBackend);
+  const toggleBackend = useMemoryOrchestration((s) => s.toggleBackend);
+  const setRoute = useMemoryOrchestration((s) => s.setRoute);
+  const setGate = useMemoryOrchestration((s) => s.setGate);
+
+  const [addingType, setAddingType] = useState<BackendType | null>(null);
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [errors, setErrors] = useState<string[]>([]);
+
+  // weknora 创建草稿
+  const [wkBase, setWkBase] = useState("http://localhost:18080");
+  const [wkKey, setWkKey] = useState("");
+  const [wkKbId, setWkKbId] = useState("");
+  const [wkTesting, setWkTesting] = useState(false);
+  const [wkKbs, setWkKbs] = useState<WeknoraKb[]>([]);
+  const [wkStatus, setWkStatus] = useState<string | null>(null);
+
+  // local-folder 创建
+  const [lfBusy, setLfBusy] = useState(false);
+
+  const enabledBackends = useMemo(() => prefs.backends.filter((b) => b.enabled), [prefs.backends]);
+
+  const backendTag: Record<BackendType, string> = {
+    sqlite: "SQLite",
+    weknora: "WeKnora",
+    supabase: "Supabase",
+    mem0: "Mem0",
+    zep: "Zep",
+    langmem: "LangMem",
+    notion: "Notion",
+    "local-folder": "本地文件夹",
+  };
+
+  const addTyped = (type: BackendType) => {
+    setAddingType(type);
+    if (type === "weknora") {
+      setWkBase("http://localhost:18080");
+      setWkKey("");
+      setWkKbId("");
+      setWkKbs([]);
+      setWkStatus(null);
+    }
+  };
+
+  const testWeknora = async () => {
+    setWkTesting(true);
+    try {
+      const list = await weknoraListKb({ baseUrl: wkBase, apiKey: wkKey });
+      setWkKbs(list);
+      setWkStatus(`连接成功 · ${list.length} 个知识库，已填入第一个`);
+      if (list[0]) setWkKbId(list[0].id);
+    } catch (e) {
+      setWkStatus(`连接失败：${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setWkTesting(false);
+    }
+  };
+
+  const createBackend = async () => {
+    if (addingType === null) return;
+    const errs: string[] = [];
+    if (addingType === "weknora") {
+      if (!wkKbId.trim()) errs.push("先测试连接并选择知识库 id");
+      if (errs.length > 0) {
+        setErrors(errs);
+        return;
+      }
+      const id = addBackend({
+        type: "weknora",
+        name: `WeKnora · ${wkKbId}`,
+        enabled: true,
+        baseUrl: wkBase,
+        apiKey: wkKey,
+        kbId: wkKbId.trim(),
+      });
+      setRoute("semantic", [...prefs.routes.semantic, id]);
+      setAddingType(null);
+      return;
+    }
+    if (addingType === "local-folder") {
+      setLfBusy(true);
+      try {
+        const picked = await pickLocalFolder();
+        if (picked) {
+          addBackend({
+            type: "local-folder",
+            name: `本地 · ${picked.name}`,
+            enabled: true,
+            sourceId: picked.id,
+          });
+          setAddingType(null);
+        }
+      } catch (e) {
+        setErrors([e instanceof Error ? e.message : String(e)]);
+      } finally {
+        setLfBusy(false);
+      }
+      return;
+    }
+    // sqlite 及云端类型：注册即可用（sqlite 内置；云端由真运行时接入）
+    const id = addBackend({
+      type: addingType,
+      name: backendTag[addingType],
+      enabled: true,
+    });
+    setAddingType(null);
+  };
+
+  const routedChips = (layer: "semantic" | "episodic" | "procedural") => {
+    const labelMap = { semantic: "语义记忆", episodic: "情节记忆", procedural: "程序性记忆" };
+    const routed = prefs.routes[layer];
+    return (
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="w-20 shrink-0 text-caption font-medium text-graphite">{labelMap[layer]}</span>
+        {enabledBackends.length === 0 ? (
+          <span className="text-caption text-ash">没有启用的后端</span>
+        ) : (
+          enabledBackends.map((b) => {
+            const on = routed.includes(b.id);
+            return (
+              <button
+                key={b.id}
+                onClick={() => setRoute(layer, on ? routed.filter((x) => x !== b.id) : [...routed, b.id])}
+                aria-pressed={on}
+                className={cn(
+                  "flex items-center gap-1 rounded-chip border px-2 py-0.5 text-caption",
+                  on
+                    ? "border-teal-edge bg-teal-tint font-medium text-ink"
+                    : "border-line text-graphite hover:bg-line-soft hover:text-ink",
+                )}
+              >
+                {on && <Check size={10} className="text-teal" />}
+                {b.name}
+              </button>
+            );
+          })
+        )}
+      </div>
+    );
+  };
 
   return (
     <div className="space-y-6">
       <p className="-mt-2 text-body-sm leading-relaxed text-graphite">
-        记忆分三层（对齐 waku-agent）：语义事实、情节事件、程序性技能。
-        每 bot 的接入开关在「添加 bot」时单独声明，这里配置全局后端与策略。
+        三层记忆（语义 / 情节 / 程序性）各自路由到一组启用的后端：检索合并全部后端的并集，
+        写入广播到每一个——分开用有分开的用法，合起来有合起来的用法。
+        每 bot 的路由覆盖在「添加 bot」时声明。
       </p>
 
+      {/* 后端注册表 */}
       <GroupCard>
-        <SettingsRow
-          label="语义记忆 · 事实"
-          description="关于人、项目、偏好的持久事实（FTS5 关键词检索）。例：「甲方喜欢简报不用长文」"
-          control={<Toggle on={prefs.semanticEnabled} onChange={(v) => update({ semanticEnabled: v })} />}
-        />
-        <SettingsRow
-          label="存储后端（可多选）"
-          description="检索合并全部启用后端；写入广播到每一个（镜像——单后端故障不丢记忆）"
-          control={
-            <BackendChips
-              value={prefs.semanticStores}
-              choices={["sqlite", "weknora", "supabase", "mem0", "zep", "langmem"] as const}
-              onChange={(v) => update({ semanticStores: v })}
-            />
-          }
-        />
-        <SettingsRow
-          label="检索条数"
-          description="每次注入的相关事实条数（top K）"
-          control={<Stepper value={prefs.semanticTopK} min={1} max={12} step={1} onChange={(v) => update({ semanticTopK: v })} />}
-        />
+        <div className="flex items-center justify-between gap-2 border-b border-line-soft px-4 pb-2 pt-3">
+          <p className="text-caption font-medium text-graphite">后端注册表 · {prefs.backends.length}</p>
+          <div className="flex flex-wrap items-center gap-1">
+            {(["weknora", "local-folder", "sqlite", "supabase", "mem0", "zep", "langmem", "notion"] as const).map((t) => {
+              const coming = !["weknora", "local-folder", "sqlite"].includes(t);
+              return (
+                <button
+                  key={t}
+                  onClick={() => addTyped(t)}
+                  disabled={coming}
+                  title={coming ? "真运行时接入后开放" : undefined}
+                  className={cn(
+                    "rounded-btn border px-1.5 py-0.5 text-caption",
+                    coming
+                      ? "cursor-not-allowed border-line text-ash opacity-50"
+                      : "border-line text-graphite hover:bg-line-soft hover:text-ink",
+                  )}
+                >
+                  + {backendTag[t]}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <ul className="divide-y divide-line-soft">
+          {prefs.backends.map((b) => {
+            const isOpen = expanded === b.id;
+            return (
+              <li key={b.id}>
+                <div className="flex items-center gap-2.5 px-4 py-2.5">
+                  <span className="shrink-0 rounded-chip bg-line-soft px-1.5 py-0.5 text-caption text-graphite">
+                    {backendTag[b.type]}
+                  </span>
+                  <button
+                    onClick={() => setExpanded(isOpen ? null : b.id)}
+                    className="min-w-0 flex-1 truncate text-left text-body-sm text-ink hover:text-teal"
+                    aria-expanded={isOpen}
+                  >
+                    {b.name}
+                  </button>
+                  <Toggle on={b.enabled} onChange={(v) => toggleBackend(b.id, v)} />
+                  <button
+                    onClick={() => removeBackend(b.id)}
+                    aria-label={`移除 ${b.name}`}
+                    className="shrink-0 rounded p-0.5 text-ash hover:bg-line hover:text-loss"
+                  >
+                    <X size={11} />
+                  </button>
+                </div>
+                {isOpen && (
+                  <div className="border-t border-line-soft bg-rail px-4 py-3">
+                    {b.type === "weknora" && (
+                      <div className="space-y-2">
+                        <RowInputLocal
+                          label="API 地址"
+                          value={b.baseUrl ?? ""}
+                          onChange={(v) => updateBackend(b.id, { baseUrl: v })}
+                        />
+                        <RowInputLocal
+                          label="API Key (X-API-Key)"
+                          value={b.apiKey ?? ""}
+                          onChange={(v) => updateBackend(b.id, { apiKey: v })}
+                          password
+                        />
+                        <RowInputLocal
+                          label="知识库 ID"
+                          value={b.kbId ?? ""}
+                          onChange={(v) => updateBackend(b.id, { kbId: v })}
+                        />
+                        <p className="text-caption text-ash">知识库列表可在「测试连接」中拉取后直接填写 id。</p>
+                      </div>
+                    )}
+                    {b.type === "local-folder" && (
+                      <p className="text-caption text-ash">
+                        本地文件夹来源：重新授权与索引在启用后自动进行（句柄存 IndexedDB）。
+                      </p>
+                    )}
+                    {b.type === "sqlite" && (
+                      <p className="text-caption text-ash">本地 SQLite（.waku/state.db 精神）：零配置内置后端。</p>
+                    )}
+                    {!["weknora", "local-folder", "sqlite"].includes(b.type) && (
+                      <p className="text-caption text-ash">该后端类型由真运行时提供连接配置。</p>
+                    )}
+                  </div>
+                )}
+              </li>
+            );
+          })}
+        </ul>
       </GroupCard>
 
-      {(prefs.semanticStores.includes("weknora") || prefs.episodicStores.includes("weknora")) && (
-        <WeknoraCard />
+      {/* weknora 创建卡 */}
+      {addingType === "weknora" && (
+        <GroupCard>
+          <div className="space-y-2 px-4 py-3">
+            <RowInputLocal label="API 地址" value={wkBase} onChange={setWkBase} />
+            <RowInputLocal label="API Key (X-API-Key)" value={wkKey} onChange={setWkKey} password />
+            <RowInputLocal label="知识库 ID" value={wkKbId} onChange={setWkKbId} />
+            <button
+              onClick={() => void testWeknora()}
+              disabled={wkTesting}
+              className="rounded-btn border border-line px-2 py-1 text-caption text-graphite hover:bg-line-soft hover:text-ink disabled:opacity-40"
+            >
+              {wkTesting ? "测试中…" : "测试连接并拉取知识库"}
+            </button>
+            {wkStatus && <p className="text-caption text-ash">{wkStatus}</p>}
+          </div>
+        </GroupCard>
       )}
 
-      <LocalSourcesCard />
+      {/* local-folder 创建卡 */}
+      {addingType === "local-folder" && (
+        <GroupCard>
+          <div className="space-y-2 px-4 py-3">
+            <p className="text-caption text-ash">
+              选择一个本地文件夹（markdown / 文本）作为记忆来源。授权句柄存本地 IndexedDB。
+            </p>
+            <button
+              onClick={() => void createBackend()}
+              disabled={lfBusy}
+              className="rounded-btn bg-ink px-3 py-1.5 text-body-sm text-canvas hover:bg-black disabled:opacity-40"
+            >
+              {lfBusy ? "处理中…" : "选择文件夹"}
+            </button>
+          </div>
+        </GroupCard>
+      )}
 
+      {/* 路由 */}
       <GroupCard>
-        <SettingsRow
-          label="情节记忆 · 事件"
-          description="带日期的“发生过什么”——由对话蒸馏出的一句话摘要"
-          control={<Toggle on={prefs.episodicEnabled} onChange={(v) => update({ episodicEnabled: v })} />}
-        />
-        <SettingsRow
-          label="存储后端（可多选）"
-          description="同语义层：检索并集、写入广播"
-          control={
-            <BackendChips
-              value={prefs.episodicStores}
-              choices={["sqlite", "notion", "weknora"] as const}
-              onChange={(v) => update({ episodicStores: v })}
-            />
-          }
-        />
+        <div className="px-4 pb-2 pt-3">
+          <p className="text-caption font-medium text-graphite">三层路由（写入广播 / 检索并集）</p>
+        </div>
+        <div className="space-y-3 px-4 pb-3">
+          {(["semantic", "episodic", "procedural"] as const).map((layer) => routedChips(layer))}
+        </div>
       </GroupCard>
 
-      <GroupCard>
-        <SettingsRow
-          label="程序性记忆 · 技能"
-          description="怎么做事的流程（SKILL.md）。关键词命中时注入正文，每轮最多 2 个"
-          control={<Toggle on={prefs.proceduralEnabled} onChange={(v) => update({ proceduralEnabled: v })} />}
-        />
-        <SettingsRow
-          label="技能目录"
-          description="自建技能放在工作目录的 skills/ 下，文件变更自动重扫描"
-          control={<span className="font-mono text-caption text-ash">skills/</span>}
-        />
-      </GroupCard>
-
+      {/* 门控 / 整理 / 镜像 / 检索条数 */}
       <GroupCard>
         <SettingsRow
           label="检索门控"
           description="小模型先判断本次是否需要检索（“2+2 等于几”不检索）。门控出错即检索（fail-open）"
-          control={<Toggle on={prefs.gateEnabled} onChange={(v) => update({ gateEnabled: v })} />}
+          control={<Toggle on={prefs.gateEnabled} onChange={(v) => setGate({ gateEnabled: v })} />}
         />
         <SettingsRow
           label="门控模型"
@@ -331,7 +558,7 @@ function MemorySettingsSection() {
           control={
             <input
               value={prefs.gateModel}
-              onChange={(e) => update({ gateModel: e.target.value })}
+              onChange={(e) => setGate({ gateModel: e.target.value })}
               spellCheck={false}
               className="w-52 rounded-input border border-transparent bg-rail px-2.5 py-1.5 font-mono text-caption text-ink outline-none focus:border-teal"
             />
@@ -341,205 +568,113 @@ function MemorySettingsSection() {
           label="整理频率"
           description="每 N 次交换由小模型从未整理对话中提取事实与情节"
           control={
-            <Stepper value={prefs.consolidateEvery} min={2} max={20} step={2} onChange={(v) => update({ consolidateEvery: v })} />
+            <Stepper
+              value={prefs.consolidateEvery}
+              min={2}
+              max={20}
+              step={2}
+              onChange={(v) => setGate({ consolidateEvery: v })}
+            />
           }
         />
-      </GroupCard>
-
-      <GroupCard>
+        <SettingsRow
+          label="语义检索条数"
+          description="每次注入的相关事实条数（top K）"
+          control={<Stepper value={prefs.semanticTopK} min={1} max={12} step={1} onChange={(v) => setGate({ semanticTopK: v })} />}
+        />
         <SettingsRow
           label="MEMORY.md 人读镜像"
           description="每轮后重新生成 .waku/MEMORY.md，人类可直接打开阅读全部记忆"
-          control={<Toggle on={prefs.mirrorMd} onChange={(v) => update({ mirrorMd: v })} />}
-        />
-        <SettingsRow
-          label="导出"
-          description="原型占位：导出全部记忆（真运行时接入后可用）"
-          control={
-            <button className="rounded-btn border border-line px-2.5 py-1.5 text-body-sm text-graphite hover:bg-line-soft hover:text-ink">
-              导出记忆
-            </button>
-          }
+          control={<Toggle on={prefs.mirrorMd} onChange={(v) => setGate({ mirrorMd: v })} />}
         />
       </GroupCard>
+
+      {/* 实测：写入广播 + 检索合并 */}
+      <MemoryTestCard />
     </div>
   );
 }
 
-/** WeKnora 连接配置 + 语义记忆实测（写一条事实 / 检索测试） */
-function WeknoraCard() {
-  const prefs = useMemoryPrefs((s) => s.prefs);
-  const update = useMemoryPrefs((s) => s.update);
-  const cfg: WeknoraConfig = {
-    baseUrl: prefs.weknoraBaseUrl,
-    apiKey: prefs.weknoraApiKey,
-  };
-  const [kbs, setKbs] = useState<WeknoraKb[]>([]);
-  const [status, setStatus] = useState<string | null>(null);
-  const [testing, setTesting] = useState(false);
+/** 语义记忆实测 —— 写入广播到语义路由的全部 weknora 后端；检索合并 weknora + 本地来源 */
+function MemoryTestCard() {
+  const prefs = useMemoryOrchestration((s) => s.prefs);
   const [fact, setFact] = useState("");
   const [query, setQuery] = useState("");
-  const [hits, setHits] = useState<{ path: string; content: string }[] | null>(null);
+  const [status, setStatus] = useState<string | null>(null);
+  const [hits, setHits] = useState<{ source: string; content: string }[] | null>(null);
+  const [busy, setBusy] = useState(false);
 
-  const hasSemKb = prefs.weknoraSemanticKbIds.length > 0;
-  void hasSemKb;
+  const wkBackends = prefs.backends.filter((b) => b.enabled && b.type === "weknora" && b.kbId);
+  const localBackends = prefs.backends.filter((b) => b.enabled && b.type === "local-folder" && b.sourceId);
 
-  const test = async () => {
-    setTesting(true);
-    setStatus(null);
-    try {
-      await weknoraPing(cfg);
-      const list = await weknoraListKb(cfg);
-      setKbs(list);
-      setStatus(`连接成功 · ${list.length} 个知识库`);
-    } catch (e) {
-      setStatus(`连接失败：${e instanceof Error ? e.message : String(e)}`);
-    } finally {
-      setTesting(false);
-    }
-  };
-
-  // 写入广播：语义层的全部启用后端各写一份（原型期可演示 WeKnora 渠道；
-  // sqlite / supabase 等由真运行时执行，本地来源无需写入——它们是只读镜像）
-  const saveFact = async () => {
+  const writeFact = async () => {
     if (fact.trim().length === 0) return;
-    const targets: string[] = [];
-    if (prefs.semanticStores.includes("weknora")) {
-      if (prefs.weknoraSemanticKbIds.length === 0) {
-        setStatus("WeKnora 已启用但未勾选知识库 —— 先在上方勾选归属");
-        return;
-      }
-      targets.push("WeKnora");
-    }
-    if (prefs.semanticStores.some((x) => x !== "weknora")) {
-      targets.push("本地/云端后端（真运行时执行）");
-    }
+    setBusy(true);
     setStatus("写入中…");
     try {
-      if (prefs.semanticStores.includes("weknora")) {
-        await weknoraSaveFact(cfg, prefs.weknoraSemanticKbIds[0]!, `事实 · ${new Date().toLocaleString("zh-CN")}`, fact.trim());
+      const done: string[] = [];
+      for (const b of wkBackends) {
+        await weknoraSaveFact(
+          { baseUrl: b.baseUrl ?? "", apiKey: b.apiKey ?? "" },
+          b.kbId ?? "",
+          `事实 · ${new Date().toLocaleString("zh-CN")}`,
+          fact.trim(),
+        );
+        done.push(b.name);
       }
-      setStatus(`已广播写入：${targets.join(" + ")}`);
+      setStatus(done.length > 0 ? `已广播写入：${done.join("、")}` : "没有启用的 WeKnora 写入目标");
       setFact("");
     } catch (e) {
       setStatus(`写入失败：${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBusy(false);
     }
   };
 
-  // 检索合并：WeKnora（若启用）+ 本地文件来源，跨渠道并集
-  const doSearch = async () => {
+  const search = async () => {
     if (query.trim().length === 0) return;
+    setBusy(true);
     setStatus("检索中…");
     try {
-      let merged: { path?: string; content: string }[] = [];
-      if (prefs.semanticStores.includes("weknora") && prefs.weknoraSemanticKbIds.length > 0) {
-        const wk = await weknoraSearch(cfg, prefs.weknoraSemanticKbIds, query.trim(), prefs.semanticTopK);
-        merged.push(...wk.map((h) => ({ content: `[WeKnora] ${h.content}` })));
+      const hits: { source: string; content: string }[] = [];
+      for (const b of prefs.backends) {
+        if (!b.enabled || b.type !== "weknora" || !b.kbId) continue;
+        const list = await weknoraSearch(
+          { baseUrl: b.baseUrl ?? "", apiKey: b.apiKey ?? "" },
+          [b.kbId],
+          query.trim(),
+          prefs.semanticTopK,
+        );
+        hits.push(...list.map((h) => ({ source: b.name, content: h.content })));
       }
-      const localIds = useMemoryPrefs.getState().prefs.localSources.filter((s) => isIndexed(s.id)).map((s) => s.id);
-      merged.push(
-        ...searchAllLocal(localIds, query.trim(), prefs.semanticTopK).map((h) => ({
-          path: h.path,
-          content: `[本地] ${h.path} · ${h.excerpt}`,
-        })),
-      );
-      setHits(merged.map((h) => ({ path: h.path ?? "", content: h.content })));
-      setStatus(`合并检索到 ${merged.length} 条`);
+      const localIds = localBackends.filter((b) => b.type === "local-folder" && b.sourceId).map((b) => b.sourceId!);
+      const local = searchAllLocal(localIds, query.trim(), prefs.semanticTopK);
+      hits.push(...local.map((h) => ({ source: h.path, content: h.excerpt })));
+      setHits(hits);
+      setStatus(`合并检索到 ${hits.length} 条`);
     } catch (e) {
       setStatus(`检索失败：${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBusy(false);
     }
   };
 
   return (
     <GroupCard>
-      <div className="px-4 pb-1 pt-3">
-        <p className="text-caption font-medium text-graphite">WeKnora 连接</p>
-        <p className="mt-0.5 text-caption text-ash">
-          本地 / 自部署的 WeKnora 服务（语义检索后端）。纯本地授权，X-API-Key 直连。
-        </p>
-      </div>
-      <div className="space-y-2.5 px-4 pb-3">
-        <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] items-center gap-3">
-          <span className="text-caption font-medium text-graphite">API 地址</span>
-          <input
-            value={prefs.weknoraBaseUrl}
-            onChange={(e) => update({ weknoraBaseUrl: e.target.value })}
-            placeholder="http://localhost:8080"
-            spellCheck={false}
-            className="w-full rounded-input border border-transparent bg-rail px-2.5 py-1.5 font-mono text-caption text-ink outline-none placeholder:text-ash focus:border-teal"
-          />
-        </div>
-        <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] items-center gap-3">
-          <span className="text-caption font-medium text-graphite">API Key</span>
-          <input
-            type="password"
-            value={prefs.weknoraApiKey}
-            onChange={(e) => update({ weknoraApiKey: e.target.value })}
-            placeholder="X-API-Key（本地部署可留空）"
-            className="w-full rounded-input border border-transparent bg-rail px-2.5 py-1.5 text-caption text-ink outline-none placeholder:text-ash focus:border-teal"
-          />
-        </div>
-        <div className="flex items-center justify-end gap-2">
-          <button
-            onClick={() => void test()}
-            disabled={testing}
-            className="rounded-btn border border-line px-2.5 py-1 text-caption text-graphite hover:bg-line-soft hover:text-ink disabled:opacity-40"
-          >
-            {testing ? "测试中…" : "测试连接并拉取知识库"}
-          </button>
-        </div>
-        {status && <p className="text-caption text-ash">{status}</p>}
-
-        {kbs.length > 0 && (
-          <div>
-            <p className="mb-1 text-caption font-medium text-graphite">
-              知识库归属（勾选该库喂给哪层记忆；可多选）
-            </p>
-            <ul className="divide-y divide-line-soft rounded-btn border border-line">
-              {kbs.map((k) => {
-                const sem = prefs.weknoraSemanticKbIds.includes(k.id);
-                const epi = prefs.weknoraEpisodicKbIds.includes(k.id);
-                const toggle = (list: readonly string[], v: boolean) =>
-                  v ? [...list, k.id] : list.filter((x) => x !== k.id);
-                return (
-                  <li key={k.id} className="flex items-center gap-2 px-2.5 py-1.5">
-                    <span className="min-w-0 flex-1 truncate text-caption text-ink">{k.name || k.id}</span>
-                    <KbCheck
-                      label={`语义 · ${k.name}`}
-                      checked={sem}
-                      onChange={(v) => update({ weknoraSemanticKbIds: toggle(prefs.weknoraSemanticKbIds, v) })}
-                    />
-                    <KbCheck
-                      label={`情节 · ${k.name}`}
-                      checked={epi}
-                      onChange={(v) => update({ weknoraEpisodicKbIds: toggle(prefs.weknoraEpisodicKbIds, v) })}
-                    />
-                  </li>
-                );
-              })}
-            </ul>
-            <p className="mt-1 text-caption text-ash">
-              语义事实写入第一个勾选的语义库；检索跨全部勾选库（WeKnora knowledge_base_ids 原生支持）。
-              个人文件夹 / 文件在 WeKnora 里传成一个知识库后勾到这里即可。
-            </p>
-          </div>
-        )}
-      </div>
-
-      <div className="border-t border-line-soft px-4 pb-3.5 pt-3">
-        <p className="text-caption font-medium text-graphite">语义记忆实测</p>
+      <div className="px-4 pb-3 pt-3">
+        <p className="text-caption font-medium text-graphite">记忆实测（写入广播 · 检索合并）</p>
         <div className="mt-2 space-y-1.5">
           <div className="flex items-center gap-1.5">
             <input
               value={fact}
               onChange={(e) => setFact(e.target.value)}
-              placeholder="写入一条事实，例如：甲方喜欢简报不用长文"
+              placeholder="写入一条事实"
               aria-label="写入事实"
               className="min-w-0 flex-1 rounded-input border border-transparent bg-rail px-2 py-1 text-caption text-ink outline-none placeholder:text-ash focus:border-teal"
             />
             <button
-              onClick={() => void saveFact()}
-              disabled={prefs.weknoraSemanticKbIds.length === 0 || fact.trim().length === 0}
+              onClick={() => void writeFact()}
+              disabled={fact.trim().length === 0 || busy}
               className="shrink-0 rounded-btn border border-line px-2 py-1 text-caption text-graphite hover:bg-line-soft hover:text-ink disabled:opacity-40"
             >
               写入
@@ -549,29 +684,25 @@ function WeknoraCard() {
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="检索测试：甲方偏好"
-              aria-label="语义检索测试"
+              placeholder="检索测试"
+              aria-label="检索测试"
               className="min-w-0 flex-1 rounded-input border border-transparent bg-rail px-2 py-1 text-caption text-ink outline-none placeholder:text-ash focus:border-teal"
             />
             <button
-              onClick={() => void doSearch()}
-              disabled={prefs.weknoraSemanticKbIds.length === 0 || query.trim().length === 0}
+              onClick={() => void search()}
+              disabled={query.trim().length === 0 || busy}
               className="shrink-0 rounded-btn border border-line px-2 py-1 text-caption text-graphite hover:bg-line-soft hover:text-ink disabled:opacity-40"
             >
               检索
             </button>
           </div>
+          {status && <p className="text-caption text-ash">{status}</p>}
           {hits !== null && (
             <ul className="space-y-1 rounded-btn bg-rail p-2">
               {hits.length === 0 && <li className="text-caption text-ash">没有命中的内容。</li>}
               {hits.map((h, i) => (
                 <li key={i} className="text-caption leading-relaxed text-graphite">
-                  {h.path ? (
-                    <>
-                      <span className="font-mono text-ash">{h.path}</span> ·{" "}
-                    </>
-                  ) : null}
-                  {h.content}
+                  [{h.source}] {h.content}
                 </li>
               ))}
             </ul>
@@ -582,185 +713,31 @@ function WeknoraCard() {
   );
 }
 
-/** 知识库归属复选（语义 / 情节） */
-function KbCheck({
+function RowInputLocal({
   label,
-  checked,
+  value,
   onChange,
+  password,
 }: {
   label: string;
-  checked: boolean;
-  onChange: (v: boolean) => void;
+  value: string;
+  onChange: (v: string) => void;
+  password?: boolean;
 }) {
   return (
-    <label className="flex shrink-0 cursor-pointer items-center gap-1 rounded-chip border px-1.5 py-0.5 text-caption"
-      style={{ borderColor: checked ? "var(--color-teal-edge)" : "var(--color-line)", background: checked ? "var(--color-teal-tint)" : "transparent" }}
-    >
-      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} className="sr-only" />
-      {checked && <Check size={10} className="text-teal" />}
-      <span className={checked ? "text-ink" : "text-ash"}>{label}</span>
-    </label>
+    <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] items-center gap-3">
+      <span className="text-caption font-medium text-graphite">{label}</span>
+      <input
+        type={password ? "password" : "text"}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        spellCheck={false}
+        className="w-full rounded-input border border-transparent bg-rail px-2.5 py-1.5 font-mono text-caption text-ink outline-none placeholder:text-ash focus:border-teal"
+      />
+    </div>
   );
 }
 
-/** 本地文件来源 —— 文件夹直连为语义记忆来源（不经 WeKnora；句柄存 IndexedDB） */
-function LocalSourcesCard() {
-  const sources = useMemoryPrefs((s) => s.prefs.localSources);
-  const addSource = useMemoryPrefs((s) => s.addLocalSource);
-  const removeSource = useMemoryPrefs((s) => s.removeLocalSource);
-  const semanticTopK = useMemoryPrefs((s) => s.prefs.semanticTopK);
-
-  const [rows, setRows] = useState<Record<string, { files: number; status: string; needsPerm: boolean }>>({});
-  const [query, setQuery] = useState("");
-  const [hits, setHits] = useState<{ path: string; excerpt: string }[] | null>(null);
-  const [status, setStatus] = useState<string | null>(null);
-  const supported = typeof window !== "undefined" && "showDirectoryPicker" in window;
-
-  // 载入时恢复句柄并自动索引已授权的来源
-  useEffect(() => {
-    void (async () => {
-      for (const src of sources) {
-        const handle = await loadLocalHandle(src.id);
-        if (!handle) continue;
-        const perm = await sourcePermission(handle);
-        if (perm === "granted") {
-          const n = await indexLocalSource(src.id, handle);
-          setRows((r) => ({ ...r, [src.id]: { files: n, status: "已索引", needsPerm: false } }));
-        } else {
-          setRows((r) => ({ ...r, [src.id]: { files: 0, status: "需重新授权", needsPerm: true } }));
-        }
-      }
-    })();
-    // eslint 需求：sources 变化时恢复（增删来源都会触发）
-  }, [sources]);
-
-  const add = async () => {
-    try {
-      const picked = await pickLocalFolder();
-      if (!picked) return;
-      addSource({ id: picked.id, name: picked.name });
-      const n = await indexLocalSource(picked.id, picked.handle);
-      setRows((r) => ({ ...r, [picked.id]: { files: n, status: "已索引", needsPerm: false } }));
-    } catch (e) {
-      setStatus(`添加失败：${e instanceof Error ? e.message : String(e)}`);
-    }
-  };
-
-  const reauthorize = async (id: string) => {
-    const handle = await loadLocalHandle(id);
-    if (!handle) return;
-    if (await requestPermission(handle)) {
-      const n = await indexLocalSource(id, handle);
-      setRows((r) => ({ ...r, [id]: { files: n, status: "已索引", needsPerm: false } }));
-    }
-  };
-
-  const remove = async (id: string) => {
-    await dropLocalHandle(id);
-    removeSource(id);
-  };
-
-  const doSearch = () => {
-    const ids = sources.filter((s) => isIndexed(s.id)).map((s) => s.id);
-    setHits(searchAllLocal(ids, query, semanticTopK));
-  };
-
-  return (
-    <GroupCard>
-      <div className="flex items-center justify-between gap-2 px-4 pb-1 pt-3">
-        <span className="text-caption font-medium text-graphite">本地文件来源</span>
-        <button
-          onClick={() => void add()}
-          disabled={!supported}
-          title={supported ? undefined : "需 Chrome / Edge"}
-          className="flex shrink-0 items-center gap-1 rounded-btn border border-line px-2 py-1 text-caption text-graphite hover:bg-line-soft hover:text-ink disabled:opacity-40"
-        >
-          <Plus size={10} />
-          添加本地文件夹
-        </button>
-      </div>
-      <div className="px-4 pb-3">
-        <p className="text-caption leading-relaxed text-ash">
-          不经 WeKnora，把本地文件夹（markdown / 文本）直连为语义记忆来源：
-          关键词检索命中后随路径注入。句柄存本地 IndexedDB，纯本地授权。
-        </p>
-
-        {!supported && (
-          <p className="mt-2 text-caption text-loss">当前浏览器不支持目录读取，请使用 Chrome / Edge。</p>
-        )}
-
-        <ul className="mt-2 space-y-1">
-          {sources.length === 0 && (
-            <li className="rounded-btn border border-dashed border-line px-3 py-3 text-center text-caption text-ash">
-              还没有本地来源 —— 点右上角「添加本地文件夹」。
-            </li>
-          )}
-          {sources.map((src) => {
-            const st = rows[src.id];
-            return (
-              <li key={src.id} className="flex items-center gap-2 rounded-btn border border-line px-2.5 py-1.5">
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-body-sm text-ink">{src.name}</span>
-                  <span className="block text-caption text-ash">
-                    {st ? (st.needsPerm ? "需重新授权" : `已索引 · ${st.files} 个文件`) : "读取中…"}
-                  </span>
-                </span>
-                {st?.needsPerm && (
-                  <button
-                    onClick={() => void reauthorize(src.id)}
-                    className="shrink-0 rounded-btn border border-line px-2 py-0.5 text-caption text-graphite hover:bg-line-soft hover:text-ink"
-                  >
-                    重新授权
-                  </button>
-                )}
-                <button
-                  onClick={() => void remove(src.id)}
-                  aria-label={`移除 ${src.name}`}
-                  className="shrink-0 rounded p-0.5 text-ash hover:bg-line hover:text-loss"
-                >
-                  <Trash2 size={11} />
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-
-        {sources.some((s) => isIndexed(s.id)) && (
-          <div className="mt-2 space-y-1.5">
-            <div className="flex items-center gap-1.5">
-              <input
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && doSearch()}
-                placeholder="检索测试：跨全部本地来源"
-                aria-label="本地来源检索测试"
-                className="min-w-0 flex-1 rounded-input border border-transparent bg-rail px-2 py-1 text-caption text-ink outline-none placeholder:text-ash focus:border-teal"
-              />
-              <button
-                onClick={doSearch}
-                disabled={query.trim().length === 0}
-                className="shrink-0 rounded-btn border border-line px-2 py-1 text-caption text-graphite hover:bg-line-soft hover:text-ink disabled:opacity-40"
-              >
-                检索
-              </button>
-            </div>
-            {status && <p className="text-caption text-ash">{status}</p>}
-            {hits !== null && (
-              <ul className="space-y-1 rounded-btn bg-rail p-2">
-                {hits.length === 0 && <li className="text-caption text-ash">没有命中的内容。</li>}
-                {hits.map((h) => (
-                  <li key={h.path} className="text-caption leading-relaxed text-graphite">
-                    <span className="font-mono text-ash">{h.path}</span> · {h.excerpt}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        )}
-      </div>
-    </GroupCard>
-  );
-}
 
 /** 存储后端多选 chips —— 一个记忆层可同时镜像到多个后端 */
 function BackendChips<T extends string>({
