@@ -608,3 +608,29 @@ gpt_image_playground 的 ApiProfile 全集：
 e2e：playground mock（8787，images）+ 自建 SSE mock（8788，responses
 流式正路径）双端点走通 —— 字段全集渲染、images 生成、responses 流式
 （partial→final）、双 profile 持久化与切换回退，零 pageerror。
+
+### 出图保存位置 —— 真实文件夹落盘（2026-09-28 第三轮）
+
+出图结果此前只存浏览器内（localStorage dataURL，「下载」走浏览器默认
+下载目录）。本轮补上保存位置设置（File System Access API，
+与 core/localMemorySource.ts 的本地文件夹来源同一套句柄持久化模式）：
+
+- `core/imageSave.ts`：showDirectoryPicker 选文件夹（句柄存 IndexedDB
+  `agent-workbench:image-fs`，显示名进 image-studio store）；
+  loadSaveFolder 恢复权限态（queryPermission，缺省 granted）；
+  ensureSavePermission 重新授权（刷新后必须由用户手势触发）；
+  saveImageToFolder 落盘，文件名 `img-<时间戳>-<序号>-<prompt短语>.<格式>`；
+- 设置页「出图」分区新增**保存位置**卡片：选择/更换/解除绑定 +
+  自动保存开关（生成成功后逐张落盘，失败写进任务卡不打断结果）；
+  无文件夹时图片仅存浏览器内；
+- 工作台摘要行显示当前文件夹 + 自动保存徽标；刷新后权限回落 prompt
+  → 「重新授权」按钮（用户手势触发 requestPermission）；
+  TaskCard 下载按钮在已授权时直接写文件夹（保存后显示「已保存」），
+  未授权时回退浏览器下载。
+
+e2e 限制说明：headless Chromium（shell 与 full 构建）在「从 IndexedDB
+反序列化文件系统目录句柄」时渲染进程原生崩溃，故 OPFS 句柄注入的
+原生链路无法 headless 验证；改用 IDB shim + JS 假目录句柄走通完整
+应用路径（restore → 生成 → autoSave → 命名落盘捕获 → UI 状态），
+零 pageerror。原生句柄 roundtrip 是真 Chrome 的标准模式
+（gpt_image_playground 同款），真实浏览器手测无碍。

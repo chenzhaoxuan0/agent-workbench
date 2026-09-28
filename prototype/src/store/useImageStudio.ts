@@ -6,6 +6,7 @@ import {
   type ImageProfile,
   type PartialImageEvent,
 } from "../core/imageApi.ts";
+import { saveImageToFolder, loadSaveFolder } from "../core/imageSave.ts";
 
 /**
  * 出图工作台 store —— 多供应商 profile 管理 + 生成参数 + 任务历史。
@@ -41,6 +42,10 @@ export interface ImageTask {
   readonly partialImage?: string;
   readonly revisedPrompt?: string;
   readonly error?: string;
+  /** 自动/手动落盘到保存文件夹的张数 */
+  readonly savedCount?: number;
+  /** 落盘失败原因 */
+  readonly saveError?: string;
   /** 请求进行中 */
   readonly pending?: boolean;
 }
@@ -49,6 +54,9 @@ interface PersistedStudio {
   profiles?: readonly ImageProfile[];
   activeProfileId?: string;
   history?: readonly ImageTask[];
+  /** 保存文件夹显示名（句柄本体在 IndexedDB，见 core/imageSave.ts） */
+  saveDirName?: string | null;
+  autoSave?: boolean;
 }
 
 export const DEFAULT_PROFILE: ImageProfile = {
@@ -101,11 +109,17 @@ function normalizeProfiles(persisted: PersistedStudio): { profiles: ImageProfile
 }
 
 /** 写历史：配额满则按「最旧优先」丢掉任务的图片重试，图片全丢仍写不下就只保留元信息 */
-function persist(profiles: readonly ImageProfile[], activeProfileId: string, history: readonly ImageTask[]): void {
+function persist(
+  profiles: readonly ImageProfile[],
+  activeProfileId: string,
+  history: readonly ImageTask[],
+  saveDirName: string | null,
+  autoSave: boolean,
+): void {
   if (typeof window === "undefined") return;
   const tryWrite = (tasks: readonly ImageTask[]): boolean => {
     try {
-      window.localStorage.setItem(STORE_KEY, JSON.stringify({ profiles, activeProfileId, history: tasks }));
+      window.localStorage.setItem(STORE_KEY, JSON.stringify({ profiles, activeProfileId, history: tasks, saveDirName, autoSave }));
       return true;
     } catch {
       return false;
@@ -128,7 +142,7 @@ function persist(profiles: readonly ImageProfile[], activeProfileId: string, his
   try {
     window.localStorage.setItem(
       STORE_KEY,
-      JSON.stringify({ profiles, activeProfileId, history: tasks.map(({ images: _i, partialImage: _p, ...rest }) => rest) }),
+      JSON.stringify({ profiles, activeProfileId, saveDirName, autoSave, history: tasks.map(({ images: _i, partialImage: _p, ...rest }) => rest) }),
     );
   } catch {
     /* 配置也写不下 —— 放弃本轮持久化 */
@@ -145,6 +159,12 @@ interface ImageStudioState {
   refImages: readonly string[];
   history: readonly ImageTask[];
   readonly busy: boolean;
+  /** 保存文件夹显示名（句柄在 IndexedDB；null = 未绑定） */
+  saveDirName: string | null;
+  /** 保存文件夹权限态：granted 可直接写；prompt = 刷新后需重新授权 */
+  savePermission: "granted" | "prompt" | "denied" | "none";
+  /** 生成成功后自动落盘到保存文件夹 */
+  autoSave: boolean;
 
   /** 当前生效的 profile（便捷选择器） */
   activeProfile: () => ImageProfile;
@@ -161,6 +181,17 @@ interface ImageStudioState {
   cancel: () => void;
   removeTask: (id: number) => void;
   clearHistory: () => void;
+
+  /** 启动时恢复保存文件夹句柄的权限态 */
+  restoreSaveDir: () => Promise<void>;
+  bindSaveDir: (name: string) => void;
+  unbindSaveDir: () => void;
+  setSavePermission: (p: "granted" | "prompt" | "denied") => void;
+  setAutoSave: (v: boolean) => void;
+  /** 手动把某条任务的第 index 张写入保存文件夹（TaskCard 下载按钮） */
+  saveOne: (taskId: number, index: number) => Promise<boolean>;
+  /** 把整条任务写入保存文件夹（自动保存复用） */
+  saveTask: (taskId: number) => Promise<void>;
 }
 
 export const useImageStudio = create<ImageStudioState>((set, get) => {
@@ -169,8 +200,8 @@ export const useImageStudio = create<ImageStudioState>((set, get) => {
   let seq = 1 + (persisted.history?.length ?? 0);
 
   const save = () => {
-    const { profiles, activeProfileId, history } = get();
-    persist(profiles, activeProfileId, history);
+    const { profiles, activeProfileId, history, saveDirName, autoSave } = get();
+    persist(profiles, activeProfileId, history, saveDirName, autoSave);
   };
 
   return {
@@ -181,6 +212,9 @@ export const useImageStudio = create<ImageStudioState>((set, get) => {
     refImages: [],
     history: persisted.history ?? [],
     busy: false,
+    saveDirName: persisted.saveDirName ?? null,
+    savePermission: "none",
+    autoSave: persisted.autoSave ?? false,
 
     activeProfile: () => {
       const { profiles, activeProfileId } = get();
@@ -273,6 +307,11 @@ export const useImageStudio = create<ImageStudioState>((set, get) => {
           prompt: "",
           refImages: [],
         }));
+        // 自动保存：autoSave 开启且文件夹已授权 → 逐张落盘（失败写进任务卡，不影响结果）
+        const { autoSave, saveDirName, savePermission } = get();
+        if (autoSave && saveDirName && savePermission === "granted") {
+          await get().saveTask(id);
+        }
         save();
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -295,6 +334,68 @@ export const useImageStudio = create<ImageStudioState>((set, get) => {
     clearHistory: () => {
       set({ history: [] });
       save();
+    },
+
+    restoreSaveDir: async () => {
+      const { name, permission } = await loadSaveFolder();
+      set({ saveDirName: name, savePermission: name ? permission : "none" });
+      const { saveDirName } = get();
+      if (!saveDirName) save();
+    },
+    bindSaveDir: (name) => {
+      set({ saveDirName: name, savePermission: "granted" });
+      save();
+    },
+    unbindSaveDir: () => {
+      set({ saveDirName: null, savePermission: "none" });
+      save();
+    },
+    setSavePermission: (p) => set({ savePermission: p }),
+    setAutoSave: (v) => {
+      set({ autoSave: v });
+      save();
+    },
+
+    saveOne: async (taskId, index) => {
+      const task = get().history.find((t) => t.id === taskId);
+      const dataUrl = task?.images[index];
+      if (!task || !dataUrl || !get().saveDirName) return false;
+      try {
+        await saveImageToFolder(dataUrl, task.prompt, index, task.params.output_format);
+        set((st) => ({
+          history: st.history.map((t) =>
+            t.id === taskId
+              ? { ...t, savedCount: Math.max(t.savedCount ?? 0, index + 1), saveError: undefined }
+              : t,
+          ),
+        }));
+        return true;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        set((st) => ({ history: st.history.map((t) => (t.id === taskId ? { ...t, saveError: message } : t)) }));
+        return false;
+      }
+    },
+
+    saveTask: async (taskId) => {
+      const task = get().history.find((t) => t.id === taskId);
+      if (!task || !get().saveDirName) return;
+      let saved = 0;
+      let saveError: string | undefined;
+      for (let i = 0; i < task.images.length; i += 1) {
+        try {
+          await saveImageToFolder(task.images[i]!, task.prompt, i, task.params.output_format);
+          saved = i + 1;
+        } catch (err) {
+          saveError = err instanceof Error ? err.message : String(err);
+          break;
+        }
+      }
+      if (saved > 0 || saveError) {
+        set((st) => ({
+          history: st.history.map((t) => (t.id === taskId ? { ...t, savedCount: saved, saveError } : t)),
+        }));
+      }
     },
   };
 });

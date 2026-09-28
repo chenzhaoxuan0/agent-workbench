@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { ChevronDown, ImagePlus, Trash2 } from "lucide-react";
+import { ChevronDown, FolderOpen, ImagePlus, Trash2 } from "lucide-react";
 import {
   IMAGE_STUDIO_STORAGE_KEY,
   PRESET_MODELS,
   useImageStudio,
 } from "../store/useImageStudio.ts";
 import type { ApiMode, ImageProfile, ReasoningEffort } from "../core/imageApi.ts";
+import { clearSaveFolder, pickSaveFolder, SAVE_DIR_SUPPORT } from "../core/imageSave.ts";
 import { cn } from "./cn.ts";
 
 /**
@@ -156,6 +157,91 @@ export function ImageSettingsSection() {
 
       {/* 选中 profile 的完整编辑面 */}
       <ProfileEditor profile={editing} onChange={(patch) => useImageStudio.getState().updateProfile(editing.id, patch)} />
+
+      {/* 保存位置（File System Access API，句柄存 IndexedDB） */}
+      <SaveDirCard />
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------- 保存位置 */
+
+function SaveDirCard() {
+  const saveDirName = useImageStudio((s) => s.saveDirName);
+  const savePermission = useImageStudio((s) => s.savePermission);
+  const autoSave = useImageStudio((s) => s.autoSave);
+  const bindSaveDir = useImageStudio((s) => s.bindSaveDir);
+  const unbindSaveDir = useImageStudio((s) => s.unbindSaveDir);
+  const setAutoSave = useImageStudio((s) => s.setAutoSave);
+
+  const supported = SAVE_DIR_SUPPORT;
+  const [busy, setBusy] = useState(false);
+
+  const onPick = async () => {
+    setBusy(true);
+    try {
+      const name = await pickSaveFolder();
+      if (name) bindSaveDir(name);
+    } catch {
+      /* 用户取消选择 */
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="rounded-card border border-line bg-card">
+      <div className="flex items-center gap-2 px-4 py-3">
+        <FolderOpen size={13} className="shrink-0 text-teal" />
+        <p className="text-body-sm font-medium text-ink">保存位置</p>
+        {saveDirName ? (
+          <span className="rounded-chip bg-teal-tint px-1.5 py-0.5 font-mono text-[10px] text-teal">{saveDirName}</span>
+        ) : (
+          <span className="rounded-chip bg-line-soft px-1.5 py-0.5 text-[10px] text-ash">未设置（仅存浏览器内）</span>
+        )}
+      </div>
+      <div className="space-y-3 border-t border-line-soft px-4 py-3">
+        {!supported && (
+          <p className="text-[10px] leading-relaxed text-ash">
+            当前浏览器不支持文件夹选择（File System Access 需要 Chromium 内核）。未设置时图片只存在浏览器内，「下载」按钮走浏览器默认下载目录。
+          </p>
+        )}
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => void onPick()}
+            disabled={!supported || busy}
+            className={cn(
+              "flex shrink-0 items-center gap-1 rounded-btn border border-line px-2.5 py-1.5 text-caption text-graphite",
+              supported && !busy ? "hover:bg-line-soft hover:text-ink" : "cursor-not-allowed opacity-50",
+            )}
+          >
+            <FolderOpen size={11} />
+            {saveDirName ? "更换文件夹" : "选择文件夹"}
+          </button>
+          {saveDirName && (
+            <button
+              onClick={() => void clearSaveFolder().then(unbindSaveDir)}
+              className="shrink-0 rounded-btn px-2.5 py-1.5 text-caption text-graphite hover:bg-line-soft hover:text-loss"
+            >
+              解除绑定
+            </button>
+          )}
+          {saveDirName && savePermission === "prompt" && (
+            <span className="rounded-chip bg-loss/10 px-2 py-0.5 text-[10px] text-loss">
+              刷新后需重新授权（到出图工作台点一次「重新授权」）
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          <ToggleSwitch checked={autoSave} onChange={setAutoSave} ariaLabel="image-autoSave" />
+          <span className="text-caption text-graphite">生成成功后自动保存到该文件夹</span>
+        </div>
+        <p className="text-[10px] leading-relaxed text-ash">
+          句柄保存在 IndexedDB（agent-workbench:image-fs），文件名格式
+          <code className="font-mono"> img-&lt;时间&gt;-&lt;序号&gt;-&lt;prompt 短语&gt;.&lt;格式&gt;</code>
+          ；页面刷新后浏览器要求对文件夹重新授权一次。
+        </p>
+      </div>
     </div>
   );
 }

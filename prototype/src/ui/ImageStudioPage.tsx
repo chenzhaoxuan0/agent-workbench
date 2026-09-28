@@ -1,8 +1,9 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ChevronDown,
   ChevronLeft,
   Download,
+  FolderOpen,
   ImagePlus,
   Loader2,
   Settings2,
@@ -18,6 +19,7 @@ import {
   type ImageTask,
 } from "../store/useImageStudio.ts";
 import { useShell } from "../store/useShell.ts";
+import { ensureSavePermission } from "../core/imageSave.ts";
 import { cn } from "./cn.ts";
 
 /**
@@ -32,6 +34,11 @@ import { cn } from "./cn.ts";
 
 export function ImageStudioPage() {
   const setMainView = useShell((s) => s.setMainView);
+  const restoreSaveDir = useImageStudio((s) => s.restoreSaveDir);
+  // 恢复保存文件夹的权限态（句柄在 IndexedDB；granted / prompt）
+  useEffect(() => {
+    void restoreSaveDir();
+  }, [restoreSaveDir]);
   return (
     <div className="h-full min-h-0 overflow-y-auto">
       {/* 面包屑顶带 —— 与自动化页同构（h-12 顶带吸顶） */}
@@ -71,6 +78,10 @@ function Composer() {
   const generate = useImageStudio((s) => s.generate);
   const busy = useImageStudio((s) => s.busy);
   const openSettings = useShell((s) => s.openSettings);
+  const saveDirName = useImageStudio((s) => s.saveDirName);
+  const savePermission = useImageStudio((s) => s.savePermission);
+  const setSavePermission = useImageStudio((s) => s.setSavePermission);
+  const autoSave = useImageStudio((s) => s.autoSave);
 
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -102,6 +113,32 @@ function Composer() {
         {profile.codexCli && <span className="rounded-chip bg-line-soft px-1.5 py-0.5 text-[10px] text-graphite">codex 中转</span>}
         {profile.streamImages && (
           <span className="rounded-chip bg-teal-tint px-1.5 py-0.5 text-[10px] text-teal">流式 ×{profile.streamPartialImages ?? 0}</span>
+        )}
+        {/* 保存位置：未设置走浏览器下载目录；prompt 权限 = 刷新后需重新授权 */}
+        {saveDirName ? (
+          savePermission === "prompt" ? (
+            <button
+              onClick={() => {
+                void ensureSavePermission().then((ok) => setSavePermission(ok ? "granted" : "denied"));
+              }}
+              title={`自动保存目标：${saveDirName}${autoSave ? "（自动保存开）" : ""}`}
+              className="flex shrink-0 items-center gap-1 rounded-chip bg-loss/10 px-2 py-0.5 text-[10px] text-loss hover:bg-loss/20"
+            >
+              <FolderOpen size={10} />
+              重新授权 {saveDirName}
+            </button>
+          ) : (
+            <span
+              title={`保存文件夹：${saveDirName}${autoSave ? "（自动保存开）" : "（下载按钮写入此文件夹）"}`}
+              className="flex shrink-0 items-center gap-1 rounded-chip bg-teal-tint px-2 py-0.5 font-mono text-[10px] text-teal"
+            >
+              <FolderOpen size={10} />
+              {saveDirName}
+              {autoSave && " · 自动保存"}
+            </span>
+          )
+        ) : (
+          <span className="shrink-0 rounded-chip bg-line-soft px-2 py-0.5 text-[10px] text-ash">保存位置未设置</span>
         )}
         <button
           onClick={() => openSettings("image")}
@@ -265,6 +302,7 @@ function Gallery() {
 }
 
 function TaskCard({ t, onRemove }: { t: ImageTask; onRemove: () => void }) {
+  const saveDirName = useImageStudio((s) => s.saveDirName);
   const time = useMemo(
     () => new Date(t.ts).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }),
     [t.ts],
@@ -326,18 +364,15 @@ function TaskCard({ t, onRemove }: { t: ImageTask; onRemove: () => void }) {
               revised: {t.revisedPrompt}
             </p>
           )}
+          {(t.savedCount ?? 0) > 0 && (
+            <p className="mt-2 text-[10px] text-teal">已保存 {t.savedCount} 张到「{saveDirName}」</p>
+          )}
+          {t.saveError && <p className="mt-2 text-[10px] text-loss">落盘失败：{t.saveError}</p>}
           <div className={cn("mt-2 grid gap-2", t.images.length > 1 ? "grid-cols-2" : "grid-cols-1")}>
             {t.images.map((src, i) => (
               <figure key={`${t.id}-${i}`} className="group relative overflow-hidden rounded-input border border-line">
                 <img src={src} alt={`${t.prompt} 结果 ${i + 1}`} className="block w-full bg-line-soft object-contain" />
-                <a
-                  href={src}
-                  download={`image-${t.id}-${i + 1}.png`}
-                  className="absolute bottom-2 right-2 flex items-center gap-1 rounded-btn bg-canvas/90 px-2 py-1 text-[10px] text-ink opacity-0 shadow-subtle transition group-hover:opacity-100"
-                >
-                  <Download size={10} />
-                  下载
-                </a>
+                <SaveButton task={t} index={i} src={src} />
               </figure>
             ))}
           </div>
@@ -348,6 +383,44 @@ function TaskCard({ t, onRemove }: { t: ImageTask; onRemove: () => void }) {
 }
 
 /* ------------------------------------------------------------- 小件 */
+
+/** 下载按钮：已授权保存文件夹时直接落盘，否则回退浏览器默认下载目录 */
+function SaveButton({ task, index, src }: { task: ImageTask; index: number; src: string }) {
+  const saveDirName = useImageStudio((s) => s.saveDirName);
+  const savePermission = useImageStudio((s) => s.savePermission);
+  const saveOne = useImageStudio((s) => s.saveOne);
+  const [state, setState] = useState<"idle" | "saved" | "failed">("idle");
+  const canWrite = Boolean(saveDirName) && savePermission === "granted";
+
+  if (!canWrite) {
+    return (
+      <a
+        href={src}
+        download={`img-${task.id}-${index + 1}.${task.params.output_format}`}
+        className="absolute bottom-2 right-2 flex items-center gap-1 rounded-btn bg-canvas/90 px-2 py-1 text-[10px] text-ink opacity-0 shadow-subtle transition group-hover:opacity-100"
+      >
+        <Download size={10} />
+        下载
+      </a>
+    );
+  }
+  return (
+    <button
+      onClick={() => {
+        void saveOne(task.id, index).then((ok) => setState(ok ? "saved" : "failed"));
+      }}
+      className={cn(
+        "absolute bottom-2 right-2 flex items-center gap-1 rounded-btn px-2 py-1 text-[10px] opacity-0 shadow-subtle transition group-hover:opacity-100",
+        state === "idle" && "bg-canvas/90 text-ink",
+        state === "saved" && "bg-gain/15 text-gain",
+        state === "failed" && "bg-loss/10 text-loss",
+      )}
+    >
+      <Download size={10} />
+      {state === "saved" ? "已保存" : state === "failed" ? "保存失败" : "保存到文件夹"}
+    </button>
+  );
+}
 
 function SelectChip({
   label,
