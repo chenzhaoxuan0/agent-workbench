@@ -213,7 +213,8 @@ export class CodexAdapter implements ExecutorAdapter {
       if (!state.cancelled) {
         state.sink?.({ type: "error", sessionId: state.sessionId, message: `codex exec produced no events (exit ${exitCode})`, recoverable: false });
       }
-      state.sink?.({ type: "session.ended", sessionId: state.sessionId, reason: state.cancelled ? "cancelled" : "error" });
+      // agent loop 语义：会话线程仍在（exec resume 可续），不发 ended
+      state.sink?.({ type: "session.status", sessionId: state.sessionId, status: state.cancelled ? "idle" : "failed" });
       return;
     }
     this.emitEvents(state, lines);
@@ -318,9 +319,10 @@ export class CodexAdapter implements ExecutorAdapter {
 
     if (failed !== null) {
       sink({ type: "error", sessionId, message: failed, recoverable: false });
-      sink({ type: "session.ended", sessionId, reason: "error" });
+      // agent loop 语义：turn 失败 ≠ 会话结束（exec resume 可续聊）
+      sink({ type: "session.status", sessionId, status: "failed" });
     } else {
-      sink({ type: "session.ended", sessionId, reason: "completed" });
+      sink({ type: "session.status", sessionId, status: "idle" });
     }
   }
 }

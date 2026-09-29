@@ -60,6 +60,8 @@ interface HostSession {
   readonly adapter: ExecutorAdapter;
   /** 最近一次 tool.started 的工具名 —— "always" 规则的 pattern 来源 */
   lastTool: string | null;
+  /** 已落盘的执行器引用（去重，避免每事件重写） */
+  lastCliRef: string | null;
   /** 会话事件环（上限 500），eval 断言与前端重放共用 */
   readonly events: RuntimeEvent[];
 }
@@ -90,29 +92,28 @@ export class RuntimeHost {
   private readonly pendingPerms = new Map<string, { kind: string; detail: string }>();
 
   /** 会话结束等待者（Ops 的 eval/arena 用它等轮次跑完） */
-  private readonly endWaiters = new Map<SessionId, Array<(info: { reason: string }) => void>>();
+  private readonly endWaiters = new Map<SessionId, Array<{ type: string; resolve: () => void }>>();
 
-  /** 等一个会话结束（已结束则立即返回） */
-  waitForSessionEnd(sessionId: SessionId, timeoutMs: number): Promise<{ reason: string }> {
+  /** 等会话的下一条指定类型事件（已在事件环里则立即返回）—— turn 级完成等待用 "usage" */
+  waitForSessionEvent(sessionId: SessionId, type: string, timeoutMs: number): Promise<void> {
     const h = this.sessions.get(sessionId);
     if (h === undefined) return Promise.reject(adapterError("unknown_session", `no such session: ${sessionId}`));
-    if (h.endedAt !== undefined) return Promise.resolve({ reason: "already" });
+    if (h.events.some((e) => e.type === type)) return Promise.resolve();
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
-        const list = this.endWaiters.get(sessionId);
+        const list = this.eventWaiters.get(sessionId);
         const i = list?.indexOf(waiter) ?? -1;
         if (list !== undefined && i >= 0) list.splice(i, 1);
-        reject(adapterError("session_end_timeout", `session ${sessionId} did not end within ${timeoutMs}ms`));
+        reject(adapterError("event_wait_timeout", `session ${sessionId}: no ${type} within ${timeoutMs}ms`));
       }, timeoutMs);
-      const waiter = (info: { reason: string }): void => {
-        clearTimeout(timer);
-        resolve(info);
-      };
-      const list = this.endWaiters.get(sessionId) ?? [];
+      const waiter = { type, resolve: () => { clearTimeout(timer); resolve(); } };
+      const list = this.eventWaiters.get(sessionId) ?? [];
       list.push(waiter);
-      this.endWaiters.set(sessionId, list);
+      this.eventWaiters.set(sessionId, list);
     });
   }
+
+  private readonly eventWaiters = new Map<SessionId, Array<{ type: string; resolve: () => void }>>();
 
   /** 会话事件环读取（eval 断言用；上限 500 条） */
   sessionEvents(sessionId: SessionId): readonly RuntimeEvent[] {
@@ -140,6 +141,7 @@ export class RuntimeHost {
         impl: null,
         adapter,
         lastTool: null,
+        lastCliRef: null,
         events: [],
       });
     }
@@ -230,6 +232,7 @@ export class RuntimeHost {
       impl,
       adapter,
       lastTool: null,
+      lastCliRef: null,
       events: [],
     };
     this.sessions.set(h.id, h);
@@ -272,6 +275,7 @@ export class RuntimeHost {
       switch (event.type) {
         case "message.completed": {
           this.store.insertMessage(h.id, Date.now(), "assistant", event.text);
+          this.syncCliRef(h);
           break;
         }
         case "tool.started": {
@@ -279,6 +283,7 @@ export class RuntimeHost {
           break;
         }
         case "usage": {
+          this.syncCliRef(h);
           void appendJournal(this.homeDir, "usage.jsonl", {
             at: Date.now(),
             sessionId: h.id,
@@ -296,8 +301,7 @@ export class RuntimeHost {
         }
         case "session.ended": {
           this.store.setSessionStatus(h.id, h.status, h.endedAt ?? Date.now(), { ...h.stats });
-          const ref = h.impl?.externalRef();
-          if (ref !== null && ref !== undefined) this.store.setSessionCliRef(h.id, ref);
+          this.syncCliRef(h);
           break;
         }
         case "permission.resolved": {
@@ -310,6 +314,15 @@ export class RuntimeHost {
     } catch (err: unknown) {
       log.warn("persist failed", { sessionId: h.id, error: err instanceof Error ? err.message : String(err) });
     }
+  }
+
+  /** 执行器引用落盘（agent loop 语义下 turn 不再结束会话，ref 在首个 turn 就同步） */
+  private syncCliRef(h: HostSession): void {
+    const ref = h.impl?.externalRef();
+    if (ref === null || ref === undefined) return;
+    if (h.lastCliRef === ref) return;
+    h.lastCliRef = ref;
+    this.store.setSessionCliRef(h.id, ref);
   }
 
   /** 把翻译好的事件记进台账（stats 与状态机都在这一处，适配器不用管） */
@@ -332,6 +345,12 @@ export class RuntimeHost {
         break;
       case "permission.resolved":
         h.status = "running";
+        break;
+      case "session.status":
+        // agent loop 语义：turn 完成 → idle（会话仍开着），失败 → failed
+        if (event.status === "idle" || event.status === "running") h.status = event.status;
+        else if (event.status.startsWith("failed")) h.status = "failed";
+        this.store.setSessionStatus(h.id, h.status, h.endedAt ?? null, { ...h.stats });
         break;
       case "session.ended":
         h.endedAt = Date.now();
@@ -395,11 +414,20 @@ export class RuntimeHost {
       }).catch(() => {});
       this.broadcast(event);
       if (event.type === "permission.requested") this.evaluateGate(cur, event);
+      // 唤醒等这一类事件的等待者（usage = turn 级完成，Ops 用）
+      const waiters = this.eventWaiters.get(cur.id);
+      if (waiters !== undefined) {
+        const hit = waiters.filter((w) => w.type === event.type);
+        if (hit.length > 0) {
+          this.eventWaiters.set(cur.id, waiters.filter((w) => w.type !== event.type));
+          for (const w of hit) w.resolve();
+        }
+      }
       if (event.type === "session.ended") {
-        const waiters = this.endWaiters.get(cur.id);
-        if (waiters !== undefined) {
+        const ends = this.endWaiters.get(cur.id);
+        if (ends !== undefined) {
           this.endWaiters.delete(cur.id);
-          for (const w of waiters) w({ reason: event.reason });
+          for (const w of ends) w.resolve();
         }
       }
     };

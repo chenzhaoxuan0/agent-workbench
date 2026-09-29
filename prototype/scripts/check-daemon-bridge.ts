@@ -121,12 +121,10 @@ async function main(): Promise<void> {
     check("probe ready", probe.state.status === "ready", probe.state);
 
     // 与 store.run() 相同的消费方式：先挂 events() 消费者，再 startSession
-    const received: Array<{ type: string; text?: string }> = [];
-    let done = false;
+    const received: Array<{ type: string; text?: string; sessionId?: string }> = [];
     void (async () => {
       for await (const event of adapter.events()) {
-        received.push({ type: event.type, text: event.type === "message.completed" ? event.text : undefined });
-        if (event.type === "session.ended") done = true;
+        received.push({ type: event.type, text: event.type === "message.completed" ? event.text : undefined, sessionId: event.sessionId });
       }
     })();
 
@@ -146,15 +144,37 @@ async function main(): Promise<void> {
     });
     check("startSession returns session", session.id.startsWith("sess_"), session);
 
-    const deadline = Date.now() + 240_000;
-    while (Date.now() < deadline && !done) await sleep(300);
-    const completed = received.find((e) => e.type === "message.completed");
-    check("turn completed with reply", done && completed !== undefined && (completed.text ?? "").trim() !== "", received.map((r) => r.type));
-    console.log(`         reply: ${JSON.stringify(completed?.text ?? "").slice(0, 60)}`);
+    // agent loop 语义：turn 完成 ≠ 会话结束，等的是 usage（turn 级完成）
+    const waitFor = async (type: string, from: number, timeoutMs = 240000): Promise<number> => {
+      const deadline = Date.now() + timeoutMs;
+      for (;;) {
+        const idx = received.findIndex((e, i) => i >= from && e.type === type);
+        if (idx >= 0) return idx;
+        if (Date.now() > deadline) throw new Error(`timed out waiting ${type} (have: ${received.slice(from).map((e) => e.type).join(",")})`);
+        await sleep(300);
+      }
+    };
+    const mark0 = 0;
+    await waitFor("session.started", mark0);
+    const delta1 = await waitFor("message.delta", mark0);
+    const completed1 = await waitFor("message.completed", mark0);
+    await waitFor("usage", mark0);
+    check("turn 1 streamed and completed", delta1 < completed1, received.map((e) => e.type));
+    const reply1 = (received[completed1]?.text ?? "").trim();
+    console.log(`         turn 1 reply: ${JSON.stringify(reply1).slice(0, 40)}`);
+    check("session stays open after turn (agent loop)", !received.some((e) => e.type === "session.ended"), received.map((e) => e.type));
+
+    // 续聊：同一会话 sendMessage（上下文连续，数学正确即证明）
+    const mark1 = received.length;
+    await adapter.sendMessage({ sessionId: session.id, text: "把上一个结果再乘以4，只回答一个数字。" });
+    const completed2 = await waitFor("message.completed", mark1);
+    await waitFor("usage", mark1);
+    const reply2 = (received[completed2]?.text ?? "").trim();
+    check("turn 2 same-session continuity (math right)", reply2.includes("20"), reply2);
+    console.log(`         turn 2 reply: ${JSON.stringify(reply2).slice(0, 40)}`);
 
     const trace = await adapter.exportTrace(session.id);
     check("exportTrace non-empty", trace.length > 50, trace.length);
-
     // Windows 上 SIGTERM 送不进子进程（backend 硬结论）——程序化退出走协议
     const { DaemonClient } = await import("../src/adapters/daemon/client.ts");
     await DaemonClient.get(endpoint).rpc("daemon.stop", null, 15000);

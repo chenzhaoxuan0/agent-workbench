@@ -77,6 +77,11 @@ class DaemonRuntimeAdapter implements RuntimeAdapter {
   readonly #pending: RuntimeEvent[] = [];
   #waiting: ((e: RuntimeEvent) => void) | null = null;
   #pumpInstalled = false;
+  /**
+   * startSession 在途缓冲：session.started 在 create RPC 返回**之前**广播，
+   * 此刻会话 id 还没进 #sessions —— 不过缓冲就会把首个事件丢掉（探针实证）。
+   */
+  #inflight: RuntimeEvent[] | null = null;
 
   constructor(id: RuntimeId, info: DaemonExecutorInfo, client: DaemonClient) {
     this.id = id;
@@ -102,15 +107,24 @@ class DaemonRuntimeAdapter implements RuntimeAdapter {
     if (this.#pumpInstalled) return;
     this.#pumpInstalled = true;
     this.#client.onEvent((event) => {
-      if (!this.#sessions.has(event.sessionId)) return;
-      const w = this.#waiting;
-      if (w) {
-        this.#waiting = null;
-        w(event);
-      } else {
-        this.#pending.push(event);
+      if (this.#inflight !== null) {
+        this.#inflight.push(event);
+        return;
       }
+      if (!this.#sessions.has(event.sessionId)) return;
+      this.#admit(event);
     });
+  }
+
+  /** 缓冲 + 单槽投递：有人在等就直接交给他；没人等就进缓冲，绝不丢 */
+  #admit(event: RuntimeEvent): void {
+    const w = this.#waiting;
+    if (w) {
+      this.#waiting = null;
+      w(event);
+    } else {
+      this.#pending.push(event);
+    }
   }
 
   async probe(): Promise<ProbeResult> {
@@ -138,21 +152,30 @@ class DaemonRuntimeAdapter implements RuntimeAdapter {
   }
 
   async startSession(req: StartSessionRequest): Promise<Session> {
-    const session = await this.#client.rpc<Session>(
-      "session.start",
-      {
-        runtimeId: this.#executorId,
-        unitId: req.unit.id,
-        unitName: req.unit.name,
-        rootPath: req.unit.rootPath,
-        prompt: req.prompt,
-        model: req.model,
-        mode: "build",
-      },
-      60000,
-    );
-    this.#sessions.add(session.id);
-    return session;
+    this.#inflight = []; // create 期间广播的 started/delta 进缓冲，拿到 id 后回收
+    try {
+      const session = await this.#client.rpc<Session>(
+        "session.start",
+        {
+          runtimeId: this.#executorId,
+          unitId: req.unit.id,
+          unitName: req.unit.name,
+          rootPath: req.unit.rootPath,
+          prompt: req.prompt,
+          model: req.model,
+          mode: "build",
+        },
+        60000,
+      );
+      this.#sessions.add(session.id);
+      const buffered = this.#inflight ?? [];
+      for (const e of buffered) {
+        if (e.sessionId === session.id) this.#admit(e);
+      }
+      return session;
+    } finally {
+      this.#inflight = null;
+    }
   }
 
   async resumeSession(sessionId: SessionId): Promise<Session> {

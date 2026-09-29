@@ -291,17 +291,23 @@ export class ZcodeAppServerTransport {
         const messageId = st.currentMessageId ?? `msg_${String(p.seq ?? 0)}`;
         this.emitFor(st, { type: "message.completed", sessionId: st.sessionId, messageId, text: response });
         await this.emitUsage(st, payload);
-        st.ended = true;
         this.denyPendingPermissions(st, "turn finished");
-        this.emitFor(st, { type: "session.ended", sessionId: st.sessionId, reason: str(payload["resultType"]) ?? "completed" });
+        // agent loop 语义：一轮完成 ≠ 会话结束。会话保持开启，session/send 续聊；
+        // session.ended 只在 session.closed / 执行器退出时发。
+        const resultType = str(payload["resultType"]) ?? "completed";
+        this.emitFor(st, {
+          type: "session.status",
+          sessionId: st.sessionId,
+          status: resultType === "success" ? "idle" : `failed:${resultType}`,
+        });
         break;
       }
       case "turn.failed": {
         const err = payload["error"] as { message?: string } | undefined;
-        st.ended = true;
         this.denyPendingPermissions(st, "turn failed");
         this.emitFor(st, { type: "error", sessionId: st.sessionId, message: err?.message ?? "turn failed", recoverable: false });
-        this.emitFor(st, { type: "session.ended", sessionId: st.sessionId, reason: "error" });
+        // turn 失败通常可重试（模型/网络/配置），会话保持开启
+        this.emitFor(st, { type: "session.status", sessionId: st.sessionId, status: "failed" });
         break;
       }
       case "session.closed": {
@@ -628,11 +634,11 @@ class PrintTransport {
 
     const parsed = this.parseTurnOutput(stdout.join("\n"));
     if (parsed === null) {
-      const reason = state.cancelled ? "cancelled" : "error";
+      // 会话线程仍在（--resume 可续），不发 ended
       if (!state.cancelled) {
         state.sink?.({ type: "error", sessionId: state.sessionId, message: `zcode -p produced no JSON (exit ${exitCode})`, recoverable: false });
       }
-      state.sink?.({ type: "session.ended", sessionId: state.sessionId, reason });
+      state.sink?.({ type: "session.status", sessionId: state.sessionId, status: state.cancelled ? "idle" : "failed" });
       return;
     }
     if (parsed.sessionId !== undefined) state.cliSessionId = parsed.sessionId;
@@ -680,9 +686,10 @@ class PrintTransport {
 
     if (r.is_error === true) {
       sink({ type: "error", sessionId, message: r.result ?? "turn failed", recoverable: false });
-      sink({ type: "session.ended", sessionId, reason: "error" });
+      // agent loop 语义：turn 失败 ≠ 会话结束（--resume 可续聊）
+      sink({ type: "session.status", sessionId, status: "failed" });
     } else {
-      sink({ type: "session.ended", sessionId, reason: "completed" });
+      sink({ type: "session.status", sessionId, status: "idle" });
     }
   }
 }

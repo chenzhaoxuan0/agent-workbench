@@ -170,10 +170,10 @@ async function main(): Promise<void> {
     const deltaIdx = await waitForEvent("message.delta", mark);
     const completedIdx = await waitForEvent("message.completed", mark);
     const usageIdx = await waitForEvent("usage", mark);
-    const endedIdx = await waitForEvent("session.ended", mark);
+    await waitForEvent("session.status", mark);
     check(
-      "event order started→delta→completed→usage→ended",
-      startedIdx < deltaIdx && deltaIdx < completedIdx && completedIdx <= usageIdx && usageIdx < endedIdx,
+      "event order started→delta→completed→usage→status (agent loop)",
+      startedIdx < deltaIdx && deltaIdx < completedIdx && completedIdx <= usageIdx,
       eventLog.slice(mark).map((e) => e["type"]),
     );
     const reply1 = String((eventLog[completedIdx] as { text?: string }).text ?? "").trim();
@@ -186,9 +186,8 @@ async function main(): Promise<void> {
     await call("session.send", { sessionId: session.id, text: "把上一个结果再乘以10，只回答一个数字。" });
     const c2 = await waitForEvent("message.completed", mark2);
     await waitForEvent("usage", mark2);
-    const e2 = await waitForEvent("session.ended", mark2);
     const reply2 = String((eventLog[c2] as { text?: string }).text ?? "").trim();
-    check("turn 2 (resume) completed", c2 < e2, eventLog.slice(mark2).map((e) => e["type"]));
+    check("turn 2 (resume) completed", reply2.length > 0, eventLog.slice(mark2).map((e) => e["type"]));
     check("turn 2 answer is arithmetically right (resume works)", reply2.includes("40"), reply2);
     console.log(`         turn 2 reply: "${reply2}"`);
 

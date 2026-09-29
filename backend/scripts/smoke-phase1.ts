@@ -189,10 +189,17 @@ async function main(): Promise<void> {
     const deltaIdx = await waitForEvent("message.delta", mark0);
     const completedIdx = await waitForEvent("message.completed", mark0);
     const usageIdx = await waitForEvent("usage", mark0);
-    const endedIdx = await waitForEvent("session.ended", mark0);
+    // agent loop 语义：turn 完成 → session.status(idle)，会话保持开启；
+    // session.ended 只在真关闭（closed / 执行器退出）时出现
+    const statusIdx = await waitForEvent("session.status", mark0);
     check(
-      "event order started→delta→completed→usage→ended",
-      startedIdx < deltaIdx && deltaIdx < completedIdx && completedIdx <= usageIdx && usageIdx < endedIdx,
+      "event order started→delta→completed→usage→status(idle)",
+      startedIdx < deltaIdx && deltaIdx < completedIdx && completedIdx <= usageIdx && usageIdx <= statusIdx,
+      eventLog.slice(mark0).map((e) => e["type"]),
+    );
+    check(
+      "session stays open after turn (agent loop)",
+      !eventLog.slice(mark0).some((e) => e["type"] === "session.ended"),
       eventLog.slice(mark0).map((e) => e["type"]),
     );
 
@@ -210,10 +217,13 @@ async function main(): Promise<void> {
     await waitForEvent("message.delta", mark1);
     const completed2 = await waitForEvent("message.completed", mark1);
     await waitForEvent("usage", mark1);
-    const ended2 = await waitForEvent("session.ended", mark1);
     const reply2 = String((eventLog[completed2] as { text?: string }).text ?? "").trim();
-    check("turn 2 streamed and ended", completed2 < ended2, eventLog.slice(mark1).map((e) => e["type"]));
     check("turn 2 answer is arithmetically right", reply2.includes("6"), reply2);
+    check(
+      "no session.ended across two turns (agent loop)",
+      !eventLog.slice(mark0).some((e) => e["type"] === "session.ended"),
+      eventLog.slice(mark0).filter((e) => e["type"] === "session.ended").length,
+    );
     console.log(`         turn 2 reply (${((Date.now() - t1) / 1000).toFixed(1)}s): "${reply2}"`);
 
     // 4. 台账与轨迹

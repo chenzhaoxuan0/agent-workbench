@@ -28,12 +28,20 @@ export function wsUrlOf(endpoint: string): string {
   return `${endpoint.replace(/\/+$/, "").replace(/^http/, "ws")}/ws`;
 }
 
+export interface DaemonTerminalFrame {
+  readonly terminalId: string;
+  readonly kind: "data" | "exit";
+  readonly data?: string;
+  readonly exitCode?: number;
+}
+
 export class DaemonClient {
   readonly #endpoint: string;
   #ws: WebSocket | null = null;
   #connecting: Promise<void> | null = null;
   readonly #pending = new Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
   readonly #eventListeners = new Set<(e: RuntimeEvent) => void>();
+  readonly #terminalListeners = new Set<(f: DaemonTerminalFrame) => void>();
   #seq = 0;
 
   private constructor(endpoint: string) {
@@ -89,7 +97,12 @@ export class DaemonClient {
           for (const fn of this.#eventListeners) fn(event);
           return;
         }
-        // 终端帧（Phase 2）与 hello 此处不消费
+        if (frame["type"] === "terminal") {
+          const tf = frame as unknown as DaemonTerminalFrame;
+          for (const fn of this.#terminalListeners) fn(tf);
+          return;
+        }
+        // hello 与其他帧此处不消费
         if (frame["id"] !== undefined && frame["id"] !== null && (frame["ok"] !== undefined || frame["error"] !== undefined)) {
           const key = String(frame["id"]);
           const p = this.#pending.get(key);
@@ -142,6 +155,12 @@ export class DaemonClient {
   onEvent(fn: (e: RuntimeEvent) => void): () => void {
     this.#eventListeners.add(fn);
     return () => this.#eventListeners.delete(fn);
+  }
+
+  /** 终端数据帧（terminal.create 之后到达；按 terminalId 过滤） */
+  onTerminalFrame(fn: (f: DaemonTerminalFrame) => void): () => void {
+    this.#terminalListeners.add(fn);
+    return () => this.#terminalListeners.delete(fn);
   }
 }
 

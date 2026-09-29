@@ -1,15 +1,23 @@
 import { useEffect, useRef, useState } from "react";
 import { SquareTerminal, X } from "lucide-react";
+import { Terminal } from "@xterm/xterm";
+import "@xterm/xterm/css/xterm.css";
 import { useWorkbench } from "../store/useWorkbench.ts";
 import { useShell } from "../store/useShell.ts";
+import { DaemonClient, DEFAULT_DAEMON_ENDPOINT, type DaemonTerminalFrame } from "../adapters/daemon/client.ts";
 
 /**
  * 终端面板（单窗格）—— 对应 ZCode 的 AnimatedTerminalPanel。
  *
- * 入口共用本组件（原型期还没有真 PTY，各实例独立状态）：
+ * 接的是 daemon 的真 PTY（Phase 2 WS 帧，ConPTY）：
+ * terminal.create（cwd = 工作单元根目录）→ data 帧进 xterm →
+ * xterm.onData → terminal.input → ResizeObserver → terminal.resize。
+ * 每个窗格一条独立 PTY（TerminalPage 可多窗格并开）。
+ * daemon 不可达时降级为能力说明卡（不白屏）。
+ *
+ * 入口两种：
  * - dock（默认）：会话下方的可开关面板（默认 30% 高，X = toggleTerminal）；
- * - page：会话头「终端」页签的窗格（TerminalPage 可多窗格并开），
- *   X = onClose（由宿主决定：关窗格 / 切回对话页签）。
+ * - page：会话头「终端」页签的窗格（TerminalPage 可多窗格并开）。
  */
 export function TerminalPanel({
   variant = "dock",
@@ -26,28 +34,99 @@ export function TerminalPanel({
   const runtime = useWorkbench((s) => s.runtimes.find((r) => r.id === s.activeRuntimeId));
   const toggleTerminal = useShell((s) => s.toggleTerminal);
   const setConversationView = useShell((s) => s.setConversationView);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const [echo, setEcho] = useState<string[]>([]);
 
   const isPage = variant === "page";
   const closeTerminal = onClose ?? (isPage ? () => setConversationView("chat") : toggleTerminal);
 
-  useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-  }, [echo.length]);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const termRef = useRef<Terminal | null>(null);
+  const terminalIdRef = useRef<string | null>(null);
+  const [daemonDown, setDaemonDown] = useState(false);
+  const [exited, setExited] = useState<number | null>(null);
 
-  const lines: readonly { text: string; tone?: "dim" | "gain" | "teal" }[] = [
-    { text: `cwd  ${unit?.rootPath ?? "—"}` },
-    { text: `unit ${unit?.name ?? "—"}${unit?.kind === "bot" ? "  (bot模式)" : "  (项目模式)"}` },
-    { text: `exec ${runtime?.presentation.displayName ?? "—"}  via ${runtime?.transportKind ?? "—"}` },
-    { text: "", tone: "dim" },
-    { text: "能力可用性：", tone: "dim" },
-    ...(runtime
-      ? Object.entries(runtime.capabilities)
-          .filter(([, v]) => v)
-          .map(([k]) => ({ text: `  ✓ ${k}`, tone: "gain" as const }))
-      : []),
-  ];
+  // 真 PTY 生命周期：mount → create + 接帧；unmount → kill
+  useEffect(() => {
+    if (!unit?.rootPath) return;
+    let disposed = false;
+    let unsubs: Array<() => void> = [];
+    const term = new Terminal({
+      fontSize: 12,
+      fontFamily: '"Cascadia Mono", Consolas, "Courier New", monospace',
+      cursorBlink: true,
+      convertEol: true,
+      theme: { background: "#14161b", foreground: "#d6dae2", cursor: "#5fb3a1" },
+    });
+    termRef.current = term;
+
+    const client = DaemonClient.get(DEFAULT_DAEMON_ENDPOINT);
+    const onFrame = (f: DaemonTerminalFrame): void => {
+      if (f.terminalId !== terminalIdRef.current) return;
+      if (f.kind === "data" && f.data !== undefined) term.write(f.data);
+      if (f.kind === "exit") {
+        setExited(f.exitCode ?? 0);
+        term.write(`\r\n\x1b[2m[进程已退出，exit=${f.exitCode ?? 0}]\x1b[0m\r\n`);
+      }
+    };
+    unsubs.push(client.onTerminalFrame(onFrame));
+
+    const boot = async (): Promise<void> => {
+      await client.ensureConnected();
+      if (disposed) return;
+      term.open(containerRef.current!);
+      // 按容器尺寸估列数/行数（12px 等宽：字符宽约 7.2px、行高约 17px）
+      const rect = containerRef.current!.getBoundingClientRect();
+      const cols = Math.max(20, Math.floor(rect.width / 7.2));
+      const rows = Math.max(8, Math.floor(rect.height / 17));
+      const created = await client.rpc<{ terminalId: string; shell: string }>(
+        "terminal.create",
+        { cwd: unit.rootPath, cols, rows },
+        15000,
+      );
+      if (disposed) {
+        void client.rpc("terminal.kill", { terminalId: created.terminalId }).catch(() => {});
+        return;
+      }
+      terminalIdRef.current = created.terminalId;
+      term.onData((data) => {
+        if (terminalIdRef.current === null) return;
+        void client.rpc("terminal.input", { terminalId: terminalIdRef.current, data }, 8000).catch(() => {});
+      });
+    };
+
+    void boot().catch((err: unknown) => {
+      if (!disposed) {
+        setDaemonDown(true);
+        console.warn("[terminal] PTY 创建失败（daemon 不可达？）", err instanceof Error ? err.message : err);
+      }
+    });
+
+    // 尺寸变化 → resize 帧
+    const ro = new ResizeObserver(() => {
+      const el = containerRef.current;
+      const tid = terminalIdRef.current;
+      if (el === null || tid === null) return;
+      const rect = el.getBoundingClientRect();
+      if (rect.width < 40 || rect.height < 60) return;
+      const cols = Math.max(20, Math.floor(rect.width / 7.2));
+      const rows = Math.max(8, Math.floor(rect.height / 17));
+      term.resize(cols, rows);
+      void client.rpc("terminal.resize", { terminalId: tid, cols, rows }, 8000).catch(() => {});
+    });
+    if (containerRef.current !== null) ro.observe(containerRef.current);
+
+    return () => {
+      disposed = true;
+      ro.disconnect();
+      for (const u of unsubs) u();
+      const tid = terminalIdRef.current;
+      if (tid !== null) {
+        void client.rpc("terminal.kill", { terminalId: tid }, 5000).catch(() => {});
+      }
+      termRef.current?.dispose();
+      termRef.current = null;
+      terminalIdRef.current = null;
+    };
+  }, [unit?.rootPath]);
 
   return (
     <div
@@ -61,7 +140,9 @@ export function TerminalPanel({
         <SquareTerminal size={12} className="text-ash" />
         <span className="text-body-sm text-graphite">{label ?? "终端"}</span>
         {isPage && <span className="rounded-chip bg-teal-tint px-1.5 py-0.5 text-[10px] text-teal">全屏页签</span>}
-        <span className="ml-auto font-mono text-caption text-ash">{unit?.name ?? ""}</span>
+        <span className="ml-auto font-mono text-caption text-ash">
+          {exited !== null ? `已退出 (exit ${exited})` : (unit?.name ?? "")}
+        </span>
         <button
           onClick={closeTerminal}
           aria-label={isPage ? "关闭终端窗格" : "关闭终端"}
@@ -72,34 +153,25 @@ export function TerminalPanel({
         </button>
       </div>
 
-      <div
-        ref={scrollRef}
-        className="min-h-0 flex-1 overflow-y-auto px-3 py-2 font-mono text-body-sm leading-relaxed"
-        onClick={() => setEcho([])}
-      >
-        {lines.map((l, i) => (
-          <p
-            key={i}
-            className={
-              l.tone === "dim" ? "text-ash" : l.tone === "gain" ? "text-gain" : l.tone === "teal" ? "text-teal" : "text-graphite"
-            }
-          >
-            {l.text || " "}
-          </p>
-        ))}
-
-        {echo.map((line, i) => (
-          <p key={`e${i}`} className="text-ink">
-            <span className="text-ash">$ </span>
-            {line}
-          </p>
-        ))}
-
-        <p>
-          <span className="text-teal">❯ </span>
-          <span className="text-ash">输入命令…（原型期无真实 PTY，回车清屏）</span>
-        </p>
-      </div>
+      {daemonDown ? (
+        <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2 font-mono text-body-sm leading-relaxed text-ash">
+          <p>daemon 不可达，无真实 PTY。</p>
+          <p className="mt-1">当前工作单元能力：</p>
+          {runtime !== null && runtime !== undefined
+            ? Object.entries(runtime.capabilities)
+                .filter(([, v]) => v)
+                .map(([k]) => (
+                  <p key={k} className="text-gain">
+                    {"  ✓ "}
+                    {k}
+                  </p>
+                ))
+            : null}
+        </div>
+      ) : (
+        /* xterm 挂载点：padding 收紧给 PTY 让位 */
+        <div ref={containerRef} className="min-h-0 flex-1 overflow-hidden px-1 py-1" />
+      )}
     </div>
   );
 }

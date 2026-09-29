@@ -162,7 +162,9 @@ async function main(): Promise<void> {
     const completed = await waitForEvent("message.completed", mark);
     const reply = String((eventLog[completed] as { text?: string }).text ?? "").trim();
     check("turn 1 answered", reply.includes("7"), reply);
-    await waitForEvent("session.ended", mark);
+    // agent loop：turn 完成 → status（会话仍开）；落盘以 status/usage 事件驱动，稍候即可
+    await waitForEvent("usage", mark);
+    await sleep(600);
     const sessions = await call<Array<{ id: string }>>("session.list", null);
     sessionId = sessions[0]?.id ?? "";
     check("session has an id to remember", sessionId.startsWith("sess_"), sessions.length);
@@ -200,7 +202,7 @@ async function main(): Promise<void> {
     const reply2 = String((eventLog[completed] as { text?: string }).text ?? "").trim();
     check("resumed turn answers correctly (7+1=8)", reply2.includes("8"), reply2);
     console.log(`         resumed reply: "${reply2}"`);
-    await waitForEvent("session.ended", mark);
+    await waitForEvent("usage", mark);
   } finally {
     await gracefulStop();
     console.log("smoke: daemon B stopped");

@@ -153,7 +153,8 @@ export class OpsRunner {
         prompt: row.input,
         model: (req.model ?? null) as never,
       });
-      await this.host.waitForSessionEnd(session.id as SessionId, req.turnTimeoutMs ?? 120_000);
+      // turn 级完成以 usage 事件为准（agent loop 语义：会话不再随轮次关闭）
+      await this.host.waitForSessionEvent(session.id as SessionId, "usage", req.turnTimeoutMs ?? 120_000);
       const events = this.host.sessionEvents(session.id as SessionId);
 
       let answer = "";

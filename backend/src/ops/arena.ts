@@ -60,7 +60,7 @@ export class ArenaRunner {
           prompt: req.prompt,
           model: null,
         });
-        await this.host.waitForSessionEnd(session.id as SessionId, req.turnTimeoutMs ?? 120_000);
+        await this.host.waitForSessionEvent(session.id as SessionId, "usage", req.turnTimeoutMs ?? 120_000);
         const events = this.host.sessionEvents(session.id as SessionId);
         let answer = "";
         for (let i = events.length - 1; i >= 0; i--) {

@@ -3,7 +3,7 @@ import { mockFactories } from "../adapters/mock/adapter.ts";
 import { SAMPLE_ARCHIVED_SESSIONS, SAMPLE_AUTOMATIONS, SAMPLE_DELIVERABLES, SAMPLE_SESSIONS, SAMPLE_UNITS } from "../adapters/mock/fixtures.ts";
 import type { Automation } from "../core/automation.ts";
 import { asModelId, canRuntimeUse, modelById, type ModelId, type ModelSpec } from "../core/models.ts";
-import { asSessionId } from "../core/units.ts";
+import { asSessionId, type SessionStatus } from "../core/units.ts";
 import {
   normalizePrefs,
   parsePrefsMap,
@@ -273,7 +273,16 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
       return { modelPrefs: map, modelPrefsVersion: s.modelPrefsVersion + 1 };
     }),
 
-  cancelRun: () => set({ busy: false }),
+  cancelRun: () => {
+    const { activeSessionId, activeRuntimeId } = get();
+    set({ busy: false });
+    if (activeSessionId !== null) {
+      void runtimeRegistry
+        .getOrCreate(activeRuntimeId as never)
+        .then((a: RuntimeAdapter) => a.cancel(activeSessionId))
+        .catch((err: unknown) => console.warn("[workbench] cancel failed", err instanceof Error ? err.message : err));
+    }
+  },
 
   setRuntimePref: (id, patch) =>
     set((s) => {
@@ -307,14 +316,18 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
     );
   },
 
+  /**
+   * 发一条消息 —— T3 语义：**活跃会话仍开着就同会话续聊**（agent loop 保持
+   * 上下文，工具记得前文），只有首条消息 / 上个会话已结束 / 换了执行器才
+   * startSession 开新会话。时间线在开新会话时重置，续聊时追加。
+   */
   run: async (prompt) => {
-    const { activeUnitId, activeRuntimeId, runtimeModels } = get();
+    const { activeUnitId, activeRuntimeId, runtimeModels, activeSessionId } = get();
     const unit = get().units.find((u) => u.id === activeUnitId);
     if (!unit) return;
 
-    set({ busy: true, timeline: [] });
-
     const adapter = await runtimeRegistry.getOrCreate(activeRuntimeId as never);
+    consumeEvents(adapter);
 
     // 模型三级回落：用户所选 → 工作单元 modelHint → 该 CLI 当前有效清单的第一个。
     // 每一级都过「有效清单」校验：用户在设置里藏掉的模型不算数，
@@ -324,6 +337,37 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
     const picked = runtimeModels[activeRuntimeId];
     const inVisible = (id: ModelId | null | undefined) => id !== null && id !== undefined && visible.some((m) => m.id === id);
     const model: ModelId = inVisible(picked) ? picked! : inVisible(hint ? asModelId(hint) : null) ? (asModelId(hint!) as ModelId) : (visible[0]?.id ?? asModelId(""));
+
+    const pushUserBubble = (sessionId: SessionId) => {
+      set((s) => ({
+        timeline: [
+          ...s.timeline,
+          {
+            id: ++seq,
+            event: {
+              type: "message.delta",
+              sessionId,
+              messageId: `u${++seq}`,
+              role: "user" as const,
+              text: prompt,
+            } as const,
+            at: Date.now(),
+          },
+        ],
+      }));
+    };
+
+    // 续聊：活跃会话开着（未 done/failed）且属于当前执行器
+    const active = activeSessionId !== null ? get().sessions.find((s) => s.id === activeSessionId) : undefined;
+    if (active !== undefined && active.runtimeId === activeRuntimeId && active.status !== "done" && active.status !== "failed") {
+      set({ busy: true });
+      pushUserBubble(active.id);
+      await adapter.sendMessage({ sessionId: active.id, text: prompt });
+      return;
+    }
+
+    // 新会话：时间线重置（新对话）
+    set({ busy: true, timeline: [] });
 
     const session = await adapter.startSession({
       unit,
@@ -336,51 +380,66 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
 
     // 用户消息是时间线的第一行（ZCode：右对齐的用户气泡）。
     // sessionId 必须是真实会话 —— 右栏轨迹按会话过滤归档，占位 id 会被滤掉
-    set((s) => ({
-      timeline: [
-        {
-          id: ++seq,
-          event: {
-            type: "message.delta",
-            sessionId: session.id,
-            messageId: `u${++seq}`,
-            role: "user" as const,
-            text: prompt,
-          } as const,
-          at: Date.now(),
-        },
-        ...s.timeline,
-      ],
-    }));
-
-    // 归一化事件流：UI 唯一的数据入口
-    void (async () => {
-      for await (const event of adapter.events()) {
-        set((s) => ({
-          timeline: [...s.timeline, { id: ++seq, event, at: Date.now() }],
-        }));
-        if (event.type === "deliverable") {
-          set((s) => ({
-            deliverables: [
-              {
-                id: `d${seq}`,
-                unitId: event.unitId,
-                sessionId: event.sessionId,
-                title: event.title,
-                kind: event.kind,
-                path: event.path,
-                url: event.url,
-                createdAt: Date.now(),
-              },
-              ...s.deliverables,
-            ],
-          }));
-        }
-        if (event.type === "session.ended") set({ busy: false });
-      }
-    })();
+    pushUserBubble(session.id);
   },
 }));
+
+/** 已挂事件消费循环的适配器 —— 每个 CLI 一条，进程内不重复挂（多挂会分抢单队列） */
+const consumerAttached = new WeakSet<RuntimeAdapter>();
+
+/** 归一化 turn 完成态 → 契约 SessionStatus */
+function mapTurnStatus(raw: string): SessionStatus {
+  if (raw.startsWith("failed")) return "failed";
+  if (raw === "idle" || raw === "running" || raw === "done" || raw === "awaiting_permission" || raw === "awaiting_input") return raw;
+  return "running";
+}
+
+/** 归一化事件流消费循环 —— UI 唯一的数据入口。每适配器挂一次，跨轮次常驻。 */
+function consumeEvents(adapter: RuntimeAdapter): void {
+  if (consumerAttached.has(adapter)) return;
+  consumerAttached.add(adapter);
+  void (async () => {
+    for await (const event of adapter.events()) {
+      useWorkbench.setState((s) => ({
+        timeline: [...s.timeline, { id: ++seq, event, at: Date.now() }],
+      }));
+      // 会话生命周期回写：status 变化 / ended → sessions[].status + busy
+      if (event.type === "session.status") {
+        const status = mapTurnStatus(event.status);
+        useWorkbench.setState((s) => ({
+          sessions: s.sessions.map((x) => (x.id === event.sessionId ? { ...x, status } : x)),
+          ...(s.activeSessionId === event.sessionId && status !== "running" ? { busy: false } : {}),
+        }));
+      }
+      if (event.type === "session.ended") {
+        useWorkbench.setState((s) => ({
+          sessions: s.sessions.map((x) =>
+            x.id === event.sessionId ? { ...x, status: event.reason === "error" ? ("failed" as const) : ("done" as const), endedAt: Date.now() } : x,
+          ),
+          busy: false,
+        }));
+      }
+      if (event.type === "message.completed") useWorkbench.setState({ busy: false });
+      if (event.type === "deliverable") {
+        useWorkbench.setState((s) => ({
+          deliverables: [
+            {
+              id: `d${seq}`,
+              unitId: event.unitId,
+              sessionId: event.sessionId,
+              title: event.title,
+              kind: event.kind,
+              path: event.path,
+              url: event.url,
+              createdAt: Date.now(),
+            },
+            ...s.deliverables,
+          ],
+        }));
+      }
+    }
+  })();
+}
 
 // 镜像注册表状态到 store。
 // 注意：订阅回调里只做「读状态 → 写 store」，绝不能在里面再触发注册表变更，
