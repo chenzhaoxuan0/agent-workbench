@@ -1,0 +1,188 @@
+import { useEffect, useRef, useState } from "react";
+import { Check, SlidersHorizontal } from "lucide-react";
+import { useWorkbench, type LoopParamsState } from "../store/useWorkbench.ts";
+import { cn } from "./cn.ts";
+
+/**
+ * agent loop 参数选择器 —— composer 右侧与权限档位并列的「怎么跑」旋钮。
+ *
+ * 参数按执行器各记一份（localStorage 持久化），透传链路：
+ * composer → store.run() → daemon session.start/send → 各家 CLI
+ * （reasoning → zcode model options / codex -c；采样仅 codex；
+ *   maxTurns 由 daemon 强制，超预算拒发新轮）。
+ *
+ * 空值 = 跟随执行器默认：不猜具体数值，daemon 端缺省不发该字段。
+ */
+
+const REASONING_LEVELS: readonly { id: string; label: string }[] = [
+  { id: "", label: "默认（跟随执行器）" },
+  { id: "max", label: "max · 最深推理" },
+  { id: "high", label: "high" },
+  { id: "medium", label: "medium" },
+  { id: "low", label: "low" },
+];
+
+function summary(loop: LoopParamsState): string {
+  const bits: string[] = [];
+  if (loop.reasoningLevel) bits.push(loop.reasoningLevel);
+  if (loop.temperature !== undefined) bits.push(`T${loop.temperature}`);
+  if (loop.topP !== undefined) bits.push(`P${loop.topP}`);
+  if (loop.maxTurns !== undefined) bits.push(`≤${loop.maxTurns}轮`);
+  return bits.length === 0 ? "loop 参数" : bits.join(" · ");
+}
+
+function NumberField({
+  label,
+  placeholder,
+  value,
+  min,
+  max,
+  step,
+  onChange,
+}: {
+  readonly label: string;
+  readonly placeholder: string;
+  readonly value: number | undefined;
+  readonly min: number;
+  readonly max: number;
+  readonly step: number;
+  readonly onChange: (v: number | undefined) => void;
+}): React.JSX.Element {
+  return (
+    <label className="flex items-center justify-between gap-2 text-body-sm">
+      <span className="text-graphite">{label}</span>
+      <input
+        type="number"
+        inputMode="decimal"
+        min={min}
+        max={max}
+        step={step}
+        value={value ?? ""}
+        placeholder={placeholder}
+        onChange={(e) => {
+          const raw = e.target.value.trim();
+          onChange(raw === "" ? undefined : Number(raw));
+        }}
+        className="w-24 rounded-btn border border-line bg-canvas px-2 py-1 text-right font-mono text-body-sm text-ink outline-none focus:border-teal"
+      />
+    </label>
+  );
+}
+
+export function LoopParamsPicker() {
+  const activeRuntimeId = useWorkbench((s) => s.activeRuntimeId);
+  const loop = useWorkbench((s) => s.loopParams[s.activeRuntimeId] ?? {});
+  const setLoopParam = useWorkbench((s) => s.setLoopParam);
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const set = (patch: Partial<LoopParamsState>): void => setLoopParam(activeRuntimeId, patch);
+
+  return (
+    <div ref={ref} className="relative shrink-0">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        aria-haspopup="dialog"
+        title="agent loop 参数：推理力度 / 采样 / 轮次预算（按执行器各记一份）"
+        className={cn(
+          "flex items-center gap-1.5 rounded-btn px-2 py-1.5 text-body-sm",
+          open ? "bg-line-soft text-ink" : "text-graphite hover:bg-line-soft hover:text-ink",
+        )}
+      >
+        <SlidersHorizontal size={13} className="shrink-0" />
+        <span className="max-w-[110px] truncate">{summary(loop)}</span>
+      </button>
+
+      {open && (
+        <div
+          role="dialog"
+          aria-label="agent loop 参数"
+          className="absolute bottom-full right-0 z-40 mb-1.5 w-72 rounded-input border border-line bg-canvas p-3 shadow-[0_8px_24px_rgb(0_0_0/0.14)]"
+        >
+          <p className="mb-2 text-caption text-ash">
+            按执行器各记一份 · 空值 = 执行器默认。采样参数仅 codex 透传（zcode 协议无采样位）。
+          </p>
+
+          <label className="mb-2 flex items-center justify-between gap-2 text-body-sm">
+            <span className="text-graphite">推理力度</span>
+            <select
+              value={loop.reasoningLevel ?? ""}
+              onChange={(e) => set({ reasoningLevel: e.target.value === "" ? undefined : e.target.value })}
+              className="w-44 rounded-btn border border-line bg-canvas px-2 py-1 text-body-sm text-ink outline-none focus:border-teal"
+            >
+              {REASONING_LEVELS.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <div className="mb-2 flex flex-col gap-1.5">
+            <NumberField
+              label="temperature"
+              placeholder="默认"
+              value={loop.temperature}
+              min={0}
+              max={2}
+              step={0.1}
+              onChange={(v) => set({ temperature: v })}
+            />
+            <NumberField
+              label="top_p"
+              placeholder="默认"
+              value={loop.topP}
+              min={0}
+              max={1}
+              step={0.05}
+              onChange={(v) => set({ topP: v })}
+            />
+            <NumberField
+              label="轮次预算"
+              placeholder="不限"
+              value={loop.maxTurns}
+              min={1}
+              max={500}
+              step={1}
+              onChange={(v) => set({ maxTurns: v })}
+            />
+          </div>
+
+          <p className="text-caption leading-relaxed text-ash">
+            轮次预算由 daemon 强制：超过后新轮会被拒绝（错误码
+            <span className="mx-1 font-mono">turn_budget_exhausted</span>），调大预算即可继续。
+          </p>
+
+          {(loop.reasoningLevel !== undefined ||
+            loop.temperature !== undefined ||
+            loop.topP !== undefined ||
+            loop.maxTurns !== undefined) && (
+            <button
+              onClick={() => set({ reasoningLevel: undefined, temperature: undefined, topP: undefined, maxTurns: undefined })}
+              className="mt-2 w-full rounded-btn border border-line py-1 text-caption text-graphite hover:bg-line-soft hover:text-ink"
+            >
+              全部恢复默认
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}

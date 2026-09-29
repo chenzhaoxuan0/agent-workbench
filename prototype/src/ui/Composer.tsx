@@ -3,6 +3,7 @@ import { ArrowUp, Square } from "lucide-react";
 import { useWorkbench, selectActiveUnit } from "../store/useWorkbench.ts";
 import { AttachmentStrip, ComposerAttach } from "./ComposerAttach.tsx";
 import { PermissionModePicker } from "./PermissionModePicker.tsx";
+import { LoopParamsPicker } from "./LoopParamsPicker.tsx";
 import { RuntimePicker } from "./RuntimePicker.tsx";
 import { StatsDock } from "./StatsDock.tsx";
 import { cn } from "./cn.ts";
@@ -76,6 +77,7 @@ export function Composer() {
 
             <div className="ml-auto flex items-center gap-1.5">
               <PermissionModePicker />
+              <LoopParamsPicker />
               <RuntimePicker />
 
               {/* 主按钮 —— ZCode：发送是 brand 底图标钮（ArrowUp），运行中变停止（实心方块）。

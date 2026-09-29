@@ -163,7 +163,12 @@ class DaemonRuntimeAdapter implements RuntimeAdapter {
           rootPath: req.unit.rootPath,
           prompt: req.prompt,
           model: req.model,
-          mode: "build",
+          mode: req.loop?.mode ?? "build",
+          reasoningLevel: req.loop?.reasoningLevel,
+          sampling: req.loop?.temperature !== undefined || req.loop?.topP !== undefined
+            ? { temperature: req.loop?.temperature, topP: req.loop?.topP }
+            : undefined,
+          maxTurns: req.loop?.maxTurns,
         },
         60000,
       );
@@ -186,7 +191,15 @@ class DaemonRuntimeAdapter implements RuntimeAdapter {
 
   async sendMessage(req: SendMessageRequest): Promise<void> {
     this.#sessions.add(req.sessionId);
-    await this.#client.rpc("session.send", { sessionId: req.sessionId, text: req.text });
+    await this.#client.rpc("session.send", {
+      sessionId: req.sessionId,
+      text: req.text,
+      reasoningLevel: req.loop?.reasoningLevel,
+      sampling: req.loop?.temperature !== undefined || req.loop?.topP !== undefined
+        ? { temperature: req.loop?.temperature, topP: req.loop?.topP }
+        : undefined,
+      maxTurns: req.loop?.maxTurns,
+    });
   }
 
   async cancel(sessionId: SessionId): Promise<void> {

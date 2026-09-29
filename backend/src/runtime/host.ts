@@ -60,6 +60,9 @@ interface HostSession {
   readonly adapter: ExecutorAdapter;
   /** 最近一次 tool.started 的工具名 —— "always" 规则的 pattern 来源 */
   lastTool: string | null;
+  /** 轮次预算（null = 不限）与已发轮数 */
+  maxTurns: number | null;
+  turnCount: number;
   /** 已落盘的执行器引用（去重，避免每事件重写） */
   lastCliRef: string | null;
   /** 会话事件环（上限 500），eval 断言与前端重放共用 */
@@ -74,6 +77,10 @@ export interface StartSessionInput {
   readonly prompt: string;
   readonly model: ModelId | null;
   readonly mode?: StartRequest["mode"];
+  readonly reasoningLevel?: string;
+  readonly sampling?: { readonly temperature?: number; readonly topP?: number };
+  /** 轮次预算：daemon 强制，超限拒发新轮 */
+  readonly maxTurns?: number;
 }
 
 export class RuntimeHost {
@@ -142,6 +149,8 @@ export class RuntimeHost {
         adapter,
         lastTool: null,
         lastCliRef: null,
+        maxTurns: null,
+        turnCount: 0,
         events: [],
       });
     }
@@ -215,6 +224,8 @@ export class RuntimeHost {
         prompt: input.prompt,
         model: input.model,
         mode: input.mode,
+        reasoningLevel: input.reasoningLevel,
+        sampling: input.sampling,
       },
       (event) => sinkRef?.(event),
     );
@@ -233,6 +244,8 @@ export class RuntimeHost {
       adapter,
       lastTool: null,
       lastCliRef: null,
+      maxTurns: input.maxTurns ?? null,
+      turnCount: 0,
       events: [],
     };
     this.sessions.set(h.id, h);
@@ -339,6 +352,7 @@ export class RuntimeHost {
         h.stats.inputTokens += event.inputTokens;
         h.stats.outputTokens += event.outputTokens;
         h.stats.costUsd += event.costUsd;
+        h.turnCount += 1;
         break;
       case "permission.requested":
         h.status = "awaiting_permission";
@@ -364,14 +378,25 @@ export class RuntimeHost {
     }
   }
 
-  async sendMessage(sessionId: SessionId, text: string): Promise<void> {
+  async sendMessage(
+    sessionId: SessionId,
+    text: string,
+    loop?: { readonly reasoningLevel?: string; readonly sampling?: { readonly temperature?: number; readonly topP?: number }; readonly maxTurns?: number },
+  ): Promise<void> {
     const h = this.sessions.get(sessionId);
     if (h === undefined) throw adapterError("unknown_session", `no such session: ${sessionId}`);
     if (h.impl === null) throw adapterError("session_not_live", `session ${sessionId} is persisted but not live — resume it first`);
+    if (loop?.maxTurns !== undefined) h.maxTurns = loop.maxTurns;
+    if (h.maxTurns !== null && h.turnCount >= h.maxTurns) {
+      throw adapterError(
+        "turn_budget_exhausted",
+        `轮次预算已用尽（${h.maxTurns} 轮）—— 调大预算或开新会话`,
+      );
+    }
     h.status = "running";
     this.broadcast({ type: "session.status", sessionId, status: "running" });
     this.store.insertMessage(sessionId, Date.now(), "user", text);
-    void h.impl.send(text).catch((err: unknown) => {
+    void h.impl.send(text, loop === undefined ? undefined : { reasoningLevel: loop.reasoningLevel, sampling: loop.sampling }).catch((err: unknown) => {
       log.error("turn failed", { sessionId, error: err instanceof Error ? err.message : String(err) });
       const errorEvent: RuntimeEvent = { type: "error", sessionId, message: err instanceof Error ? err.message : String(err), recoverable: false };
       this.broadcast(errorEvent);

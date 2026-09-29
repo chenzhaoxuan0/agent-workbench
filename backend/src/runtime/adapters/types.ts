@@ -34,14 +34,21 @@ export interface StartRequest {
   readonly model: ModelId | null;
   /** 权限模式（zcode 语义：yolo 不问权限，build 问） */
   readonly mode?: "plan" | "build" | "edit" | "yolo";
+  /** 推理力度（zcode → model.options.reasoningLevel；codex → model_reasoning_effort） */
+  readonly reasoningLevel?: string;
+  /** 采样参数（仅 codex 透传；zcode 协议无采样位，忽略并记日志） */
+  readonly sampling?: { readonly temperature?: number; readonly topP?: number };
 }
 
 export type AdapterSink = (event: RuntimeEvent) => void;
 
 export interface AdapterSession {
   readonly id: SessionId;
-  /** 再发一轮（多轮会话由适配器自己决定怎么续：同会话追加或 --resume） */
-  send(text: string): Promise<void>;
+  /**
+   * 再发一轮（多轮会话由适配器自己决定怎么续：同会话追加或 --resume）。
+   * loop = 本轮的参数覆盖（推理力度 / 采样），不改变会话级配置。
+   */
+  send(text: string, loop?: { readonly reasoningLevel?: string; readonly sampling?: { readonly temperature?: number; readonly topP?: number } }): Promise<void>;
   cancel(): Promise<void>;
   resolvePermission(requestId: string, decision: "allow" | "deny" | "always"): Promise<void>;
   /**

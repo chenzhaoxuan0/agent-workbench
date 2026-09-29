@@ -141,6 +141,7 @@ async function main(): Promise<void> {
       } as never,
       prompt: "只回答一个数字，不要使用任何工具：2+3=?",
       model: factory.models[0]!,
+      loop: { mode: "build", reasoningLevel: "max" },
     });
     check("startSession returns session", session.id.startsWith("sess_"), session);
 
@@ -175,6 +176,42 @@ async function main(): Promise<void> {
 
     const trace = await adapter.exportTrace(session.id);
     check("exportTrace non-empty", trace.length > 50, trace.length);
+
+    // 轮次预算：mockperm 快且免费 —— maxTurns 1，第二轮 send 必须被 daemon 拒绝。
+    // mockperm 每轮必发权限请求 → 先注入放行规则（顺带验证权限闸自动放行）。
+    await fetch(`${endpoint}/api/permissions/rules`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ pattern: "mock_tool", decision: "allow" }),
+    });
+    const mockInfo = infos.find((i) => i.id === "mockperm");
+    if (mockInfo === undefined) throw new Error("mockperm executor missing");
+    const mockAdapter = await createDaemonFactory(mockInfo, endpoint).create();
+    const budgetSession = await mockAdapter.startSession({
+      unit: { id: "budget" as never, rootPath: workspace, name: "预算", kind: "bot" as const, bindings: [], assets: { agentFiles: [], skillDirs: [] }, tags: [] } as never,
+      prompt: "第一轮",
+      model: factory.models[0]!,
+      loop: { mode: "build", maxTurns: 1 },
+    });
+    const budgetSeen: string[] = [];
+    void (async () => {
+      for await (const e of mockAdapter.events()) budgetSeen.push(e.type);
+    })();
+    // 等第一轮的 usage 入账（turnCount 达到预算上限后再试才有效）
+    const budgetDeadline = Date.now() + 10000;
+    for (;;) {
+      if (budgetSeen.includes("usage")) break;
+      if (Date.now() > budgetDeadline) throw new Error("budget session turn 1 never completed (have: " + budgetSeen.join(",") + ")");
+      await sleep(200);
+    }
+    let budgetRejected = false;
+    try {
+      await mockAdapter.sendMessage({ sessionId: budgetSession.id, text: "第二轮" });
+    } catch (err: unknown) {
+      budgetRejected = err instanceof Error && err.message.includes("预算");
+    }
+    check("maxTurns budget rejects second send", budgetRejected);
+
     // Windows 上 SIGTERM 送不进子进程（backend 硬结论）——程序化退出走协议
     const { DaemonClient } = await import("../src/adapters/daemon/client.ts");
     await DaemonClient.get(endpoint).rpc("daemon.stop", null, 15000);

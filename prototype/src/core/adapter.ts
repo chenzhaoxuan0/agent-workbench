@@ -122,6 +122,27 @@ export interface ProbeResult {
 // 请求类型
 // ---------------------------------------------------------------------------
 
+/**
+ * agent loop 参数 —— 一次会话/一轮的执行面旋钮。
+ *
+ * 透传语义（daemon 落到各家 CLI 的能力不同，不支持的项会被忽略并记日志，
+ * 不报错）：mode 全执行器生效；reasoningLevel 在 zcode（model options）与
+ * codex（model_reasoning_effort）上生效；temperature / topP 目前仅 codex
+ * 支持（zcode 协议无采样位）；maxTurns 由 daemon 强制（超预算拒发新轮）。
+ */
+export interface LoopParams {
+  /** 权限模式：plan / build(默认询问) / edit / yolo(全放行) */
+  readonly mode: "plan" | "build" | "edit" | "yolo";
+  /** 推理力度（zcode: max/high/…；codex: minimal~high，max 映射为 high） */
+  readonly reasoningLevel?: string;
+  /** 采样温度（0–2；仅 codex 透传） */
+  readonly temperature?: number;
+  /** nucleus 采样（0–1；仅 codex 透传） */
+  readonly topP?: number;
+  /** 轮次预算：本会话最多发的轮数，超限后 daemon 拒绝新轮（daemon 强制） */
+  readonly maxTurns?: number;
+}
+
 export interface StartSessionRequest {
   readonly unit: WorkUnit;
   /** bot模式：读 AGENTS.md 当岗位说明书。项目模式：当作普通开发上下文 */
@@ -137,6 +158,16 @@ export interface StartSessionRequest {
   readonly model: ModelId;
   /** 项目模式：指定 worktree 以实现并行隔离 */
   readonly worktree?: { readonly path: string; readonly branch: string };
+  /** agent loop 参数（省略 = 各执行器默认；mode 缺省视为 build） */
+  readonly loop?: LoopParams;
+}
+
+export interface SendMessageRequest {
+  readonly sessionId: SessionId;
+  readonly text: string;
+  readonly attachments?: readonly { readonly path: string; readonly mimeType: string }[];
+  /** 下一轮的 loop 参数覆盖（会话级 mode 不变，reasoning/采样/预算可逐轮调） */
+  readonly loop?: Omit<LoopParams, "mode">;
 }
 
 export interface SendMessageRequest {

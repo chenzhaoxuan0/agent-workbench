@@ -431,6 +431,9 @@ export class ZcodeAppServerTransport {
       mode: req.mode ?? "yolo",
       persistence: "immediate",
     };
+    if (req.sampling !== undefined && (req.sampling.temperature !== undefined || req.sampling.topP !== undefined)) {
+      log.warn("zcode 协议无采样参数位，temperature/topP 已忽略", { sampling: req.sampling });
+    }
     if (req.model !== null) {
       // registry 的 providerId 因登录渠道而异；写错会被 setModel 拒绝 → 回落默认模型
       createParams["model"] = { providerId: CODING_PLAN_PROVIDER_ID, modelId: req.model };

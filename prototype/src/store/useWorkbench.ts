@@ -15,7 +15,7 @@ import {
 } from "../core/modelPrefs.ts";
 import type { PermissionMode } from "../core/permission.ts";
 import type { Attachment } from "../core/units.ts";
-import type { RuntimeAdapter, PermissionDecision } from "../core/adapter.ts";
+import type { LoopParams, RuntimeAdapter, PermissionDecision } from "../core/adapter.ts";
 import type { RuntimeEvent } from "../core/events.ts";
 import { runtimeRegistry } from "../core/registry.ts";
 import type { RuntimeEntry } from "../core/registry.ts";
@@ -37,6 +37,26 @@ export interface RuntimePref {
   readonly launchArgs?: string;
   readonly envVars?: readonly { key: string; value: string }[];
   readonly lastCheckedAt?: number;
+}
+
+/** agent loop 参数 —— 每执行器各记一份；未设置的位用默认值（见 loopOf） */
+export interface LoopParamsState {
+  mode?: LoopParams["mode"];
+  reasoningLevel?: string;
+  temperature?: number;
+  topP?: number;
+  maxTurns?: number;
+}
+
+const LOOP_PARAMS_KEY = "agent-workbench:loop-params";
+
+function readLoopParams(): Record<string, LoopParamsState> {
+  try {
+    const raw = localStorage.getItem(LOOP_PARAMS_KEY);
+    return raw === null ? {} : (JSON.parse(raw) as Record<string, LoopParamsState>);
+  } catch {
+    return {};
+  }
 }
 
 interface TimelineItem {
@@ -69,6 +89,9 @@ interface WorkbenchState {
   modelPrefsVersion: number;
   sessions: readonly Session[];
   activeSessionId: SessionId | null;
+  /** 每执行器的 agent loop 参数（mode/reasoning/采样/预算），localStorage 持久化 */
+  loopParams: Record<string, LoopParamsState>;
+  setLoopParam: (runtimeId: string, patch: Partial<LoopParamsState>) => void;
   timeline: readonly TimelineItem[];
   deliverables: readonly Deliverable[];
   busy: boolean;
@@ -190,6 +213,7 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
   modelPrefsVersion: 0,
   sessions: SAMPLE_SESSIONS,
   activeSessionId: null,
+  loopParams: readLoopParams(),
   timeline: [],
   deliverables: SAMPLE_DELIVERABLES,
   busy: false,
@@ -203,6 +227,14 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
   setDraft: (draft) => set({ draft }),
 
   setPermissionMode: (permissionMode) => set({ permissionMode }),
+
+  setLoopParam: (runtimeId, patch) => {
+    set((s) => {
+      const loopParams = { ...s.loopParams, [runtimeId]: { ...s.loopParams[runtimeId], ...patch } };
+      try { localStorage.setItem(LOOP_PARAMS_KEY, JSON.stringify(loopParams)); } catch { /* 私有模式写不进就算了 */ }
+      return { loopParams };
+    });
+  },
 
   addAttachment: (a) => set((s) => ({ attachments: [...s.attachments, a] })),
   removeAttachment: (id) => set((s) => ({ attachments: s.attachments.filter((a) => a.id !== id) })),
@@ -329,6 +361,18 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
     const adapter = await runtimeRegistry.getOrCreate(activeRuntimeId as never);
     consumeEvents(adapter);
 
+    // agent loop 参数：每执行器各记一份；mode 未单独设置时跟随权限档位（ask→build 等）
+    const loopState = get().loopParams[activeRuntimeId] ?? {};
+    const pmToMode = (pm: PermissionMode): LoopParams["mode"] =>
+      pm === "ask" ? "build" : pm === "acceptEdits" ? "edit" : pm === "plan" ? "plan" : "yolo";
+    const loop: LoopParams = {
+      mode: loopState.mode ?? pmToMode(get().permissionMode),
+      ...(loopState.reasoningLevel ? { reasoningLevel: loopState.reasoningLevel } : {}),
+      ...(loopState.temperature !== undefined ? { temperature: loopState.temperature } : {}),
+      ...(loopState.topP !== undefined ? { topP: loopState.topP } : {}),
+      ...(loopState.maxTurns !== undefined ? { maxTurns: loopState.maxTurns } : {}),
+    };
+
     // 模型三级回落：用户所选 → 工作单元 modelHint → 该 CLI 当前有效清单的第一个。
     // 每一级都过「有效清单」校验：用户在设置里藏掉的模型不算数，
     // modelHint 指向一个被藏掉 / 该 CLI 不接的模型时也不能生效。
@@ -362,7 +406,17 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
     if (active !== undefined && active.runtimeId === activeRuntimeId && active.status !== "done" && active.status !== "failed") {
       set({ busy: true });
       pushUserBubble(active.id);
-      await adapter.sendMessage({ sessionId: active.id, text: prompt });
+      await adapter.sendMessage({
+        sessionId: active.id,
+        text: prompt,
+        loop: {
+          ...(loop.reasoningLevel ? { reasoningLevel: loop.reasoningLevel } : {}),
+          ...(loop.temperature !== undefined || loop.topP !== undefined
+            ? { sampling: { temperature: loop.temperature, topP: loop.topP } }
+            : {}),
+          ...(loop.maxTurns !== undefined ? { maxTurns: loop.maxTurns } : {}),
+        },
+      });
       return;
     }
 
@@ -374,6 +428,7 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
       prompt,
       model,
       worktree: unit.kind === "project" ? { path: `${unit.rootPath}/.wt/session`, branch: "feat/session" } : undefined,
+      loop,
     });
 
     set((s) => ({ sessions: [...s.sessions, session], activeSessionId: session.id }));
