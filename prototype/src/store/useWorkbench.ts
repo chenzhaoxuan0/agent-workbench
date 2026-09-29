@@ -21,8 +21,7 @@ import { runtimeRegistry } from "../core/registry.ts";
 import type { RuntimeEntry } from "../core/registry.ts";
 import type { Deliverable, Session, SessionId, UnitId, WorkUnit } from "../core/units.ts";
 
-// 注册六家工具。注册表不认识厂商，只认识 RuntimeId 字符串。
-runtimeRegistry.registerAll(mockFactories);
+// 注册执行器：见文件末尾的 bootstrap（优先本地 daemon，回退 mock）。
 
 export type ViewMode = "bot" | "project";
 
@@ -459,3 +458,25 @@ export type { SessionId };
 /** 当前工作单元的自动化，bot视图下最关心的一组 */
 export const selectUnitAutomations = (s: WorkbenchState): readonly Automation[] =>
   s.automations.filter((a) => a.unitId === s.activeUnitId);
+
+// 注册执行器 bootstrap —— 必须在 store 创建之后（要校正 activeRuntimeId）：
+// 优先本地 daemon（真实执行），不可达时回退 mock（纯 UI 原型，daemon 没起是正常态）。
+void (async () => {
+  try {
+    const { listDaemonExecutors } = await import("../adapters/daemon/client.ts");
+    const { createDaemonFactory } = await import("../adapters/daemon/adapter.ts");
+    const { DEFAULT_DAEMON_ENDPOINT } = await import("../adapters/daemon/client.ts");
+    const infos = await listDaemonExecutors(DEFAULT_DAEMON_ENDPOINT);
+    if (infos.length === 0) throw new Error("daemon 无可用执行器");
+    const factories = infos.map((info) => createDaemonFactory(info, DEFAULT_DAEMON_ENDPOINT));
+    runtimeRegistry.registerAll(factories);
+    useWorkbench.setState({ activeRuntimeId: factories[0]!.id });
+    console.info(`[workbench] 已连接本地 daemon：${infos.map((i) => i.id).join(", ")}`);
+  } catch (err: unknown) {
+    console.info(
+      "[workbench] 本地 daemon 不可达，使用 mock 执行器（启动 backend/ 的 daemon 即接入真实执行）",
+      err instanceof Error ? err.message : err,
+    );
+    runtimeRegistry.registerAll(mockFactories);
+  }
+})();

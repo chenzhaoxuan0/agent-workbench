@@ -360,9 +360,15 @@ registerMethod("session.resume", (params) => {
   return host.resumeSession(asSessionId(sessionId));
 });
 registerMethod("session.messages", (params) => {
-  const { sessionId } = (params ?? {}) as { sessionId?: string };
-  if (typeof sessionId !== "string") throw Object.assign(new Error("sessionId is required"), { code: "bad_params" });
-  return host.sessionMessages(asSessionId(sessionId));
+  const p = (params ?? {}) as { sessionId?: string };
+  if (typeof p.sessionId !== "string") throw Object.assign(new Error("sessionId is required"), { code: "bad_params" });
+  return host.sessionMessages(asSessionId(p.sessionId));
+});
+// exportTrace 的线上形态：会话事件环（上限 500）原样 JSON —— judge / 前端轨迹共用
+registerMethod("session.trace", (params) => {
+  const p = (params ?? {}) as { sessionId?: string };
+  if (typeof p.sessionId !== "string") throw Object.assign(new Error("sessionId is required"), { code: "bad_params" });
+  return JSON.stringify(host.sessionEvents(asSessionId(p.sessionId)), null, 2);
 });
 registerMethod("permission.resolve", (params) => {
   const p = params as { sessionId?: string; requestId?: string; decision?: "allow" | "deny" | "always" };

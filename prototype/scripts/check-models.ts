@@ -63,8 +63,13 @@ console.log("\n【1】目录自身：字段完整、无重复、id 可查");
   );
   eq("每条都有 id/名称/厂商/说明/快照日期/来源", bad.map((m) => m.id).join(","), "");
 
-  const noPrice = MODELS.filter((m) => !(m.inputPerMTok > 0) || !(m.outputPerMTok > 0));
-  eq("每条都有正数价格", noPrice.map((m) => m.id).join(","), "");
+  // 订阅内含的模型（价格 0/0）是合法档：边际成本为 0，token 计量由 daemon 的
+  // usage.jsonl 承担。两类各自校验：按量模型必须双侧正价；订阅模型必须双侧为零。
+  const badPrice = MODELS.filter((m) => {
+    const subscription = m.inputPerMTok === 0 && m.outputPerMTok === 0;
+    return subscription ? false : !(m.inputPerMTok > 0) || !(m.outputPerMTok > 0);
+  });
+  eq("按量模型有正数价格、订阅模型价格为零", badPrice.map((m) => m.id).join(","), "");
 
   const badCtx = MODELS.filter((m) => m.contextWindow < 1000);
   eq("上下文窗口都合理", badCtx.map((m) => m.id).join(","), "");
@@ -75,9 +80,13 @@ console.log("\n【1】目录自身：字段完整、无重复、id 可查");
 
 console.log("\n【2】价格与窗口是**快照**，不是契约 —— 每条都必须带来源");
 {
-  // 这条断言的作用是：将来有人手改数字却忘了更新来源，让它当场挂掉
-  const noSource = MODELS.filter((m) => !/^https:\/\//.test(m.source));
-  eq("来源都是真实 URL", noSource.map((m) => m.id).join(","), "");
+  // 这条断言的作用是：将来有人手改数字却忘了更新来源，让它当场挂掉。
+  // registry 快照声明（zcode registry 开头）是 daemon 侧目录的合法来源：
+  // 订阅模型的 id/档位以本机 zcode registry 为准，没有公开 URL 可引。
+  const noSource = MODELS.filter(
+    (m) => !/^https:\/\//.test(m.source) && !m.source.startsWith("zcode registry"),
+  );
+  eq("来源是真实 URL 或 registry 快照声明", noSource.map((m) => m.id).join(","), "");
   const noDate = MODELS.filter((m) => !/^\d{4}-\d{2}-\d{2}$/.test(m.asOf));
   eq("快照日期格式统一", noDate.map((m) => m.id).join(","), "");
 }

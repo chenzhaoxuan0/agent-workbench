@@ -20,7 +20,7 @@ import { asModelId, type ModelId } from "./units.ts";
 export { asModelId };
 export type { ModelId };
 
-export type ModelVendor = "anthropic" | "openai" | "deepseek";
+export type ModelVendor = "anthropic" | "openai" | "deepseek" | "glm" | "mock";
 
 /** 档位。决定菜单排序，也决定它在列表里的位置（先按档位再按价格）。 */
 export type ModelTier = "frontier" | "balanced" | "fast";
@@ -164,6 +164,69 @@ export const MODELS: readonly ModelSpec[] = [
     note: "最快最便宜，适合跑量任务",
     asOf: T,
     source: "https://cloudprice.net/models/openai",
+  },
+
+  // ---- GLM（Z.AI / bigmodel coding plan，经 daemon 的 zcode 执行器）----
+  // 订阅内含，不按 token 计价：价格填 0，真金白银的成本口径以 daemon 的
+  // usage.jsonl（token 为 ground truth）为准。id 与 zcode registry 的
+  // modelId 一致（区分大小写）。
+  {
+    id: asModelId("GLM-5.3-Flash"),
+    displayName: "GLM-5.3 Flash",
+    vendor: "glm",
+    vendorLabel: "GLM",
+    tier: "fast",
+    contextWindow: 200_000,
+    inputPerMTok: 0,
+    outputPerMTok: 0,
+    multimodal: true,
+    note: "zcode 执行器默认档，订阅内含",
+    asOf: T,
+    source: "zcode registry（daemon adapter.list）",
+  },
+  {
+    id: asModelId("GLM-5.3"),
+    displayName: "GLM-5.3",
+    vendor: "glm",
+    vendorLabel: "GLM",
+    tier: "frontier",
+    contextWindow: 200_000,
+    inputPerMTok: 0,
+    outputPerMTok: 0,
+    multimodal: true,
+    note: "深思旗舰档，订阅内含",
+    asOf: T,
+    source: "zcode registry（daemon adapter.list）",
+  },
+  {
+    id: asModelId("GLM-5-Turbo"),
+    displayName: "GLM-5 Turbo",
+    vendor: "glm",
+    vendorLabel: "GLM",
+    tier: "balanced",
+    contextWindow: 200_000,
+    inputPerMTok: 0,
+    outputPerMTok: 0,
+    multimodal: true,
+    note: "速度与智能平衡，订阅内含",
+    asOf: T,
+    source: "zcode registry（daemon adapter.list）",
+  },
+
+  // ---- mock（daemon 的 mockperm 执行器：权限闸试金石，零成本走全流程）----
+  {
+    id: asModelId("mock-1"),
+    displayName: "Mock-1",
+    vendor: "mock",
+    vendorLabel: "Mock",
+    tier: "fast",
+    contextWindow: 8_000,
+    inputPerMTok: 0,
+    outputPerMTok: 0,
+    multimodal: false,
+    note: "每轮必发权限请求 —— 权限卡与闸的端到端试金石",
+    asOf: T,
+    source: "zcode registry（daemon mockperm adapter，无外部来源）",
   },
 
   // ---- DeepSeek ----

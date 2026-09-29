@@ -39,6 +39,10 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
     "content-length": Buffer.byteLength(payload),
+    // 前端 dev server（5180）跨源取管理面端点；daemon 只绑回环，CORS 全开无害
+    "access-control-allow-origin": "*",
+    "access-control-allow-methods": "GET, POST, DELETE, OPTIONS",
+    "access-control-allow-headers": "content-type",
   });
   res.end(payload);
 }
@@ -84,6 +88,12 @@ async function route(
 
   if (req.method === "GET" && url.pathname === "/healthz") {
     sendJson(res, 200, healthPayload(config, startedAt));
+    return;
+  }
+
+  // 预检：带 JSON body 的跨源 POST/DELETE 需要
+  if (req.method === "OPTIONS") {
+    sendJson(res, 204, {});
     return;
   }
 
