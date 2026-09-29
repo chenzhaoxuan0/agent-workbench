@@ -78,7 +78,6 @@ export interface StartSessionInput {
   readonly model: ModelId | null;
   readonly mode?: StartRequest["mode"];
   readonly reasoningLevel?: string;
-  readonly sampling?: { readonly temperature?: number; readonly topP?: number };
   /** 轮次预算：daemon 强制，超限拒发新轮 */
   readonly maxTurns?: number;
 }
@@ -225,7 +224,6 @@ export class RuntimeHost {
         model: input.model,
         mode: input.mode,
         reasoningLevel: input.reasoningLevel,
-        sampling: input.sampling,
       },
       (event) => sinkRef?.(event),
     );
@@ -381,7 +379,7 @@ export class RuntimeHost {
   async sendMessage(
     sessionId: SessionId,
     text: string,
-    loop?: { readonly reasoningLevel?: string; readonly sampling?: { readonly temperature?: number; readonly topP?: number }; readonly maxTurns?: number },
+    loop?: { readonly reasoningLevel?: string; readonly maxTurns?: number },
   ): Promise<void> {
     const h = this.sessions.get(sessionId);
     if (h === undefined) throw adapterError("unknown_session", `no such session: ${sessionId}`);
@@ -396,7 +394,7 @@ export class RuntimeHost {
     h.status = "running";
     this.broadcast({ type: "session.status", sessionId, status: "running" });
     this.store.insertMessage(sessionId, Date.now(), "user", text);
-    void h.impl.send(text, loop === undefined ? undefined : { reasoningLevel: loop.reasoningLevel, sampling: loop.sampling }).catch((err: unknown) => {
+    void h.impl.send(text, loop === undefined ? undefined : { reasoningLevel: loop.reasoningLevel }).catch((err: unknown) => {
       log.error("turn failed", { sessionId, error: err instanceof Error ? err.message : String(err) });
       const errorEvent: RuntimeEvent = { type: "error", sessionId, message: err instanceof Error ? err.message : String(err), recoverable: false };
       this.broadcast(errorEvent);

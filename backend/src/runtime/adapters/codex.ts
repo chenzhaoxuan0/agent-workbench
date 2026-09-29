@@ -76,8 +76,8 @@ interface SessionState {
   child: ChildProcess | null;
   /** 本轮已收到的 message 数（turn.completed 时补 message.completed 用） */
   turnTexts: string[];
-  /** 本轮 loop 参数（reasoning / 采样），send 时可覆盖 */
-  loop: { reasoningLevel?: string; sampling?: { temperature?: number; topP?: number } };
+  /** 本轮 loop 参数（reasoning），send 时可覆盖 */
+  loop: { reasoningLevel?: string };
 }
 
 export class CodexAdapter implements ExecutorAdapter {
@@ -131,20 +131,14 @@ export class CodexAdapter implements ExecutorAdapter {
       cancelled: false,
       child: null,
       turnTexts: [],
-      loop: {
-        reasoningLevel: req.reasoningLevel,
-        sampling: req.sampling,
-      },
+      loop: { reasoningLevel: req.reasoningLevel },
     };
     this.sessions.set(state.sessionId, state);
 
     const impl: AdapterSession = {
       id: state.sessionId,
-      send: async (text: string, loop?) => {
-        if (loop !== undefined) {
-          if (loop.reasoningLevel !== undefined) state.loop.reasoningLevel = loop.reasoningLevel;
-          if (loop.sampling !== undefined) state.loop.sampling = loop.sampling;
-        }
+      send: async (text: string, loop?: { reasoningLevel?: string }) => {
+        if (loop?.reasoningLevel !== undefined) state.loop.reasoningLevel = loop.reasoningLevel;
         await this.spawnTurn(state, text);
       },
       cancel: async () => {
@@ -209,8 +203,6 @@ export class CodexAdapter implements ExecutorAdapter {
       const effort = loop.reasoningLevel === "max" ? "high" : loop.reasoningLevel;
       args.push("-c", `model_reasoning_effort="${effort}"`);
     }
-    if (loop.sampling?.temperature !== undefined) args.push("-c", `model_temperature=${loop.sampling.temperature}`);
-    if (loop.sampling?.topP !== undefined) args.push("-c", `model_top_p=${loop.sampling.topP}`);
     if (state.threadId !== null) args.push("resume", state.threadId);
     args.push(prompt);
 

@@ -39,12 +39,12 @@ export interface RuntimePref {
   readonly lastCheckedAt?: number;
 }
 
-/** agent loop 参数 —— 每执行器各记一份；未设置的位用默认值（见 loopOf） */
+/** agent loop 参数 —— 每执行器各记一份；未设置的位用默认值（见 loopOf）
+ *  ⚠ 不含采样参数（temperature/top_p）：zcode 协议无此位、codex 透传未证实被尊重，
+ *  无效参数不进界面 —— 未来某家 CLI 真支持了再加回来。 */
 export interface LoopParamsState {
   mode?: LoopParams["mode"];
   reasoningLevel?: string;
-  temperature?: number;
-  topP?: number;
   maxTurns?: number;
 }
 
@@ -368,8 +368,6 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
     const loop: LoopParams = {
       mode: loopState.mode ?? pmToMode(get().permissionMode),
       ...(loopState.reasoningLevel ? { reasoningLevel: loopState.reasoningLevel } : {}),
-      ...(loopState.temperature !== undefined ? { temperature: loopState.temperature } : {}),
-      ...(loopState.topP !== undefined ? { topP: loopState.topP } : {}),
       ...(loopState.maxTurns !== undefined ? { maxTurns: loopState.maxTurns } : {}),
     };
 
@@ -411,9 +409,6 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
         text: prompt,
         loop: {
           ...(loop.reasoningLevel ? { reasoningLevel: loop.reasoningLevel } : {}),
-          ...(loop.temperature !== undefined || loop.topP !== undefined
-            ? { sampling: { temperature: loop.temperature, topP: loop.topP } }
-            : {}),
           ...(loop.maxTurns !== undefined ? { maxTurns: loop.maxTurns } : {}),
         },
       });

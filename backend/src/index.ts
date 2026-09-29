@@ -326,7 +326,7 @@ registerMethod("session.start", (params) => {
   const p = params as {
     runtimeId?: string; unitId?: string; unitName?: string; rootPath?: string;
     prompt?: string; model?: string; mode?: "plan" | "build" | "edit" | "yolo";
-    reasoningLevel?: string; sampling?: { temperature?: number; topP?: number }; maxTurns?: number;
+    reasoningLevel?: string; maxTurns?: number;
   };
   if (typeof p.runtimeId !== "string" || typeof p.unitId !== "string" ||
       typeof p.rootPath !== "string" || typeof p.prompt !== "string") {
@@ -341,7 +341,6 @@ registerMethod("session.start", (params) => {
     model: typeof p.model === "string" ? asModelId(p.model) : null,
     mode: p.mode,
     reasoningLevel: p.reasoningLevel,
-    sampling: p.sampling,
     maxTurns: typeof p.maxTurns === "number" ? p.maxTurns : undefined,
   });
 });

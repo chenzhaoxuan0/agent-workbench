@@ -29,8 +29,6 @@ const EMPTY_LOOP: LoopParamsState = {};
 export function summaryOfLoop(loop: LoopParamsState): string {
   const bits: string[] = [];
   if (loop.reasoningLevel) bits.push(loop.reasoningLevel);
-  if (loop.temperature !== undefined) bits.push(`T${loop.temperature}`);
-  if (loop.topP !== undefined) bits.push(`P${loop.topP}`);
   if (loop.maxTurns !== undefined) bits.push(`≤${loop.maxTurns}轮`);
   return bits.length === 0 ? "loop 参数" : bits.join(" · ");
 }
@@ -125,7 +123,7 @@ export function LoopParamsPicker() {
           className="absolute bottom-full right-0 z-40 mb-1.5 w-72 rounded-input border border-line bg-canvas p-3 shadow-[0_8px_24px_rgb(0_0_0/0.14)]"
         >
           <p className="mb-2 text-caption text-ash">
-            按执行器各记一份 · 空值 = 执行器默认。采样参数仅 codex 透传（zcode 协议无采样位）。
+            按执行器各记一份 · 空值 = 执行器默认。
           </p>
 
           <label className="mb-2 flex items-center justify-between gap-2 text-body-sm">
@@ -145,24 +143,6 @@ export function LoopParamsPicker() {
 
           <div className="mb-2 flex flex-col gap-1.5">
             <NumberField
-              label="temperature"
-              placeholder="默认"
-              value={loop.temperature}
-              min={0}
-              max={2}
-              step={0.1}
-              onChange={(v) => set({ temperature: v })}
-            />
-            <NumberField
-              label="top_p"
-              placeholder="默认"
-              value={loop.topP}
-              min={0}
-              max={1}
-              step={0.05}
-              onChange={(v) => set({ topP: v })}
-            />
-            <NumberField
               label="轮次预算"
               placeholder="不限"
               value={loop.maxTurns}
@@ -178,12 +158,9 @@ export function LoopParamsPicker() {
             <span className="mx-1 font-mono">turn_budget_exhausted</span>），调大预算即可继续。
           </p>
 
-          {(loop.reasoningLevel !== undefined ||
-            loop.temperature !== undefined ||
-            loop.topP !== undefined ||
-            loop.maxTurns !== undefined) && (
+          {(loop.reasoningLevel !== undefined || loop.maxTurns !== undefined) && (
             <button
-              onClick={() => set({ reasoningLevel: undefined, temperature: undefined, topP: undefined, maxTurns: undefined })}
+              onClick={() => set({ reasoningLevel: undefined, maxTurns: undefined })}
               className="mt-2 w-full rounded-btn border border-line py-1 text-caption text-graphite hover:bg-line-soft hover:text-ink"
             >
               全部恢复默认
