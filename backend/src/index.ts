@@ -12,6 +12,7 @@ import { log, setLogLevel } from "./log.ts";
 import { attachWs, broadcastEvent, broadcastTerminal, registerMethod, WIRE_VERSION } from "./wsd.ts";
 import { PermissionGate } from "./permissions/gate.ts";
 import { MockPermAdapter } from "./runtime/adapters/mockperm.ts";
+import { ClaudeAdapter } from "./runtime/adapters/claude.ts";
 import { RuntimeHost } from "./runtime/host.ts";
 import { TraceSink } from "./runtime/trace.ts";
 import { ZcodeAdapter } from "./runtime/adapters/zcode.ts";
@@ -49,8 +50,35 @@ const host = new RuntimeHost((event) => {
 }, new TraceSink(config.homeDir), config.homeDir, store, gate);
 host.register(new ZcodeAdapter());
 host.register(new CodexAdapter());
+host.register(new ClaudeAdapter());
 host.register(new MockPermAdapter());
 host.loadPersisted();
+
+// ---- T3 式执行器目录（按需开启的可见性面）-----------------------------------
+// 已注册的执行器出现在 adapter.list；未注册的已知驱动在这里以真实状态列出
+//（not_installed / not_configured），前端可据此渲染灰色项与配置指引。
+// 某家补齐安装/凭据后，probe 通过即可升级为注册执行器（新增 = adapter 文件 + 注册一行）。
+registerMethod("driver.catalog", () => [
+  { id: "zcode", installed: true, registered: true, hint: "" },
+  { id: "codex", installed: true, registered: true, hint: "" },
+  { id: "claude", installed: true, registered: true, hint: "网关偶发过载时 turn 失败，恢复即用" },
+  { id: "mockperm", installed: true, registered: true, hint: "权限闸试金石" },
+  {
+    id: "opencode",
+    installed: true,
+    registered: false,
+    hint: "已安装但未配置 provider 凭据（opencode auth login）—— 配置后即可接入",
+  },
+  {
+    id: "pi",
+    installed: true,
+    registered: false,
+    hint: "已安装但无任何 provider 凭据（pi auth login / --api-key）—— 配置后即可接入",
+  },
+  { id: "cursor-agent", installed: false, registered: false, hint: "未安装（cursor-agent install）" },
+  { id: "grok", installed: false, registered: false, hint: "未安装" },
+  { id: "antigravity", installed: false, registered: false, hint: "未安装" },
+]);
 
 // ---- 终端（Phase 2）--------------------------------------------------------
 

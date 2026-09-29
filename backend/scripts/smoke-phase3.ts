@@ -152,12 +152,12 @@ async function main(): Promise<void> {
     await connect(portA);
     const mark = eventLog.length;
     await call("session.start", {
-      runtimeId: "zcode",
+      runtimeId: "codex",
       unitId: "smoke-persist",
       unitName: "Phase 3 冒烟",
       rootPath: workspace,
       prompt: "只回答一个数字，不要使用任何工具：3+4=?",
-      model: "glm-5-turbo",
+      model: "gpt-6-astra",
     });
     const completed = await waitForEvent("message.completed", mark);
     const reply = String((eventLog[completed] as { text?: string }).text ?? "").trim();

@@ -166,6 +166,52 @@ export const MODELS: readonly ModelSpec[] = [
     source: "https://cloudprice.net/models/openai",
   },
 
+  // ---- Claude Code（经 daemon 执行器；本机网关别名，订阅内含）----
+  // sonnet/opus/haiku 是 claude CLI 的模型别名，由本机 settings.json 映射到
+  // 网关实际模型；计价走网关订阅，故价格为 0。total_cost_usd 由 CLI 真实回报。
+  {
+    id: asModelId("sonnet"),
+    displayName: "Claude Sonnet（网关）",
+    vendor: "anthropic",
+    vendorLabel: "Anthropic",
+    tier: "balanced",
+    contextWindow: 200_000,
+    inputPerMTok: 0,
+    outputPerMTok: 0,
+    multimodal: true,
+    note: "claude CLI 网关别名，日常主力档",
+    asOf: T,
+    source: "zcode registry（claude settings.json 别名，订阅内含）",
+  },
+  {
+    id: asModelId("opus"),
+    displayName: "Claude Opus（网关）",
+    vendor: "anthropic",
+    vendorLabel: "Anthropic",
+    tier: "frontier",
+    contextWindow: 200_000,
+    inputPerMTok: 0,
+    outputPerMTok: 0,
+    multimodal: true,
+    note: "claude CLI 网关别名，旗舰档",
+    asOf: T,
+    source: "zcode registry（claude settings.json 别名，订阅内含）",
+  },
+  {
+    id: asModelId("haiku"),
+    displayName: "Claude Haiku（网关）",
+    vendor: "anthropic",
+    vendorLabel: "Anthropic",
+    tier: "fast",
+    contextWindow: 200_000,
+    inputPerMTok: 0,
+    outputPerMTok: 0,
+    multimodal: true,
+    note: "claude CLI 网关别名，最快档",
+    asOf: T,
+    source: "zcode registry（claude settings.json 别名，订阅内含）",
+  },
+
   // ---- GLM（Z.AI / bigmodel coding plan，经 daemon 的 zcode 执行器）----
   // 订阅内含，不按 token 计价：价格填 0，真金白银的成本口径以 daemon 的
   // usage.jsonl（token 为 ground truth）为准。id 与 zcode registry 的

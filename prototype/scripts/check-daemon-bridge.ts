@@ -111,9 +111,10 @@ async function main(): Promise<void> {
     check("adapter.list returns executors", infos.length >= 2, infos.map((i) => i.id));
     check("daemon executor ids present", infos.some((i) => i.id === "zcode") && infos.some((i) => i.id === "codex"));
 
-    const zcode = infos.find((i) => i.id === "zcode");
-    if (zcode === undefined) throw new Error("zcode executor missing");
-    const factory = createDaemonFactory(zcode, endpoint);
+    // 用 codex 跑 turn（免 zcode 套餐 5h 配额窗口依赖）；zcode 仍断言在册
+    const executor = infos.find((i) => i.id === "codex");
+    if (executor === undefined) throw new Error("codex executor missing");
+    const factory = createDaemonFactory(executor, endpoint);
     check("factory declares non-empty models", factory.models.length > 0, factory.models);
 
     const adapter = await factory.create();
@@ -141,7 +142,7 @@ async function main(): Promise<void> {
       } as never,
       prompt: "只回答一个数字，不要使用任何工具：2+3=?",
       model: factory.models[0]!,
-      loop: { mode: "build", reasoningLevel: "max" },
+      loop: { mode: "build", reasoningLevel: "high" },
     });
     check("startSession returns session", session.id.startsWith("sess_"), session);
 
@@ -165,14 +166,25 @@ async function main(): Promise<void> {
     console.log(`         turn 1 reply: ${JSON.stringify(reply1).slice(0, 40)}`);
     check("session stays open after turn (agent loop)", !received.some((e) => e.type === "session.ended"), received.map((e) => e.type));
 
-    // 续聊：同一会话 sendMessage（上下文连续，数学正确即证明）
+    // 续聊 + steer：turn 2 与 turn 3 背靠背发送 —— turn 3 在 turn 2 飞行中到达，
+    // daemon 排队、turn 2 落定后自动发出（上下文连续：5 → ×4 → ×3 = 60）
     const mark1 = received.length;
     await adapter.sendMessage({ sessionId: session.id, text: "把上一个结果再乘以4，只回答一个数字。" });
+    await adapter.sendMessage({ sessionId: session.id, text: "把上一个结果再乘以3，只回答一个数字。" });
     const completed2 = await waitFor("message.completed", mark1);
     await waitFor("usage", mark1);
     const reply2 = (received[completed2]?.text ?? "").trim();
     check("turn 2 same-session continuity (math right)", reply2.includes("20"), reply2);
     console.log(`         turn 2 reply: ${JSON.stringify(reply2).slice(0, 40)}`);
+    const completed3 = await waitFor("message.completed", completed2 + 1);
+    await waitFor("usage", completed2 + 1);
+    const reply3 = (received[completed3]?.text ?? "").trim();
+    check("turn 3 (steered during flight) completes in order", reply3.includes("60"), reply3);
+    // codex 会把 config 告警作为可恢复 error 事件上报（如 MCP 配置键名过时）——
+    // 只禁止不可恢复错误（真 turn 失败）
+    const fatalErrors = received.filter((e) => e.type === "error" && (e as { recoverable?: boolean }).recoverable === false);
+    check("no fatal errors across three turns", fatalErrors.length === 0, fatalErrors.length);
+    console.log(`         turn 3 reply: ${JSON.stringify(reply3).slice(0, 40)}`);
 
     const trace = await adapter.exportTrace(session.id);
     check("exportTrace non-empty", trace.length > 50, trace.length);

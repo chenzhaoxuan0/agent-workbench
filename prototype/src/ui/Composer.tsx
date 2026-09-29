@@ -29,9 +29,10 @@ export function Composer() {
     if (draft) taRef.current?.focus();
   }, [draft]);
 
+  // T3 steer 语义：turn 进行中发消息 = 排队（daemon 在轮落定后自动发出），不拒收
   const submit = () => {
     const v = draft.trim();
-    if (!v || busy) return;
+    if (!v) return;
     setDraft("");
     void run(v);
   };
