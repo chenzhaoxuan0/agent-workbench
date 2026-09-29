@@ -135,8 +135,6 @@ export interface LoopParams {
   readonly mode: "plan" | "build" | "edit" | "yolo";
   /** 推理力度（zcode: max/high/…；codex: minimal~high，max 映射为 high） */
   readonly reasoningLevel?: string;
-  /** 轮次预算：本会话最多发的轮数，超限后 daemon 拒绝新轮（daemon 强制） */
-  readonly maxTurns?: number;
 }
 
 export interface StartSessionRequest {
@@ -162,7 +160,7 @@ export interface SendMessageRequest {
   readonly sessionId: SessionId;
   readonly text: string;
   readonly attachments?: readonly { readonly path: string; readonly mimeType: string }[];
-  /** 下一轮的 loop 参数覆盖（会话级 mode 不变，reasoning/预算可逐轮调） */
+  /** 下一轮的 loop 参数覆盖（会话级 mode 不变，reasoning 可逐轮调） */
   readonly loop?: Omit<LoopParams, "mode">;
 }
 

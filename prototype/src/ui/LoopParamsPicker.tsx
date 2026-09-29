@@ -27,52 +27,11 @@ const REASONING_LEVELS: readonly { id: string; label: string }[] = [
 const EMPTY_LOOP: LoopParamsState = {};
 
 export function summaryOfLoop(loop: LoopParamsState): string {
-  const bits: string[] = [];
-  if (loop.reasoningLevel) bits.push(loop.reasoningLevel);
-  if (loop.maxTurns !== undefined) bits.push(`≤${loop.maxTurns}轮`);
-  return bits.length === 0 ? "loop 参数" : bits.join(" · ");
+  return loop.reasoningLevel ? `推理 ${loop.reasoningLevel}` : "loop 参数";
 }
 
 function summary(loop: LoopParamsState): string {
   return summaryOfLoop(loop);
-}
-
-function NumberField({
-  label,
-  placeholder,
-  value,
-  min,
-  max,
-  step,
-  onChange,
-}: {
-  readonly label: string;
-  readonly placeholder: string;
-  readonly value: number | undefined;
-  readonly min: number;
-  readonly max: number;
-  readonly step: number;
-  readonly onChange: (v: number | undefined) => void;
-}): React.JSX.Element {
-  return (
-    <label className="flex items-center justify-between gap-2 text-body-sm">
-      <span className="text-graphite">{label}</span>
-      <input
-        type="number"
-        inputMode="decimal"
-        min={min}
-        max={max}
-        step={step}
-        value={value ?? ""}
-        placeholder={placeholder}
-        onChange={(e) => {
-          const raw = e.target.value.trim();
-          onChange(raw === "" ? undefined : Number(raw));
-        }}
-        className="w-24 rounded-btn border border-line bg-canvas px-2 py-1 text-right font-mono text-body-sm text-ink outline-none focus:border-teal"
-      />
-    </label>
-  );
 }
 
 export function LoopParamsPicker() {
@@ -141,29 +100,16 @@ export function LoopParamsPicker() {
             </select>
           </label>
 
-          <div className="mb-2 flex flex-col gap-1.5">
-            <NumberField
-              label="轮次预算"
-              placeholder="不限"
-              value={loop.maxTurns}
-              min={1}
-              max={500}
-              step={1}
-              onChange={(v) => set({ maxTurns: v })}
-            />
-          </div>
-
           <p className="text-caption leading-relaxed text-ash">
-            轮次预算由 daemon 强制：超过后新轮会被拒绝（错误码
-            <span className="mx-1 font-mono">turn_budget_exhausted</span>），调大预算即可继续。
+            推理力度随下一轮生效（zcode → model options；codex → reasoning effort）。
           </p>
 
-          {(loop.reasoningLevel !== undefined || loop.maxTurns !== undefined) && (
+          {loop.reasoningLevel !== undefined && (
             <button
-              onClick={() => set({ reasoningLevel: undefined, maxTurns: undefined })}
+              onClick={() => set({ reasoningLevel: undefined })}
               className="mt-2 w-full rounded-btn border border-line py-1 text-caption text-graphite hover:bg-line-soft hover:text-ink"
             >
-              全部恢复默认
+              恢复默认
             </button>
           )}
         </div>

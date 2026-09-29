@@ -326,7 +326,7 @@ registerMethod("session.start", (params) => {
   const p = params as {
     runtimeId?: string; unitId?: string; unitName?: string; rootPath?: string;
     prompt?: string; model?: string; mode?: "plan" | "build" | "edit" | "yolo";
-    reasoningLevel?: string; maxTurns?: number;
+    reasoningLevel?: string;
   };
   if (typeof p.runtimeId !== "string" || typeof p.unitId !== "string" ||
       typeof p.rootPath !== "string" || typeof p.prompt !== "string") {
@@ -341,15 +341,14 @@ registerMethod("session.start", (params) => {
     model: typeof p.model === "string" ? asModelId(p.model) : null,
     mode: p.mode,
     reasoningLevel: p.reasoningLevel,
-    maxTurns: typeof p.maxTurns === "number" ? p.maxTurns : undefined,
   });
 });
 registerMethod("session.send", (params) => {
-  const p = params as { sessionId?: string; text?: string };
+  const p = params as { sessionId?: string; text?: string; reasoningLevel?: string };
   if (typeof p.sessionId !== "string" || typeof p.text !== "string") {
     throw Object.assign(new Error("sessionId and text are required"), { code: "bad_params" });
   }
-  return host.sendMessage(asSessionId(p.sessionId), p.text);
+  return host.sendMessage(asSessionId(p.sessionId), p.text, { reasoningLevel: p.reasoningLevel });
 });
 registerMethod("session.cancel", (params) => {
   const { sessionId } = (params ?? {}) as { sessionId?: string };

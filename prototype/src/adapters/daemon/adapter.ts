@@ -165,7 +165,6 @@ class DaemonRuntimeAdapter implements RuntimeAdapter {
           model: req.model,
           mode: req.loop?.mode ?? "build",
           reasoningLevel: req.loop?.reasoningLevel,
-          maxTurns: req.loop?.maxTurns,
         },
         60000,
       );
@@ -192,7 +191,6 @@ class DaemonRuntimeAdapter implements RuntimeAdapter {
       sessionId: req.sessionId,
       text: req.text,
       reasoningLevel: req.loop?.reasoningLevel,
-      maxTurns: req.loop?.maxTurns,
     });
   }
 

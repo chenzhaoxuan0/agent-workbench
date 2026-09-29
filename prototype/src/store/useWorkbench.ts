@@ -45,7 +45,6 @@ export interface RuntimePref {
 export interface LoopParamsState {
   mode?: LoopParams["mode"];
   reasoningLevel?: string;
-  maxTurns?: number;
 }
 
 const LOOP_PARAMS_KEY = "agent-workbench:loop-params";
@@ -368,7 +367,6 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
     const loop: LoopParams = {
       mode: loopState.mode ?? pmToMode(get().permissionMode),
       ...(loopState.reasoningLevel ? { reasoningLevel: loopState.reasoningLevel } : {}),
-      ...(loopState.maxTurns !== undefined ? { maxTurns: loopState.maxTurns } : {}),
     };
 
     // 模型三级回落：用户所选 → 工作单元 modelHint → 该 CLI 当前有效清单的第一个。
@@ -409,7 +407,6 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
         text: prompt,
         loop: {
           ...(loop.reasoningLevel ? { reasoningLevel: loop.reasoningLevel } : {}),
-          ...(loop.maxTurns !== undefined ? { maxTurns: loop.maxTurns } : {}),
         },
       });
       return;
