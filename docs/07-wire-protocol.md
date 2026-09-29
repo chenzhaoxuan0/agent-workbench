@@ -92,7 +92,7 @@
 
 **为什么有 `daemon.stop`**：Windows 上跨进程 SIGTERM 不可投递（冒烟实证，`child.kill("SIGTERM")` 后子进程无动于衷）。程序化退出一律走协议；SIGINT/SIGTERM 处理器保留给终端 Ctrl+C 与 Unix。这是 Phase 0 的一个硬结论，后续 PTY / 子进程管理会反复遇到，处置口径一致：**能走协议的走协议，信号只当人肉兜底**。
 
-**Phase 1 执行器事实（zcode）**：daemon 首个执行器走 `zcode -p --json`（headless 单轮 + `--resume` 多轮），真实流式 delta / usage / 会话 id 全部落进契约事件。`zcode app-server`（ZCode Protocol NDJSON，能力更全：真流式、工具事件、权限反向流）第一版已跑通到 turn 层，但 standalone 模式的 Provider Registry 依赖 `zcode login` 的独立凭据体系，桌面端 oauth 登录无法喂饱（详见 `backend/src/runtime/adapters/zcode.ts` 头注释）——留作后续升级路径。
+**Phase 1 执行器事实（zcode）**：daemon 的 zcode 执行器走 **`zcode app-server --stdio`（ZCode Protocol v1）全能力路径**——真流式 delta、工具事件、权限反向流（与 Phase 4 权限闸闭环）、真 usage、跨进程 resume。前提是本机安装的 zcode CLI 带有 fork 补丁 `awb/standalone-app-server`（app-server 入口补 standalone 引导 + 认证头端口内接；两处都在 `apps/zcode-cli/packages/bootstrap/src/zcode-protocol-entrypoint.ts`，已实测并提交到 zcode 克隆的该分支）。CLI 未打补丁时 daemon **自动降级**到 `zcode -p --json` 回退路径（真实回复/usage/多轮仍在，无流式/工具/权限事件），进程生命周期内不再回头。
 
 ## 五、版本与演进
 

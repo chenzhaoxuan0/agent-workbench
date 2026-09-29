@@ -25,6 +25,7 @@ export interface SessionRow {
   readonly startedAt: number;
   readonly endedAt: number | null;
   readonly cliRef: string | null;
+  readonly rootPath: string | null;
   readonly stats: {
     messages: number;
     toolCalls: number;
@@ -63,6 +64,7 @@ export class Store {
         started_at INTEGER NOT NULL,
         ended_at INTEGER,
         cli_ref TEXT,
+        root_path TEXT,
         stats_json TEXT NOT NULL DEFAULT '{}'
       );
       CREATE TABLE IF NOT EXISTS messages (
@@ -81,8 +83,7 @@ export class Store {
         pattern TEXT NOT NULL,
         decision TEXT NOT NULL,
         created_at INTEGER NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS automations (
+      );      CREATE TABLE IF NOT EXISTS automations (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         unit_id TEXT NOT NULL,
         unit_name TEXT NOT NULL,
@@ -113,16 +114,22 @@ export class Store {
       );
       CREATE INDEX IF NOT EXISTS idx_memory_pillar ON memory(pillar, id);
     `);
+    // 旧库迁移：root_path 是 Phase 3 之后补的列（resume 需要工作目录重建 workspace）
+    try {
+      this.db.exec(`ALTER TABLE sessions ADD COLUMN root_path TEXT`);
+    } catch {
+      // 列已存在
+    }
     log.info("store opened", { db: path.join(homeDir, "state.db") });
   }
 
   upsertSession(row: SessionRow): void {
     this.db
       .prepare(
-        `INSERT INTO sessions (id, unit_id, runtime_id, title, status, started_at, ended_at, cli_ref, stats_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO sessions (id, unit_id, runtime_id, title, status, started_at, ended_at, cli_ref, root_path, stats_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET title=excluded.title, status=excluded.status,
-           ended_at=excluded.ended_at, cli_ref=excluded.cli_ref, stats_json=excluded.stats_json`,
+           ended_at=excluded.ended_at, cli_ref=excluded.cli_ref, root_path=excluded.root_path, stats_json=excluded.stats_json`,
       )
       .run(
         row.id,
@@ -133,6 +140,7 @@ export class Store {
         row.startedAt,
         row.endedAt,
         row.cliRef,
+        row.rootPath,
         JSON.stringify(row.stats),
       );
   }
@@ -368,6 +376,7 @@ export class Store {
       startedAt: Number(r["started_at"]),
       endedAt: r["ended_at"] === null || r["ended_at"] === undefined ? null : Number(r["ended_at"]),
       cliRef: r["cli_ref"] === null || r["cli_ref"] === undefined ? null : String(r["cli_ref"]),
+      rootPath: r["root_path"] === null || r["root_path"] === undefined ? null : String(r["root_path"]),
       stats,
     };
   }

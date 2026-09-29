@@ -68,7 +68,7 @@ export class MockPermAdapter implements ExecutorAdapter {
     return this.makeSession(state);
   }
 
-  reattach(sessionId: SessionId, _ref: string, sink: AdapterSink): AdapterSession {
+  reattach(sessionId: SessionId, _ref: string, _rootPath: string, sink: AdapterSink): AdapterSession {
     const state: MockSession = { sessionId, sink, pending: new Map(), turnCount: 0 };
     this.sessions.set(sessionId, state);
     return this.makeSession(state);

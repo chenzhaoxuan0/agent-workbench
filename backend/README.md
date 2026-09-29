@@ -43,9 +43,11 @@ pnpm smoke:phase1   # …逐 Phase 到 smoke:phase7（回归基准线，改动�
 
 ## 执行器现状（诚实清单）
 
-- **zcode**：`zcode -p --json` 单轮 + `--resume` 多轮。真实回复/usage/会话 id；
-  无流式 delta（整段单块）、无工具事件、无权限反向流 —— `-p` 路径的能力边界，
-  详见 `src/runtime/adapters/zcode.ts` 头注释（app-server 升级路径已探明并留档）。
+- **zcode**：**首选 `zcode app-server`（ZCode Protocol v1）全能力**——真流式 delta、
+  工具事件、权限反向流（接 Phase 4 闸）、真 usage、同会话多轮、跨进程 resume。
+  前提：本机 zcode CLI 带 fork 补丁（分支 `awb/standalone-app-server`，见
+  `docs/07` §四）。未打补丁的安装自动降级到 `zcode -p --json` 回退路径
+  （真实回复/usage/`--resume` 多轮；无流式/工具/权限事件）。
 - **codex**：`codex exec --json` JSONL 事件流。有工具事件（command_execution/
   file_change）、usage、resume 多轮；审批恒为 never（exec 模式）。
 - **mockperm**：权限闸与审批流的试金石（每轮必发 permission.requested 并挂起）。
@@ -55,5 +57,10 @@ pnpm smoke:phase1   # …逐 Phase 到 smoke:phase7（回归基准线，改动�
 - Windows 跨进程 SIGTERM 不可投递 → 程序化退出只走 `daemon.stop` 协议方法。
 - npm .cmd shim 必须 parse 出真 node 脚本路径 spawn（cmd /c 兜底会被
   含双引号的 prompt 打碎——judge 冒烟实证）；`src/runtime/exec.ts`。
-- 一次性 CLI spawn 后立即 end stdin（codex 会停在 stdin 读取）。
+  **且 bootstrap 这类 workspace 依赖是 tsc 产物**：改它们的 src 必须先重建该包
+  再打 cli bundle，否则改动静默丢失（app-server 补丁一度"看似无效"即是此因）。
+- 一次性 CLI spawn 后立即 end stdin（codex 会停在 stdin 读取）；**长驻协议进程
+  （zcode app-server）相反，stdin 就是协议通道，关了 = 优雅退出**。
 - 权限挂起要先注册 pending 再广播 requested（闸的自动放行是同步的）。
+- zcode 冷恢复（session/resume）必须带 workspace，缺了报 "Session is not active"；
+  reattach 的引导是异步的，send 必须等 ready 门。

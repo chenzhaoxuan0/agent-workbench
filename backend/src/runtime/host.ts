@@ -244,6 +244,7 @@ export class RuntimeHost {
       startedAt: h.startedAt,
       endedAt: null,
       cliRef: null,
+      rootPath: input.rootPath,
       stats: { ...h.stats },
     });
     this.store.insertMessage(h.id, Date.now(), "user", input.prompt);
@@ -368,7 +369,7 @@ export class RuntimeHost {
     if (row === undefined) throw adapterError("unknown_session", `session not in store: ${sessionId}`);
     if (row.cliRef === null) throw adapterError("no_cli_ref", `session ${sessionId} has no executor reference to resume`);
     const sink = this.makeSink(h);
-    h.impl = h.adapter.reattach(sessionId, row.cliRef, sink);
+    h.impl = h.adapter.reattach(sessionId, row.cliRef, row.rootPath ?? "", sink);
     h.status = "idle";
     this.store.setSessionStatus(sessionId, "idle", h.endedAt ?? null, { ...h.stats });
     log.info("session resumed", { sessionId, runtimeId: h.runtimeId, cliRef: row.cliRef });

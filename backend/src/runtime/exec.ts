@@ -91,6 +91,12 @@ export interface SpawnLinesOptions {
   readonly onLine: (line: string) => void;
   readonly onStderrLine?: (line: string) => void;
   readonly onExit?: (code: number | null) => void;
+  /**
+   * spawn 后立即关 stdin（默认 true）：一次性 CLI（prompt 全在 argv）必须关，
+   * 否则 codex 会停在 stdin 读取上；长驻协议进程（zcode app-server）必须传 false
+   * —— stdin 就是它的协议通道，EOF = 优雅退出。
+   */
+  readonly closeStdin?: boolean;
 }
 
 export function spawnLines(cmd: ResolvedCommand, args: readonly string[], opts: SpawnLinesOptions) {
@@ -99,9 +105,7 @@ export function spawnLines(cmd: ResolvedCommand, args: readonly string[], opts: 
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
   });
-  // 一次性 CLI：prompt 都在 argv 里，立即关 stdin——
-  // 否则 codex 这类会停在「读 stdin / 目录信任确认」上永远不跑（冒烟实证）
-  child.stdin?.end();
+  if (opts.closeStdin !== false) child.stdin?.end();
   createInterface({ input: child.stdout! }).on("line", opts.onLine);
   if (opts.onStderrLine) {
     createInterface({ input: child.stderr! }).on("line", opts.onStderrLine);

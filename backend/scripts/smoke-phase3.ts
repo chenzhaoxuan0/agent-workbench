@@ -94,6 +94,7 @@ async function connect(port: number): Promise<void> {
     ws.addEventListener("message", (ev: MessageEvent) => {
       const frame = JSON.parse(String(ev.data)) as Record<string, unknown>;
       if (frame["type"] === "event") eventLog.push(frame["event"] as Record<string, unknown>);
+      if (frame["type"] === "event" && (frame["event"] as Record<string, unknown>)["type"] === "error") console.log('  event | error:', JSON.stringify((frame["event"] as Record<string, unknown>)["message"]).slice(0, 220));
     });
   });
 }

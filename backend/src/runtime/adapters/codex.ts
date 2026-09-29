@@ -149,10 +149,10 @@ export class CodexAdapter implements ExecutorAdapter {
     return impl;
   }
 
-  reattach(sessionId: SessionId, ref: string, sink: AdapterSink): AdapterSession {
+  reattach(sessionId: SessionId, ref: string, rootPath: string, sink: AdapterSink): AdapterSession {
     const state: SessionState = {
       sessionId,
-      rootPath: process.cwd(),
+      rootPath,
       threadId: ref,
       sink,
       running: false,

@@ -66,9 +66,10 @@ export interface ExecutorAdapter {
   start(req: StartRequest, sink: AdapterSink): Promise<AdapterSession>;
   /**
    * 把一个已存在的外部会话接回 daemon（Phase 3 resumeSession 的执行器侧）。
-   * sessionId 是 daemon 侧稳定 id（事件全用它），ref 是 externalRef 存的值。
+   * sessionId 是 daemon 侧稳定 id（事件全用它），ref 是 externalRef 存的值，
+   * rootPath 是会话原工作目录（执行器冷恢复常需要 workspace 才能找到会话）。
    */
-  reattach(sessionId: SessionId, ref: string, sink: AdapterSink): AdapterSession;
+  reattach(sessionId: SessionId, ref: string, rootPath: string, sink: AdapterSink): AdapterSession;
   /** daemon 关停时回收子进程 */
   disconnect(): Promise<void>;
 }
