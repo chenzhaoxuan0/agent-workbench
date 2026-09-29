@@ -60,11 +60,12 @@ interface HostSession {
   readonly adapter: ExecutorAdapter;
   /** 最近一次 tool.started 的工具名 —— "always" 规则的 pattern 来源 */
   lastTool: string | null;
-  /** 轮次预算（null = 不限）与已发轮数 */
-  maxTurns: number | null;
-  turnCount: number;
   /** 已落盘的执行器引用（去重，避免每事件重写） */
   lastCliRef: string | null;
+  /** T3 steer 语义：turn 进行中到达的消息在此排队，轮落定后自动发出 */
+  readonly pendingSends: Array<{ text: string; loop?: { readonly reasoningLevel?: string } }>;
+  /** 当前是否有未落定的轮 */
+  turnBusy: boolean;
   /** 会话事件环（上限 500），eval 断言与前端重放共用 */
   readonly events: RuntimeEvent[];
 }
@@ -78,8 +79,6 @@ export interface StartSessionInput {
   readonly model: ModelId | null;
   readonly mode?: StartRequest["mode"];
   readonly reasoningLevel?: string;
-  /** 轮次预算：daemon 强制，超限拒发新轮 */
-  readonly maxTurns?: number;
 }
 
 export class RuntimeHost {
@@ -148,8 +147,8 @@ export class RuntimeHost {
         adapter,
         lastTool: null,
         lastCliRef: null,
-        maxTurns: null,
-        turnCount: 0,
+        pendingSends: [],
+        turnBusy: false,
         events: [],
       });
     }
@@ -242,8 +241,8 @@ export class RuntimeHost {
       adapter,
       lastTool: null,
       lastCliRef: null,
-      maxTurns: input.maxTurns ?? null,
-      turnCount: 0,
+      pendingSends: [],
+      turnBusy: false,
       events: [],
     };
     this.sessions.set(h.id, h);
@@ -270,11 +269,14 @@ export class RuntimeHost {
 
     // 首轮 prompt：受理即返回，turn 进展全走事件流
     //（mockperm 这类会在权限处挂起整轮，await 会把 session.start 卡死——冒烟实证）
+    h.turnBusy = true;
     void impl.send(input.prompt).catch((err: unknown) => {
       log.error("first turn failed", { sessionId: h.id, error: err instanceof Error ? err.message : String(err) });
       const errorEvent: RuntimeEvent = { type: "error", sessionId: h.id, message: err instanceof Error ? err.message : String(err), recoverable: false };
       this.broadcast(errorEvent);
       this.broadcast({ type: "session.ended", sessionId: h.id, reason: "error" });
+      h.turnBusy = false;
+      this.flushPendingSends(h);
     });
     log.info("session started", { sessionId: h.id, runtimeId: adapter.id, unitId: h.unitId });
     return this.toSession(h);
@@ -350,7 +352,6 @@ export class RuntimeHost {
         h.stats.inputTokens += event.inputTokens;
         h.stats.outputTokens += event.outputTokens;
         h.stats.costUsd += event.costUsd;
-        h.turnCount += 1;
         break;
       case "permission.requested":
         h.status = "awaiting_permission";
@@ -376,29 +377,48 @@ export class RuntimeHost {
     }
   }
 
-  async sendMessage(
+  /**
+   * 发一条消息 —— T3 steer 语义：turn 进行中不报错，消息进会话级出站队列，
+   * 当前轮落定（status idle/failed / ended）后自动发出。预算机制已按产品决定移除。
+   */
+  sendMessage(
     sessionId: SessionId,
     text: string,
-    loop?: { readonly reasoningLevel?: string; readonly maxTurns?: number },
-  ): Promise<void> {
+    loop?: { readonly reasoningLevel?: string },
+  ): void {
     const h = this.sessions.get(sessionId);
     if (h === undefined) throw adapterError("unknown_session", `no such session: ${sessionId}`);
     if (h.impl === null) throw adapterError("session_not_live", `session ${sessionId} is persisted but not live — resume it first`);
-    if (loop?.maxTurns !== undefined) h.maxTurns = loop.maxTurns;
-    if (h.maxTurns !== null && h.turnCount >= h.maxTurns) {
-      throw adapterError(
-        "turn_budget_exhausted",
-        `轮次预算已用尽（${h.maxTurns} 轮）—— 调大预算或开新会话`,
-      );
+
+    if (h.turnBusy) {
+      if (h.pendingSends.length >= 10) {
+        throw adapterError("send_queue_full", "该会话已有 10 条排队消息 —— 等当前轮完成再发");
+      }
+      h.pendingSends.push({ text, loop });
+      log.info("message queued (turn in flight)", { sessionId, queueDepth: h.pendingSends.length });
+      return;
     }
+
+    this.dispatchSend(h, text, loop);
+  }
+
+  /** 实际发起一轮：置 turnBusy、写用户消息、fire-and-forget（结果走事件流） */
+  private dispatchSend(
+    h: HostSession,
+    text: string,
+    loop?: { readonly reasoningLevel?: string },
+  ): void {
+    h.turnBusy = true;
     h.status = "running";
-    this.broadcast({ type: "session.status", sessionId, status: "running" });
-    this.store.insertMessage(sessionId, Date.now(), "user", text);
-    void h.impl.send(text, loop === undefined ? undefined : { reasoningLevel: loop.reasoningLevel }).catch((err: unknown) => {
-      log.error("turn failed", { sessionId, error: err instanceof Error ? err.message : String(err) });
-      const errorEvent: RuntimeEvent = { type: "error", sessionId, message: err instanceof Error ? err.message : String(err), recoverable: false };
+    this.broadcast({ type: "session.status", sessionId: h.id, status: "running" });
+    this.store.insertMessage(h.id, Date.now(), "user", text);
+    void h.impl!.send(text, loop === undefined ? undefined : { reasoningLevel: loop.reasoningLevel }).catch((err: unknown) => {
+      log.error("turn failed", { sessionId: h.id, error: err instanceof Error ? err.message : String(err) });
+      const errorEvent: RuntimeEvent = { type: "error", sessionId: h.id, message: err instanceof Error ? err.message : String(err), recoverable: false };
       this.broadcast(errorEvent);
-      this.broadcast({ type: "session.ended", sessionId, reason: "error" });
+      this.broadcast({ type: "session.ended", sessionId: h.id, reason: "error" });
+      h.turnBusy = false;
+      this.flushPendingSends(h);
     });
   }
 
@@ -437,6 +457,14 @@ export class RuntimeHost {
       }).catch(() => {});
       this.broadcast(event);
       if (event.type === "permission.requested") this.evaluateGate(cur, event);
+      // 轮落定（status idle/failed 或 ended）→ 清 turnBusy → 自动发出排队消息（T3 steer）
+      if (
+        (event.type === "session.status" && (event.status === "idle" || event.status.startsWith("failed"))) ||
+        event.type === "session.ended"
+      ) {
+        cur.turnBusy = false;
+        this.flushPendingSends(cur);
+      }
       // 唤醒等这一类事件的等待者（usage = turn 级完成，Ops 用）
       const waiters = this.eventWaiters.get(cur.id);
       if (waiters !== undefined) {
@@ -454,6 +482,15 @@ export class RuntimeHost {
         }
       }
     };
+  }
+
+  /** 依次发出排队消息；当前轮仍忙或会话死挂则停手（下一轮落定会再触发） */
+  private flushPendingSends(h: HostSession): void {
+    if (h.turnBusy || h.impl === null) return;
+    const next = h.pendingSends.shift();
+    if (next === undefined) return;
+    log.info("dispatching queued message", { sessionId: h.id, remaining: h.pendingSends.length });
+    this.dispatchSend(h, next.text, next.loop);
   }
 
   /** 权限闸（Phase 4）：规则命中就自动决策，不命中保持挂起等人 */

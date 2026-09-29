@@ -93,7 +93,8 @@ async function connect(port: number): Promise<void> {
     ws.addEventListener("error", () => reject(new Error("ws connect failed")));
     ws.addEventListener("message", (ev: MessageEvent) => {
       const frame = JSON.parse(String(ev.data)) as Record<string, unknown>;
-      if (frame["type"] === "event") eventLog.push(frame["event"] as Record<string, unknown>);
+      if (frame["type"] === "event") { const e = frame["event"] as Record<string, unknown>; eventLog.push(e); console.log("  EVT", String(e["type"])); }
+      else if (frame["type"] !== undefined) console.log("  FRAME", String(frame["type"]));
     });
   });
 }
@@ -149,7 +150,9 @@ async function main(): Promise<void> {
     check("daemon healthy", await waitHealthy(port));
     await connect(port);
 
-    // 第一轮：挂起 → REST always → 放行 + 落规则
+    // 第一轮：session.start 的 prompt 即首轮（受理即返回，fire-and-forget）——
+    // mockperm 毫秒级跑完，事件可能先于 rpc 响应到达，所以 mark 从 0 起算，
+    // 断言一律按事件内容过滤而非下标窗口。
     const s = await call<{ id: string }>("session.start", {
       runtimeId: "mockperm",
       unitId: "smoke-gate",
@@ -158,13 +161,11 @@ async function main(): Promise<void> {
       prompt: "需要审批的操作 A",
       model: "mock-1",
     });
-    let mark = eventLog.length;
-    await call("session.send", { sessionId: s.id, text: "操作 A" });
-    const reqIdx = await waitForEvent("permission.requested", mark);
+    const reqIdx = await waitForEvent("permission.requested", 0);
     const requested = eventLog[reqIdx] as { requestId?: string };
     check("permission requested and pending", typeof requested.requestId === "string", requested);
     await sleep(600); // 给自动规则留 600ms 证明它「没有」自动放行（首次无规则）
-    check("no auto-resolve before rule exists", !eventLog.slice(mark).some((e) => e["type"] === "permission.resolved"));
+    check("no auto-resolve before rule exists", !eventLog.some((e) => e["type"] === "permission.resolved"));
 
     const resolveRes = await rest<{ resolved: boolean }>(port, "POST", "/api/permissions/resolve", {
       sessionId: s.id,
@@ -172,30 +173,29 @@ async function main(): Promise<void> {
       decision: "always",
     });
     check("REST resolve(always) ok", resolveRes.resolved === true, resolveRes);
-    await waitForEvent("session.ended", mark);
+    await waitForEvent("message.completed", 0);
     check("turn 1 completed after always", true);
 
     const rules = await rest<{ rules: Array<{ id: number; pattern: string; decision: string }> }>(port, "GET", "/api/permissions/rules");
     check("always persisted a rule", rules.rules.some((r) => r.pattern === "mock_tool" && r.decision === "allow"), rules.rules);
 
     // 第二轮：规则自动放行（无 REST 参与）
-    mark = eventLog.length;
+    const mark2 = eventLog.length;
     await call("session.send", { sessionId: s.id, text: "操作 B" });
-    await waitForEvent("permission.requested", mark);
-    const resolvedIdx = await waitForEvent("permission.resolved", mark);
+    const req2 = await waitForEvent("permission.requested", mark2);
+    const resolvedIdx = await waitForEvent("permission.resolved", mark2);
     const resolved = eventLog[resolvedIdx] as { decision?: string };
     check("rule auto-resolved second request", resolved.decision === "allow", resolved);
-    await waitForEvent("session.ended", mark);
+    await waitForEvent("session.ended", resolvedIdx);
     check("turn 2 completed without human", true);
 
     // 第三轮：新 deny 规则优先（id 倒序），自动拒绝
     await rest(port, "POST", "/api/permissions/rules", { pattern: "mock_tool", decision: "deny" });
-    mark = eventLog.length;
+    const mark3 = eventLog.length;
     await call("session.send", { sessionId: s.id, text: "操作 C" });
-    const resolved3Idx = await waitForEvent("permission.resolved", mark);
+    const resolved3Idx = await waitForEvent("permission.resolved", mark3);
     const resolved3 = eventLog[resolved3Idx] as { decision?: string };
     check("newer deny rule wins", resolved3.decision === "deny", resolved3);
-    await waitForEvent("session.ended", mark);
 
     // 清理规则（DELETE 端点）
     const firstRule = rules.rules[0];
