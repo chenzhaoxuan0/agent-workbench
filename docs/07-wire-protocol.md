@@ -51,6 +51,10 @@
   `message.completed` + `usage` + `session.status`（idle/failed/running）——**会话保持开启**，
   同会话 `session.send` 续聊即 agent loop（上下文连续）。`session.ended` 只在真关闭时发：
   `session.closed` / 执行器退出。turn 失败可重试（同一会话再 send 即可）。
+  这套语义与 T3 的编排一致（thread 长存、turn 完成是独立里程碑、会话开始后锁定模型实例、
+  参数面只暴露执行器自告的旋钮——无采样位、无轮次预算），T3 源码考证见
+  `apps/server/src/orchestration/Layers/ProviderCommandReactor.ts` 与
+  `docs/internals/overview.md`。
 - `terminal` 帧是终端数据流（`kind: "data" | "exit"`，exit 带 `exitCode`）——高频且非契约事件，独立于 `event` 流，不落轨迹。
 - **解析不出 `id` 的帧**（非 JSON / envelope 不合法）回 `id: null` 的错误帧——这是唯一允许 `id` 为 null 的场景。
 
