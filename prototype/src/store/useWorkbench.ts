@@ -22,6 +22,7 @@ import type { RuntimeEntry } from "../core/registry.ts";
 import type { Deliverable, Session, SessionId, UnitId, WorkUnit } from "../core/units.ts";
 
 // 注册执行器：见文件末尾的 bootstrap（优先本地 daemon，回退 mock）。
+// [BISECT] sync mock disabled
 
 export type ViewMode = "bot" | "project";
 
@@ -113,9 +114,14 @@ let seq = 0;
 
 /* ------------------------------------------------------------------ 模型偏好 */
 
-/** 某个 CLI 适配器**声明**的内置模型（不含用户自定义） */
+/** 某个 CLI 适配器**声明**的内置模型（不含用户自定义）。
+ *  ⚠ 未注册时的兜底必须是**稳定引用**的空数组：返回字面量 [] 会让
+ *  visibleModelsFor 的缓存永不命中 → getSnapshot 每次新数组 →
+ *  React 19 无限循环白屏（registry 异步装填的首个渲染窗口必踩）。 */
+const EMPTY_MODELS: readonly ModelSpec[] = [];
+
 function declaredOf(s: WorkbenchState, runtimeId: string): readonly ModelSpec[] {
-  return s.runtimes.find((r) => r.id === runtimeId)?.models ?? [];
+  return s.runtimes.find((r) => r.id === runtimeId)?.models ?? EMPTY_MODELS;
 }
 
 /**
@@ -470,6 +476,7 @@ void (async () => {
     if (infos.length === 0) throw new Error("daemon 无可用执行器");
     const factories = infos.map((info) => createDaemonFactory(info, DEFAULT_DAEMON_ENDPOINT));
     runtimeRegistry.registerAll(factories);
+    runtimeRegistry.setState(factories[0]!.id, { status: "stopped" });
     useWorkbench.setState({ activeRuntimeId: factories[0]!.id });
     console.info(`[workbench] 已连接本地 daemon：${infos.map((i) => i.id).join(", ")}`);
   } catch (err: unknown) {
