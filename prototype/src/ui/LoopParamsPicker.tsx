@@ -22,13 +22,21 @@ const REASONING_LEVELS: readonly { id: string; label: string }[] = [
   { id: "low", label: "low" },
 ];
 
-function summary(loop: LoopParamsState): string {
+/** ⚠ zustand 选择器的兜底必须稳定引用：字面量 {} 会让 getSnapshot 每次新对象 →
+ *  React 19 无限循环白屏（与 declaredOf 的 ?? [] 同一类坑）。 */
+const EMPTY_LOOP: LoopParamsState = {};
+
+export function summaryOfLoop(loop: LoopParamsState): string {
   const bits: string[] = [];
   if (loop.reasoningLevel) bits.push(loop.reasoningLevel);
   if (loop.temperature !== undefined) bits.push(`T${loop.temperature}`);
   if (loop.topP !== undefined) bits.push(`P${loop.topP}`);
   if (loop.maxTurns !== undefined) bits.push(`≤${loop.maxTurns}轮`);
   return bits.length === 0 ? "loop 参数" : bits.join(" · ");
+}
+
+function summary(loop: LoopParamsState): string {
+  return summaryOfLoop(loop);
 }
 
 function NumberField({
@@ -71,7 +79,7 @@ function NumberField({
 
 export function LoopParamsPicker() {
   const activeRuntimeId = useWorkbench((s) => s.activeRuntimeId);
-  const loop = useWorkbench((s) => s.loopParams[s.activeRuntimeId] ?? {});
+  const loop = useWorkbench((s) => s.loopParams[s.activeRuntimeId] ?? EMPTY_LOOP);
   const setLoopParam = useWorkbench((s) => s.setLoopParam);
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
