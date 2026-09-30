@@ -26,6 +26,7 @@ import { OpsRunner } from "./ops/eval.ts";
 import { ArenaRunner } from "./ops/arena.ts";
 import { MemoryService } from "./memory/memory.ts";
 import { BotRegistry } from "./bots/registry.ts";
+import { TelegramGateway } from "./channels/telegram.ts";
 import { asModelId, asSessionId, asUnitId } from "../../prototype/src/core/units.ts";
 
 const startedAt = Date.now();
@@ -129,6 +130,14 @@ async function runAutomation(a: {
 
 const scheduler = new AutomationScheduler(store, runAutomation);
 scheduler.start();
+
+// 渠道网关（docs/08 WP-8）：bot 的 IM 入站通道；apiBase 可指向 mock（冒烟）
+const telegramGateway = new TelegramGateway({
+  apiBase: process.env["AGENT_WORKBENCH_TELEGRAM_API"] ?? "https://api.telegram.org",
+  registry: botRegistry,
+  host,
+});
+telegramGateway.start();
 
 // ---- Ops（Phase 6）----------------------------------------------------------
 
@@ -503,6 +512,7 @@ function shutdown(signal: string): void {
   shuttingDown = true;
   log.info("shutting down", { signal });
   scheduler.stop();
+  telegramGateway.stop();
   void host.shutdown().catch(() => {});
   terminals.shutdown();
   for (const client of wss.clients) client.close(1001, "server shutting down");

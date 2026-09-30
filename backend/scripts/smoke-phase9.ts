@@ -11,6 +11,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import net from "node:net";
+import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -109,6 +110,39 @@ const wsRoot = path.join(home, "workspace");
 const botRoot = path.join(wsRoot, "bot-a");
 mkdirSync(botRoot, { recursive: true });
 
+// ---- mock Telegram Bot API（WP-8）：getUpdates 投一条消息，sendMessage 捕获回复 ----
+const mockApiPort = await freePort();
+const sentMessages: Array<{ chat_id?: unknown; text?: string }> = [];
+let updatesServed = false;
+const mockApi = createServer((req, res) => {
+  const url = new URL(req.url ?? "/", `http://127.0.0.1:${mockApiPort}`);
+  if (url.pathname.endsWith("/getUpdates")) {
+    const body = updatesServed ? { ok: true, result: [] } : {
+      ok: true,
+      result: [{ update_id: 1, message: { chat: { id: 42 }, text: "帮我跑个冒烟" } }],
+    };
+    updatesServed = true;
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(body));
+    return;
+  }
+  if (url.pathname.endsWith("/sendMessage")) {
+    const chunks: Buffer[] = [];
+    req.on("data", (c) => chunks.push(c as Buffer));
+    req.on("end", () => {
+      try {
+        sentMessages.push(JSON.parse(Buffer.concat(chunks).toString("utf8")) as { chat_id?: unknown; text?: string });
+      } catch { /* ignore */ }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    return;
+  }
+  res.writeHead(404);
+  res.end("{}");
+});
+await new Promise<void>((res) => mockApi.listen(mockApiPort, "127.0.0.1", () => res()));
+
 let daemon: ChildProcess | undefined;
 daemon = spawn(process.execPath, ["--import", "tsx", path.join(backendRoot, "src", "index.ts")], {
   cwd: backendRoot,
@@ -117,7 +151,7 @@ daemon = spawn(process.execPath, ["--import", "tsx", path.join(backendRoot, "src
     AGENT_WORKBENCH_PORT: String(port),
     AGENT_WORKBENCH_HOME: home, AGENT_WORKBENCH_INSECURE: "1",
     // WP-8：telegram 网关打向本地 mock Bot API
-    AGENT_WORKBENCH_TELEGRAM_API: "http://127.0.0.1:" + (await freePort()),
+    AGENT_WORKBENCH_TELEGRAM_API: `http://127.0.0.1:${mockApiPort}`,
   },
   stdio: ["ignore", "ignore", "inherit"],
 });
@@ -149,7 +183,7 @@ try {
     kind: "bot",
     bindings: [],
     tags: [],
-    channels: [{ kind: "telegram", enabled: false, config: { botToken: "test-token", chatId: "42" } }],
+    channels: [{ kind: "telegram", enabled: true, config: { botToken: "test-token", chatId: "42" } }],
   };
   await c.call("bot.put", { unit });
   const { existsSync } = await import("node:fs");
@@ -169,7 +203,7 @@ try {
       ...process.env,
       AGENT_WORKBENCH_PORT: String(port),
       AGENT_WORKBENCH_HOME: home, AGENT_WORKBENCH_INSECURE: "1",
-      AGENT_WORKBENCH_TELEGRAM_API: "http://127.0.0.1:" + (await freePort()),
+      AGENT_WORKBENCH_TELEGRAM_API: `http://127.0.0.1:${mockApiPort}`,
     },
     stdio: ["ignore", "ignore", "inherit"],
   });
@@ -186,6 +220,23 @@ try {
   const listed2 = await c2.call<Array<{ id?: string }>>("bot.list", null);
   check("daemon 重启后 bot 定义仍在", listed2.some((b) => b.id === "u-bot-a"), listed2);
   c2.close();
+
+  // ---- WP-8：telegram 网关把 mock 消息送进会话并回 sendMessage ----
+  // mockperm 每轮必挂权限；预置 always-allow 规则让 headless 渠道轮次能自动走完
+  {
+    const r = await fetch(`http://127.0.0.1:${port}/api/permissions/rules`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ pattern: "mock_tool", decision: "allow" }),
+    });
+    check("预置权限规则", r.ok);
+  }
+  const imT0 = Date.now();
+  while (Date.now() - imT0 < 45_000 && sentMessages.length === 0) await sleep(500);
+  check("网关回发了 sendMessage", sentMessages.length >= 1, sentMessages);
+  const reply = sentMessages[0];
+  check("回复指向 chat 42", reply?.chat_id === "42" || reply?.chat_id === 42, reply);
+  check("回复非空文本", typeof reply?.text === "string" && (reply.text as string).length > 0, reply?.text);
 } finally {
   try {
     const stopper = makeClient(port);
