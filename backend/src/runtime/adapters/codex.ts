@@ -209,6 +209,8 @@ export class CodexAdapter implements ExecutorAdapter {
   }
 
   private async spawnTurn(state: SessionState, prompt: string): Promise<void> {
+    // 评审 P1：cancelled 只描述"cancel 杀掉的那一轮"；不复位会把后续轮的失败误判为 idle
+    state.cancelled = false;
     const cmd = await resolveCommand("codex");
     const args = ["exec", "--json", "--skip-git-repo-check", "-s", this.sandboxFor("yolo"), "--cd", state.rootPath];
     const loop = state.loop;
@@ -232,7 +234,8 @@ export class CodexAdapter implements ExecutorAdapter {
     state.running = true;
     state.turnTexts = [];
 
-    const exitCode = await new Promise<number | null>((resolve) => child.once("exit", (code) => resolve(code)));
+    // 评审 P2：'exit' 可先于 stdio 排空——'close' 在流全部结束之后触发
+    const exitCode = await new Promise<number | null>((resolve) => child.once("close", (code) => resolve(code)));
     state.child = null;
     state.running = false;
 
@@ -244,7 +247,9 @@ export class CodexAdapter implements ExecutorAdapter {
       state.sink?.({ type: "session.status", sessionId: state.sessionId, status: state.cancelled ? "idle" : "failed" });
       return;
     }
-    this.finalizeTurn(state, acc);
+    // 评审 P2：有行但既无 usage 又无 failed、退出码还非 0 —— 凭据/配置横幅类启动失败，
+    // 如实报 failed 而不是 idle（否则用户端零反馈）
+    this.finalizeTurn(state, acc, exitCode);
   }
 
   // ---- JSONL → RuntimeEvent（逐行）----
@@ -252,13 +257,13 @@ export class CodexAdapter implements ExecutorAdapter {
   private handleLine(state: SessionState, acc: CodexTurnAcc, line: string): void {
     const sink = state.sink;
     if (sink === null) return;
-    acc.sawAny = true;
     let ev: CliEvent;
     try {
       ev = JSON.parse(line) as CliEvent;
     } catch {
-      return;
+      return; // 非 JSON 横幅不算有效轮（sawAny 在 parse 成功后才置位——与 claude 对齐）
     }
+    acc.sawAny = true;
     const sessionId = state.sessionId;
     switch (ev.type) {
       case "thread.started": {
@@ -327,10 +332,14 @@ export class CodexAdapter implements ExecutorAdapter {
     }
   }
 
-  private finalizeTurn(state: SessionState, acc: CodexTurnAcc): void {
+  private finalizeTurn(state: SessionState, acc: CodexTurnAcc, exitCode: number | null): void {
     const sink = state.sink;
     if (sink === null) return;
     const sessionId = state.sessionId;
+
+    if (acc.failed === null && acc.turnUsage === undefined && exitCode !== 0 && !state.cancelled) {
+      acc.failed = `codex exec exited ${exitCode} without turn events`;
+    }
 
     if (acc.turnUsage !== undefined) {
       const billedInput = (acc.turnUsage.input_tokens ?? 0) + (acc.turnUsage.cache_write_input_tokens ?? 0);
@@ -344,7 +353,7 @@ export class CodexAdapter implements ExecutorAdapter {
         costUsd: 0, // 美元由 Phase 6 价目表统一估算
         model: "codex-default",
         decodeMs: undefined,
-        requestId: `codex:${state.threadId ?? "pending"}:${++state.usageCount}`,
+        requestId: `codex:${state.threadId ?? state.sessionId}:p${process.pid}:${++state.usageCount}`,
       });
     }
 

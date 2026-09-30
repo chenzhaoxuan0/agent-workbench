@@ -27,11 +27,23 @@
 | WP-9 | ✅ 完成 | 9562ba5 | askBot 内核 + bot.ask + /webhook/bot（per-bot secret）+ src/mcp.ts（MCP stdio 桥）；冒烟 phase10 |
 | WP-11 | 🔒 冻结维持 | —— | 解冻条件未触发 |
 
+**评审轮（同日，三代理并行 review 后统一修复）**：45 条 findings（P0×1/P1×8/P2×18/P3×18），
+修复 33 条，其余为注释级/刻意取舍（详见评审提交）。关键修复：
+- P0 安全：CORS `*` + /bootstrap 回环豁免组合可被任意网页偷 token——CORS 改本地源白名单、
+  /bootstrap 加 Origin 校验；新增 phase11 鉴权冒烟（401/双通道/bootstrap/CORS/webhook 豁免）
+- P1 正确性：waitForSessionEvent 加 afterSeq 游标（续聊曾确定性返回上一轮旧回复）；
+  shutdown 未 await 导致 undelivered/断开/落盘全被 process.exit 抢跑；daemon 换代 seq 回绕
+  （hello 带 generation，客户端清游标全量重拉）+ 补拉与实时帧竞争（stash 按 seq 全序合并）；
+  claude/codex/zcode cancel 标志不复位毒化会话；MCP 桥断线永不重连
+- P2 健壮性：client 建连生命周期三缺陷、#inflight 吞其他会话事件、forget/gc 状态口径判活、
+  flush 不再向 ended 会话派发、trace 写链串行化、codex sawAny 位置、zcode 降级不再打死健康会话、
+  telegram 轮询锁+畸形 bot.json 容错、webhook 常量时间比较+waitMs 钳制、MCP/冒烟端口泄漏
+
 **遗留与注意**：
 - claude 流式粒度取决于网关（本机 invite-2608 路由整段返回且偶发模型报错——适配器如实浮出为 error 事件）；换支持 partial 的网关即得 token 级打字机，代码已就绪。
 - IM 渠道的权限档固定 yolo（headless 无审批面）；要收权就把 bot 的规则表预置好（phase4 的规则机制）。
 - MCP 桥用法：`npx tsx backend/src/mcp.ts --url http://127.0.0.1:5181 [--token …]`，在 ZCode/Claude 等 MCP 客户端里以 stdio 方式登记。
-- 冒烟套件现为 phase1~10（`pnpm smoke:phase*`），全部无需真 CLI token（真执行器验证用临时脚本，见 WP-1 纪录）。
+- 冒烟套件现为 phase1~11（`pnpm smoke:phase*`；phase11 = 鉴权面），全部无需真 CLI token（真执行器验证用临时脚本，见 WP-1 纪录）。
 
 ---
 

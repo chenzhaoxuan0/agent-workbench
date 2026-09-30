@@ -26,11 +26,15 @@ let seq = 0;
 const pending = new Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
 let ws: WebSocket;
 let nextReady: Promise<void>;
+let reconnectAttempt = 0;
 
 function connect(): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     ws = new WebSocket(wsUrl);
-    ws.on("open", () => resolve());
+    ws.on("open", () => {
+      reconnectAttempt = 0;
+      resolve();
+    });
     ws.on("error", (err) => reject(err));
     ws.on("message", (data) => {
       let f: Record<string, unknown>;
@@ -50,15 +54,28 @@ function connect(): Promise<void> {
     ws.on("close", () => {
       for (const p of pending.values()) p.reject(new Error("daemon connection closed"));
       pending.clear();
+      // 评审 P1：断线自愈——退避重连并整体替换 nextReady；此前的实现一次性报废，
+      // daemon 重启后每个工具调用都挂满超时
+      const delay = Math.min(30_000, 500 * 2 ** reconnectAttempt);
+      reconnectAttempt += 1;
+      setTimeout(() => {
+        nextReady = connect().catch((err: Error) => {
+          throw new Error(`daemon unreachable: ${err.message}`);
+        });
+      }, delay).unref();
     });
   });
 }
 nextReady = connect();
 
-function call<T>(method: string, params: unknown, timeoutMs = 180_000): Promise<T> {
+function call<T>(method: string, params: unknown, timeoutMs = 190_000): Promise<T> {
   return nextReady.then(
     () =>
       new Promise<T>((resolve, reject) => {
+        if (ws.readyState !== WebSocket.OPEN) {
+          reject(new Error("daemon not connected (reconnecting)"));
+          return;
+        }
         const id = `mcp-${++seq}`;
         const timer = setTimeout(() => {
           pending.delete(id);

@@ -358,7 +358,7 @@ export class ZcodeAppServerTransport {
       costUsd: 0,
       model: st.model ?? "zcode-default",
       decodeMs: num(turnPayload["duration"]),
-      requestId: `zcode:${st.sessionId}:${++st.usageCount}`,
+      requestId: `zcode:${st.sessionId}:p${process.pid}:${++st.usageCount}`,
     });
   }
 
@@ -620,6 +620,8 @@ class PrintTransport {
   }
 
   private async spawnTurn(state: PrintSessionState, prompt: string): Promise<void> {
+    // 评审 P1：cancelled 只描述"cancel 杀掉的那一轮"；不复位会把后续轮的失败误判为 idle
+    state.cancelled = false;
     const resumeId = state.cliSessionId;
     const cmd = await resolveCommand("zcode");
     const args = ["-p", prompt, "--json", "--cwd", state.rootPath];
@@ -687,7 +689,7 @@ class PrintTransport {
         cacheWriteTokens: u.cacheCreationTokens,
         costUsd: 0,
         model: "zcode-default",
-        requestId: `zcode:${sessionId}:${++state.usageCount}`,
+        requestId: `zcode:${sessionId}:p${process.pid}:${++state.usageCount}`,
         decodeMs: r.duration_ms,
       });
     }
@@ -766,7 +768,9 @@ export class ZcodeAdapter implements ExecutorAdapter {
         const msg = err instanceof Error ? err.message : String(err);
         const code = err instanceof Error && "code" in err ? String(err.code) : "";
         const registryEmpty = ZcodeAppServerTransport.isRegistryEmptyError(err);
-        if (registryEmpty || code === "adapter_died" || code === "rpc_timeout") {
+        // 评审 P2：rpc_timeout 不再触发降级——单次 RPC 慢（180s）不代表进程死了，
+        // disconnect 会打死其它健康会话在途的全部 RPC；只对"进程真死/无模型"降级
+        if (registryEmpty || code === "adapter_died") {
           log.warn("zcode app-server unavailable, degrading to -p transport (this process)", {
             error: msg,
             hint: "安装带 awb/standalone-app-server 补丁的 zcode CLI 可恢复全能力（真流式/工具事件/权限流）",

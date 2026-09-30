@@ -178,11 +178,6 @@ export interface SendMessageRequest {
   readonly loop?: Omit<LoopParams, "mode">;
 }
 
-export interface SendMessageRequest {
-  readonly sessionId: SessionId;
-  readonly text: string;
-  readonly attachments?: readonly { readonly path: string; readonly mimeType: string }[];
-}
 
 export type PermissionDecision = "allow" | "deny" | "always";
 

@@ -104,7 +104,7 @@ const RUNTIME_SPECS: readonly RuntimeSpec[] = [
     transport: "http",
     endpoint: "http://127.0.0.1:7801",
     requiresCwd: true,
-    capabilities: CAP_ALL,
+    capabilities: { ...CAP_ALL, steering: "turn-end" }, // daemon zcode 如实报 turn-end（mid-turn 未实现）
     models: NEUTRAL_MODELS,
     installed: true,
   },
@@ -118,7 +118,8 @@ const RUNTIME_SPECS: readonly RuntimeSpec[] = [
     transport: "jsonrpc",
     endpoint: "claude",
     requiresCwd: true,
-    capabilities: { ...CAP_PER_TURN_PROCESS, multimodal: false, worktrees: false },
+    // WP-1 后 claude 已逐行真流式（daemon 声明 realtime）——mock 画像与实现对齐（评审 P2）
+    capabilities: { ...CAP_PER_TURN_PROCESS, streaming: "realtime", multimodal: false, worktrees: false },
     models: [m("claude-opus-5-5"), m("claude-sonnet-5"), m("claude-haiku-4-5")],
     installed: true,
   },
@@ -132,7 +133,7 @@ const RUNTIME_SPECS: readonly RuntimeSpec[] = [
     transport: "jsonrpc",
     endpoint: "codex app-server",
     requiresCwd: true,
-    capabilities: { ...CAP_PER_TURN_PROCESS, multimodal: false, subagents: false },
+    capabilities: { ...CAP_PER_TURN_PROCESS, streaming: "realtime", multimodal: false, subagents: false },
     models: [m("gpt-6-astra"), m("gpt-5-1-codex"), m("gpt-5-6-luna")],
     installed: true,
   },

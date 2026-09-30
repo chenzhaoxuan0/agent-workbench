@@ -543,11 +543,18 @@ function CapabilitiesPane() {
     ? active.models.length - activeModels.filter((m) => m.source !== "custom").length
     : 0;
   if (!active) return <p className="p-4 text-body-sm text-ash">无执行器</p>;
-  const caps = Object.values(active.capabilities);
+
+/** 布尔能力计数（评审 P3）：streaming/steering 是字符串档位，不进 n/x 布尔口径 */
+function capCount(caps: Record<string, unknown>): { on: number; total: number } {
+  const bools = Object.values(caps).filter((v) => typeof v === "boolean");
+  return { on: bools.filter((v) => v === true).length, total: bools.length };
+}
+
+  const caps = capCount(active.capabilities as unknown as Record<string, unknown>);
 
   return (
     <>
-      <PaneSection title={`执行器 · ${caps.filter(Boolean).length}/${caps.length}`}>
+      <PaneSection title={`执行器 · ${caps.on}/${caps.total}`}>
         <div className="flex items-center gap-2.5">
           <span
             className="flex h-7 w-7 shrink-0 items-center justify-center rounded-btn text-body-sm font-medium text-white"
@@ -633,7 +640,7 @@ function CapabilitiesPane() {
 
       <PaneSection title="全部执行器">
         {runtimes.map((r) => {
-          const c = Object.values(r.capabilities);
+          const c = capCount(r.capabilities as unknown as Record<string, unknown>);
           return (
             <div key={r.id} className="-mx-2 flex items-center gap-2 rounded-btn px-2 py-1.5">
               <span
@@ -645,7 +652,7 @@ function CapabilitiesPane() {
               </span>
               <span className="truncate text-body-sm text-graphite">{r.presentation.displayName}</span>
               <span className="tnum ml-auto shrink-0 text-caption text-ash">
-                {c.filter(Boolean).length}/{c.length}
+                {c.on}/{c.total}
               </span>
             </div>
           );

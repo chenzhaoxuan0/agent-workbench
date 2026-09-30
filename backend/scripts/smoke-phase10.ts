@@ -8,6 +8,7 @@
  * 用法：cd backend && pnpm smoke:phase10
  */
 
+import net from "node:net";
 import { spawn, type ChildProcess, type StdioOptions } from "node:child_process";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { createInterface } from "node:readline";
@@ -27,12 +28,23 @@ const check = (name: string, cond: boolean, detail?: unknown): void => {
   }
 };
 
-const port = 5181 + Math.floor(Math.random() * 900);
+function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const srv = net.createServer();
+    srv.listen(0, "127.0.0.1", () => {
+      const addr = srv.address();
+      srv.close(() => resolve(addr !== null && typeof addr === "object" ? addr.port : 0));
+    });
+    srv.on("error", reject);
+  });
+}
+const port = await freePort(); // 评审 P3：固定随机段会撞上真实 daemon 的 5181
 const home = mkdtempSync(path.join(os.tmpdir(), "awb-phase10-"));
 const botRoot = path.join(home, "workspace", "bot-a");
 mkdirSync(botRoot, { recursive: true });
 
 let daemon: ChildProcess | undefined;
+let mcpChild: ChildProcess | undefined;
 daemon = spawn(process.execPath, ["--import", "tsx", path.join(backendRoot, "src", "index.ts")], {
   cwd: backendRoot,
   env: {
@@ -56,6 +68,7 @@ for (let i = 0; i < 40; i++) {
 }
 if (!up) {
   console.log("  FAIL daemon did not come up");
+  daemon?.kill(); // 评审 P3：失败路径也要清子进程
   process.exit(1);
 }
 
@@ -114,13 +127,12 @@ try {
   check("回复来自 mockperm", (good.body.reply ?? "").includes("mock ok"), good.body.reply);
 
   // ---- MCP：stdio 起桥，initialize → tools/list → tools/call ----
-  const child = spawn(process.execPath, ["--import", "tsx", path.join(backendRoot, "src", "mcp.ts"), "--url", `http://127.0.0.1:${port}`], {
+  mcpChild = spawn(process.execPath, ["--import", "tsx", path.join(backendRoot, "src", "mcp.ts"), "--url", `http://127.0.0.1:${port}`], {
     cwd: backendRoot,
     stdio: ["pipe", "pipe", "pipe"] as StdioOptions,
   });
   const mcpReplies = new Map<number, Record<string, unknown>>();
-  const rl = createInterface({ input: child.stdout! });
-  let mcpReady = Promise.resolve();
+  const rl = createInterface({ input: mcpChild.stdout! });
   rl.on("line", (line) => {
     try {
       const msg = JSON.parse(line) as { id?: number; result?: Record<string, unknown> };
@@ -128,7 +140,7 @@ try {
     } catch { /* ignore */ }
   });
   const mcpCall = (id: number, method: string, params?: unknown): Promise<Record<string, unknown>> => {
-    child.stdin!.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
+    (mcpChild as ChildProcess).stdin!.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
     return (async () => {
       for (let i = 0; i < 100; i++) {
         const hit = mcpReplies.get(id);
@@ -147,7 +159,7 @@ try {
   const asked = await mcpCall(3, "tools/call", { name: "ask_bot", arguments: { botId: "u-bot-a", text: "只回复一个字符：8" } });
   const content = (asked as { content?: Array<{ text?: string }> }).content?.[0]?.text ?? "";
   check("MCP ask_bot 拿到回复", content.includes("mock ok"), asked);
-  child.kill();
+  mcpChild.kill();
 } finally {
   try {
     const { WebSocket } = await import("ws");
@@ -162,6 +174,7 @@ try {
   } catch {
     daemon?.kill();
   }
+  mcpChild?.kill(); // 评审 P3：MCP 子进程失败路径不泄漏
 }
 
 console.log(failures === 0 ? "smoke-phase10: all checks passed — webhook 鉴权/跑通 + MCP 握手/工具调用成立" : `smoke-phase10: ${failures} FAIL`);

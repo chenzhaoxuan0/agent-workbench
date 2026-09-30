@@ -22,7 +22,8 @@
     "smoke:phase7": "tsx scripts/smoke-phase7.ts",
     "smoke:phase8": "tsx scripts/smoke-phase8.ts",
     "smoke:phase9": "tsx scripts/smoke-phase9.ts",
-    "smoke:phase10": "tsx scripts/smoke-phase10.ts"
+    "smoke:phase10": "tsx scripts/smoke-phase10.ts",
+    "smoke:phase11": "tsx scripts/smoke-phase11.ts"
   },
   "dependencies": {
     "node-pty": "^1.1.0",

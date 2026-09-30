@@ -6,9 +6,11 @@
  */
 
 import { mkdirSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import { loadConfig } from "./config.ts";
-import { healthPayload, isLoopbackAddr, startHttp, type HttpRoute } from "./httpd.ts";
+import { healthPayload, isLocalOrigin, isLoopbackAddr, startHttp, type HttpRoute } from "./httpd.ts";
 import { log, setLogLevel } from "./log.ts";
 import { attachWs, broadcastEvent, broadcastTerminal, registerMethod, WIRE_VERSION } from "./wsd.ts";
 import { PermissionGate } from "./permissions/gate.ts";
@@ -168,7 +170,7 @@ const httpRoutes: HttpRoute[] = [
     method: "POST",
     path: "/webhook/bot",
     handle: async ({ body }) => {
-      const p = (body ?? {}) as { botId?: string; secret?: string; text?: string };
+      const p = (body ?? {}) as { botId?: string; secret?: string; text?: string; waitMs?: number };
       if (typeof p.botId !== "string" || typeof p.text !== "string") {
         throw Object.assign(new Error("botId and text are required"), { code: "bad_params" });
       }
@@ -180,10 +182,17 @@ const httpRoutes: HttpRoute[] = [
         throw Object.assign(new Error(`bot ${p.botId} has no webhook channel`), { code: "no_channel" });
       }
       const secret = hook.config?.["secret"] ?? "";
-      if (secret === "" || p.secret !== secret) {
+      // 评审 P3：常量时间比较（hash 后等长比较），防 LAN 侧信道；secret 是唯一门槛
+      // （通过即等同在 bot 工作目录 yolo 执行）
+      const provided = createHash("sha256").update(p.secret ?? "").digest();
+      const expected = createHash("sha256").update(secret).digest();
+      if (secret === "" || !timingSafeEqual(provided, expected)) {
         throw Object.assign(new Error("bad secret"), { code: "forbidden" });
       }
-      const { sessionId, reply } = await askBot(botRegistry, host, p.botId, p.text);
+      // 评审 P3：waitMs 默认 60s、上限 120s——慢轮次不该无限占住 HTTP 连接
+      const rawWait = typeof p.waitMs === "number" ? p.waitMs : 60_000;
+      const waitMs = Math.min(Math.max(rawWait, 1_000), 120_000);
+      const { sessionId, reply } = await askBot(botRegistry, host, p.botId, p.text, { waitMs });
       return { sessionId, reply };
     },
   },
@@ -229,7 +238,12 @@ const httpRoutes: HttpRoute[] = [
 /** 鉴权判定（docs/08 WP-7）：token 开启时全查，唯一豁免 = 回环取 /bootstrap */
 const authorize = (req: IncomingMessage, url: URL): boolean => {
   if (config.token === null) return true;
-  if (url.pathname === "/bootstrap" && isLoopbackAddr(req.socket.remoteAddress)) return true;
+  if (url.pathname === "/bootstrap") {
+    // 评审 P0：跨源网页 fetch 自带 Origin 头且对端是回环——必须连 Origin 一起验
+    const origin = req.headers.origin;
+    if (origin !== undefined && !isLocalOrigin(origin)) return false;
+    return isLoopbackAddr(req.socket.remoteAddress);
+  }
   if (url.pathname === "/webhook/bot") return true; // per-bot secret 在路由内自验
   const provided = req.headers["x-awb-token"] ?? url.searchParams.get("token");
   return typeof provided === "string" && provided === config.token;
@@ -406,7 +420,9 @@ registerMethod("bot.ask", (params) => {
   if (typeof p.botId !== "string" || typeof p.text !== "string") {
     throw Object.assign(new Error("botId and text are required"), { code: "bad_params" });
   }
-  return askBot(botRegistry, host, p.botId, p.text, { waitMs: typeof p.waitMs === "number" ? p.waitMs : undefined });
+  // 评审 P3：waitMs 设上限，防误设大值无限占住 WS RPC
+  const waitMs = typeof p.waitMs === "number" ? Math.min(Math.max(p.waitMs, 1_000), 600_000) : undefined;
+  return askBot(botRegistry, host, p.botId, p.text, { waitMs });
 });
 
 registerMethod("memory.routing.get", () => memory.getRouting());
@@ -428,7 +444,7 @@ registerMethod("memory.mirror", () => memory.readMirror());
 
 registerMethod("adapter.list", () => host.listAdapters());
 registerMethod("adapter.probe", (params) => {
-  const { runtimeId } = params as { runtimeId?: string };
+  const { runtimeId } = (params ?? {}) as { runtimeId?: string };
   if (typeof runtimeId !== "string") throw Object.assign(new Error("runtimeId is required"), { code: "bad_params" });
   return host.probe(runtimeId);
 });
@@ -541,17 +557,25 @@ log.info("daemon listening", {
 });
 
 let shuttingDown = false;
-function shutdown(signal: string): void {
+// 评审 P1：host.shutdown 必须真等——undelivered 广播是异步 socket 写、adapter.disconnect
+// 杀子进程、store.close 落盘，全部排在第一个 await 之后；此前同步 process.exit 抢跑全跳过
+async function shutdown(signal: string): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
   log.info("shutting down", { signal });
   scheduler.stop();
   telegramGateway.stop();
-  void host.shutdown().catch(() => {});
   terminals.shutdown();
+  const force = setTimeout(() => process.exit(0), 2000).unref(); // 挂起写兜底：2s 强制退
+  try {
+    await host.shutdown();
+  } catch (err: unknown) {
+    log.warn("host shutdown failed", { error: err instanceof Error ? err.message : String(err) });
+  }
   for (const client of wss.clients) client.close(1001, "server shutting down");
   wss.close();
   server.close();
+  clearTimeout(force);
   log.info("bye");
   process.exit(0);
 }

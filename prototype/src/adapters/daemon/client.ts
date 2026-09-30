@@ -10,8 +10,13 @@
  *                   | { v:1, type:"event", seq, event: RuntimeEvent }
  *                   | { v:1, type:"terminal", … }（终端页签接入时再消费）
  *
- * 断线重放（docs/08 WP-2）：每个会话的 seq 在此记账；重连成功后触发 resync 监听器，
- * 由适配器层按会话调 session.events.since 补拉缺口（去重在适配器侧按 seq 判）。
+ * 断线重放（docs/08 WP-2）：事件帧带 per-session seq；重连（hello）成功后触发
+ * resync 监听器，适配器按会话调 session.events.since 补拉缺口（判重在适配器侧）。
+ * hello 帧的 daemon.generation（评审 P1）：daemon 换代后 seq 空间从 1 重来，
+ * 检测到换代即通知适配器清游标做全量重拉——否则旧游标会把新事件全部判重丢弃。
+ *
+ * token（WP-7）：localStorage 显式配置优先（手机/局域网），否则回环经 /bootstrap
+ * 自动取；都拿不到就连裸的，daemon 开着鉴权会 401。
  */
 
 import type { RuntimeCapabilities } from "../../core/adapter.ts";
@@ -45,11 +50,11 @@ export class DaemonClient {
   readonly #pending = new Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
   readonly #eventListeners = new Set<(e: RuntimeEvent, seq?: number) => void>();
   readonly #resyncListeners = new Set<() => void>();
+  readonly #generationListeners = new Set<() => void>();
   readonly #terminalListeners = new Set<(f: DaemonTerminalFrame) => void>();
-  /** 每会话已见最大 seq（WP-2）：重连补拉的游标来源 */
-  readonly #lastSeq = new Map<string, number>();
   #seq = 0;
   #everConnected = false;
+  #generation: string | null = null;
   #token: string | null = null;
 
   private constructor(endpoint: string) {
@@ -72,9 +77,8 @@ export class DaemonClient {
   }
 
   /**
-   * token 解析（docs/08 WP-7）：localStorage 显式配置优先（手机/局域网手动带），
-   * 否则回环自动经 GET /bootstrap 取（本机前端免配置）。都拿不到就连裸的——
-   * daemon 若开着鉴权会 401，调用方据此报"需要 token"。
+   * token 解析（WP-7）：localStorage 显式配置优先，否则回环自动经 GET /bootstrap 取。
+   * 都拿不到返回 null——连裸的，鉴权开着会 401，调用方据此报"需要 token"。
    */
   async #ensureToken(): Promise<string | null> {
     if (this.#token !== null) return this.#token;
@@ -102,84 +106,115 @@ export class DaemonClient {
     if (this.#ws !== null && this.#ws.readyState === WebSocket.OPEN) return;
     if (this.#connecting !== null) return this.#connecting;
 
-    this.#connecting = new Promise<void>((resolve, reject) => {
-      void this.#ensureToken().then((token) => {
-        const wsUrl = token !== null ? `${wsUrlOf(this.#endpoint)}?token=${encodeURIComponent(token)}` : wsUrlOf(this.#endpoint);
-        const ws = new WebSocket(wsUrl);
-        const timer = setTimeout(() => {
-          reject(Object.assign(new Error(`daemon ${this.#endpoint} 连接超时`), { code: "daemon_connect_timeout" }));
-        }, timeoutMs);
-        ws.addEventListener("open", () => {
-          // hello 帧随后来不及等也无所谓：rpc 会自然排队
-          clearTimeout(timer);
-          this.#ws = ws;
-          const isReconnect = this.#everConnected;
-          this.#everConnected = true;
-          resolve();
-          // 重连（非首连）成功 → 通知适配器按 seq 补拉断线窗口内的事件
-          if (isReconnect) {
-            for (const fn of this.#resyncListeners) fn();
-          }
-        });
-        ws.addEventListener("error", () => {
-          clearTimeout(timer);
-          if (this.#connecting !== null) {
-            this.#connecting = null;
-            reject(Object.assign(new Error(`daemon ${this.#endpoint} 连接失败（daemon 没起？或 token 不对）`), { code: "daemon_unreachable" }));
-          }
-        });
-        ws.addEventListener("message", (ev: MessageEvent) => {
-          let frame: Record<string, unknown>;
+    const attempt: Promise<void> = new Promise<void>((resolve, reject) => {
+      // 评审 P2：建连体全程 try/catch + attempt 级 settled 标记——此前超时不关 socket、
+      // 迟到的 error/open 会 clobber 下一次尝试、WebSocket 构造同步抛会让 Promise 永不 settle
+      let settled = false;
+      let ws: WebSocket | null = null;
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const fail = (code: string, message: string): void => {
+        if (settled) return;
+        settled = true;
+        if (timer !== null) clearTimeout(timer);
+        if (ws !== null) {
           try {
-            frame = JSON.parse(String(ev.data)) as Record<string, unknown>;
-          } catch {
-            return;
-          }
-          if (frame["type"] === "event") {
-            const event = frame["event"] as RuntimeEvent;
-            const seq = typeof frame["seq"] === "number" ? frame["seq"] : undefined;
-            if (seq !== undefined && event.sessionId !== undefined) {
-              const prev = this.#lastSeq.get(event.sessionId) ?? 0;
-              if (seq > prev) this.#lastSeq.set(event.sessionId, seq);
-            }
-            for (const fn of this.#eventListeners) fn(event, seq);
-            return;
-          }
-          if (frame["type"] === "terminal") {
-            const tf = frame as unknown as DaemonTerminalFrame;
-            for (const fn of this.#terminalListeners) fn(tf);
-            return;
-          }
-          // hello 与其他帧此处不消费
-          if (frame["id"] !== undefined && frame["id"] !== null && (frame["ok"] !== undefined || frame["error"] !== undefined)) {
-            const key = String(frame["id"]);
-            const p = this.#pending.get(key);
-            if (!p) return;
-            this.#pending.delete(key);
-            clearTimeout(p.timer);
-            if (frame["ok"] === true) p.resolve(frame["result"]);
-            else {
-              const err = frame["error"] as { code?: string; message?: string } | undefined;
-              p.reject(Object.assign(new Error(err?.message ?? "daemon rpc failed"), { code: err?.code ?? "daemon_error" }));
-            }
-          }
-        });
-        ws.addEventListener("close", () => {
-          this.#ws = null;
-          // 挂起的 rpc 全部失败：调用方据此感知断线
-          for (const p of this.#pending.values()) {
-            clearTimeout(p.timer);
-            p.reject(Object.assign(new Error("daemon 连接已断开"), { code: "daemon_disconnected" }));
-          }
-          this.#pending.clear();
-        });
-          });
-        }).finally(() => {
-          this.#connecting = null;
-        });
+            ws.close();
+          } catch { /* 已死不究 */ }
+        }
+        reject(Object.assign(new Error(message), { code }));
+      };
+      const succeed = (socket: WebSocket): void => {
+        if (settled) return;
+        settled = true;
+        if (timer !== null) clearTimeout(timer);
+        this.#ws = socket;
+        resolve();
+      };
 
-        return this.#connecting;
+      void this.#ensureToken()
+        .then((token) => {
+          const base = wsUrlOf(this.#endpoint);
+          const wsUrl = token !== null ? `${base}?token=${encodeURIComponent(token)}` : base;
+          try {
+            ws = new WebSocket(wsUrl);
+          } catch (err: unknown) {
+            fail("daemon_unreachable", `daemon ${this.#endpoint} 连接创建失败：${err instanceof Error ? err.message : String(err)}`);
+            return;
+          }
+          timer = setTimeout(() => fail("daemon_connect_timeout", `daemon ${this.#endpoint} 连接超时`), timeoutMs);
+          ws.addEventListener("open", () => succeed(ws!));
+          ws.addEventListener("error", () => fail("daemon_unreachable", `daemon ${this.#endpoint} 连接失败（daemon 没起？或 token 不对）`));
+          ws.addEventListener("message", (ev: MessageEvent) => this.#onFrame(ev));
+          ws.addEventListener("close", () => {
+            if (this.#ws === ws) this.#ws = null;
+            // 挂起的 rpc 全部失败：调用方据此感知断线
+            for (const p of this.#pending.values()) {
+              clearTimeout(p.timer);
+              p.reject(Object.assign(new Error("daemon 连接已断开"), { code: "daemon_disconnected" }));
+            }
+            this.#pending.clear();
+          });
+        })
+        .catch((err: unknown) => fail("daemon_unreachable", err instanceof Error ? err.message : String(err)));
+    }).finally(() => {
+      if (this.#connecting === attempt) this.#connecting = null;
+    });
+
+    this.#connecting = attempt;
+    return attempt;
+  }
+
+  /** 帧分发：hello（代际检测/resync 触发）、event、terminal、rpc 响应 */
+  #onFrame(ev: MessageEvent): void {
+    let frame: Record<string, unknown>;
+    try {
+      frame = JSON.parse(String(ev.data)) as Record<string, unknown>;
+    } catch {
+      return;
+    }
+    if (frame["type"] === "hello") {
+      // 评审 P1：daemon 换代（pid 变）= seq 空间重置——通知适配器清游标全量重拉；
+      // 未换代的重连走增量 resync。resync 触发统一收敛到 hello（连接建立的权威信号）。
+      const daemon = frame["daemon"] as { generation?: string; pid?: number } | undefined;
+      const gen = daemon === undefined ? "unknown" : (daemon.generation ?? `pid:${daemon.pid ?? "?"}`);
+      const changed = this.#generation !== null && this.#generation !== gen;
+      const wasConnected = this.#everConnected;
+      this.#generation = gen;
+      this.#everConnected = true;
+      if (changed) {
+        for (const fn of this.#generationListeners) fn();
+      } else if (wasConnected) {
+        for (const fn of this.#resyncListeners) fn();
       }
+      return;
+    }
+    if (frame["type"] === "event") {
+      const event = frame["event"] as RuntimeEvent | undefined;
+      // 评审 P3：最小形状校验——半实现 daemon / wscat 手发帧不至于在监听器里抛 TypeError
+      if (event === undefined || typeof event !== "object" || typeof event.sessionId !== "string") return;
+      const seq = typeof frame["seq"] === "number" ? frame["seq"] : undefined;
+      for (const fn of this.#eventListeners) fn(event, seq);
+      return;
+    }
+    if (frame["type"] === "terminal") {
+      const tf = frame as unknown as DaemonTerminalFrame;
+      for (const fn of this.#terminalListeners) fn(tf);
+      return;
+    }
+    // rpc 响应
+    if (frame["id"] !== undefined && frame["id"] !== null && (frame["ok"] !== undefined || frame["error"] !== undefined)) {
+      const key = String(frame["id"]);
+      const p = this.#pending.get(key);
+      if (!p) return;
+      this.#pending.delete(key);
+      clearTimeout(p.timer);
+      if (frame["ok"] === true) p.resolve(frame["result"]);
+      else {
+        const err = frame["error"] as { code?: string; message?: string } | undefined;
+        p.reject(Object.assign(new Error(err?.message ?? "daemon rpc failed"), { code: err?.code ?? "daemon_error" }));
+      }
+    }
+  }
 
   rpc<T = unknown>(method: string, params: unknown, timeoutMs = 300_000): Promise<T> {
     return this.ensureConnected().then(
@@ -206,15 +241,16 @@ export class DaemonClient {
     return () => this.#eventListeners.delete(fn);
   }
 
-  /** 重连成功（非首连）时触发——适配器在此按会话 seq 补拉缺口 */
+  /** 重连（未换代）时触发——适配器按会话游标增量补拉 */
   onResync(fn: () => void): () => void {
     this.#resyncListeners.add(fn);
     return () => this.#resyncListeners.delete(fn);
   }
 
-  /** 某会话已见的最大 seq（没有收到过带 seq 的帧则为 0） */
-  lastSeqOf(sessionId: string): number {
-    return this.#lastSeq.get(sessionId) ?? 0;
+  /** daemon 换代（重连后 hello 的 generation 变化）——适配器清游标全量重拉 */
+  onGenerationChange(fn: () => void): () => void {
+    this.#generationListeners.add(fn);
+    return () => this.#generationListeners.delete(fn);
   }
 
   /** 终端数据帧（terminal.create 之后到达；按 terminalId 过滤） */

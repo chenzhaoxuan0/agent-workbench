@@ -140,7 +140,7 @@ export class MockPermAdapter implements ExecutorAdapter {
       outputTokens: 1,
       costUsd: 0,
       model: "mock-1",
-      requestId: `mock:${sessionId}:${state.turnCount}`,
+      requestId: `mock:${sessionId}:p${process.pid}:${state.turnCount}`,
     });
     sink({ type: "session.ended", sessionId, reason: decision === "deny" ? "completed" : "completed" });
   }

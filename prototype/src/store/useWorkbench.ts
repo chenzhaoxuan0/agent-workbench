@@ -595,12 +595,22 @@ void (async () => {
     try {
       const { listBotDefinitions } = await import("../adapters/daemon/client.ts");
       const defs = (await listBotDefinitions()) as WorkUnit[];
-      const valid = defs.filter((d) => typeof d.id === "string" && typeof d.rootPath === "string");
+      // 评审 P2：bot.json 手可编辑——缺 bindings/kind 的半成品合并进来会在 run() 里
+      // TypeError，最小必填面守卫不合格即跳过
+      const valid = defs.filter(
+        (d) =>
+          typeof d.id === "string" &&
+          typeof d.rootPath === "string" &&
+          typeof d.name === "string" &&
+          Array.isArray(d.bindings) &&
+          (d.kind === "bot" || d.kind === "project"),
+      );
+      const skipped = defs.length - valid.length;
       if (valid.length > 0) {
         const current = useWorkbench.getState().units;
         const merged = [...current.filter((u) => !valid.some((d) => d.id === u.id)), ...valid];
         useWorkbench.setState({ units: merged });
-        console.info(`[workbench] 已合并 ${valid.length} 个落盘 bot 定义`);
+        console.info(`[workbench] 已合并 ${valid.length} 个落盘 bot 定义${skipped > 0 ? `（跳过 ${skipped} 个不合格定义）` : ""}`);
       }
     } catch (err: unknown) {
       console.info("[workbench] 落盘 bot 定义缺失（不致命）", err instanceof Error ? err.message : err);

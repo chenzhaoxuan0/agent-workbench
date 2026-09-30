@@ -16,6 +16,8 @@ const HEADER = JSON.stringify({ v: 1, format: "trace", writtenBy: "agent-workben
 export class TraceSink {
   private cachedDate = "";
   private cachedFile = "";
+  /** 写链（评审 P2）：appendFile 并发完成顺序无保证，会让账本 seq 乱序、日期翻转首条双 header */
+  private chain: Promise<void> = Promise.resolve();
 
   constructor(private readonly homeDir: string) {}
 

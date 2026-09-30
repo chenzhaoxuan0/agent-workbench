@@ -82,6 +82,7 @@ class DaemonRuntimeAdapter implements RuntimeAdapter {
   /**
    * startSession 在途缓冲：session.started 在 create RPC 返回**之前**广播，
    * 此刻会话 id 还没进 #sessions —— 不过缓冲就会把首个事件丢掉（探针实证）。
+   * 只缓冲「未进 #sessions」的事件（评审 P2）：已知会话照常投递，并发 startSession 不互踩。
    */
   #inflight: RuntimeEvent[] | null = null;
 
@@ -109,37 +110,57 @@ class DaemonRuntimeAdapter implements RuntimeAdapter {
     if (this.#pumpInstalled) return;
     this.#pumpInstalled = true;
     this.#client.onEvent((event, seq) => {
-      // WP-2 按 seq 判重：daemon 广播全量事件，重放/补拉的重叠在此挡住
+      // WP-2 按 seq 判重：daemon 广播全量事件，重放/补拉的重叠在此挡住。
+      // 补拉进行中的会话（评审 P1）帧进 stash——若照常推进游标，补拉响应会被整体判重丢洞
       if (seq !== undefined) {
+        if (this.#resyncing.has(event.sessionId)) {
+          this.#stash.get(event.sessionId)?.push({ seq, event });
+          return;
+        }
         const prev = this.#lastSeq.get(event.sessionId) ?? 0;
         if (seq <= prev) return;
         this.#lastSeq.set(event.sessionId, seq);
       }
-      if (this.#inflight !== null) {
+      // 评审 P2：在途缓冲只收「还没进 #sessions」的会话（startSession 竞态窗口），
+      // 已知会话照常走判重+投递——此前不分青红皂白全缓冲，并发 startSession 互相踩
+      if (this.#inflight !== null && !this.#sessions.has(event.sessionId)) {
         this.#inflight.push(event);
         return;
       }
       if (!this.#sessions.has(event.sessionId)) return;
       this.#admit(event);
     });
-    // 断线重连（非首连）→ 按会话补拉断线窗口内的事件（WP-2）
+    // 断线重连（非首连、未换代）→ 按会话游标增量补拉（WP-2）
     this.#client.onResync(() => {
-      void this.#resync();
+      void this.#resync(false);
+    });
+    // daemon 换代（评审 P1）：seq 空间重置——清游标，对新代际做全量重拉
+    this.#client.onGenerationChange(() => {
+      this.#lastSeq.clear();
+      void this.#resync(true);
     });
   }
 
-  /** 对跟踪中的会话逐个 since 补拉；失败不致命（下一轮事件的 seq 会继续推进） */
-  async #resync(): Promise<void> {
+  /** 补拉进行中的会话：实时帧暂存不投递，响应到达后按 seq 全序合并（防洞与乱序） */
+  readonly #resyncing = new Set<string>();
+  readonly #stash = new Map<string, Array<{ seq: number; event: RuntimeEvent }>>();
+
+  /** 对跟踪中的会话逐个 since 补拉；reset=true 用于 daemon 换代（游标已清，全量重拉） */
+  async #resync(reset: boolean): Promise<void> {
     for (const sessionId of this.#sessions) {
-      const after = this.#lastSeq.get(sessionId) ?? 0;
+      const after = reset ? 0 : (this.#lastSeq.get(sessionId) ?? 0);
       if (after <= 0) continue;
+      this.#resyncing.add(sessionId);
+      this.#stash.set(sessionId, []);
       try {
         const items = await this.#client.rpc<Array<{ seq: number; event: RuntimeEvent }>>(
           "session.events.since",
           { sessionId, afterSeq: after },
           15000,
         );
-        for (const item of items ?? []) {
+        // 补拉响应与补拉期间到达的实时帧按 seq 全序合并去重，再统一投递
+        const merged = [...(items ?? []), ...(this.#stash.get(sessionId) ?? [])].sort((a, b) => a.seq - b.seq);
+        for (const item of merged) {
           const prev = this.#lastSeq.get(sessionId) ?? 0;
           if (item.seq <= prev) continue;
           this.#lastSeq.set(sessionId, item.seq);
@@ -147,6 +168,17 @@ class DaemonRuntimeAdapter implements RuntimeAdapter {
         }
       } catch {
         // 补拉失败：保持游标，等下一条实时事件推进
+      } finally {
+        // 合并后才撤 stash：撤之前到达的尾部帧在此兜底排空（残余按游标判重）
+        const late = this.#stash.get(sessionId) ?? [];
+        this.#resyncing.delete(sessionId);
+        this.#stash.delete(sessionId);
+        for (const item of late) {
+          const prev = this.#lastSeq.get(sessionId) ?? 0;
+          if (item.seq <= prev) continue;
+          this.#lastSeq.set(sessionId, item.seq);
+          this.#admit(item.event);
+        }
       }
     }
   }

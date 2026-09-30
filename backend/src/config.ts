@@ -5,7 +5,7 @@
  * （冒烟脚本、未来的前端拉起、开机自启），cwd 不可信。
  */
 
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -73,7 +73,20 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): DaemonConfig {
     if (token === null) {
       token = randomUUID().replace(/-/g, "");
       mkdirSync(homeDir, { recursive: true });
-      writeFileSync(tokenFile, token + "\n", "utf8");
+      // 评审 P3：tmp+rename 原子落盘（并发首启不读半行）、0600（多用户机器不全局可读）；
+      // rename 失败（Windows 上目标已存在 = 并发首启）时采用先到者的 token
+      const tmp = `${tokenFile}.${process.pid}.tmp`;
+      writeFileSync(tmp, token + "\n", { encoding: "utf8", mode: 0o600 });
+      try {
+        renameSync(tmp, tokenFile);
+      } catch {
+        try {
+          token = readFileSync(tokenFile, "utf8").trim() || token;
+        } catch { /* 保留本进程生成的 token */ }
+        try {
+          unlinkSync(tmp);
+        } catch { /* noop */ }
+      }
     }
   }
 

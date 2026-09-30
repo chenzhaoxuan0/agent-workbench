@@ -224,6 +224,8 @@ export class ClaudeAdapter implements ExecutorAdapter {
   }
 
   private async spawnTurn(state: SessionState, prompt: string): Promise<void> {
+    // 评审 P1：cancelled 只描述"cancel 杀掉的那一轮"；不复位会让后续每轮的结果被静默丢弃
+    state.cancelled = false;
     const cmd = await resolveCommand("claude");
     const args = ["-p", prompt, "--output-format", "stream-json", "--verbose", "--include-partial-messages"];
     if (state.cliSessionId !== null) args.push("--resume", state.cliSessionId);
@@ -244,7 +246,9 @@ export class ClaudeAdapter implements ExecutorAdapter {
       onStderrLine: (line) => log.debug("claude -p stderr", { line: line.slice(0, 200) }),
     });
     state.child = child;
-    const exitCode = await new Promise<number | null>((resolve) => child.once("exit", (code) => resolve(code)));
+    // 评审 P2：'exit' 可先于 stdio 排空——尾部 result 行（usage/终态聚合源）可能未读；
+    // 'close' 在流全部结束之后触发
+    const exitCode = await new Promise<number | null>((resolve) => child.once("close", (code) => resolve(code)));
     state.child = null;
 
     if (state.cancelled) {
@@ -379,7 +383,7 @@ export class ClaudeAdapter implements ExecutorAdapter {
         costUsd: acc.costUsd ?? 0,
         model: state.loop.reasoningLevel ? `claude:${state.loop.reasoningLevel}` : "claude-default",
         decodeMs: acc.durationMs,
-        requestId: `claude:${state.cliSessionId ?? "pending"}:${++state.usageCount}`,
+        requestId: `claude:${state.cliSessionId ?? state.sessionId}:p${process.pid}:${++state.usageCount}`,
       });
     }
 

@@ -100,11 +100,22 @@ export class RuntimeHost {
   /** 会话结束等待者（Ops 的 eval/arena 用它等轮次跑完） */
   private readonly endWaiters = new Map<SessionId, Array<{ type: string; resolve: () => void }>>();
 
-  /** 等会话的下一条指定类型事件（已在事件环里则立即返回）—— turn 级完成等待用 "usage" */
-  waitForSessionEvent(sessionId: SessionId, type: string, timeoutMs: number): Promise<void> {
+  /** 会话当前 seq（调用方在派发动作前快照，配合 waitForSessionEvent 的 afterSeq 只等"新"事件） */
+  currentSeq(sessionId: SessionId): number {
+    const h = this.sessions.get(sessionId);
+    if (h === undefined) throw adapterError("unknown_session", `no such session: ${sessionId}`);
+    return h.seq;
+  }
+
+  /**
+   * 等会话的下一条指定类型事件——turn 级完成等待用 "usage"。
+   * afterSeq（评审 P1）：只认 seq 大于它的事件。续聊场景事件环里必有上一轮的
+   * usage，不传游标会立即返回并拿到旧回复——askBot 等渠道入口必须传派发前快照。
+   */
+  waitForSessionEvent(sessionId: SessionId, type: string, timeoutMs: number, afterSeq = 0): Promise<void> {
     const h = this.sessions.get(sessionId);
     if (h === undefined) return Promise.reject(adapterError("unknown_session", `no such session: ${sessionId}`));
-    if (h.events.some((e) => e.event.type === type)) return Promise.resolve();
+    if (h.events.some((e) => e.seq > afterSeq && e.event.type === type)) return Promise.resolve();
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         const list = this.eventWaiters.get(sessionId);
@@ -112,14 +123,14 @@ export class RuntimeHost {
         if (list !== undefined && i >= 0) list.splice(i, 1);
         reject(adapterError("event_wait_timeout", `session ${sessionId}: no ${type} within ${timeoutMs}ms`));
       }, timeoutMs);
-      const waiter = { type, resolve: () => { clearTimeout(timer); resolve(); } };
+      const waiter = { type, afterSeq, resolve: () => { clearTimeout(timer); resolve(); } };
       const list = this.eventWaiters.get(sessionId) ?? [];
       list.push(waiter);
       this.eventWaiters.set(sessionId, list);
     });
   }
 
-  private readonly eventWaiters = new Map<SessionId, Array<{ type: string; resolve: () => void }>>();
+  private readonly eventWaiters = new Map<SessionId, Array<{ type: string; afterSeq: number; resolve: () => void }>>();
 
   /** 会话事件环读取（eval 断言用；上限 500 条） */
   sessionEvents(sessionId: SessionId): readonly RuntimeEvent[] {
@@ -138,8 +149,10 @@ export class RuntimeHost {
     if (h === undefined) throw adapterError("unknown_session", `no such session: ${sessionId}`);
     const items = h.events.filter((e) => e.seq > afterSeq);
     const oldest = h.events[0]?.seq ?? Number.POSITIVE_INFINITY;
-    // afterSeq>0（客户端真有前情）且环里最老的事件仍比游标新 → 中段缺了
-    const gap = afterSeq > 0 && h.events.length > 0 && oldest > afterSeq + 1;
+    // afterSeq>0（客户端真有前情）且环为空或最老事件仍比游标新 → 中段缺了。
+    // 空环分支（评审 P1）：daemon 重启后事件环从零开始，客户端旧游标必然落空——
+    // 不判 gap 会静默返回 []，永不回落落盘账本。
+    const gap = afterSeq > 0 && (h.events.length === 0 || oldest > afterSeq + 1);
     return { items, gap };
   }
 
@@ -477,9 +490,10 @@ export class RuntimeHost {
       // 唤醒等这一类事件的等待者（usage = turn 级完成，Ops 用）
       const waiters = this.eventWaiters.get(cur.id);
       if (waiters !== undefined) {
-        const hit = waiters.filter((w) => w.type === event.type);
+        // 只唤醒 afterSeq 落在本条事件之前的等待者——旧游标的等待者继续等它自己的轮
+        const hit = waiters.filter((w) => w.type === event.type && w.afterSeq < cur.seq);
         if (hit.length > 0) {
-          this.eventWaiters.set(cur.id, waiters.filter((w) => w.type !== event.type));
+          this.eventWaiters.set(cur.id, waiters.filter((w) => !(w.type === event.type && w.afterSeq < cur.seq)));
           for (const w of hit) w.resolve();
         }
       }
@@ -510,7 +524,9 @@ export class RuntimeHost {
 
   /** 依次发出排队消息；当前轮仍忙或会话死挂则停手（下一轮落定会再触发） */
   private flushPendingSends(h: HostSession): void {
-    if (h.turnBusy || h.impl === null) return;
+    // 评审 P2：ended 会话不再复活派发——session.ended 也走 flush 路径，无此守卫会把
+    // 排队插话逐条打进死会话变成 error 风暴（与 steer.undelivered 语义矛盾）
+    if (h.turnBusy || h.impl === null || h.endedAt !== undefined) return;
     const next = h.pendingSends.shift();
     if (next === undefined) return;
     log.info("dispatching queued message", { sessionId: h.id, remaining: h.pendingSends.length });
@@ -607,9 +623,15 @@ export class RuntimeHost {
   /** 回收一个非 live 的落盘会话（行 + 消息）；轨迹文件保留 */
   forgetSession(sessionId: SessionId): void {
     const h = this.sessions.get(sessionId);
-    if (h?.impl != null) throw adapterError("session_live", "live session cannot be forgotten — cancel it first");
+    if (h !== undefined && h.impl !== null && h.status !== "done" && h.status !== "failed") {
+      throw adapterError("session_live", "live session cannot be forgotten — cancel it first");
+    }
     this.store.deleteSession(sessionId);
     this.sessions.delete(sessionId);
+    this.eventWaiters.delete(sessionId); // 评审 P3：等待者/挂起权限一并清，防悬挂到自身超时
+    for (const key of [...this.pendingPerms.keys()]) {
+      if (key.startsWith(`${sessionId}:`)) this.pendingPerms.delete(key);
+    }
     log.info("session forgotten", { sessionId });
   }
 }

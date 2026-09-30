@@ -40,9 +40,12 @@ export async function runBotTurn(
   if (unitId === "" || rootPath === "") throw Object.assign(new Error("bot definition missing id/rootPath"), { code: "bad_bot" });
   const { runtimeId, model } = primaryBinding(bot);
 
+  // 派发前快照游标（评审 P1）：续聊时环里有上一轮的 usage，等待必须只认这轮的新事件
+  let sinceSeq = 0;
   let sessionId: string | null = lastSession.get(unitId) ?? null;
   if (sessionId !== null) {
     try {
+      sinceSeq = host.currentSeq(asSessionId(sessionId));
       host.resumeSession(asSessionId(sessionId));
     } catch {
       sessionId = null;
@@ -56,6 +59,7 @@ export async function runBotTurn(
     }
   }
   if (sessionId === null) {
+    sinceSeq = 0; // 新会话 seq 从 1 重新起算，旧游标必须作废
     const s = await host.startSession({
       runtimeId,
       unitId: asUnitId(unitId),
@@ -69,8 +73,9 @@ export async function runBotTurn(
   }
   lastSession.set(unitId, sessionId);
 
-  // usage = turn 级完成（与 Ops 同口径）；超时不炸，回已知内容
-  await host.waitForSessionEvent(asSessionId(sessionId), "usage", opts.waitMs ?? 180_000).catch(() => {});
+  // usage = turn 级完成（与 Ops 同口径）；超时不炸，回已知内容。
+  // sinceSeq：续聊时环里必有上一轮 usage，不设游标会立即返回拿旧回复（评审 P1）
+  await host.waitForSessionEvent(asSessionId(sessionId), "usage", opts.waitMs ?? 180_000, sinceSeq).catch(() => {});
   const messages = host.sessionMessages(asSessionId(sessionId));
   let reply: string | null = null;
   for (let i = messages.length - 1; i >= 0; i--) {

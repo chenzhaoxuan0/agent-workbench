@@ -27,6 +27,8 @@ export interface HelloFrame {
     readonly version: string;
     readonly pid: number;
     readonly uptimeMs: number;
+    /** 进程代际（评审 P1）：daemon 换代后 per-session seq 从 1 重新起算，客户端据此重置游标 */
+    readonly generation: string;
   };
 }
 
@@ -117,6 +119,7 @@ export function attachWs(
         version: opts.config.version,
         pid: process.pid,
         uptimeMs: Date.now() - opts.startedAt,
+        generation: String(process.pid),
       },
     };
     ws.send(JSON.stringify(hello));

@@ -237,6 +237,8 @@ try {
   const reply = sentMessages[0];
   check("回复指向 chat 42", reply?.chat_id === "42" || reply?.chat_id === 42, reply);
   check("回复非空文本", typeof reply?.text === "string" && (reply.text as string).length > 0, reply?.text);
+  // 评审 P2：失败路径也回"出错了：…"同样非空——必须强断言真实回复，链路坏掉不许假绿
+  check("回复是真实轮次结果（含 mock ok）", typeof reply?.text === "string" && (reply.text as string).includes("mock ok"), reply?.text);
 } finally {
   try {
     const stopper = makeClient(port);

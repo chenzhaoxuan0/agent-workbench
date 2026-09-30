@@ -34,17 +34,29 @@ export function healthPayload(config: DaemonConfig, startedAt: number): HealthPa
   };
 }
 
-function sendJson(res: ServerResponse, status: number, body: unknown): void {
+function sendJson(res: ServerResponse, status: number, body: unknown, allowOrigin?: string): void {
   const payload = JSON.stringify(body);
-  res.writeHead(status, {
+  const headers: Record<string, string | number> = {
     "content-type": "application/json; charset=utf-8",
     "content-length": Buffer.byteLength(payload),
-    // 前端 dev server（5180）跨源取管理面端点；daemon 只绑回环，CORS 全开无害
-    "access-control-allow-origin": "*",
     "access-control-allow-methods": "GET, POST, DELETE, OPTIONS",
     "access-control-allow-headers": "content-type",
-  });
+  };
+  // CORS 白名单（评审 P0）：只对本地源回显 allow-origin——此前 "*/bootstrap 回环豁免"
+  // 的组合让任意网页可凭 fetch 直读本机 daemon（含 token）。非白名单源一律不带 CORS 头。
+  if (allowOrigin !== undefined) headers["access-control-allow-origin"] = allowOrigin;
+  res.writeHead(status, headers);
   res.end(payload);
+}
+
+/** 本地源判定（含 dev server 5180 等任意本机端口） */
+export function isLocalOrigin(origin: string): boolean {
+  try {
+    const u = new URL(origin);
+    return u.hostname === "127.0.0.1" || u.hostname === "localhost" || u.hostname === "[::1]" || u.hostname === "::1";
+  } catch {
+    return false;
+  }
 }
 
 export interface HttpRouteContext {
@@ -88,15 +100,17 @@ async function route(
 ): Promise<void> {
   const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
   log.debug("http request", { method: req.method, path: url.pathname });
+  const origin = req.headers.origin;
+  const allowOrigin = typeof origin === "string" && isLocalOrigin(origin) ? origin : undefined;
 
   if (req.method === "GET" && url.pathname === "/healthz") {
-    sendJson(res, 200, healthPayload(config, startedAt));
+    sendJson(res, 200, healthPayload(config, startedAt), allowOrigin);
     return;
   }
 
   // 预检：带 JSON body 的跨源 POST/DELETE 需要
   if (req.method === "OPTIONS") {
-    sendJson(res, 204, {});
+    sendJson(res, 204, {}, allowOrigin);
     return;
   }
 
@@ -104,7 +118,7 @@ async function route(
   if (authorize !== undefined && config.token !== null && !authorize(req, url)) {
     const provided = req.headers["x-awb-token"] ?? url.searchParams.get("token");
     if (typeof provided !== "string" || provided !== config.token) {
-      sendJson(res, 401, { ok: false, error: { code: "unauthorized", message: "missing or bad token" } });
+      sendJson(res, 401, { ok: false, error: { code: "unauthorized", message: "missing or bad token" } }, allowOrigin);
       return;
     }
   }
@@ -113,14 +127,14 @@ async function route(
   if (hit !== undefined) {
     const body = req.method === "GET" ? null : await readBody(req);
     const result = await hit.handle({ url, body, remoteAddress: req.socket.remoteAddress });
-    sendJson(res, 200, result ?? { ok: true });
+    sendJson(res, 200, result ?? { ok: true }, allowOrigin);
     return;
   }
 
   sendJson(res, 404, {
     ok: false,
     error: { code: "not_found", message: `no route: ${req.method} ${url.pathname}` },
-  });
+  }, allowOrigin);
 }
 
 export function isLoopbackAddr(addr: string | undefined): boolean {

@@ -103,7 +103,9 @@ function SidebarSlot() {
   // WP-7 窄屏（手机局域网）：<900px 自动收侧栏，主列全宽——收起即归零语义复用；
   // 只在从宽变窄的瞬间收一次，不把用户的手动展开反复压回
   useEffect(() => {
-    let wasWide = window.innerWidth >= 900;
+    // wasWide 恒以 true 起步（评审 P2）：首载即窄屏（手机 390px 直开）也要收——
+    // 旧初值让首调 onResize 恒为死代码，"从宽变窄"永远不成立
+    let wasWide = true;
     const onResize = (): void => {
       const wide = window.innerWidth >= 900;
       if (wasWide && !wide && !useShell.getState().sidebarCollapsed) {

@@ -71,6 +71,11 @@ export class BotRegistry {
 
     const parent = path.dirname(root);
     if (!this.roots().includes(parent) && parent !== root) this.addRoot(parent);
+    else if (parent === root) {
+      // 评审 P3：rootPath 是盘符/文件系统根时无法登记扫描根（扫描一层子目录语义不适配）——
+      // 定义已落盘但永远扫不到，必须把话说在日志里
+      log.warn("bot at filesystem root is not scannable — move it into a subdirectory", { root });
+    }
     log.info("bot definition written", { id: unit.id, path: file });
     return { path: file };
   }
@@ -94,7 +99,14 @@ export class BotRegistry {
         try {
           const raw = await readFile(file, "utf8");
           const def = JSON.parse(raw) as BotDefinition;
-          if (typeof def.id === "string" && def.id !== "") byId.set(def.id, def);
+          if (typeof def.id === "string" && def.id !== "") {
+            // 评审 P2：channels 形状容错——非数组的脏字段归一为缺省，渠道网关按"无渠道"处理
+            if (def.channels !== undefined && !Array.isArray(def.channels)) {
+              log.warn("bot channels malformed, ignored", { file });
+              delete def.channels;
+            }
+            byId.set(def.id, def);
+          }
         } catch (err: unknown) {
           log.warn("bot definition unreadable", { file, error: err instanceof Error ? err.message : String(err) });
         }

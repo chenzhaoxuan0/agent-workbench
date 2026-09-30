@@ -30,6 +30,8 @@ export class TelegramGateway {
   private timer: NodeJS.Timeout | null = null;
   private readonly offsets = new Map<string, number>();
   private readonly chains = new Map<string, Promise<void>>();
+  /** 在途轮询锁（评审 P2）：API 变慢时无锁会让同 bot 轮询堆叠、同 offset 被并发取走重复消费 */
+  private readonly inFlight = new Set<string>();
 
   constructor(
     private readonly opts: {
@@ -62,9 +64,17 @@ export class TelegramGateway {
       return;
     }
     for (const bot of bots) {
-      const ch = telegramChannel(bot);
-      if (ch === null) continue;
-      void this.pollBot(bot, ch);
+      // 评审 P2：单份畸形 bot.json 不许拖死排在后面的所有 bot
+      try {
+        const ch = telegramChannel(bot);
+        if (ch === null) continue;
+        const lockKey = (ch.config["botToken"] ?? bot.id ?? "") ;
+        if (this.inFlight.has(lockKey)) continue;
+        this.inFlight.add(lockKey);
+        void this.pollBot(bot, ch).finally(() => this.inFlight.delete(lockKey));
+      } catch (err: unknown) {
+        log.warn("telegram channel skipped", { bot: bot.id, error: err instanceof Error ? err.message : String(err) });
+      }
     }
   }
 
@@ -117,18 +127,25 @@ export class TelegramGateway {
 
   private async sendTelegram(apiBase: string, token: string, chatId: string, text: string): Promise<void> {
     if (token === "" || chatId === "") return;
-    const r = await fetch(`${apiBase}/bot${token}/sendMessage`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, text: text.slice(0, REPLY_CAP) }),
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!r.ok) log.warn("telegram sendMessage failed", { status: r.status });
+    // 评审 P3：按 3900 分片循环发，不再静默丢长回复后半段
+    const chunks: string[] = [];
+    for (let i = 0; i < text.length; i += REPLY_CAP) chunks.push(text.slice(i, i + REPLY_CAP));
+    if (chunks.length === 0) chunks.push("(空回复)");
+    for (const chunk of chunks) {
+      const r = await fetch(`${apiBase}/bot${token}/sendMessage`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ chat_id: chatId, text: chunk }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!r.ok) log.warn("telegram sendMessage failed", { status: r.status });
+    }
   }
 }
 
 function telegramChannel(bot: BotDefinition): TelegramChannelConf | null {
-  const channels = bot.channels as TelegramChannelConf[] | undefined;
-  const ch = channels?.find((c) => c?.kind === "telegram" && c.enabled === true);
+  const channels = bot.channels as unknown;
+  if (!Array.isArray(channels)) return null; // 手改坏的 channels（非数组）不许炸网关
+  const ch = (channels as TelegramChannelConf[]).find((c) => c?.kind === "telegram" && c.enabled === true);
   return ch ?? null;
 }
