@@ -251,12 +251,18 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
 
   selectUnit: (activeUnitId) => set({ activeUnitId, activeSessionId: null }),
 
-  addUnit: (u) =>
+  addUnit: (u) => {
     set((s) => ({
       units: [...s.units, u],
       activeUnitId: u.id,
       activeSessionId: null,
-    })),
+    }));
+    // WP-5 写穿：daemon 可达则落盘 <rootPath>/.agent-workbench/bot.json（fire-and-forget；
+    // 失败只影响持久化，不影响 UI——mock 模式 / daemon 未起是正常态）
+    void import("../adapters/daemon/client.ts")
+      .then(({ putBotDefinition }) => putBotDefinition(u))
+      .catch((err: unknown) => console.warn("[workbench] bot 定义写盘失败（daemon 未起？）", err));
+  },
 
   selectSession: (activeSessionId) => set({ activeSessionId }),
 
@@ -585,6 +591,20 @@ void (async () => {
     runtimeRegistry.setState(factories[0]!.id, { status: "stopped" });
     useWorkbench.setState({ activeRuntimeId: factories[0]!.id });
     console.info(`[workbench] 已连接本地 daemon：${infos.map((i) => i.id).join(", ")}`);
+    // WP-5：daemon 可达时合并落盘 bot 定义（bot.json 是家，store 只是运行态视图）
+    try {
+      const { listBotDefinitions } = await import("../adapters/daemon/client.ts");
+      const defs = (await listBotDefinitions()) as WorkUnit[];
+      const valid = defs.filter((d) => typeof d.id === "string" && typeof d.rootPath === "string");
+      if (valid.length > 0) {
+        const current = useWorkbench.getState().units;
+        const merged = [...current.filter((u) => !valid.some((d) => d.id === u.id)), ...valid];
+        useWorkbench.setState({ units: merged });
+        console.info(`[workbench] 已合并 ${valid.length} 个落盘 bot 定义`);
+      }
+    } catch (err: unknown) {
+      console.info("[workbench] 落盘 bot 定义缺失（不致命）", err instanceof Error ? err.message : err);
+    }
   } catch (err: unknown) {
     console.info(
       "[workbench] 本地 daemon 不可达，使用 mock 执行器（启动 backend/ 的 daemon 即接入真实执行）",

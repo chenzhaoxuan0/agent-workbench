@@ -199,3 +199,15 @@ export async function listDaemonExecutors(endpoint: string = DEFAULT_DAEMON_ENDP
   const list = await client.rpc<DaemonExecutorInfo[]>("adapter.list", null, 10000);
   return list;
 }
+
+/** 写一个 bot 的定义到 <rootPath>/.agent-workbench/bot.json（WP-5 写穿） */
+export async function putBotDefinition(unit: unknown, endpoint: string = DEFAULT_DAEMON_ENDPOINT): Promise<void> {
+  const client = DaemonClient.get(endpoint);
+  await client.rpc("bot.put", { unit }, 15000);
+}
+
+/** 拉全部落盘 bot 定义（WP-5：启动合并） */
+export async function listBotDefinitions(endpoint: string = DEFAULT_DAEMON_ENDPOINT): Promise<unknown[]> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<unknown[]>("bot.list", null, 15000);
+}

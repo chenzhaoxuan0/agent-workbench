@@ -53,6 +53,17 @@ export interface UnitSchedule {
   readonly enabled: boolean;
 }
 
+/**
+ * bot 的外联渠道（docs/08 WP-5）——"bot 找得到你"的声明面。
+ * config 的键随 kind 而定（telegram: botToken/chatId；webhook: secret/url），
+ * 敏感值落 bot.json 属预期：这是本机私有文件（.agent-workbench/），不是要提交的仓库资产。
+ */
+export interface BotChannel {
+  readonly kind: "telegram" | "discord" | "webhook";
+  readonly enabled: boolean;
+  readonly config: Readonly<Record<string, string>>;
+}
+
 /** 运行时绑定：一个工作单元可以同时挂多个工具。 */
 export interface RuntimeBinding {
   readonly runtimeId: RuntimeId;
@@ -99,6 +110,11 @@ export interface WorkUnit {
     readonly episodic: boolean;
     readonly procedural: boolean;
   };
+  /**
+   * 外联渠道（docs/08 WP-5）：IM / webhook 绑定。daemon 的渠道网关据此把
+   * "消息进来 → 会话 → 回出去"接到具体 bot 上；缺省 = 纯工作台内 bot。
+   */
+  readonly channels?: readonly BotChannel[];
   readonly lastActiveAt?: number;
   readonly tags: readonly string[];
 }

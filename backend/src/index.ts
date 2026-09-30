@@ -24,6 +24,7 @@ import { parseCron } from "./automation/cron.ts";
 import { OpsRunner } from "./ops/eval.ts";
 import { ArenaRunner } from "./ops/arena.ts";
 import { MemoryService } from "./memory/memory.ts";
+import { BotRegistry } from "./bots/registry.ts";
 import { asModelId, asSessionId, asUnitId } from "../../prototype/src/core/units.ts";
 
 const startedAt = Date.now();
@@ -37,6 +38,7 @@ mkdirSync(config.homeDir, { recursive: true });
 const store = new Store(config.homeDir);
 const gate = new PermissionGate(store);
 const traceSink = new TraceSink(config.homeDir);
+const botRegistry = new BotRegistry(store);
 const host = new RuntimeHost((event, seq) => {
   broadcastEvent(wss, event, seq);
   // 自动化运行记录的终态回灌（Phase 5）
@@ -328,6 +330,22 @@ registerMethod("memory.list", (params) => {
   if (typeof p.pillar !== "string") throw Object.assign(new Error("pillar is required"), { code: "bad_params" });
   return memory.list(p.pillar as never);
 });
+// ---- Bot 注册表（docs/08 WP-5）：bot 定义的落盘面 <rootPath>/.agent-workbench/bot.json ----
+registerMethod("bot.put", (params) => {
+  const p = (params ?? {}) as { unit?: Record<string, unknown> };
+  if (p.unit === undefined || typeof p.unit !== "object") {
+    throw Object.assign(new Error("unit is required"), { code: "bad_params" });
+  }
+  return botRegistry.putBot(p.unit);
+});
+registerMethod("bot.list", () => botRegistry.listBots());
+registerMethod("bot.roots.add", (params) => {
+  const p = (params ?? {}) as { dir?: string };
+  if (typeof p.dir !== "string" || p.dir === "") throw Object.assign(new Error("dir is required"), { code: "bad_params" });
+  botRegistry.addRoot(p.dir);
+  return { roots: botRegistry.roots() };
+});
+
 registerMethod("memory.routing.get", () => memory.getRouting());
 registerMethod("memory.routing.set", (params) => {
   const p = (params ?? {}) as { routing?: Record<string, string[]> };
