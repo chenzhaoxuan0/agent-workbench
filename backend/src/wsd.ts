@@ -33,6 +33,8 @@ export interface HelloFrame {
 export interface EventFrame {
   readonly v: typeof WIRE_VERSION;
   readonly type: "event";
+  /** 会话内单调递增事件序号（WP-2）：断线方凭它调 session.events.since 补拉 */
+  readonly seq: number;
   readonly event: RuntimeEvent;
 }
 
@@ -197,9 +199,10 @@ function handleRaw(ws: WebSocket, data: unknown): void {
 /**
  * 向所有在线客户端广播一条 RuntimeEvent —— Phase 1 事件流的唯一出口。
  * 一个客户端都没有就丢弃：daemon 不为订阅者攒历史（历史 = 落盘的轨迹，不是内存队列）。
+ * seq 供断线方补拉（session.events.since / session.trace 的 afterSeq 游标）。
  */
-export function broadcastEvent(wss: WebSocketServer, event: RuntimeEvent): void {
-  const frame = JSON.stringify({ v: WIRE_VERSION, type: "event", event } satisfies EventFrame);
+export function broadcastEvent(wss: WebSocketServer, event: RuntimeEvent, seq: number): void {
+  const frame = JSON.stringify({ v: WIRE_VERSION, type: "event", seq, event } satisfies EventFrame);
   for (const ws of wss.clients) {
     if (ws.readyState === ws.OPEN) ws.send(frame);
   }

@@ -7,8 +7,11 @@
  * 帧形态：
  *   client → daemon : { v:1, id, method, params? }
  *   daemon → client : { v:1, id, ok, result|error } | { v:1, type:"hello",… }
- *                   | { v:1, type:"event", event: RuntimeEvent }
+ *                   | { v:1, type:"event", seq, event: RuntimeEvent }
  *                   | { v:1, type:"terminal", … }（终端页签接入时再消费）
+ *
+ * 断线重放（docs/08 WP-2）：每个会话的 seq 在此记账；重连成功后触发 resync 监听器，
+ * 由适配器层按会话调 session.events.since 补拉缺口（去重在适配器侧按 seq 判）。
  */
 
 import type { RuntimeCapabilities } from "../../core/adapter.ts";
@@ -40,9 +43,13 @@ export class DaemonClient {
   #ws: WebSocket | null = null;
   #connecting: Promise<void> | null = null;
   readonly #pending = new Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
-  readonly #eventListeners = new Set<(e: RuntimeEvent) => void>();
+  readonly #eventListeners = new Set<(e: RuntimeEvent, seq?: number) => void>();
+  readonly #resyncListeners = new Set<() => void>();
   readonly #terminalListeners = new Set<(f: DaemonTerminalFrame) => void>();
+  /** 每会话已见最大 seq（WP-2）：重连补拉的游标来源 */
+  readonly #lastSeq = new Map<string, number>();
   #seq = 0;
+  #everConnected = false;
 
   private constructor(endpoint: string) {
     this.#endpoint = endpoint;
@@ -76,7 +83,13 @@ export class DaemonClient {
         // hello 帧随后来不及等也无所谓：rpc 会自然排队
         clearTimeout(timer);
         this.#ws = ws;
+        const isReconnect = this.#everConnected;
+        this.#everConnected = true;
         resolve();
+        // 重连（非首连）成功 → 通知适配器按 seq 补拉断线窗口内的事件
+        if (isReconnect) {
+          for (const fn of this.#resyncListeners) fn();
+        }
       });
       ws.addEventListener("error", () => {
         clearTimeout(timer);
@@ -94,7 +107,12 @@ export class DaemonClient {
         }
         if (frame["type"] === "event") {
           const event = frame["event"] as RuntimeEvent;
-          for (const fn of this.#eventListeners) fn(event);
+          const seq = typeof frame["seq"] === "number" ? frame["seq"] : undefined;
+          if (seq !== undefined && event.sessionId !== undefined) {
+            const prev = this.#lastSeq.get(event.sessionId) ?? 0;
+            if (seq > prev) this.#lastSeq.set(event.sessionId, seq);
+          }
+          for (const fn of this.#eventListeners) fn(event, seq);
           return;
         }
         if (frame["type"] === "terminal") {
@@ -152,9 +170,20 @@ export class DaemonClient {
     );
   }
 
-  onEvent(fn: (e: RuntimeEvent) => void): () => void {
+  onEvent(fn: (e: RuntimeEvent, seq?: number) => void): () => void {
     this.#eventListeners.add(fn);
     return () => this.#eventListeners.delete(fn);
+  }
+
+  /** 重连成功（非首连）时触发——适配器在此按会话 seq 补拉缺口 */
+  onResync(fn: () => void): () => void {
+    this.#resyncListeners.add(fn);
+    return () => this.#resyncListeners.delete(fn);
+  }
+
+  /** 某会话已见的最大 seq（没有收到过带 seq 的帧则为 0） */
+  lastSeqOf(sessionId: string): number {
+    return this.#lastSeq.get(sessionId) ?? 0;
   }
 
   /** 终端数据帧（terminal.create 之后到达；按 terminalId 过滤） */

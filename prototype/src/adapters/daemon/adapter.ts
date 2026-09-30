@@ -73,6 +73,8 @@ class DaemonRuntimeAdapter implements RuntimeAdapter {
   readonly #executorId: string;
   /** 本实例创建/续接过的会话 —— 事件过滤的边界（别人的会话不进我的队列） */
   readonly #sessions = new Set<string>();
+  /** 每会话已见最大 seq（WP-2 去重游标）：重放与补拉重叠的判据 */
+  readonly #lastSeq = new Map<string, number>();
   // mock 同款「缓冲 + 单槽」：运行时不因 UI 未调 next() 丢事件
   readonly #pending: RuntimeEvent[] = [];
   #waiting: ((e: RuntimeEvent) => void) | null = null;
@@ -106,7 +108,13 @@ class DaemonRuntimeAdapter implements RuntimeAdapter {
   #installPump(): void {
     if (this.#pumpInstalled) return;
     this.#pumpInstalled = true;
-    this.#client.onEvent((event) => {
+    this.#client.onEvent((event, seq) => {
+      // WP-2 按 seq 判重：daemon 广播全量事件，重放/补拉的重叠在此挡住
+      if (seq !== undefined) {
+        const prev = this.#lastSeq.get(event.sessionId) ?? 0;
+        if (seq <= prev) return;
+        this.#lastSeq.set(event.sessionId, seq);
+      }
       if (this.#inflight !== null) {
         this.#inflight.push(event);
         return;
@@ -114,6 +122,33 @@ class DaemonRuntimeAdapter implements RuntimeAdapter {
       if (!this.#sessions.has(event.sessionId)) return;
       this.#admit(event);
     });
+    // 断线重连（非首连）→ 按会话补拉断线窗口内的事件（WP-2）
+    this.#client.onResync(() => {
+      void this.#resync();
+    });
+  }
+
+  /** 对跟踪中的会话逐个 since 补拉；失败不致命（下一轮事件的 seq 会继续推进） */
+  async #resync(): Promise<void> {
+    for (const sessionId of this.#sessions) {
+      const after = this.#lastSeq.get(sessionId) ?? 0;
+      if (after <= 0) continue;
+      try {
+        const items = await this.#client.rpc<Array<{ seq: number; event: RuntimeEvent }>>(
+          "session.events.since",
+          { sessionId, afterSeq: after },
+          15000,
+        );
+        for (const item of items ?? []) {
+          const prev = this.#lastSeq.get(sessionId) ?? 0;
+          if (item.seq <= prev) continue;
+          this.#lastSeq.set(sessionId, item.seq);
+          this.#admit(item.event);
+        }
+      } catch {
+        // 补拉失败：保持游标，等下一条实时事件推进
+      }
+    }
   }
 
   /** 缓冲 + 单槽投递：有人在等就直接交给他；没人等就进缓冲，绝不丢 */

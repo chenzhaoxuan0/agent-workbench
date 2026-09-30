@@ -42,11 +42,14 @@
 
 ```json
 { "v": 1, "type": "hello", "daemon": { "version": "0.1.0", "pid": 1234, "uptimeMs": 42 } }
-{ "v": 1, "type": "event", "event": { "type": "message.delta", "…": "…RuntimeEvent…" } }
+{ "v": 1, "type": "event", "seq": 7, "event": { "type": "message.delta", "…": "…RuntimeEvent…" } }
 { "v": 1, "type": "terminal", "terminalId": "term_…", "kind": "data", "data": "…" }
 ```
 
 - 客户端 TCP 连上即收到 `hello`，之后 `event` 帧里的 `event` 就是 `events.ts` 的 union 原样序列化。
+- `event.seq`（WP-2 起）：会话内单调递增的事件序号，与落盘轨迹的 TraceRecord.seq 同源。
+  客户端记录每会话已见最大 seq；**重连成功后**凭 `session.events.since` 补拉断线窗口，
+  按 `(sessionId, seq)` 判重——这是"断线不丢事件"的协议面。
 - **会话生命周期（agent loop 语义）**：`session.started` 之后，每一轮 turn 完成发
   `message.completed` + `usage` + `session.status`（idle/failed/running）——**会话保持开启**，
   同会话 `session.send` 续聊即 agent loop（上下文连续）。`session.ended` 只在真关闭时发：
@@ -96,6 +99,8 @@
 | `memory.mirror` | **已实现** | 读 `.waku/memory/MEMORY.md`（语义柱写入时自动重生成） |
 | `session.resume` | **已实现** | params `{sessionId}`；从 state.db 的 cli_ref 接回执行器，之后 send/cancel 照常 |
 | `session.messages` | **已实现** | params `{sessionId}`；落盘的对话流（user/assistant），前端重载会话用 |
+| `session.trace` | **已实现** | params `{sessionId, afterSeq?}`；result 为 TraceRecord NDJSON 文本（跨日期落盘账本，WP-3）；`afterSeq` 游标只返回更大 seq 的行 |
+| `session.events.since` | **已实现** | params `{sessionId, afterSeq}`；result 为 `{seq, event}[]`——断线补拉（WP-2）；环内热路径直出，游标滑出环外自动回落落盘账本 |
 | 自动化 / Ops / 记忆方法 | Phase 5–7 | 落地时在此表登记 schema |
 
 **为什么有 `daemon.stop`**：Windows 上跨进程 SIGTERM 不可投递（冒烟实证，`child.kill("SIGTERM")` 后子进程无动于衷）。程序化退出一律走协议；SIGINT/SIGTERM 处理器保留给终端 Ctrl+C 与 Unix。这是 Phase 0 的一个硬结论，后续 PTY / 子进程管理会反复遇到，处置口径一致：**能走协议的走协议，信号只当人肉兜底**。

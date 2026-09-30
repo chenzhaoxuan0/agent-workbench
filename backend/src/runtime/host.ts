@@ -66,8 +66,8 @@ interface HostSession {
   readonly pendingSends: Array<{ text: string; loop?: { readonly reasoningLevel?: string } }>;
   /** 当前是否有未落定的轮 */
   turnBusy: boolean;
-  /** 会话事件环（上限 500），eval 断言与前端重放共用 */
-  readonly events: RuntimeEvent[];
+  /** 会话事件环（上限 500，带 seq），eval 断言与前端重放共用 */
+  readonly events: Array<{ seq: number; event: RuntimeEvent }>;
 }
 
 export interface StartSessionInput {
@@ -86,7 +86,7 @@ export class RuntimeHost {
   private readonly sessions = new Map<SessionId, HostSession>();
 
   constructor(
-    private readonly broadcast: (event: RuntimeEvent) => void,
+    private readonly broadcast: (event: RuntimeEvent, seq: number) => void,
     private readonly trace: TraceSink,
     private readonly homeDir: string,
     private readonly store: Store,
@@ -103,7 +103,7 @@ export class RuntimeHost {
   waitForSessionEvent(sessionId: SessionId, type: string, timeoutMs: number): Promise<void> {
     const h = this.sessions.get(sessionId);
     if (h === undefined) return Promise.reject(adapterError("unknown_session", `no such session: ${sessionId}`));
-    if (h.events.some((e) => e.type === type)) return Promise.resolve();
+    if (h.events.some((e) => e.event.type === type)) return Promise.resolve();
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         const list = this.eventWaiters.get(sessionId);
@@ -124,7 +124,22 @@ export class RuntimeHost {
   sessionEvents(sessionId: SessionId): readonly RuntimeEvent[] {
     const h = this.sessions.get(sessionId);
     if (h === undefined) throw adapterError("unknown_session", `no such session: ${sessionId}`);
-    return h.events;
+    return h.events.map((e) => e.event);
+  }
+
+  /**
+   * 断线补拉的热路径（WP-2）：返回环内 seq > afterSeq 的事件。
+   * gap=true 表示请求的游标已滑出环外（环最老 seq > afterSeq+1 且客户端确有前情），
+   * 调用方应回落到落盘账本（session.trace 的 afterSeq 路径）。
+   */
+  hotEventsSince(sessionId: SessionId, afterSeq: number): { items: Array<{ seq: number; event: RuntimeEvent }>; gap: boolean } {
+    const h = this.sessions.get(sessionId);
+    if (h === undefined) throw adapterError("unknown_session", `no such session: ${sessionId}`);
+    const items = h.events.filter((e) => e.seq > afterSeq);
+    const oldest = h.events[0]?.seq ?? Number.POSITIVE_INFINITY;
+    // afterSeq>0（客户端真有前情）且环里最老的事件仍比游标新 → 中段缺了
+    const gap = afterSeq > 0 && h.events.length > 0 && oldest > afterSeq + 1;
+    return { items, gap };
   }
 
   /** 适配器全部注册完之后调用一次：把盘里的会话装进台账（跨重启 listSessions 成立） */
@@ -263,9 +278,7 @@ export class RuntimeHost {
     this.store.insertMessage(h.id, Date.now(), "user", input.prompt);
 
     const started: RuntimeEvent = { type: "session.started", sessionId: h.id, unitId: h.unitId };
-    void this.trace.append({ seq: ++h.seq, at: Date.now(), sessionId: h.id, unitId: h.unitId, runtimeId: h.runtimeId, event: started })
-      .catch(() => {});
-    this.broadcast(started);
+    this.emitStamped(h, started);
 
     // 首轮 prompt：受理即返回，turn 进展全走事件流
     //（mockperm 这类会在权限处挂起整轮，await 会把 session.start 卡死——冒烟实证）
@@ -273,8 +286,8 @@ export class RuntimeHost {
     void impl.send(input.prompt).catch((err: unknown) => {
       log.error("first turn failed", { sessionId: h.id, error: err instanceof Error ? err.message : String(err) });
       const errorEvent: RuntimeEvent = { type: "error", sessionId: h.id, message: err instanceof Error ? err.message : String(err), recoverable: false };
-      this.broadcast(errorEvent);
-      this.broadcast({ type: "session.ended", sessionId: h.id, reason: "error" });
+      this.emitStamped(h, errorEvent);
+      this.emitStamped(h, { type: "session.ended", sessionId: h.id, reason: "error" });
       h.turnBusy = false;
       this.flushPendingSends(h);
     });
@@ -410,13 +423,13 @@ export class RuntimeHost {
   ): void {
     h.turnBusy = true;
     h.status = "running";
-    this.broadcast({ type: "session.status", sessionId: h.id, status: "running" });
+    this.emitStamped(h, { type: "session.status", sessionId: h.id, status: "running" });
     this.store.insertMessage(h.id, Date.now(), "user", text);
     void h.impl!.send(text, loop === undefined ? undefined : { reasoningLevel: loop.reasoningLevel }).catch((err: unknown) => {
       log.error("turn failed", { sessionId: h.id, error: err instanceof Error ? err.message : String(err) });
       const errorEvent: RuntimeEvent = { type: "error", sessionId: h.id, message: err instanceof Error ? err.message : String(err), recoverable: false };
-      this.broadcast(errorEvent);
-      this.broadcast({ type: "session.ended", sessionId: h.id, reason: "error" });
+      this.emitStamped(h, errorEvent);
+      this.emitStamped(h, { type: "session.ended", sessionId: h.id, reason: "error" });
       h.turnBusy = false;
       this.flushPendingSends(h);
     });
@@ -443,19 +456,9 @@ export class RuntimeHost {
     return (event: RuntimeEvent): void => {
       const cur = this.sessions.get(event.sessionId);
       if (cur === undefined) return;
-      cur.events.push(event);
-      if (cur.events.length > 500) cur.events.splice(0, cur.events.length - 500);
+      this.emitStamped(cur, event);
       this.track(cur, event);
       this.persistOnEvent(cur, event);
-      void this.trace.append({
-        seq: ++cur.seq,
-        at: Date.now(),
-        sessionId: cur.id,
-        unitId: cur.unitId,
-        runtimeId: cur.runtimeId,
-        event,
-      }).catch(() => {});
-      this.broadcast(event);
       if (event.type === "permission.requested") this.evaluateGate(cur, event);
       // 轮落定（status idle/failed 或 ended）→ 清 turnBusy → 自动发出排队消息（T3 steer）
       if (
@@ -482,6 +485,21 @@ export class RuntimeHost {
         }
       }
     };
+  }
+
+  /**
+   * 统一出口（WP-2）：分配 seq → 事件环 → 落盘 → 广播。
+   * WS 事件帧带 seq 的事实源在这里；host 自产的事件（started/ended/status）也走这里，
+   * 顺带修掉旧实现里 error/ended 不落 trace 的不一致。
+   */
+  private emitStamped(h: HostSession, event: RuntimeEvent): void {
+    const seq = ++h.seq;
+    h.events.push({ seq, event });
+    if (h.events.length > 500) h.events.splice(0, h.events.length - 500);
+    void this.trace
+      .append({ seq, at: Date.now(), sessionId: h.id, unitId: h.unitId, runtimeId: h.runtimeId, event })
+      .catch(() => {});
+    this.broadcast(event, seq);
   }
 
   /** 依次发出排队消息；当前轮仍忙或会话死挂则停手（下一轮落定会再触发） */

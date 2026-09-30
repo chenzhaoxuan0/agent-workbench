@@ -37,8 +37,8 @@ mkdirSync(config.homeDir, { recursive: true });
 const store = new Store(config.homeDir);
 const gate = new PermissionGate(store);
 const traceSink = new TraceSink(config.homeDir);
-const host = new RuntimeHost((event) => {
-  broadcastEvent(wss, event);
+const host = new RuntimeHost((event, seq) => {
+  broadcastEvent(wss, event, seq);
   // 自动化运行记录的终态回灌（Phase 5）
   if (event.type === "session.ended") {
     const runId = automationRunBySession.get(event.sessionId);
@@ -401,6 +401,22 @@ registerMethod("session.trace", (params) => {
   const p = (params ?? {}) as { sessionId?: string; afterSeq?: number };
   if (typeof p.sessionId !== "string") throw Object.assign(new Error("sessionId is required"), { code: "bad_params" });
   return traceSink.readSessionNdjson(asSessionId(p.sessionId), typeof p.afterSeq === "number" ? p.afterSeq : 0);
+});
+// 断线补拉（WP-2）：热路径读事件环；游标滑出环外（gap）时回落落盘账本。
+registerMethod("session.events.since", async (params) => {
+  const p = (params ?? {}) as { sessionId?: string; afterSeq?: number };
+  if (typeof p.sessionId !== "string") throw Object.assign(new Error("sessionId is required"), { code: "bad_params" });
+  const afterSeq = typeof p.afterSeq === "number" ? p.afterSeq : 0;
+  const hot = host.hotEventsSince(asSessionId(p.sessionId), afterSeq);
+  if (!hot.gap) return hot.items;
+  const nd = await traceSink.readSessionNdjson(asSessionId(p.sessionId), afterSeq);
+  return nd
+    .split("\n")
+    .filter((l) => l !== "")
+    .map((l) => {
+      const r = JSON.parse(l) as { seq: number; event: unknown };
+      return { seq: r.seq, event: r.event };
+    });
 });
 registerMethod("permission.resolve", (params) => {
   const p = params as { sessionId?: string; requestId?: string; decision?: "allow" | "deny" | "always" };
