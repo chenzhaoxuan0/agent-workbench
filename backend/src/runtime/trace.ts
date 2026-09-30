@@ -6,10 +6,10 @@
  * 第一行写 {"v":1,"format":"trace"} 头——以后格式演进靠文件头升版，行内容不动。
  */
 
-import { appendFile, mkdir } from "node:fs/promises";
+import { appendFile, mkdir, readdir, readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
-import type { TraceRecord } from "../contract.ts";
+import type { SessionId, TraceRecord } from "../contract.ts";
 
 const HEADER = JSON.stringify({ v: 1, format: "trace", writtenBy: "agent-workbench-daemon" });
 
@@ -35,5 +35,30 @@ export class TraceSink {
       await appendFile(file, HEADER + "\n", "utf8");
     }
     await appendFile(file, JSON.stringify(record) + "\n", "utf8");
+  }
+
+  /**
+   * 读回一个会话的完整轨迹（WP-3：exportTrace 以落盘账本为准，事件环只是热缓存）。
+   * 跨日期文件升序拼接，NDJSON 输出（每行一个 TraceRecord，不含文件头行）；
+   * afterSeq > 0 时只返回 seq 大于它的行（断线补拉的游标）。
+   */
+  async readSessionNdjson(sessionId: SessionId, afterSeq = 0): Promise<string> {
+    const dir = path.join(this.homeDir, "traces");
+    if (!existsSync(dir)) return "";
+    const files = (await readdir(dir)).filter((f) => f.endsWith(".jsonl")).sort();
+    const out: string[] = [];
+    for (const f of files) {
+      const raw = await readFile(path.join(dir, f), "utf8");
+      for (const line of raw.split("\n")) {
+        if (line === "" || !line.startsWith("{")) continue; // 首行是 {"v":1,"format":"trace"} 头
+        try {
+          const rec = JSON.parse(line) as TraceRecord;
+          if (rec.sessionId === sessionId && rec.seq > afterSeq) out.push(line);
+        } catch {
+          // 坏行跳过：账本容错读
+        }
+      }
+    }
+    return out.length > 0 ? out.join("\n") + "\n" : "";
   }
 }

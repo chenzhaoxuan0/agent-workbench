@@ -36,6 +36,7 @@ mkdirSync(config.homeDir, { recursive: true });
 
 const store = new Store(config.homeDir);
 const gate = new PermissionGate(store);
+const traceSink = new TraceSink(config.homeDir);
 const host = new RuntimeHost((event) => {
   broadcastEvent(wss, event);
   // 自动化运行记录的终态回灌（Phase 5）
@@ -47,7 +48,7 @@ const host = new RuntimeHost((event) => {
       store.finishAutomationRun(runId, failed ? "failed" : "done", `ended: ${event.reason}`);
     }
   }
-}, new TraceSink(config.homeDir), config.homeDir, store, gate);
+}, traceSink, config.homeDir, store, gate);
 host.register(new ZcodeAdapter());
 host.register(new CodexAdapter());
 host.register(new ClaudeAdapter());
@@ -394,11 +395,12 @@ registerMethod("session.messages", (params) => {
   if (typeof p.sessionId !== "string") throw Object.assign(new Error("sessionId is required"), { code: "bad_params" });
   return host.sessionMessages(asSessionId(p.sessionId));
 });
-// exportTrace 的线上形态：会话事件环（上限 500）原样 JSON —— judge / 前端轨迹共用
+// exportTrace 的线上形态（WP-3）：以落盘账本为准 —— 跨日期 TraceRecord NDJSON，
+// 事件环（上限 500）只是热缓存。afterSeq 可选：断线补拉游标（WP-2 复用）。
 registerMethod("session.trace", (params) => {
-  const p = (params ?? {}) as { sessionId?: string };
+  const p = (params ?? {}) as { sessionId?: string; afterSeq?: number };
   if (typeof p.sessionId !== "string") throw Object.assign(new Error("sessionId is required"), { code: "bad_params" });
-  return JSON.stringify(host.sessionEvents(asSessionId(p.sessionId)), null, 2);
+  return traceSink.readSessionNdjson(asSessionId(p.sessionId), typeof p.afterSeq === "number" ? p.afterSeq : 0);
 });
 registerMethod("permission.resolve", (params) => {
   const p = params as { sessionId?: string; requestId?: string; decision?: "allow" | "deny" | "always" };
