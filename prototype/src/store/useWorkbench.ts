@@ -260,7 +260,7 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
     // WP-5 写穿：daemon 可达则落盘 <rootPath>/.agent-workbench/bot.json（fire-and-forget；
     // 失败只影响持久化，不影响 UI——mock 模式 / daemon 未起是正常态）
     void import("../adapters/daemon/client.ts")
-      .then(({ putBotDefinition }) => putBotDefinition(u))
+      .then(({ putBotDefinition, defaultDaemonEndpoint }) => putBotDefinition(u, defaultDaemonEndpoint()))
       .catch((err: unknown) => console.warn("[workbench] bot 定义写盘失败（daemon 未起？）", err));
   },
 
@@ -583,18 +583,18 @@ void (async () => {
   try {
     const { listDaemonExecutors } = await import("../adapters/daemon/client.ts");
     const { createDaemonFactory } = await import("../adapters/daemon/adapter.ts");
-    const { DEFAULT_DAEMON_ENDPOINT } = await import("../adapters/daemon/client.ts");
-    const infos = await listDaemonExecutors(DEFAULT_DAEMON_ENDPOINT);
+    const { defaultDaemonEndpoint } = await import("../adapters/daemon/client.ts");
+    const infos = await listDaemonExecutors(defaultDaemonEndpoint());
     if (infos.length === 0) throw new Error("daemon 无可用执行器");
-    const factories = infos.map((info) => createDaemonFactory(info, DEFAULT_DAEMON_ENDPOINT));
+    const factories = infos.map((info) => createDaemonFactory(info, defaultDaemonEndpoint()));
     runtimeRegistry.registerAll(factories);
     runtimeRegistry.setState(factories[0]!.id, { status: "stopped" });
     useWorkbench.setState({ activeRuntimeId: factories[0]!.id });
     console.info(`[workbench] 已连接本地 daemon：${infos.map((i) => i.id).join(", ")}`);
     // WP-5：daemon 可达时合并落盘 bot 定义（bot.json 是家，store 只是运行态视图）
     try {
-      const { listBotDefinitions } = await import("../adapters/daemon/client.ts");
-      const defs = (await listBotDefinitions()) as WorkUnit[];
+      const { listBotDefinitions, defaultDaemonEndpoint } = await import("../adapters/daemon/client.ts");
+      const defs = (await listBotDefinitions(defaultDaemonEndpoint())) as WorkUnit[];
       // 评审 P2：bot.json 手可编辑——缺 bindings/kind 的半成品合并进来会在 run() 里
       // TypeError，最小必填面守卫不合格即跳过
       const valid = defs.filter(

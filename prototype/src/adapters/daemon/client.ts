@@ -30,7 +30,26 @@ export interface DaemonExecutorInfo {
   readonly capabilities: RuntimeCapabilities;
 }
 
-export const DEFAULT_DAEMON_ENDPOINT = "http://127.0.0.1:5181";
+/**
+ * daemon 地址解析（WP-7 手机流程）：
+ * 1. localStorage `agent-workbench:daemon-endpoint` 显式指定（最高优先）；
+ * 2. 页面本身跑在非本机主机名上（手机开 http://<pc-ip>:5180）→ 自动跟随主机名，
+ *    指向 <pc-ip>:5181 —— 手机端零配置连上同一台 daemon；
+ * 3. 兜底 127.0.0.1:5181（本机桌面）。
+ */
+export function defaultDaemonEndpoint(): string {
+  try {
+    const stored = localStorage.getItem("agent-workbench:daemon-endpoint");
+    if (stored !== null && stored !== "") return stored;
+  } catch { /* 私有模式 */ }
+  if (typeof window !== "undefined") {
+    const host = window.location.hostname;
+    if (host !== "127.0.0.1" && host !== "localhost" && host !== "") {
+      return `http://${host}:5181`;
+    }
+  }
+  return "http://127.0.0.1:5181";
+}
 
 export function wsUrlOf(endpoint: string): string {
   return `${endpoint.replace(/\/+$/, "").replace(/^http/, "ws")}/ws`;
@@ -261,20 +280,20 @@ export class DaemonClient {
 }
 
 /** 拉执行器清单 —— 前端据此为每个 daemon 执行器注册一个 RuntimeAdapter */
-export async function listDaemonExecutors(endpoint: string = DEFAULT_DAEMON_ENDPOINT): Promise<DaemonExecutorInfo[]> {
+export async function listDaemonExecutors(endpoint: string = defaultDaemonEndpoint()): Promise<DaemonExecutorInfo[]> {
   const client = DaemonClient.get(endpoint);
   const list = await client.rpc<DaemonExecutorInfo[]>("adapter.list", null, 10000);
   return list;
 }
 
 /** 写一个 bot 的定义到 <rootPath>/.agent-workbench/bot.json（WP-5 写穿） */
-export async function putBotDefinition(unit: unknown, endpoint: string = DEFAULT_DAEMON_ENDPOINT): Promise<void> {
+export async function putBotDefinition(unit: unknown, endpoint: string = defaultDaemonEndpoint()): Promise<void> {
   const client = DaemonClient.get(endpoint);
   await client.rpc("bot.put", { unit }, 15000);
 }
 
 /** 拉全部落盘 bot 定义（WP-5：启动合并） */
-export async function listBotDefinitions(endpoint: string = DEFAULT_DAEMON_ENDPOINT): Promise<unknown[]> {
+export async function listBotDefinitions(endpoint: string = defaultDaemonEndpoint()): Promise<unknown[]> {
   const client = DaemonClient.get(endpoint);
   return client.rpc<unknown[]>("bot.list", null, 15000);
 }

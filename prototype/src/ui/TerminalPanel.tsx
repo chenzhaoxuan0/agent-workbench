@@ -4,7 +4,7 @@ import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { useWorkbench } from "../store/useWorkbench.ts";
 import { useShell } from "../store/useShell.ts";
-import { DaemonClient, DEFAULT_DAEMON_ENDPOINT, type DaemonTerminalFrame } from "../adapters/daemon/client.ts";
+import { DaemonClient, defaultDaemonEndpoint, type DaemonTerminalFrame } from "../adapters/daemon/client.ts";
 
 /**
  * 终端面板（单窗格）—— 对应 ZCode 的 AnimatedTerminalPanel。
@@ -58,7 +58,7 @@ export function TerminalPanel({
     });
     termRef.current = term;
 
-    const client = DaemonClient.get(DEFAULT_DAEMON_ENDPOINT);
+    const client = DaemonClient.get(defaultDaemonEndpoint());
     const onFrame = (f: DaemonTerminalFrame): void => {
       if (f.terminalId !== terminalIdRef.current) return;
       if (f.kind === "data" && f.data !== undefined) term.write(f.data);
