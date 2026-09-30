@@ -10,6 +10,7 @@ export default defineConfig({
   resolve: {
     alias: { "@": src },
   },
-  // 显式绑 IPv4：Vite 在 Windows 上默认只绑 ::1，本地浏览器工具够不着
-  server: { host: "127.0.0.1", port: 5180, strictPort: true },
+  // host: true = 绑全部网卡：Windows 上同时覆盖 ::1 与 0.0.0.0，
+  // 本地工具与手机（http://<pc-ip>:5180）都可达（daemon 侧需 AGENT_WORKBENCH_HOST=0.0.0.0 配合）
+  server: { host: true, port: 5180, strictPort: true },
 });

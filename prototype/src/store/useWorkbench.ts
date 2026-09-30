@@ -1,9 +1,7 @@
 import { create } from "zustand";
-import { mockFactories } from "../adapters/mock/adapter.ts";
-import { SAMPLE_ARCHIVED_SESSIONS, SAMPLE_AUTOMATIONS, SAMPLE_DELIVERABLES, SAMPLE_SESSIONS, SAMPLE_UNITS } from "../adapters/mock/fixtures.ts";
 import type { Automation } from "../core/automation.ts";
 import { asModelId, canRuntimeUse, modelById, type ModelId, type ModelSpec } from "../core/models.ts";
-import { asSessionId, type SessionStatus } from "../core/units.ts";
+import { asSessionId, asUnitId, type SessionStatus } from "../core/units.ts";
 import {
   normalizePrefs,
   parsePrefsMap,
@@ -200,9 +198,11 @@ function persistPrefs(map: ModelPrefsMap): void {
 }
 
 export const useWorkbench = create<WorkbenchState>((set, get) => ({
-  units: SAMPLE_UNITS,
-  archivedSessions: SAMPLE_ARCHIVED_SESSIONS,
-  activeUnitId: SAMPLE_UNITS[0]!.id,
+  // 评审后清 mock（用户指示）：初始全空，一切数据来自真实 daemon——
+  // 空态是设计的一部分（ZCode 原则：功能不因空而消失），不再用样例数据撑门面
+  units: [],
+  archivedSessions: [],
+  activeUnitId: asUnitId(""),
   view: "bot",
   runtimes: [],
   activeRuntimeId: "zcode",
@@ -210,18 +210,18 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
   runtimeModels: {},
   modelPrefs: readPrefs(),
   modelPrefsVersion: 0,
-  sessions: SAMPLE_SESSIONS,
+  sessions: [],
   activeSessionId: null,
   loopParams: readLoopParams(),
   timeline: [],
-  deliverables: SAMPLE_DELIVERABLES,
+  deliverables: [],
   busy: false,
   draft: "",
   runtimePrefs: {} as Readonly<Record<string, RuntimePref>>,
   permissionDecisions: {},
   permissionMode: "ask",
   attachments: [],
-  automations: SAMPLE_AUTOMATIONS,
+  automations: [],
 
   setDraft: (draft) => set({ draft }),
 
@@ -617,9 +617,9 @@ void (async () => {
     }
   } catch (err: unknown) {
     console.info(
-      "[workbench] 本地 daemon 不可达，使用 mock 执行器（启动 backend/ 的 daemon 即接入真实执行）",
+      "[workbench] 本地 daemon 不可达 —— 无执行器可用（启动 backend/ 的 daemon 即接入真实执行）",
       err instanceof Error ? err.message : err,
     );
-    runtimeRegistry.registerAll(mockFactories);
+    // 评审后清 mock（用户指示）：daemon 不可达就空着，不再注册六家 mock 执行器充数
   }
 })();
