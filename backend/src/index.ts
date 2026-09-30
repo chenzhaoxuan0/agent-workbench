@@ -6,8 +6,9 @@
  */
 
 import { mkdirSync } from "node:fs";
+import type { IncomingMessage } from "node:http";
 import { loadConfig } from "./config.ts";
-import { healthPayload, startHttp, type HttpRoute } from "./httpd.ts";
+import { healthPayload, isLoopbackAddr, startHttp, type HttpRoute } from "./httpd.ts";
 import { log, setLogLevel } from "./log.ts";
 import { attachWs, broadcastEvent, broadcastTerminal, registerMethod, WIRE_VERSION } from "./wsd.ts";
 import { PermissionGate } from "./permissions/gate.ts";
@@ -141,6 +142,17 @@ const memory = new MemoryService(store, config.homeDir);
 // ---- REST 管理面（权限闸的决策入口，docs/07 §六）----------------------------
 
 const httpRoutes: HttpRoute[] = [
+  // 回环自动取 token（WP-7）：本机前端免配置；非回环走不到路由层（authorize 401）
+  {
+    method: "GET",
+    path: "/bootstrap",
+    handle: ({ remoteAddress }) => {
+      if (!isLoopbackAddr(remoteAddress)) {
+        throw Object.assign(new Error("bootstrap only from loopback"), { code: "forbidden" });
+      }
+      return { token: config.token, home: config.homeDir };
+    },
+  },
   {
     method: "GET",
     path: "/api/permissions/rules",
@@ -180,8 +192,16 @@ const httpRoutes: HttpRoute[] = [
   },
 ];
 
-const { server, port } = await startHttp(config, startedAt, httpRoutes);
-const wss = attachWs(server, { config, startedAt });
+/** 鉴权判定（docs/08 WP-7）：token 开启时全查，唯一豁免 = 回环取 /bootstrap */
+const authorize = (req: IncomingMessage, url: URL): boolean => {
+  if (config.token === null) return true;
+  if (url.pathname === "/bootstrap" && isLoopbackAddr(req.socket.remoteAddress)) return true;
+  const provided = req.headers["x-awb-token"] ?? url.searchParams.get("token");
+  return typeof provided === "string" && provided === config.token;
+};
+
+const { server, port } = await startHttp(config, startedAt, httpRoutes, authorize);
+const wss = attachWs(server, { config, startedAt, authorize });
 registerMethod("terminal.create", (params) => {
   const p = (params ?? {}) as { cwd?: string; shell?: string; cols?: number; rows?: number };
   return terminals.create({ cwd: p.cwd, shell: p.shell, cols: p.cols, rows: p.rows });

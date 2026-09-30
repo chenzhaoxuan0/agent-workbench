@@ -118,11 +118,17 @@
 
 | 端点 | 说明 |
 |---|---|
-| `GET /healthz` | `{ ok, name, version, pid, uptimeMs }` |
-| `GET /api/permissions/rules` | 权限规则清单 |
+| `GET /healthz` | `{ ok, name, version, pid, uptimeMs }`（豁免鉴权） |
+| `GET /bootstrap` | **仅回环**（WP-7）：`{ token, home }`——本机前端免配置自动取 token；非回环 401 |
+| `GET /api/permissions/rules` | 权限规则清单（其余端点全部要求 `x-awb-token` 头或 `?token=`） |
 | `POST /api/permissions/rules` | 新增规则 `{pattern, decision, runtimeId?, kind?}` → `{id}` |
 | `DELETE /api/permissions/rules?id=N` | 删除规则 |
 | `POST /api/permissions/resolve` | 审批决策 `{sessionId, requestId, decision}`（与 WS `permission.resolve` 同义） |
 | 其他 | JSON 404 `{ ok:false, error:{ code:"not_found", … } }` |
+
+**鉴权（WP-7）**：默认开启——`AGENT_WORKBENCH_TOKEN` 显式指定，否则首启生成落盘
+`<homeDir>/token`；`AGENT_WORKBENCH_INSECURE=1` 关闭（冒烟/本机调试）。WS 走
+`?token=`（浏览器无法设 WS 头），REST 走头或 query。回环客户端凭 `/bootstrap`
+自动取 token；手机/局域网客户端手动配置（localStorage `agent-workbench:daemon-token`）。
 
 会话数据不走 REST（都在 WS 事件流），管理面只放配置与审批类端点。

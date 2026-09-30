@@ -10,7 +10,7 @@
  * id 解析不出来的帧回 id:null 的错误帧，这是唯一允许 null id 的场景。
  */
 
-import type { Server } from "node:http";
+import type { IncomingMessage, Server } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { RuntimeEvent } from "./contract.ts";
 import type { DaemonConfig } from "./config.ts";
@@ -82,17 +82,26 @@ export function registerMethod(name: string, handler: RpcHandler): void {
 
 export function attachWs(
   server: Server,
-  opts: { config: DaemonConfig; startedAt: number },
+  opts: { config: DaemonConfig; startedAt: number; authorize?: (req: IncomingMessage, url: URL) => boolean },
 ): WebSocketServer {
   const wss = new WebSocketServer({ noServer: true });
   const clients = new Set<WebSocket>();
 
   server.on("upgrade", (req, socket, head) => {
-    const { pathname } = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+    const { pathname, searchParams } = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
     if (pathname !== "/ws") {
       socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
       socket.destroy();
       return;
+    }
+    // 鉴权（docs/08 WP-7）：WS 没有响应体可讲道理，upgrade 阶段直接拒绝
+    if (opts.authorize !== undefined && opts.config.token !== null) {
+      const provided = req.headers["x-awb-token"] ?? searchParams.get("token");
+      if (typeof provided !== "string" || provided !== opts.config.token) {
+        socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+        socket.destroy();
+        return;
+      }
     }
     wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
   });

@@ -46,7 +46,7 @@ let daemon: ChildProcess | undefined;
 function startDaemon(port: number): void {
   daemon = spawn(process.execPath, ["--import", "tsx", path.join(backendRoot, "src", "index.ts")], {
     cwd: backendRoot,
-    env: { ...process.env, AGENT_WORKBENCH_PORT: String(port) },
+    env: { ...process.env, AGENT_WORKBENCH_PORT: String(port), AGENT_WORKBENCH_INSECURE: "1" },
     stdio: ["ignore", "ignore", "inherit"],
   });
 }

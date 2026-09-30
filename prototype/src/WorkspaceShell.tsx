@@ -100,6 +100,22 @@ function SidebarSlot() {
   const setWidth = useShell((s) => s.setSidebarWidth);
   const ref = useRef<PanelImperativeHandle>(null);
 
+  // WP-7 窄屏（手机局域网）：<900px 自动收侧栏，主列全宽——收起即归零语义复用；
+  // 只在从宽变窄的瞬间收一次，不把用户的手动展开反复压回
+  useEffect(() => {
+    let wasWide = window.innerWidth >= 900;
+    const onResize = (): void => {
+      const wide = window.innerWidth >= 900;
+      if (wasWide && !wide && !useShell.getState().sidebarCollapsed) {
+        useShell.setState({ sidebarCollapsed: true });
+      }
+      wasWide = wide;
+    };
+    onResize();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
   // 折叠/展开走 panelRef，保证 Group 的子节点结构始终是 Panel / Separator
   useEffect(() => {
     const p = ref.current;

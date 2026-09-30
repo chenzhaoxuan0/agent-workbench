@@ -51,6 +51,8 @@ export interface HttpRouteContext {
   readonly url: URL;
   /** POST/DELETE 的 JSON body；无 body 或解析失败为 null */
   readonly body: unknown;
+  /** 对端地址（/bootstrap 的回环豁免判定用，WP-7） */
+  readonly remoteAddress: string | undefined;
 }
 
 export interface HttpRoute {
@@ -82,6 +84,7 @@ async function route(
   routes: readonly HttpRoute[],
   req: IncomingMessage,
   res: ServerResponse,
+  authorize?: (req: IncomingMessage, url: URL) => boolean,
 ): Promise<void> {
   const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
   log.debug("http request", { method: req.method, path: url.pathname });
@@ -97,10 +100,19 @@ async function route(
     return;
   }
 
+  // 鉴权（docs/08 WP-7）：token 关闭时全放行；否则交给注入的 authorize（豁免面在 index 侧）
+  if (authorize !== undefined && config.token !== null && !authorize(req, url)) {
+    const provided = req.headers["x-awb-token"] ?? url.searchParams.get("token");
+    if (typeof provided !== "string" || provided !== config.token) {
+      sendJson(res, 401, { ok: false, error: { code: "unauthorized", message: "missing or bad token" } });
+      return;
+    }
+  }
+
   const hit = routes.find((r) => r.method === req.method && r.path === url.pathname);
   if (hit !== undefined) {
     const body = req.method === "GET" ? null : await readBody(req);
-    const result = await hit.handle({ url, body });
+    const result = await hit.handle({ url, body, remoteAddress: req.socket.remoteAddress });
     sendJson(res, 200, result ?? { ok: true });
     return;
   }
@@ -109,6 +121,10 @@ async function route(
     ok: false,
     error: { code: "not_found", message: `no route: ${req.method} ${url.pathname}` },
   });
+}
+
+export function isLoopbackAddr(addr: string | undefined): boolean {
+  return addr === "127.0.0.1" || addr === "::1" || addr === "::ffff:127.0.0.1";
 }
 
 export interface HttpHandle {
@@ -121,9 +137,10 @@ export function startHttp(
   config: DaemonConfig,
   startedAt: number,
   routes: readonly HttpRoute[] = [],
+  authorize?: (req: IncomingMessage, url: URL) => boolean,
 ): Promise<HttpHandle> {
   const server = createServer((req, res) => {
-    void route(config, startedAt, routes, req, res).catch((err: unknown) => {
+    void route(config, startedAt, routes, req, res, authorize).catch((err: unknown) => {
       const code = err instanceof Error && "code" in err ? String(err.code) : "internal";
       log.error("http handler failed", { error: err instanceof Error ? err.message : String(err) });
       if (!res.headersSent) {

@@ -5,7 +5,8 @@
  * （冒烟脚本、未来的前端拉起、开机自启），cwd 不可信。
  */
 
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -38,6 +39,12 @@ export interface DaemonConfig {
   readonly homeDir: string;
   readonly logLevel: LogLevel;
   readonly version: string;
+  /**
+   * 鉴权 token（docs/08 WP-7）：null = 关闭鉴权（AGENT_WORKBENCH_INSECURE=1，冒烟/本机调试）。
+   * 默认开启：AGENT_WORKBENCH_TOKEN 显式指定，否则首启生成落盘 <homeDir>/token。
+   * 回环客户端经 GET /bootstrap 免鉴权取 token；非回环（手机/局域网）必须自带。
+   */
+  readonly token: string | null;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): DaemonConfig {
@@ -47,11 +54,35 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): DaemonConfig {
       ? (rawLevel as LogLevel)
       : "info";
 
+  const homeDir = env["AGENT_WORKBENCH_HOME"] ?? path.join(backendRoot, ".waku");
+  const insecure = env["AGENT_WORKBENCH_INSECURE"] === "1";
+  const explicit = env["AGENT_WORKBENCH_TOKEN"];
+  let token: string | null;
+  if (insecure) {
+    token = null;
+  } else if (explicit !== undefined && explicit !== "") {
+    token = explicit;
+  } else {
+    // 首启生成落盘；此后随 home 走（state.db 换 home 换 token，隔离成立）
+    const tokenFile = path.join(homeDir, "token");
+    try {
+      token = readFileSync(tokenFile, "utf8").trim() || null;
+    } catch {
+      token = null;
+    }
+    if (token === null) {
+      token = randomUUID().replace(/-/g, "");
+      mkdirSync(homeDir, { recursive: true });
+      writeFileSync(tokenFile, token + "\n", "utf8");
+    }
+  }
+
   return {
     host: env["AGENT_WORKBENCH_HOST"] ?? "127.0.0.1",
     port: Number.parseInt(env["AGENT_WORKBENCH_PORT"] ?? "5181", 10) || 5181,
-    homeDir: env["AGENT_WORKBENCH_HOME"] ?? path.join(backendRoot, ".waku"),
+    homeDir,
     logLevel,
     version: readVersion(),
+    token,
   };
 }

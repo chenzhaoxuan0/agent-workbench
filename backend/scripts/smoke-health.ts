@@ -58,7 +58,7 @@ const daemonOutput: string[] = [];
 function startDaemon(port: number): void {
   daemon = spawn(process.execPath, ["--import", "tsx", path.join(backendRoot, "src", "index.ts")], {
     cwd: backendRoot,
-    env: { ...process.env, AGENT_WORKBENCH_PORT: String(port), AGENT_WORKBENCH_HOST: "127.0.0.1" },
+    env: { ...process.env, AGENT_WORKBENCH_PORT: String(port), AGENT_WORKBENCH_HOST: "127.0.0.1", AGENT_WORKBENCH_INSECURE: "1" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   for (const stream of [daemon.stdout, daemon.stderr]) {

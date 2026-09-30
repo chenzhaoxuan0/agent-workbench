@@ -115,7 +115,7 @@ daemon = spawn(process.execPath, ["--import", "tsx", path.join(backendRoot, "src
   env: {
     ...process.env,
     AGENT_WORKBENCH_PORT: String(port),
-    AGENT_WORKBENCH_HOME: home,
+    AGENT_WORKBENCH_HOME: home, AGENT_WORKBENCH_INSECURE: "1",
     // WP-8：telegram 网关打向本地 mock Bot API
     AGENT_WORKBENCH_TELEGRAM_API: "http://127.0.0.1:" + (await freePort()),
   },
@@ -168,7 +168,7 @@ try {
     env: {
       ...process.env,
       AGENT_WORKBENCH_PORT: String(port),
-      AGENT_WORKBENCH_HOME: home,
+      AGENT_WORKBENCH_HOME: home, AGENT_WORKBENCH_INSECURE: "1",
       AGENT_WORKBENCH_TELEGRAM_API: "http://127.0.0.1:" + (await freePort()),
     },
     stdio: ["ignore", "ignore", "inherit"],
