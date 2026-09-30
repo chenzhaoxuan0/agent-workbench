@@ -76,6 +76,18 @@ interface SessionState {
   loop: { reasoningLevel?: string };
 }
 
+/** 一轮的终态聚合器：行内事件即时 sink，聚合字段由 result 行回填、exit 后收尾用 */
+interface TurnAcc {
+  readonly messageId: string;
+  initSeen: boolean;
+  sawAnyEvent: boolean;
+  resultText: string | null;
+  isError: boolean;
+  usage?: Record<string, number | undefined>;
+  costUsd?: number;
+  durationMs?: number;
+}
+
 export class ClaudeAdapter implements ExecutorAdapter {
   readonly id = "claude";
   readonly displayName = "Claude Code";
@@ -96,8 +108,9 @@ export class ClaudeAdapter implements ExecutorAdapter {
     mcp: true,
     usage: true,
     multimodal: true,
-    // 每轮 spawn 新进程 + 批量翻译（WP-1 前的事实）；WP-1 内联翻译后改 realtime
-    streaming: "batch",
+    // WP-1：stream-json 逐行内联翻译，行到即 sink（工具/结果事件随轮次实时到达）。
+    // 注意：token 级 delta 还需网关支持 partial（本机网关实测整段返回，粒度=completed 级）。
+    streaming: "realtime",
     steering: "turn-end",
   };
 
@@ -212,12 +225,19 @@ export class ClaudeAdapter implements ExecutorAdapter {
     if (state.cliSessionId !== null) args.push("--resume", state.cliSessionId);
     args.push("--permission-mode", this.permissionModeFor(state.mode));
 
-    const stdout: string[] = [];
+    // WP-1 真流式：逐行内联翻译——delta/工具事件在行到达时即 sink，不等进程退出；
+    // 只有终态聚合（completed/usage/status）留在 exit 后收尾（避免双重 ended）。
+    const acc: TurnAcc = {
+      messageId: `msg_${Date.now()}`,
+      initSeen: false,
+      sawAnyEvent: false,
+      resultText: null,
+      isError: false,
+    };
     const child = spawnLines(cmd, args, {
       cwd: state.rootPath,
-      onLine: (line) => stdout.push(line),
+      onLine: (line) => this.handleLine(state, acc, line),
       onStderrLine: (line) => log.debug("claude -p stderr", { line: line.slice(0, 200) }),
-      // 正常路径在 await exit 之后统一收尾（避免双重 ended）
     });
     state.child = child;
     const exitCode = await new Promise<number | null>((resolve) => child.once("exit", (code) => resolve(code)));
@@ -227,98 +247,90 @@ export class ClaudeAdapter implements ExecutorAdapter {
       state.sink?.({ type: "session.status", sessionId: state.sessionId, status: "idle" });
       return;
     }
-    this.emitEvents(state, stdout, exitCode);
+    this.finalizeTurn(state, acc, exitCode);
   }
 
-  // ---- JSONL → RuntimeEvent ----
+  // ---- JSONL → RuntimeEvent（逐行）----
 
-  private emitEvents(state: SessionState, lines: readonly string[], exitCode: number | null): void {
+  private handleLine(state: SessionState, acc: TurnAcc, line: string): void {
+    const sink = state.sink;
+    if (sink === null || line.trim() === "") return;
+    let ev: CliEvent;
+    try {
+      ev = JSON.parse(line) as CliEvent;
+    } catch {
+      return;
+    }
+    acc.sawAnyEvent = true;
+    const sessionId = state.sessionId;
+
+    if (ev.type === "system" && ev.subtype === "init") {
+      acc.initSeen = true;
+      if (ev.session_id !== undefined) state.cliSessionId = ev.session_id;
+      return;
+    }
+
+    if (ev.type === "stream_event") {
+      const delta = ev.event?.delta;
+      if (delta?.type === "text_delta" && delta.text !== undefined && delta.text !== "") {
+        sink({ type: "message.delta", sessionId, messageId: acc.messageId, role: "assistant", text: delta.text });
+      } else if (delta?.type === "thinking_delta" && delta.thinking !== undefined && delta.thinking !== "") {
+        sink({ type: "reasoning.delta", sessionId, messageId: acc.messageId, text: delta.thinking });
+      }
+      return;
+    }
+
+    if (ev.type === "assistant") {
+      for (const block of ev.message?.content ?? []) {
+        if (block.type === "tool_use" && block.id !== undefined) {
+          sink({
+            type: "tool.started",
+            sessionId,
+            callId: block.id,
+            toolName: block.name ?? "tool",
+            title: block.name ?? "tool",
+            input: block.input ?? null,
+          });
+        }
+      }
+      return;
+    }
+
+    if (ev.type === "user") {
+      for (const block of ev.message?.content ?? []) {
+        if (block.type === "tool_result" && block.tool_use_id !== undefined) {
+          const out =
+            typeof block.content === "string"
+              ? block.content
+              : JSON.stringify(block.content ?? null);
+          sink({
+            type: "tool.completed",
+            sessionId,
+            callId: block.tool_use_id,
+            ok: block.is_error !== true,
+            output: out.slice(0, 8000),
+          });
+        }
+      }
+      return;
+    }
+
+    if (ev.type === "result") {
+      acc.resultText = ev.result ?? "";
+      acc.isError = ev.is_error === true;
+      acc.usage = ev.usage;
+      acc.costUsd = ev.total_cost_usd;
+      acc.durationMs = ev.duration_ms;
+      if (ev.session_id !== undefined) state.cliSessionId = ev.session_id;
+    }
+  }
+
+  private finalizeTurn(state: SessionState, acc: TurnAcc, exitCode: number | null): void {
     const sink = state.sink;
     if (sink === null) return;
     const sessionId = state.sessionId;
-    const messageId = `msg_${Date.now()}`;
 
-    // 终态聚合
-    let resultText: string | null = null;
-    let isError = false;
-    let usage: Record<string, number | undefined> | undefined;
-    let costUsd: number | undefined;
-    let durationMs: number | undefined;
-    let initSeen = false;
-    let sawAnyEvent = false;
-
-    for (const line of lines) {
-      if (line.trim() === "") continue;
-      let ev: CliEvent;
-      try {
-        ev = JSON.parse(line) as CliEvent;
-      } catch {
-        continue;
-      }
-      sawAnyEvent = true;
-
-      if (ev.type === "system" && ev.subtype === "init") {
-        initSeen = true;
-        if (ev.session_id !== undefined) state.cliSessionId = ev.session_id;
-        continue;
-      }
-
-      if (ev.type === "stream_event") {
-        const delta = ev.event?.delta;
-        if (delta?.type === "text_delta" && delta.text !== undefined && delta.text !== "") {
-          sink({ type: "message.delta", sessionId, messageId, role: "assistant", text: delta.text });
-        } else if (delta?.type === "thinking_delta" && delta.thinking !== undefined && delta.thinking !== "") {
-          sink({ type: "reasoning.delta", sessionId, messageId, text: delta.thinking });
-        }
-        continue;
-      }
-
-      if (ev.type === "assistant") {
-        for (const block of ev.message?.content ?? []) {
-          if (block.type === "tool_use" && block.id !== undefined) {
-            sink({
-              type: "tool.started",
-              sessionId,
-              callId: block.id,
-              toolName: block.name ?? "tool",
-              title: block.name ?? "tool",
-              input: block.input ?? null,
-            });
-          }
-        }
-        continue;
-      }
-
-      if (ev.type === "user") {
-        for (const block of ev.message?.content ?? []) {
-          if (block.type === "tool_result" && block.tool_use_id !== undefined) {
-            const out =
-              typeof block.content === "string"
-                ? block.content
-                : JSON.stringify(block.content ?? null);
-            sink({
-              type: "tool.completed",
-              sessionId,
-              callId: block.tool_use_id,
-              ok: block.is_error !== true,
-              output: out.slice(0, 8000),
-            });
-          }
-        }
-        continue;
-      }
-
-      if (ev.type === "result") {
-        resultText = ev.result ?? "";
-        isError = ev.is_error === true;
-        usage = ev.usage;
-        costUsd = ev.total_cost_usd;
-        durationMs = ev.duration_ms;
-        if (ev.session_id !== undefined) state.cliSessionId = ev.session_id;
-      }
-    }
-
-    if (!sawAnyEvent) {
+    if (!acc.sawAnyEvent) {
       state.sink?.({
         type: "error",
         sessionId,
@@ -328,7 +340,7 @@ export class ClaudeAdapter implements ExecutorAdapter {
       state.sink?.({ type: "session.status", sessionId, status: "failed" });
       return;
     }
-    if (!initSeen && resultText === null) {
+    if (!acc.initSeen && acc.resultText === null) {
       // 非 JSON 噪声或异常输出：有行但没有协议事件
       state.sink?.({
         type: "error",
@@ -341,16 +353,16 @@ export class ClaudeAdapter implements ExecutorAdapter {
     }
 
     // 完整回复（result.result 是权威全文；流式 delta 已实时推过）
-    const finalText = resultText ?? "";
+    const finalText = acc.resultText ?? "";
     if (finalText !== "") {
-      sink({ type: "message.completed", sessionId, messageId, text: finalText });
+      sink({ type: "message.completed", sessionId, messageId: acc.messageId, text: finalText });
     }
 
-    if (usage !== undefined) {
-      const input = Number(usage["input_tokens"] ?? 0);
-      const output = Number(usage["output_tokens"] ?? 0);
-      const cacheR = Number(usage["cache_read_input_tokens"] ?? 0);
-      const cacheW = Number(usage["cache_creation_input_tokens"] ?? 0);
+    if (acc.usage !== undefined) {
+      const input = Number(acc.usage["input_tokens"] ?? 0);
+      const output = Number(acc.usage["output_tokens"] ?? 0);
+      const cacheR = Number(acc.usage["cache_read_input_tokens"] ?? 0);
+      const cacheW = Number(acc.usage["cache_creation_input_tokens"] ?? 0);
       sink({
         type: "usage",
         sessionId,
@@ -360,17 +372,17 @@ export class ClaudeAdapter implements ExecutorAdapter {
         cacheReadTokens: cacheR,
         cacheWriteTokens: cacheW,
         // total_cost_usd 是网关真实计费，非估算
-        costUsd: costUsd ?? 0,
+        costUsd: acc.costUsd ?? 0,
         model: state.loop.reasoningLevel ? `claude:${state.loop.reasoningLevel}` : "claude-default",
-        decodeMs: durationMs,
+        decodeMs: acc.durationMs,
       });
     }
 
-    if (isError) {
+    if (acc.isError) {
       sink({ type: "error", sessionId, message: finalText || "turn failed", recoverable: false });
       sink({ type: "session.status", sessionId, status: "failed" });
     } else {
-      // agent loop：turn 完成 ≠ 会话结束（--resume 可续聊）
+      // agent loop 语义：turn 完成 ≠ 会话结束（--resume 可续聊）
       sink({ type: "session.status", sessionId, status: "idle" });
     }
   }

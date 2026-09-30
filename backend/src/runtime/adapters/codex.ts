@@ -80,6 +80,13 @@ interface SessionState {
   loop: { reasoningLevel?: string };
 }
 
+/** 一轮的终态聚合器：行内事件即时 sink，usage/failed 由终局行回填、exit 后收尾用 */
+interface CodexTurnAcc {
+  sawAny: boolean;
+  turnUsage?: CliEvent["usage"];
+  failed: string | null;
+}
+
 export class CodexAdapter implements ExecutorAdapter {
   readonly id = "codex";
   readonly displayName = "Codex";
@@ -99,8 +106,8 @@ export class CodexAdapter implements ExecutorAdapter {
     mcp: true,
     usage: true,
     multimodal: true,
-    // 每轮 spawn 新进程 + 批量翻译（WP-1 前的事实）；WP-1 内联翻译后改 realtime
-    streaming: "batch",
+    // WP-1 已兑现：JSONL 逐行内联翻译，行到即 sink（文本粒度受协议限制为 item 级）
+    streaming: "realtime",
     steering: "turn-end",
   };
 
@@ -209,10 +216,12 @@ export class CodexAdapter implements ExecutorAdapter {
     if (state.threadId !== null) args.push("resume", state.threadId);
     args.push(prompt);
 
-    const lines: string[] = [];
+    // WP-1 真流式：逐行内联翻译——thread/item/工具事件行到即 sink，不等进程退出；
+    // usage 与 turn 结局在 exit 后收尾（agent loop 语义：失败 ≠ 会话结束）。
+    const acc: CodexTurnAcc = { sawAny: false, turnUsage: undefined, failed: null };
     const child = spawnLines(cmd, args, {
       cwd: state.rootPath,
-      onLine: (line) => lines.push(line),
+      onLine: (line) => this.handleLine(state, acc, line),
       onStderrLine: (line) => log.debug("codex exec stderr", { line: line.slice(0, 200) }),
     });
     state.child = child;
@@ -223,7 +232,7 @@ export class CodexAdapter implements ExecutorAdapter {
     state.child = null;
     state.running = false;
 
-    if (lines.length === 0) {
+    if (!acc.sawAny) {
       if (!state.cancelled) {
         state.sink?.({ type: "error", sessionId: state.sessionId, message: `codex exec produced no events (exit ${exitCode})`, recoverable: false });
       }
@@ -231,108 +240,111 @@ export class CodexAdapter implements ExecutorAdapter {
       state.sink?.({ type: "session.status", sessionId: state.sessionId, status: state.cancelled ? "idle" : "failed" });
       return;
     }
-    this.emitEvents(state, lines);
+    this.finalizeTurn(state, acc);
   }
 
-  // ---- JSONL → RuntimeEvent ----
+  // ---- JSONL → RuntimeEvent（逐行）----
 
-  private emitEvents(state: SessionState, lines: readonly string[]): void {
+  private handleLine(state: SessionState, acc: CodexTurnAcc, line: string): void {
+    const sink = state.sink;
+    if (sink === null) return;
+    acc.sawAny = true;
+    let ev: CliEvent;
+    try {
+      ev = JSON.parse(line) as CliEvent;
+    } catch {
+      return;
+    }
+    const sessionId = state.sessionId;
+    switch (ev.type) {
+      case "thread.started": {
+        if (ev.thread_id !== undefined) state.threadId = ev.thread_id;
+        break;
+      }
+      case "item.started": {
+        const item = ev.item ?? {};
+        if (item.type === "command_execution") {
+          sink({
+            type: "tool.started",
+            sessionId,
+            callId: item.id ?? `call_${Date.now()}`,
+            toolName: "shell",
+            title: item.command ?? "shell",
+            input: { command: item.command },
+          });
+        }
+        break;
+      }
+      case "item.completed": {
+        const item = ev.item ?? {};
+        if (item.type === "agent_message") {
+          const text = item.text ?? "";
+          if (text !== "") {
+            const messageId = item.id ?? `msg_${Date.now()}`;
+            sink({ type: "message.delta", sessionId, messageId, role: "assistant", text });
+            sink({ type: "message.completed", sessionId, messageId, text });
+            state.turnTexts.push(text);
+          }
+        } else if (item.type === "command_execution") {
+          sink({
+            type: "tool.completed",
+            sessionId,
+            callId: item.id ?? `call_${Date.now()}`,
+            ok: item.exit_code === 0 || item.status === "completed",
+            output: item.aggregated_output ?? item.status ?? "",
+          });
+        } else if (item.type === "reasoning") {
+          const text = item.text ?? "";
+          if (text !== "") {
+            sink({ type: "reasoning.delta", sessionId, messageId: item.id ?? `r_${Date.now()}`, text });
+          }
+        } else if (item.type === "file_change") {
+          for (const ch of item.changes ?? []) {
+            if (ch.path === undefined) continue;
+            const change = ch.kind === "add" ? "created" : ch.kind === "delete" ? "deleted" : "modified";
+            sink({ type: "file.changed", sessionId, path: ch.path, change });
+          }
+        } else if (item.type === "error") {
+          // 配置告警之类也走 error item；recoverable 由 turn 结局决定，先给 true
+          sink({ type: "error", sessionId, message: item.message ?? "item error", recoverable: true });
+        }
+        break;
+      }
+      case "turn.completed": {
+        acc.turnUsage = ev.usage;
+        break;
+      }
+      case "turn.failed": {
+        acc.failed = ev.error?.message ?? "turn failed";
+        break;
+      }
+      default:
+        break;
+    }
+  }
+
+  private finalizeTurn(state: SessionState, acc: CodexTurnAcc): void {
     const sink = state.sink;
     if (sink === null) return;
     const sessionId = state.sessionId;
-    let turnUsage: CliEvent["usage"] | undefined;
-    let failed: string | null = null;
 
-    for (const line of lines) {
-      let ev: CliEvent;
-      try {
-        ev = JSON.parse(line) as CliEvent;
-      } catch {
-        continue;
-      }
-      switch (ev.type) {
-        case "thread.started": {
-          if (ev.thread_id !== undefined) state.threadId = ev.thread_id;
-          break;
-        }
-        case "item.started": {
-          const item = ev.item ?? {};
-          if (item.type === "command_execution") {
-            sink({
-              type: "tool.started",
-              sessionId,
-              callId: item.id ?? `call_${Date.now()}`,
-              toolName: "shell",
-              title: item.command ?? "shell",
-              input: { command: item.command },
-            });
-          }
-          break;
-        }
-        case "item.completed": {
-          const item = ev.item ?? {};
-          if (item.type === "agent_message") {
-            const text = item.text ?? "";
-            if (text !== "") {
-              sink({ type: "message.delta", sessionId, messageId: item.id ?? `msg_${Date.now()}`, role: "assistant", text });
-              sink({ type: "message.completed", sessionId, messageId: item.id ?? `msg_${Date.now()}`, text });
-              state.turnTexts.push(text);
-            }
-          } else if (item.type === "command_execution") {
-            sink({
-              type: "tool.completed",
-              sessionId,
-              callId: item.id ?? `call_${Date.now()}`,
-              ok: item.exit_code === 0 || item.status === "completed",
-              output: item.aggregated_output ?? item.status ?? "",
-            });
-          } else if (item.type === "reasoning") {
-            const text = item.text ?? "";
-            if (text !== "") {
-              sink({ type: "reasoning.delta", sessionId, messageId: item.id ?? `r_${Date.now()}`, text });
-            }
-          } else if (item.type === "file_change") {
-            for (const ch of item.changes ?? []) {
-              if (ch.path === undefined) continue;
-              const change = ch.kind === "add" ? "created" : ch.kind === "delete" ? "deleted" : "modified";
-              sink({ type: "file.changed", sessionId, path: ch.path, change });
-            }
-          } else if (item.type === "error") {
-            // 配置告警之类也走 error item；recoverable 由 turn 结局决定，先给 true
-            sink({ type: "error", sessionId, message: item.message ?? "item error", recoverable: true });
-          }
-          break;
-        }
-        case "turn.completed": {
-          turnUsage = ev.usage;
-          break;
-        }
-        case "turn.failed": {
-          failed = ev.error?.message ?? "turn failed";
-          break;
-        }
-        default:
-          break;
-      }
-    }
-
-    if (turnUsage !== undefined) {
-      const billedInput = (turnUsage.input_tokens ?? 0) + (turnUsage.cache_write_input_tokens ?? 0);
+    if (acc.turnUsage !== undefined) {
+      const billedInput = (acc.turnUsage.input_tokens ?? 0) + (acc.turnUsage.cache_write_input_tokens ?? 0);
       sink({
         type: "usage",
         sessionId,
         inputTokens: billedInput,
-        outputTokens: turnUsage.output_tokens ?? 0,
-        cacheReadTokens: turnUsage.cached_input_tokens,
-        cacheWriteTokens: turnUsage.cache_write_input_tokens,
+        outputTokens: acc.turnUsage.output_tokens ?? 0,
+        cacheReadTokens: acc.turnUsage.cached_input_tokens,
+        cacheWriteTokens: acc.turnUsage.cache_write_input_tokens,
         costUsd: 0, // 美元由 Phase 6 价目表统一估算
         model: "codex-default",
         decodeMs: undefined,
       });
     }
 
-    if (failed !== null) {
-      sink({ type: "error", sessionId, message: failed, recoverable: false });
+    if (acc.failed !== null) {
+      sink({ type: "error", sessionId, message: acc.failed, recoverable: false });
       // agent loop 语义：turn 失败 ≠ 会话结束（exec resume 可续聊）
       sink({ type: "session.status", sessionId, status: "failed" });
     } else {

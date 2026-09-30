@@ -70,10 +70,9 @@ export interface RuntimeCapabilities {
   /** 是否支持语音/多模态输入 */
   readonly multimodal: boolean;
   /**
-   * 流式真实性（docs/08 WP-4）：realtime = 事件逐条实时到达（UI 可渲染打字机）；
-   * batch = 轮末批量到达（UI 不渲染假光标，delta 只是重放）。
-   * 每轮 spawn 新进程的执行器（claude -p / codex exec）即使协议带 delta，
-   * 在批量翻译的实现下也是 batch —— 声明跟实现走，不跟协议走。
+   * 流式真实性（docs/08 WP-4）：realtime = 轮内事件持续到达（工具与文本块随生产即推，
+   * delta 粒度由协议与网关决定）；batch = 轮末一次性灌入（UI 不渲染假光标）。
+   * 声明跟实现走，不跟协议走——批量翻译的实现即使协议带 delta 也是 batch。
    */
   readonly streaming: "realtime" | "batch";
   /**
