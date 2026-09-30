@@ -11,6 +11,30 @@
 
 ---
 
+## 〇、执行状态（2026-09-30 收工回写）
+
+| WP | 状态 | 提交 | 验收落点 |
+|---|---|---|---|
+| WP-4 | ✅ 完成 | 5d602a7 | streaming/steering 进契约；zcode getter 跟传输态走；UI 无假光标（核查过，免改） |
+| WP-1 | ✅ 完成 | b3ba049 | claude/codex 逐行内联翻译；codex 实测 tool.completed→轮落定间隔 15s（旧实现同毫秒）；claude delta 受本机网关限制（invite-2608 synthetic 路由，无 partial 事件），无回归验证通过 |
+| WP-3 | ✅ 完成 | 882d6f3 | session.trace 读落盘账本（NDJSON + afterSeq 游标），事件环降为热缓存 |
+| WP-2 | ✅ 完成 | 0d21ab4 | event 帧带 seq；session.events.since（环内热路径/落盘回落）；客户端 seq 判重 + 重连补拉；冒烟 phase8 |
+| WP-10 | ✅ 完成 | 611bfe8 | session.ref / usage.requestId 幂等键 / steer.queued+boundary+undelivered / session.gc+forget |
+| WP-5 | ✅ 完成 | 9c645a4 | WorkUnit.channels 契约 + BotRegistry（.agent-workbench/bot.json）+ bot.put/list/roots.add + 前端写穿与启动合并；冒烟 phase9 |
+| WP-6 | ⚠ 数据通路完成，UI 收敛按用户指示**留给下一轮前端简化** | —— | addUnit 写穿 + 启动合并已生效；设置页逐面板迁移未做 |
+| WP-7 | ✅ 完成 | bd166aa | token 鉴权默认开（/bootstrap 回环豁免）；窄屏自动收侧栏；全部冒烟适配 INSECURE |
+| WP-8 | ✅ 完成 | d5b2d91 | Telegram 网关（单 bot 串行/续聊优先/yolo）；mock Bot API 冒烟闭环（无真 token 即可验收） |
+| WP-9 | ✅ 完成 | 9562ba5 | askBot 内核 + bot.ask + /webhook/bot（per-bot secret）+ src/mcp.ts（MCP stdio 桥）；冒烟 phase10 |
+| WP-11 | 🔒 冻结维持 | —— | 解冻条件未触发 |
+
+**遗留与注意**：
+- claude 流式粒度取决于网关（本机 invite-2608 路由整段返回且偶发模型报错——适配器如实浮出为 error 事件）；换支持 partial 的网关即得 token 级打字机，代码已就绪。
+- IM 渠道的权限档固定 yolo（headless 无审批面）；要收权就把 bot 的规则表预置好（phase4 的规则机制）。
+- MCP 桥用法：`npx tsx backend/src/mcp.ts --url http://127.0.0.1:5181 [--token …]`，在 ZCode/Claude 等 MCP 客户端里以 stdio 方式登记。
+- 冒烟套件现为 phase1~10（`pnpm smoke:phase*`），全部无需真 CLI token（真执行器验证用临时脚本，见 WP-1 纪录）。
+
+---
+
 ## 一、目标形态（锚点）
 
 **一台跑在本机上的、常驻的 bot 服务器 + 多端轻客户端。**
