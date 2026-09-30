@@ -144,7 +144,13 @@ export function startHttp(
       const code = err instanceof Error && "code" in err ? String(err.code) : "internal";
       log.error("http handler failed", { error: err instanceof Error ? err.message : String(err) });
       if (!res.headersSent) {
-        sendJson(res, code === "bad_request" ? 400 : 500, {
+        const status =
+          code === "bad_request" ? 400
+          : code === "unauthorized" ? 401
+          : code === "forbidden" ? 403
+          : code === "not_found" || code === "unknown_bot" || code === "no_channel" ? 404
+          : 500;
+        sendJson(res, status, {
           ok: false,
           error: { code, message: err instanceof Error ? err.message : "internal error" },
         });

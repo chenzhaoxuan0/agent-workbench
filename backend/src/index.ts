@@ -27,6 +27,7 @@ import { ArenaRunner } from "./ops/arena.ts";
 import { MemoryService } from "./memory/memory.ts";
 import { BotRegistry } from "./bots/registry.ts";
 import { TelegramGateway } from "./channels/telegram.ts";
+import { askBot } from "./channels/askBot.ts";
 import { asModelId, asSessionId, asUnitId } from "../../prototype/src/core/units.ts";
 
 const startedAt = Date.now();
@@ -162,6 +163,30 @@ const httpRoutes: HttpRoute[] = [
       return { token: config.token, home: config.homeDir };
     },
   },
+  // per-bot 入站 webhook（WP-9）：鉴权走 bot 自己的 secret（全局 token 豁免此路径）
+  {
+    method: "POST",
+    path: "/webhook/bot",
+    handle: async ({ body }) => {
+      const p = (body ?? {}) as { botId?: string; secret?: string; text?: string };
+      if (typeof p.botId !== "string" || typeof p.text !== "string") {
+        throw Object.assign(new Error("botId and text are required"), { code: "bad_params" });
+      }
+      const bot = await botRegistry.getBot(p.botId);
+      if (bot === undefined) throw Object.assign(new Error(`no such bot: ${p.botId}`), { code: "unknown_bot" });
+      const hook = (bot.channels as Array<{ kind?: string; enabled?: boolean; config?: Record<string, string> } | undefined>)
+        ?.find((c) => c?.kind === "webhook");
+      if (hook === undefined || hook.enabled !== true) {
+        throw Object.assign(new Error(`bot ${p.botId} has no webhook channel`), { code: "no_channel" });
+      }
+      const secret = hook.config?.["secret"] ?? "";
+      if (secret === "" || p.secret !== secret) {
+        throw Object.assign(new Error("bad secret"), { code: "forbidden" });
+      }
+      const { sessionId, reply } = await askBot(botRegistry, host, p.botId, p.text);
+      return { sessionId, reply };
+    },
+  },
   {
     method: "GET",
     path: "/api/permissions/rules",
@@ -205,6 +230,7 @@ const httpRoutes: HttpRoute[] = [
 const authorize = (req: IncomingMessage, url: URL): boolean => {
   if (config.token === null) return true;
   if (url.pathname === "/bootstrap" && isLoopbackAddr(req.socket.remoteAddress)) return true;
+  if (url.pathname === "/webhook/bot") return true; // per-bot secret 在路由内自验
   const provided = req.headers["x-awb-token"] ?? url.searchParams.get("token");
   return typeof provided === "string" && provided === config.token;
 };
@@ -373,6 +399,14 @@ registerMethod("bot.roots.add", (params) => {
   if (typeof p.dir !== "string" || p.dir === "") throw Object.assign(new Error("dir is required"), { code: "bad_params" });
   botRegistry.addRoot(p.dir);
   return { roots: botRegistry.roots() };
+});
+// 把一条文本交给 bot 并等轮落定拿回全文（WP-9：MCP ask_bot / webhook 的内核入口）
+registerMethod("bot.ask", (params) => {
+  const p = (params ?? {}) as { botId?: string; text?: string; waitMs?: number };
+  if (typeof p.botId !== "string" || typeof p.text !== "string") {
+    throw Object.assign(new Error("botId and text are required"), { code: "bad_params" });
+  }
+  return askBot(botRegistry, host, p.botId, p.text, { waitMs: typeof p.waitMs === "number" ? p.waitMs : undefined });
 });
 
 registerMethod("memory.routing.get", () => memory.getRouting());

@@ -10,8 +10,7 @@
 
 import type { BotRegistry, BotDefinition } from "../bots/registry.ts";
 import type { RuntimeHost } from "../runtime/host.ts";
-import type { ModelId } from "../contract.ts";
-import { asModelId, asSessionId, asUnitId } from "../../../prototype/src/core/units.ts";
+import { runBotTurn } from "./askBot.ts";
 import { log } from "../log.ts";
 
 interface TelegramChannelConf {
@@ -31,7 +30,6 @@ export class TelegramGateway {
   private timer: NodeJS.Timeout | null = null;
   private readonly offsets = new Map<string, number>();
   private readonly chains = new Map<string, Promise<void>>();
-  private readonly lastSession = new Map<string, string>();
 
   constructor(
     private readonly opts: {
@@ -105,47 +103,14 @@ export class TelegramGateway {
   }
 
   private async handleText(bot: BotDefinition, ch: TelegramChannelConf, text: string): Promise<void> {
-    const unitId = bot.id ?? "";
-    const rootPath = typeof bot.rootPath === "string" ? bot.rootPath : "";
-    if (unitId === "" || rootPath === "") return;
     const token = ch.config["botToken"] ?? "";
     const chatId = ch.config["chatId"] ?? "";
     try {
-      let sessionId: string | null = this.lastSession.get(unitId) ?? null;
-      if (sessionId !== null) {
-        try {
-          this.opts.host.resumeSession(asSessionId(sessionId));
-        } catch {
-          sessionId = null; // 续不上（无 cli_ref / 没这行）就起新会话
-        }
-      }
-      if (sessionId !== null) {
-        try {
-          this.opts.host.sendMessage(asSessionId(sessionId), text);
-        } catch {
-          sessionId = null;
-        }
-      }
-      if (sessionId === null) {
-        const s = await this.opts.host.startSession({
-          runtimeId: primaryRuntime(bot),
-          unitId: asUnitId(unitId),
-          unitName: typeof bot.name === "string" ? bot.name : unitId,
-          rootPath,
-          prompt: text,
-          model: primaryModel(bot),
-          mode: "yolo", // faceless 渠道无审批面
-        });
-        sessionId = s.id;
-      }
-      this.lastSession.set(unitId, sessionId);
-      // usage = turn 级完成（与 Ops 同口径）；超时不炸，回已知内容
-      await this.opts.host.waitForSessionEvent(asSessionId(sessionId), "usage", 180_000).catch(() => {});
-      const reply = lastAssistantText(this.opts.host.sessionMessages(asSessionId(sessionId)));
-      await this.sendTelegram(this.opts.apiBase, token, chatId, reply ?? "(空回复)");
+      const { reply } = await runBotTurn(this.opts.host, bot, text);
+      await this.sendTelegram(this.opts.apiBase, token, chatId, reply);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
-      log.warn("telegram turn failed", { bot: unitId, error: message });
+      log.warn("telegram turn failed", { bot: bot.id, error: message });
       await this.sendTelegram(this.opts.apiBase, token, chatId, `出错了：${message}`).catch(() => {});
     }
   }
@@ -166,24 +131,4 @@ function telegramChannel(bot: BotDefinition): TelegramChannelConf | null {
   const channels = bot.channels as TelegramChannelConf[] | undefined;
   const ch = channels?.find((c) => c?.kind === "telegram" && c.enabled === true);
   return ch ?? null;
-}
-
-function primaryRuntime(bot: BotDefinition): string {
-  const bindings = bot.bindings as Array<{ runtimeId?: string; primary?: boolean }> | undefined;
-  const primary = bindings?.find((b) => b?.primary === true) ?? bindings?.[0];
-  return typeof primary?.runtimeId === "string" && primary.runtimeId !== "" ? primary.runtimeId : "mockperm";
-}
-
-function primaryModel(bot: BotDefinition): ModelId | null {
-  const bindings = bot.bindings as Array<{ modelHint?: string; primary?: boolean }> | undefined;
-  const primary = bindings?.find((b) => b?.primary === true) ?? bindings?.[0];
-  return typeof primary?.modelHint === "string" && primary.modelHint !== "" ? asModelId(primary.modelHint) : null;
-}
-
-function lastAssistantText(messages: Array<{ role: string; text: string }>): string | null {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i];
-    if (m !== undefined && m.role === "assistant" && m.text !== "") return m.text;
-  }
-  return null;
 }
