@@ -74,6 +74,8 @@ interface SessionState {
   cancelled: boolean;
   child: ChildProcess | null;
   loop: { reasoningLevel?: string };
+  /** usage 幂等键计数（WP-10） */
+  usageCount: number;
 }
 
 /** 一轮的终态聚合器：行内事件即时 sink，聚合字段由 result 行回填、exit 后收尾用 */
@@ -148,6 +150,7 @@ export class ClaudeAdapter implements ExecutorAdapter {
       cancelled: false,
       child: null,
       loop: { reasoningLevel: req.reasoningLevel },
+      usageCount: 0,
     };
     this.sessions.set(state.sessionId, state);
 
@@ -179,6 +182,7 @@ export class ClaudeAdapter implements ExecutorAdapter {
       cancelled: false,
       child: null,
       loop: {},
+      usageCount: 0,
     };
     this.sessions.set(sessionId, state);
     return {
@@ -375,6 +379,7 @@ export class ClaudeAdapter implements ExecutorAdapter {
         costUsd: acc.costUsd ?? 0,
         model: state.loop.reasoningLevel ? `claude:${state.loop.reasoningLevel}` : "claude-default",
         decodeMs: acc.durationMs,
+        requestId: `claude:${state.cliSessionId ?? "pending"}:${++state.usageCount}`,
       });
     }
 

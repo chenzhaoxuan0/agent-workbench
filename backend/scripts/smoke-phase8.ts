@@ -149,7 +149,7 @@ try {
   const aSeen = a.events.slice();
   check("A 收到事件且帧带 seq", aSeen.length > 0 && aSeen.every((e) => typeof e.seq === "number"), aSeen);
   const seqs = aSeen.map((e) => e.seq as number);
-  const monotonic = seqs.every((v, i) => i === 0 || v > seqs[i - 1]);
+  const monotonic = seqs.every((v, i) => i === 0 || v > (seqs[i - 1] as number));
   check("seq 单调递增", monotonic, seqs);
   const lastSeqA = seqs.at(-1) as number;
 
@@ -188,7 +188,7 @@ try {
   check("补拉非空", missed.length > 0);
   const missedSeqs = missed.map((m) => m.seq);
   check("补拉全部 > lastSeqA", missedSeqs.every((v) => v > lastSeqA), missedSeqs);
-  const noGap = missedSeqs.every((v, i) => i === 0 || v === missedSeqs[i - 1] + 1);
+  const noGap = missedSeqs.every((v, i) => i === 0 || v === (missedSeqs[i - 1] as number) + 1);
   check("补拉无缺口（环内连续）", noGap, missedSeqs);
   check("补拉含轮终态（mockperm 以 session.ended 收尾）", missed.some((m) => m.event.type === "session.ended"));
 

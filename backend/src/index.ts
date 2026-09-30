@@ -418,6 +418,18 @@ registerMethod("session.events.since", async (params) => {
       return { seq: r.seq, event: r.event };
     });
 });
+// 孤儿治理面（WP-10）：列出可回收的死会话 / 回收指定会话（轨迹文件永不删）。
+registerMethod("session.gc", (params) => {
+  const p = (params ?? {}) as { maxAgeDays?: number };
+  const maxAgeDays = typeof p.maxAgeDays === "number" ? p.maxAgeDays : 14;
+  return host.gcCandidates(maxAgeDays * 86_400_000);
+});
+registerMethod("session.forget", (params) => {
+  const { sessionId } = (params ?? {}) as { sessionId?: string };
+  if (typeof sessionId !== "string") throw Object.assign(new Error("sessionId is required"), { code: "bad_params" });
+  host.forgetSession(asSessionId(sessionId));
+  return { forgotten: sessionId };
+});
 registerMethod("permission.resolve", (params) => {
   const p = params as { sessionId?: string; requestId?: string; decision?: "allow" | "deny" | "always" };
   if (typeof p.sessionId !== "string" || typeof p.requestId !== "string" ||

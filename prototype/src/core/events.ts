@@ -29,8 +29,14 @@ export interface PlanStep {
 export type RuntimeEvent =
   // ---- 会话生命周期 ----
   | { readonly type: "session.started"; readonly sessionId: SessionId; readonly unitId: UnitId }
-  | { readonly type: "session.ended"; readonly sessionId: SessionId; readonly reason: string }
   | { readonly type: "session.status"; readonly sessionId: SessionId; readonly status: string }
+  /**
+   * 执行器原生会话引用（WP-10：cherry 的 resume-token 事件化）。
+   * 变化即推（首轮 init 后、resume 后），前端免轮询 externalRef；
+   * 客户端凭它可以在 daemon 重启后跨进程续命（配合 session.resume）。
+   */
+  | { readonly type: "session.ref"; readonly sessionId: SessionId; readonly ref: string }
+  | { readonly type: "session.ended"; readonly sessionId: SessionId; readonly reason: string }
 
   // ---- 消息 ----
   | {
@@ -118,6 +124,14 @@ export type RuntimeEvent =
       readonly summary?: string;
     }
 
+  // ---- steering（T3 语义：turn 进行中的插话排队与落点，WP-10 事件化）----
+  /** 插话进入排队（turn 进行中到达，等本轮落定后发出） */
+  | { readonly type: "steer.queued"; readonly sessionId: SessionId; readonly queueDepth: number }
+  /** 排队插话在轮边界被注入——前端据此把 A1（pre-steer）/A2（post-steer）分行 */
+  | { readonly type: "steer.boundary"; readonly sessionId: SessionId; readonly text: string }
+  /** 会话终结时仍在排队的插话（没有下一轮可附着）——上游渠道应知晓这些消息未被投递 */
+  | { readonly type: "steer.undelivered"; readonly sessionId: SessionId; readonly inputs: readonly string[] }
+
   // ---- 计划（ZCode 的 plan-detail：agent 提计划 → 用户批 / 改 / 否）----
   | {
       readonly type: "plan.proposed";
@@ -158,6 +172,11 @@ export type RuntimeEvent =
       readonly cacheWriteTokens?: number;
       /** 本轮解码耗时（ms），速度 = outputTokens / (decodeMs / 1000)。缺省表示没报 */
       readonly decodeMs?: number;
+      /**
+       * 幂等键（WP-10：cherry 语义）——driver 命名的一次 provider 调用 id
+       * （如 `codex:<threadId>:<n>`）。重放/补拉场景凭它去重，落库不重复计费。
+       */
+      readonly requestId?: string;
     }
 
   // ---- 产出 ----

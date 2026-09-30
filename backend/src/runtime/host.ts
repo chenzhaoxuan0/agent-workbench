@@ -24,6 +24,7 @@ import type {
   UnitId,
 } from "../contract.ts";
 import { log } from "../log.ts";
+import { asSessionId } from "../../../prototype/src/core/units.ts";
 import type { TraceSink } from "./trace.ts";
 import type { Store } from "../store/db.ts";
 import type { PermissionGate } from "../permissions/gate.ts";
@@ -322,6 +323,7 @@ export class RuntimeHost {
             cacheWriteTokens: event.cacheWriteTokens ?? null,
             costUsd: event.costUsd,
             decodeMs: event.decodeMs ?? null,
+            requestId: event.requestId ?? null,
           }).catch(() => {});
           break;
         }
@@ -349,6 +351,8 @@ export class RuntimeHost {
     if (h.lastCliRef === ref) return;
     h.lastCliRef = ref;
     this.store.setSessionCliRef(h.id, ref);
+    // WP-10：引用变化即推事件（resume-token 事件化），客户端免轮询 externalRef
+    this.emitStamped(h, { type: "session.ref", sessionId: h.id, ref });
   }
 
   /** 把翻译好的事件记进台账（stats 与状态机都在这一处，适配器不用管） */
@@ -409,6 +413,8 @@ export class RuntimeHost {
       }
       h.pendingSends.push({ text, loop });
       log.info("message queued (turn in flight)", { sessionId, queueDepth: h.pendingSends.length });
+      // WP-10：插话入队对客户端可见（steer.queued）
+      this.emitStamped(h, { type: "steer.queued", sessionId, queueDepth: h.pendingSends.length });
       return;
     }
 
@@ -508,6 +514,8 @@ export class RuntimeHost {
     const next = h.pendingSends.shift();
     if (next === undefined) return;
     log.info("dispatching queued message", { sessionId: h.id, remaining: h.pendingSends.length });
+    // WP-10：注入点事件化——前端据此把 pre/post-steer 的助手消息分行
+    this.emitStamped(h, { type: "steer.boundary", sessionId: h.id, text: next.text });
     this.dispatchSend(h, next.text, next.loop);
   }
 
@@ -549,6 +557,16 @@ export class RuntimeHost {
   }
 
   async shutdown(): Promise<void> {
+    // WP-10：会话终结时仍在排队的插话如实宣告未投递（上游渠道据此重试或告知用户）
+    for (const h of this.sessions.values()) {
+      if (h.pendingSends.length === 0) continue;
+      this.emitStamped(h, {
+        type: "steer.undelivered",
+        sessionId: h.id,
+        inputs: h.pendingSends.map((p) => p.text),
+      });
+      h.pendingSends.length = 0;
+    }
     for (const adapter of this.adapters.values()) {
       await adapter.disconnect().catch((err: unknown) => log.warn("adapter disconnect failed", {
         adapter: adapter.id,
@@ -556,5 +574,42 @@ export class RuntimeHost {
       }));
     }
     this.store.close();
+  }
+
+  // ---- 孤儿治理面（WP-10：cherry orphanSessionReclaim 语义的 daemon 版） ----
+
+  /**
+   * 列出可回收的落盘会话：非 live、超过 maxAgeMs、带 cli_ref（真孤儿）或不带（纯死行）。
+   * 轨迹文件永不删除——回收只动 state.db 的行。
+   */
+  gcCandidates(maxAgeMs: number): Array<{
+    id: SessionId;
+    runtimeId: RuntimeId;
+    title: string;
+    cliRef: string | null;
+    startedAt: number;
+  }> {
+    const out: Array<{ id: SessionId; runtimeId: RuntimeId; title: string; cliRef: string | null; startedAt: number }> = [];
+    for (const row of this.store.listSessions()) {
+      if (this.sessions.get(asSessionId(row.id))?.impl != null) continue; // 活着的不回收
+      if (Date.now() - row.startedAt < maxAgeMs) continue;
+      out.push({
+        id: asSessionId(row.id),
+        runtimeId: row.runtimeId as RuntimeId,
+        title: row.title,
+        cliRef: row.cliRef,
+        startedAt: row.startedAt,
+      });
+    }
+    return out;
+  }
+
+  /** 回收一个非 live 的落盘会话（行 + 消息）；轨迹文件保留 */
+  forgetSession(sessionId: SessionId): void {
+    const h = this.sessions.get(sessionId);
+    if (h?.impl != null) throw adapterError("session_live", "live session cannot be forgotten — cancel it first");
+    this.store.deleteSession(sessionId);
+    this.sessions.delete(sessionId);
+    log.info("session forgotten", { sessionId });
   }
 }

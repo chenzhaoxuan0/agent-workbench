@@ -101,6 +101,7 @@
 | `session.messages` | **已实现** | params `{sessionId}`；落盘的对话流（user/assistant），前端重载会话用 |
 | `session.trace` | **已实现** | params `{sessionId, afterSeq?}`；result 为 TraceRecord NDJSON 文本（跨日期落盘账本，WP-3）；`afterSeq` 游标只返回更大 seq 的行 |
 | `session.events.since` | **已实现** | params `{sessionId, afterSeq}`；result 为 `{seq, event}[]`——断线补拉（WP-2）；环内热路径直出，游标滑出环外自动回落落盘账本 |
+| `session.gc` / `session.forget` | **已实现** | 孤儿治理面（WP-10）：`gc` params `{maxAgeDays?=14}` 列非 live 落盘会话；`forget` params `{sessionId}` 删行+消息（轨迹保留） |
 | 自动化 / Ops / 记忆方法 | Phase 5–7 | 落地时在此表登记 schema |
 
 **为什么有 `daemon.stop`**：Windows 上跨进程 SIGTERM 不可投递（冒烟实证，`child.kill("SIGTERM")` 后子进程无动于衷）。程序化退出一律走协议；SIGINT/SIGTERM 处理器保留给终端 Ctrl+C 与 Unix。这是 Phase 0 的一个硬结论，后续 PTY / 子进程管理会反复遇到，处置口径一致：**能走协议的走协议，信号只当人肉兜底**。

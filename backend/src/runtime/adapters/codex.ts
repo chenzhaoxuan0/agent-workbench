@@ -78,6 +78,8 @@ interface SessionState {
   turnTexts: string[];
   /** 本轮 loop 参数（reasoning），send 时可覆盖 */
   loop: { reasoningLevel?: string };
+  /** usage 幂等键计数（WP-10） */
+  usageCount: number;
 }
 
 /** 一轮的终态聚合器：行内事件即时 sink，usage/failed 由终局行回填、exit 后收尾用 */
@@ -142,6 +144,7 @@ export class CodexAdapter implements ExecutorAdapter {
       child: null,
       turnTexts: [],
       loop: { reasoningLevel: req.reasoningLevel },
+      usageCount: 0,
     };
     this.sessions.set(state.sessionId, state);
 
@@ -174,6 +177,7 @@ export class CodexAdapter implements ExecutorAdapter {
       child: null,
       turnTexts: [],
       loop: {},
+      usageCount: 0,
     };
     this.sessions.set(sessionId, state);
     return {
@@ -340,6 +344,7 @@ export class CodexAdapter implements ExecutorAdapter {
         costUsd: 0, // 美元由 Phase 6 价目表统一估算
         model: "codex-default",
         decodeMs: undefined,
+        requestId: `codex:${state.threadId ?? "pending"}:${++state.usageCount}`,
       });
     }
 

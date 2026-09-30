@@ -101,6 +101,8 @@ interface AppServerSessionState {
   cumulative: { input: number; output: number; cacheRead: number; cacheWrite: number };
   /** toolCallId → server 反向请求 id（权限应答按原 id 回；"" = 反向请求未到） */
   readonly pendingPermissions: Map<string, string>;
+  /** usage 幂等键计数（WP-10） */
+  usageCount: number;
 }
 
 export class ZcodeAppServerTransport {
@@ -356,6 +358,7 @@ export class ZcodeAppServerTransport {
       costUsd: 0,
       model: st.model ?? "zcode-default",
       decodeMs: num(turnPayload["duration"]),
+      requestId: `zcode:${st.sessionId}:${++st.usageCount}`,
     });
   }
 
@@ -466,6 +469,7 @@ export class ZcodeAppServerTransport {
       ready: Promise.resolve(),
       cumulative: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       pendingPermissions: new Map(),
+      usageCount: 0,
     };
     this.sessions.set(nativeId, st);
     return this.makeAppServerSession(st);
@@ -548,6 +552,8 @@ interface PrintSessionState {
   running: boolean;
   cancelled: boolean;
   child: ChildProcess | null;
+  /** usage 幂等键计数（WP-10） */
+  usageCount: number;
 }
 
 interface CliTurnResult {
@@ -602,6 +608,7 @@ class PrintTransport {
       running: false,
       cancelled: false,
       child: null,
+      usageCount: 0,
     };
     this.sessions.set(sessionId, state);
     return this.start(state, { unitId: "unknown" as never, unitName: "", rootPath: state.rootPath, prompt: "", model: null });
@@ -680,6 +687,7 @@ class PrintTransport {
         cacheWriteTokens: u.cacheCreationTokens,
         costUsd: 0,
         model: "zcode-default",
+        requestId: `zcode:${sessionId}:${++state.usageCount}`,
         decodeMs: r.duration_ms,
       });
     }
@@ -786,6 +794,7 @@ export class ZcodeAdapter implements ExecutorAdapter {
       running: false,
       cancelled: false,
       child: null,
+      usageCount: 0,
     };
     if (req.model !== null) {
       log.warn("zcode -p path cannot select a model; using CLI default", { model: req.model });
@@ -807,6 +816,7 @@ export class ZcodeAdapter implements ExecutorAdapter {
       ready: Promise.resolve(),
       cumulative: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       pendingPermissions: new Map(),
+      usageCount: 0,
     };
     const attached = this.appServer.reattach(state, ref);
     return attached;

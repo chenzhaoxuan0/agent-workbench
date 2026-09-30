@@ -160,6 +160,12 @@ export class Store {
     return row === undefined ? undefined : this.toRow(row);
   }
 
+  /** 删除一个会话行及其消息（WP-10 孤儿回收的 forget 面）；轨迹文件不动 */
+  deleteSession(id: string): void {
+    this.db.prepare(`DELETE FROM messages WHERE session_id = ?`).run(id);
+    this.db.prepare(`DELETE FROM sessions WHERE id = ?`).run(id);
+  }
+
   listSessions(): SessionRow[] {
     const rows = this.db.prepare(`SELECT * FROM sessions ORDER BY started_at DESC`).all() as Array<Record<string, unknown>>;
     return rows.map((r) => this.toRow(r));
