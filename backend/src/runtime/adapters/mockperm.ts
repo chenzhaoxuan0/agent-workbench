@@ -49,6 +49,8 @@ export class MockPermAdapter implements ExecutorAdapter {
     mcp: false,
     usage: true,
     multimodal: false,
+    streaming: "realtime", // 定时器逐条推事件，是名副其实的实时
+    steering: "turn-end", // host pendingSends：轮落定后随下一轮发出
   };
 
   private readonly sessions = new Map<string, MockSession>();

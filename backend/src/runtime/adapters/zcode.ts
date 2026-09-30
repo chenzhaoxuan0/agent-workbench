@@ -705,18 +705,24 @@ export class ZcodeAdapter implements ExecutorAdapter {
     { id: "GLM-5.3" as ModelId, displayName: "GLM-5.3" },
     { id: "GLM-5-Turbo" as ModelId, displayName: "GLM-5 Turbo" },
   ];
-  readonly capabilities: RuntimeCapabilities = {
-    resumeSession: true,
-    fileDiff: false,
-    terminal: false,
-    permissions: true, // app-server 反向权限流（fork 补丁后）；降级到 -p 时实际不触发
-    subagents: false,
-    worktrees: false,
-    sandbox: true,
-    mcp: true,
-    usage: true,
-    multimodal: true,
-  };
+  // 能力声明跟传输状态走（docs/08 WP-4）：app-server = 真流式；print 回退 = 批量。
+  // 注册表在 probe 前读到的快照是 app-server 档——probe 返回值才是权威。
+  get capabilities(): RuntimeCapabilities {
+    return {
+      resumeSession: true,
+      fileDiff: false,
+      terminal: false,
+      permissions: true, // app-server 反向权限流（fork 补丁后）；降级到 -p 时实际不触发
+      subagents: false,
+      worktrees: false,
+      sandbox: true,
+      mcp: true,
+      usage: true,
+      multimodal: true,
+      streaming: this.transport === "app-server" ? "realtime" : "batch",
+      steering: "turn-end", // mid-turn 的物理条件具备（常驻进程），实现前如实报 turn-end
+    };
+  }
 
   /** 进程级传输状态：app-server 起不动时降级到 print，本次 daemon 生命周期内不再回头 */
   private transport: "app-server" | "print" = "app-server";

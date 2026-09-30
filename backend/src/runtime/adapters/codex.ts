@@ -99,6 +99,9 @@ export class CodexAdapter implements ExecutorAdapter {
     mcp: true,
     usage: true,
     multimodal: true,
+    // 每轮 spawn 新进程 + 批量翻译（WP-1 前的事实）；WP-1 内联翻译后改 realtime
+    streaming: "batch",
+    steering: "turn-end",
   };
 
   private readonly sessions = new Map<string, SessionState>();

@@ -68,6 +68,15 @@ const CAP_ALL: RuntimeCapabilities = {
   mcp: true,
   usage: true,
   multimodal: true,
+  streaming: "realtime",
+  steering: "mid-turn",
+};
+
+/** 每轮 spawn 新进程的执行器画像：批量流式 + 仅轮间 steer（docs/08 WP-4 口径） */
+const CAP_PER_TURN_PROCESS: RuntimeCapabilities = {
+  ...CAP_ALL,
+  streaming: "batch",
+  steering: "turn-end",
 };
 
 const m = (v: string) => asModelId(v);
@@ -109,7 +118,7 @@ const RUNTIME_SPECS: readonly RuntimeSpec[] = [
     transport: "jsonrpc",
     endpoint: "claude",
     requiresCwd: true,
-    capabilities: { ...CAP_ALL, multimodal: false, worktrees: false },
+    capabilities: { ...CAP_PER_TURN_PROCESS, multimodal: false, worktrees: false },
     models: [m("claude-opus-5-5"), m("claude-sonnet-5"), m("claude-haiku-4-5")],
     installed: true,
   },
@@ -123,7 +132,7 @@ const RUNTIME_SPECS: readonly RuntimeSpec[] = [
     transport: "jsonrpc",
     endpoint: "codex app-server",
     requiresCwd: true,
-    capabilities: { ...CAP_ALL, multimodal: false, subagents: false },
+    capabilities: { ...CAP_PER_TURN_PROCESS, multimodal: false, subagents: false },
     models: [m("gpt-6-astra"), m("gpt-5-1-codex"), m("gpt-5-6-luna")],
     installed: true,
   },
@@ -138,7 +147,7 @@ const RUNTIME_SPECS: readonly RuntimeSpec[] = [
     endpoint: "opencode serve",
     requiresCwd: true,
     capabilities: {
-      ...CAP_ALL,
+      ...CAP_PER_TURN_PROCESS,
       fileDiff: false,
       permissions: false,
       multimodal: false,
@@ -159,7 +168,7 @@ const RUNTIME_SPECS: readonly RuntimeSpec[] = [
     endpoint: "pi --mode rpc",
     requiresCwd: true,
     capabilities: {
-      ...CAP_ALL,
+      ...CAP_PER_TURN_PROCESS,
       terminal: false,
       permissions: false,
       multimodal: false,

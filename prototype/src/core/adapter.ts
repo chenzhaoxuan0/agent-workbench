@@ -69,6 +69,19 @@ export interface RuntimeCapabilities {
   readonly usage: boolean;
   /** 是否支持语音/多模态输入 */
   readonly multimodal: boolean;
+  /**
+   * 流式真实性（docs/08 WP-4）：realtime = 事件逐条实时到达（UI 可渲染打字机）；
+   * batch = 轮末批量到达（UI 不渲染假光标，delta 只是重放）。
+   * 每轮 spawn 新进程的执行器（claude -p / codex exec）即使协议带 delta，
+   * 在批量翻译的实现下也是 batch —— 声明跟实现走，不跟协议走。
+   */
+  readonly streaming: "realtime" | "batch";
+  /**
+   * steering 能到的边界（docs/08 WP-4）：mid-turn = turn 进行中可注入；
+   * turn-end = 只能排队到本轮落定后随下一轮发出；none = 完全不支持。
+   * 常驻协议进程（zcode app-server）具备 mid-turn 的物理条件，未实现前仍如实报 turn-end。
+   */
+  readonly steering: "mid-turn" | "turn-end" | "none";
 }
 
 /** 全能力，用于对照。适配器应显式声明自己缺什么，而不是全给 true。 */
@@ -83,6 +96,8 @@ export const FULL_CAPABILITIES: RuntimeCapabilities = {
   mcp: true,
   usage: true,
   multimodal: true,
+  streaming: "realtime",
+  steering: "mid-turn",
 };
 
 // ---------------------------------------------------------------------------
