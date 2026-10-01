@@ -5,7 +5,8 @@
  * （冒烟脚本、未来的前端拉起、开机自启），cwd 不可信。
  */
 
-import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -35,7 +36,11 @@ export interface DaemonConfig {
   /** 监听地址。默认回环 —— daemon 能 spawn 任意进程，不对外网开门 */
   readonly host: string;
   readonly port: number;
-  /** daemon 工作目录：state.db / traces/ / *.jsonl 都落这里（.waku 语义） */
+  /**
+   * daemon 工作目录（集中存储家，docs/08 存储归位）：
+   * 默认 ~/.agent-workbench —— 会话/轨迹/用量/权限/cron/记忆/bot 索引全部收敛在此；
+   * bot 的身份文件（AGENTS.md / bot.json）不在这里，跟各自的工作目录走。
+   */
   readonly homeDir: string;
   readonly logLevel: LogLevel;
   readonly version: string;
@@ -47,6 +52,33 @@ export interface DaemonConfig {
   readonly token: string | null;
 }
 
+/** 旧默认家（backend/.waku）——集中存储迁移的源（docs/08 存储归位） */
+export const legacyDefaultHome = path.join(backendRoot, ".waku");
+
+/**
+ * 旧家平迁（docs/08 存储归位）：默认 home 改为 ~/.agent-workbench 后，首次启动把
+ * backend/.waku 的运行数据整体搬过来（幂等：新家已有 state.db 即跳过）。
+ * 必须在 loadConfig 的 token 生成之前跑——否则新 token 先落盘、旧 token 再覆盖，
+ * 内存与磁盘就分叉了（实测踩过：迁移后用盘上 token 连不上，401）。
+ * bot 身份文件不在迁移范围——它们跟各自的工作目录走。
+ */
+function migrateLegacyHome(newHome: string, legacyHome: string): void {
+  if (existsSync(path.join(newHome, "state.db"))) return;
+  if (!existsSync(path.join(legacyHome, "state.db"))) return;
+  mkdirSync(newHome, { recursive: true });
+  const items = ["state.db", "state.db-wal", "state.db-shm", "traces", "usage.jsonl", "eval_runs.jsonl", "token", "memory", "compare"];
+  for (const item of items) {
+    const from = path.join(legacyHome, item);
+    if (!existsSync(from)) continue;
+    try {
+      cpSync(from, path.join(newHome, item), { recursive: true });
+    } catch (err) {
+      console.warn(`[config] legacy migrate item failed: ${item}`, err);
+    }
+  }
+  console.info(`[config] legacy home migrated → centralized home: ${legacyHome} → ${newHome}`);
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): DaemonConfig {
   const rawLevel = env["AGENT_WORKBENCH_LOG_LEVEL"];
   const logLevel =
@@ -54,7 +86,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): DaemonConfig {
       ? (rawLevel as LogLevel)
       : "info";
 
-  const homeDir = env["AGENT_WORKBENCH_HOME"] ?? path.join(backendRoot, ".waku");
+  const homeDir = env["AGENT_WORKBENCH_HOME"]
+    ?? path.join(os.homedir(), ".agent-workbench");
+  // 平迁先于 token 生成/读取——顺序错了会出现"内存 token 与盘上 token 分叉"（实测踩过）
+  migrateLegacyHome(homeDir, legacyDefaultHome);
   const insecure = env["AGENT_WORKBENCH_INSECURE"] === "1";
   const explicit = env["AGENT_WORKBENCH_TOKEN"];
   let token: string | null;

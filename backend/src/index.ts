@@ -9,6 +9,7 @@ import { mkdirSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage } from "node:http";
+import path from "node:path";
 import { loadConfig } from "./config.ts";
 import { healthPayload, isLocalOrigin, isLoopbackAddr, startHttp, type HttpRoute } from "./httpd.ts";
 import { log, setLogLevel } from "./log.ts";
@@ -37,6 +38,8 @@ const config = loadConfig();
 setLogLevel(config.logLevel);
 
 mkdirSync(config.homeDir, { recursive: true });
+
+
 
 // ---- 服务与执行器（先建好，REST 路由要引用）---------------------------------
 
