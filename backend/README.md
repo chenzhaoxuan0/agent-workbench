@@ -38,7 +38,7 @@ pnpm smoke:phase1   # …逐 Phase 到 smoke:phase7（回归基准线，改动�
 |---|---|---|
 | `AGENT_WORKBENCH_HOST` | `127.0.0.1` | 监听地址（只认回环，daemon 能 spawn 进程） |
 | `AGENT_WORKBENCH_PORT` | `5181` | HTTP + WS 端口（前端 dev server 是 5180） |
-| `AGENT_WORKBENCH_HOME` | `<backend>/.waku` | daemon 工作目录（state.db / traces / jsonl 落这里） |
+| `AGENT_WORKBENCH_HOME` | `~/.agent-workbench` | daemon 集中存储家（state.db / traces / usage / token 落这里）；bot 身份文件不在其中，跟各自工作目录走。旧 backend/.waku 首启自动平迁 |
 | `AGENT_WORKBENCH_LOG_LEVEL` | `info` | debug / info / warn / error |
 
 ## 执行器现状（诚实清单）
