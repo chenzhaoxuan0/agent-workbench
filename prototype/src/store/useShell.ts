@@ -135,6 +135,10 @@ interface ShellState {
   mainView: MainView;
   settingsOpen: boolean;
   settingsSection: SettingsSectionId;
+  /** 新建 bot 对话框（AGENTS.md 岗位说明书）。放 store 而不是 Sidebar 局部状态：
+   *  「添加 bot」的按钮收进了侧栏 ⋯ 之后，单元区的空态要能当第二个入口，
+   *  两处共用一个开关。 */
+  addBotOpen: boolean;
   /** 会话内视图（dsh view-selection：对话 / 轨迹 / Ops 与 Chat 并列的页签） */
   conversationView: ConversationView;
 
@@ -153,6 +157,8 @@ interface ShellState {
   setConversationView: (v: ConversationView) => void;
 
   setCommandOpen: (open: boolean) => void;
+  openAddBot: () => void;
+  closeAddBot: () => void;
 }
 
 export const useShell = create<ShellState>((set, get) => ({
@@ -166,6 +172,7 @@ export const useShell = create<ShellState>((set, get) => ({
   settingsOpen: false,
   settingsSection: "general",
   conversationView: "chat",
+  addBotOpen: false,
 
   setMainView: (mainView) => set({ mainView }),
 
@@ -195,6 +202,9 @@ export const useShell = create<ShellState>((set, get) => ({
   setTerminalHeight: (terminalHeight) => set({ terminalHeight }),
 
   setCommandOpen: (commandOpen) => set({ commandOpen }),
+
+  openAddBot: () => set({ addBotOpen: true }),
+  closeAddBot: () => set({ addBotOpen: false }),
 }));
 
 // ---------------------------------------------------------------------------
@@ -237,6 +247,7 @@ export function bindShellShortcuts(): () => void {
     if (e.key === "Escape") {
       const s = useShell.getState();
       if (s.commandOpen) s.setCommandOpen(false);
+      else if (s.addBotOpen) s.closeAddBot();
       else if (s.settingsOpen) s.closeSettings();
       return;
     }

@@ -29,7 +29,14 @@ interface PickerRow {
   readonly spec: ModelSpec;
 }
 
-export function RuntimePicker() {
+/**
+ * 执行器 + 模型面板 —— 只渲染双栏弹层内容，不带触发器。
+ *
+ * 抽出来给 RunConfigMenu 的 ⋯ 面板复用：composer 里它可以是绝对定位的下拉，
+ * 也可以就地展开成手风琴段。**同一份 rail / 搜索 / 键盘导航逻辑**，
+ * 不做第二套实现。
+ */
+export function RuntimePanel({ onDone }: { onDone?: () => void }) {
   const runtimes = useWorkbench((s) => s.runtimes);
   // 已停用的执行器不出现在 rail / 列表（T3：Disabled 实例仍列在设置里，但选择器不出现）
   const runtimePrefs = useWorkbench((s) => s.runtimePrefs);
@@ -39,39 +46,14 @@ export function RuntimePicker() {
   const modelPrefsMap = useWorkbench((s) => s.modelPrefs);
   const apply = useWorkbench((s) => s.applyModelPrefs);
 
-  const [open, setOpen] = useState(false);
   const [rail, setRail] = useState<Rail>(activeId);
   const [q, setQ] = useState("");
   const [cursor, setCursor] = useState(0);
-  const ref = useRef<HTMLDivElement>(null);
 
-  const active = runtimes.find((r) => r.id === activeId);
   const activeModelId = useWorkbench((s) => s.runtimeModels[s.activeRuntimeId] ?? s.runtimes.find((r) => r.id === s.activeRuntimeId)?.defaultModel);
 
-  // 打开时归位：rail 落到当前执行器、清空搜索
-  useEffect(() => {
-    if (open) {
-      setRail(activeId);
-      setQ("");
-      setCursor(0);
-    }
-  }, [open, activeId]);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
+  // 切换执行器后 rail 跟着走（首挂载由 useState 的初值负责）
+  useEffect(() => setRail(activeId), [activeId]);
 
   // 当前 rail 的行：★ = 跨执行器收藏；执行器 = 它的有效清单（收藏排前）
   const rows = useMemo<readonly PickerRow[]>(() => {
@@ -106,7 +88,7 @@ export function RuntimePicker() {
     if (row.runtime.state.status === "not_installed") return;
     if (row.runtime.id !== s.activeRuntimeId) s.selectRuntime(row.runtime.id);
     s.selectModel(row.spec.id);
-    setOpen(false);
+    onDone?.();
   };
 
   const toggleFavorite = (row: PickerRow) =>
@@ -116,6 +98,135 @@ export function RuntimePicker() {
         ? p.favoriteModels.filter((x) => x !== row.spec.id)
         : [...p.favoriteModels, row.spec.id],
     })]);
+
+  return (
+    <div
+      role="dialog"
+      aria-label="选择执行器与模型"
+      onKeyDown={(e) => {
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          setCursor((c) => Math.min(filtered.length - 1, c + 1));
+        } else if (e.key === "ArrowUp") {
+          e.preventDefault();
+          setCursor((c) => Math.max(0, c - 1));
+        } else if (e.key === "Enter") {
+          e.preventDefault();
+          const row = filtered[cursor];
+          if (row) pick(row);
+        }
+      }}
+      className="flex h-[346px] w-full overflow-hidden rounded-card border border-line bg-canvas"
+    >
+      {/* 左 rail：★ 收藏视图 + 执行器图标（T3 的 ModelPickerSidebar） */}
+      <div className="flex w-11 shrink-0 flex-col items-center gap-1 border-r border-line-soft bg-rail py-2">
+        <RailButton selected={rail === "favorites"} title="收藏的模型" onClick={() => setRail("favorites")}>
+          <Star size={16} className={cn(rail === "favorites" && "fill-current")} />
+        </RailButton>
+        <span className="my-0.5 h-px w-6 bg-line" aria-hidden />
+        {enabledRuntimes.map((r) => (
+          <RailButton
+            key={r.id}
+            selected={rail === r.id}
+            dimmed={r.state.status === "not_installed"}
+            title={`${r.presentation.displayName} · 可选 ${visibleModelsFor(useWorkbench.getState(), r.id).length} 个模型`}
+            onClick={() => setRail(r.id)}
+          >
+            <span
+              className="flex h-5 w-5 items-center justify-center rounded text-caption font-medium text-white"
+              style={{ background: r.presentation.accent }}
+              aria-hidden
+            >
+              {r.presentation.glyph}
+            </span>
+          </RailButton>
+        ))}
+      </div>
+
+      {/* 右区：搜索 + 模型列表 + 设置入口 */}
+      <div className="flex min-w-0 flex-1 flex-col">
+        <div className="px-2 pt-2">
+          <div className="flex h-7 items-center gap-1.5 border-b border-line-soft px-1 pb-1.5 transition-colors focus-within:border-teal">
+            <Search size={12} className="shrink-0 text-ash" />
+            <input
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="搜索模型…"
+              aria-label="搜索模型"
+              className="min-w-0 flex-1 bg-transparent text-body-sm text-ink outline-none placeholder:text-ash"
+            />
+          </div>
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto px-1 py-1">
+          {filtered.length === 0 ? (
+            <p className="px-3 py-6 text-center text-body-sm text-ash">
+              {rail === "favorites" ? "还没有收藏的模型 —— 列表行右侧的星标可以收藏" : "没有匹配的模型"}
+            </p>
+          ) : (
+            filtered.map((row, i) => {
+              const fav = prefsOf(modelPrefsMap, row.runtime.id).favoriteModels.includes(row.spec.id);
+              const selected = row.runtime.id === activeId && row.spec.id === activeModelId;
+              return (
+                <ModelRow
+                  key={`${row.runtime.id}:${row.spec.id}`}
+                  row={row}
+                  selected={selected}
+                  fav={fav}
+                  highlighted={i === cursor}
+                  showRuntime={rail === "favorites"}
+                  onHover={() => setCursor(i)}
+                  onPick={() => pick(row)}
+                  onToggleFavorite={() => toggleFavorite(row)}
+                />
+              );
+            })
+          )}
+        </div>
+
+        <div className="shrink-0 border-t border-line-soft px-2.5 py-2">
+          <p className="text-caption text-ash">切换只影响下一条消息</p>
+          <button
+            onClick={() => {
+              useShell.getState().openSettings("models");
+              onDone?.();
+            }}
+            className="mt-0.5 text-caption text-teal hover:underline"
+          >
+            打开模型设置
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function RuntimePicker() {
+  const activeId = useWorkbench((s) => s.activeRuntimeId);
+  const activeModels = useWorkbench(selectVisibleModels(activeId));
+  const runtimes = useWorkbench((s) => s.runtimes);
+
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  const active = runtimes.find((r) => r.id === activeId);
+  const activeModelId = useWorkbench((s) => s.runtimeModels[s.activeRuntimeId] ?? s.runtimes.find((r) => r.id === s.activeRuntimeId)?.defaultModel);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
 
   const activeModel = active ? activeModels.find((m) => m.id === (activeModelId ?? "")) : undefined;
   const label = active ? (activeModel?.displayName ?? "未选模型") : "执行器";
@@ -152,107 +263,8 @@ export function RuntimePicker() {
       </button>
 
       {open && (
-        <div
-          role="dialog"
-          aria-label="选择执行器与模型"
-          onKeyDown={(e) => {
-            if (e.key === "ArrowDown") {
-              e.preventDefault();
-              setCursor((c) => Math.min(filtered.length - 1, c + 1));
-            } else if (e.key === "ArrowUp") {
-              e.preventDefault();
-              setCursor((c) => Math.max(0, c - 1));
-            } else if (e.key === "Enter") {
-              e.preventDefault();
-              const row = filtered[cursor];
-              if (row) pick(row);
-            }
-          }}
-          className="absolute bottom-full left-0 z-40 mb-1.5 flex h-[346px] w-[360px] overflow-hidden rounded-card border border-line bg-canvas shadow-subtle"
-        >
-          {/* 左 rail：★ 收藏视图 + 执行器图标（T3 的 ModelPickerSidebar） */}
-          <div className="flex w-11 shrink-0 flex-col items-center gap-1 border-r border-line-soft bg-rail py-2">
-            <RailButton
-              selected={rail === "favorites"}
-              title="收藏的模型"
-              onClick={() => setRail("favorites")}
-            >
-              <Star size={16} className={cn(rail === "favorites" && "fill-current")} />
-            </RailButton>
-            <span className="my-0.5 h-px w-6 bg-line" aria-hidden />
-            {enabledRuntimes.map((r) => (
-              <RailButton
-                key={r.id}
-                selected={rail === r.id}
-                dimmed={r.state.status === "not_installed"}
-                title={`${r.presentation.displayName} · 可选 ${visibleModelsFor(useWorkbench.getState(), r.id).length} 个模型`}
-                onClick={() => setRail(r.id)}
-              >
-                <span
-                  className="flex h-5 w-5 items-center justify-center rounded text-caption font-medium text-white"
-                  style={{ background: r.presentation.accent }}
-                  aria-hidden
-                >
-                  {r.presentation.glyph}
-                </span>
-              </RailButton>
-            ))}
-          </div>
-
-          {/* 右区：搜索 + 模型列表 + 设置入口 */}
-          <div className="flex min-w-0 flex-1 flex-col">
-            <div className="px-2 pt-2">
-              <div className="flex h-7 items-center gap-1.5 border-b border-line-soft px-1 pb-1.5 transition-colors focus-within:border-teal">
-                <Search size={12} className="shrink-0 text-ash" />
-                <input
-                  value={q}
-                  onChange={(e) => setQ(e.target.value)}
-                  placeholder="搜索模型…"
-                  aria-label="搜索模型"
-                  className="min-w-0 flex-1 bg-transparent text-body-sm text-ink outline-none placeholder:text-ash"
-                />
-              </div>
-            </div>
-
-            <div className="min-h-0 flex-1 overflow-y-auto px-1 py-1">
-              {filtered.length === 0 ? (
-                <p className="px-3 py-6 text-center text-body-sm text-ash">
-                  {rail === "favorites" ? "还没有收藏的模型 —— 列表行右侧的星标可以收藏" : "没有匹配的模型"}
-                </p>
-              ) : (
-                filtered.map((row, i) => {
-                  const fav = prefsOf(modelPrefsMap, row.runtime.id).favoriteModels.includes(row.spec.id);
-                  const selected = row.runtime.id === activeId && row.spec.id === activeModelId;
-                  return (
-                    <ModelRow
-                      key={`${row.runtime.id}:${row.spec.id}`}
-                      row={row}
-                      selected={selected}
-                      fav={fav}
-                      highlighted={i === cursor}
-                      showRuntime={rail === "favorites"}
-                      onHover={() => setCursor(i)}
-                      onPick={() => pick(row)}
-                      onToggleFavorite={() => toggleFavorite(row)}
-                    />
-                  );
-                })
-              )}
-            </div>
-
-            <div className="shrink-0 border-t border-line-soft px-2.5 py-2">
-              <p className="text-caption text-ash">切换只影响下一条消息</p>
-              <button
-                onClick={() => {
-                  useShell.getState().openSettings("models");
-                  setOpen(false);
-                }}
-                className="mt-0.5 text-caption text-teal hover:underline"
-              >
-                打开模型设置
-              </button>
-            </div>
-          </div>
+        <div className="absolute bottom-full left-0 z-40 mb-1.5 w-[360px] shadow-subtle">
+          <RuntimePanel onDone={() => setOpen(false)} />
         </div>
       )}
     </div>

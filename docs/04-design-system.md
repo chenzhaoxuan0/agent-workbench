@@ -1,17 +1,29 @@
 # 设计系统落地
 
-> 把 `DESIGN.md`（Perplexity 风格参考）应用到本项目的完整记录。
-> **重点是第八节：我在哪些地方偏离了 DESIGN.md，以及为什么。**
-> 严格遵守的部分不再逐条罗列。
+> ## ⚠️ 配色部分已过期（2026-10-02）
+>
+> 本文记录的是**上一轮**换皮的完整过程：从深色多品牌色 → 浅色羊皮纸 + 单青。
+> 那一轮的 `DESIGN.md`（Perplexity 风格参考）已作废。
+>
+> **当前配色规范以 [`DESIGN.md`](../DESIGN.md) 为准**（中性灰阶 + 单一青色）。
+> 本文里凡是出现 `#faf8f5` / `#fdfbfa` / `#f2efe9` / `#d1d1cd` / `#e7e4de` /
+> `#27251e` / `#72706b` / `#92918b` / 「羊皮纸」字样的地方，**都是历史记录，不是现行规范**。
+>
+> 但本文的**决策内容仍然有效**，尤其是：
+> - 第八节「我偏离 DESIGN.md 的地方」—— 那些判断依据的是信息层级，不是具体色值
+> - 各组件映射表 —— 结构没变，只是色值换了
+> - 圆角四档、字重锁死 400/500、投影只有一道 —— 这三条**至今仍然成立**
+>
+> 只想知道「现在该用什么色」，直接看 `DESIGN.md` 和 `src/styles.css` 的 `@theme`。
 
 ---
 
 ## 一、总体气质
 
-原型的深色 + 多品牌色，与 DESIGN.md 的浅色羊皮纸 + 单青强调几乎没有交集。
-这是一次彻底重构，不是换配色。
+> 以下为**历史记录**：原型的深色 + 多品牌色，与当时的 DESIGN.md（浅色羊皮纸 + 单青强调）
+> 几乎没有交集。那是一次彻底重构，不是换配色。
 
-| | 改前 | 改后 |
+| | 改前 | 改后（已再次作废） |
 |---|---|---|
 | 画布 | `#0b0c0f` 近黑 | `#faf8f5` 羊皮纸 |
 | 强调色 | 6 种品牌色 | 1 种青 `#016a71` |
@@ -26,17 +38,23 @@
 
 全部集中在 `prototype/src/styles.css` 的 `@theme`，Tailwind v4 直接生成工具类。
 
+**当前值（2026-10 换皮后）**：
+
 ```
-画布   canvas  #faf8f5    侧栏 rail #f2efe9    卡片 card #fdfbfa
-发丝线 line   #d1d1cd    浅分隔 line-soft #e7e4de
-文字   ink #27251e   graphite #72706b   ash #92918b
-强调   teal #016a71  teal-tint #e7efef  teal-edge #a9c6c8
+画布   canvas  #fafafa    侧栏 rail #f4f4f4    卡片 card #ffffff
+发丝线 line   #e4e4e4    浅分隔 line-soft #f0f0f0    通用悬停 surface-hover #f4f4f4
+文字   ink #0a0a0a   graphite #525252   ash #8a8a8a
+强调   teal #016a71  teal-tint #e6f0f0  teal-edge #a9c6c8
 语义   gain #2f6b4f（diff +）  loss #9a4a3c（diff − / 错误）
 ```
 
+> 上一版是 `canvas #faf8f5 / rail #f2efe9 / card #fdfbfa / line #d1d1cd /
+> line-soft #e7e4de / ink #27251e / graphite #72706b / ash #92918b / teal-tint #e7efef`。
+> 青色 `#016a71` 是唯一没改的。
+
 圆角严格四档：`btn 6px` / `input 12px` / `card 16px` / `chip 9999px`。
 
-**投影只有一道**：`--shadow-subtle: 0 1px 2px rgba(0,0,0,.08)`，只给卡片用。
+**投影只有一道**：`--shadow-subtle: 0 1px 2px rgb(0 0 0 / .06)`，只给卡片用。
 其余层级全靠背景色差 + 1px 发丝线区分。
 
 ---

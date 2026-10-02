@@ -39,9 +39,62 @@ function modeIcon(id: PermissionMode): LucideIcon {
   }
 }
 
-export function PermissionModePicker() {
+/**
+ * 权限模式面板 —— 只渲染选项列表，不带触发器、不带浮层定位。
+ *
+ * 抽出来是为了让同一个选项集有两种宿主：
+ * - `PermissionModePicker`：composer 里原来的下拉（绝对定位浮层）
+ * - `RunConfigMenu`：composer 右侧 ⋯ 面板里的手风琴段（就地展开）
+ * 两种宿主共用一份选项渲染，避免两处实现分叉。
+ */
+export function PermissionModePanel({ onDone }: { onDone?: () => void }) {
   const mode = useWorkbench((s) => s.permissionMode);
   const setMode = useWorkbench((s) => s.setPermissionMode);
+
+  return (
+    <div role="listbox" aria-label="权限模式">
+      {PERMISSION_MODES.map((m) => {
+        const active = m.id === mode;
+        const Icon = modeIcon(m.id);
+        return (
+          <button
+            key={m.id}
+            role="option"
+            aria-selected={active}
+            onClick={() => {
+              setMode(m.id as PermissionMode);
+              onDone?.();
+            }}
+            className={cn(
+              "flex min-h-[52px] w-full items-start gap-3 py-2 pl-2 pr-8 text-left",
+              active ? "bg-teal-tint" : "hover:bg-line-soft",
+            )}
+          >
+            <Icon
+              size={17}
+              className={cn("mt-0.5 shrink-0", m.danger ? "text-loss" : "text-ink")}
+            />
+            <span className="flex min-w-0 flex-col gap-0.5">
+              <span
+                className={cn(
+                  "truncate text-body-sm",
+                  m.danger ? "font-medium text-loss" : active ? "font-medium text-ink" : "text-graphite",
+                )}
+              >
+                {m.label}
+              </span>
+              <span className="line-clamp-2 text-caption leading-relaxed text-ash">{m.desc}</span>
+            </span>
+            {active && <Check size={12} className="ml-auto mt-1 shrink-0 text-teal" />}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+export function PermissionModePicker() {
+  const mode = useWorkbench((s) => s.permissionMode);
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -86,46 +139,8 @@ export function PermissionModePicker() {
       </button>
 
       {open && (
-        <div
-          role="listbox"
-          className="absolute bottom-full right-0 z-40 mb-1.5 w-64 overflow-hidden rounded-input border border-line bg-canvas py-1"
-        >
-          {PERMISSION_MODES.map((m) => {
-            const active = m.id === mode;
-            const Icon = modeIcon(m.id);
-            return (
-              <button
-                key={m.id}
-                role="option"
-                aria-selected={active}
-                onClick={() => {
-                  setMode(m.id as PermissionMode);
-                  setOpen(false);
-                }}
-                className={cn(
-                  "flex min-h-[52px] w-full items-start gap-3 py-2 pl-2 pr-8 text-left",
-                  active ? "bg-teal-tint" : "hover:bg-line-soft",
-                )}
-              >
-                <Icon
-                  size={17}
-                  className={cn("mt-0.5 shrink-0", m.danger ? "text-loss" : "text-ink")}
-                />
-                <span className="flex min-w-0 flex-col gap-0.5">
-                  <span
-                    className={cn(
-                      "truncate text-body-sm",
-                      m.danger ? "font-medium text-loss" : active ? "font-medium text-ink" : "text-graphite",
-                    )}
-                  >
-                    {m.label}
-                  </span>
-                  <span className="line-clamp-2 text-caption leading-relaxed text-ash">{m.desc}</span>
-                </span>
-                {active && <Check size={12} className="ml-auto mt-1 shrink-0 text-teal" />}
-              </button>
-            );
-          })}
+        <div className="absolute bottom-full right-0 z-40 mb-1.5 w-64 overflow-hidden rounded-input border border-line bg-canvas py-1">
+          <PermissionModePanel onDone={() => setOpen(false)} />
         </div>
       )}
     </div>

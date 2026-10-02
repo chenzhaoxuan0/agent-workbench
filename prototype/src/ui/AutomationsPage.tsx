@@ -311,7 +311,7 @@ function EmptyPanel({
             {TEMPLATES.map((t) => (
               <button
                 key={t.name}
-                className="flex flex-col gap-1.5 rounded-card bg-card px-4 py-3 text-left shadow-subtle hover:bg-[#f7f4f0]"
+                className="flex flex-col gap-1.5 rounded-card bg-card px-4 py-3 text-left shadow-subtle hover:bg-surface-hover"
               >
                 <span className="text-body-sm font-medium text-ink">{t.name}</span>
                 <span className="text-caption text-graphite">{t.desc}</span>

@@ -2,9 +2,7 @@ import { useEffect, useRef } from "react";
 import { ArrowUp, Square } from "lucide-react";
 import { useWorkbench, selectActiveUnit } from "../store/useWorkbench.ts";
 import { AttachmentStrip, ComposerAttach } from "./ComposerAttach.tsx";
-import { PermissionModePicker } from "./PermissionModePicker.tsx";
-import { LoopParamsPicker } from "./LoopParamsPicker.tsx";
-import { RuntimePicker } from "./RuntimePicker.tsx";
+import { RunConfigMenu } from "./RunConfigMenu.tsx";
 import { StatsDock } from "./StatsDock.tsx";
 import { cn } from "./cn.ts";
 
@@ -37,10 +35,13 @@ export function Composer() {
     void run(v);
   };
 
-  const placeholder =
-    unit?.kind === "bot"
+  // ⚠ unit 为空时不能走 `${unit?.name}` —— 模板串会把 undefined 印成字面量
+  //   "对「undefined」下任务"，那是数据缺失被当成字符串渲染了，不是占位符。
+  const placeholder = !unit
+    ? "先选一个工作单元，或新建一个 bot…"
+    : unit.kind === "bot"
       ? `给「${unit.name}」派活…（会先读它的 AGENTS.md 当岗位说明书）`
-      : `对「${unit?.name}」下任务…（项目模式，可开 worktree 隔离）`;
+      : `对「${unit.name}」下任务…（项目模式，可开 worktree 隔离）`;
 
   return (
     <div className="shrink-0 border-t border-line bg-rail">
@@ -77,9 +78,10 @@ export function Composer() {
             <ComposerAttach />
 
             <div className="ml-auto flex items-center gap-1.5">
-              <PermissionModePicker />
-              <LoopParamsPicker />
-              <RuntimePicker />
+              {/* 「怎么跑」的三项收进一颗 ⋯（渐进披露）。
+                  原来权限 / loop / 执行器三个带文字的触发器常驻右缘，
+                  但它们一个会话内基本不动。收起来后输入区只留图标。 */}
+              <RunConfigMenu />
 
               {/* 主按钮 —— ZCode：发送是 brand 底图标钮（ArrowUp），运行中变停止（实心方块）。
                   mock 没有取消通道，停止只翻 busy 位 */}

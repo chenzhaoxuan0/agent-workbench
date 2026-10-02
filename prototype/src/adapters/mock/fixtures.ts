@@ -304,15 +304,6 @@ export const UNAVAILABLE_UNIT: WorkUnit = {
   lastActiveAt: Date.now() - 1000 * 60 * 60 * 24 * 90,
 };
 
-/** 任务分组 —— 对应 ZCode 的 taskGroup（可新建、可折叠） */
-export interface TaskGroup {
-  readonly id: string;
-  readonly name: string;
-  readonly color: string;
-  readonly collapsed: boolean;
-}
-
-export const SAMPLE_TASK_GROUPS: readonly TaskGroup[] = [
-  { id: "g-writing", name: "写作", color: "#016a71", collapsed: false },
-  { id: "g-scan", name: "巡检", color: "#A855F7", collapsed: false },
-];
+// 任务分组（ZCode taskGroup）已移除：侧栏里那一块是纯 UI 壳——
+// 按钮没有 onClick、没有 store 状态、没有过滤逻辑，样例数组也从没被 import 过。
+// 真要做分组功能时，从这里重新加回数据模型 + 渲染层，别只加 UI。

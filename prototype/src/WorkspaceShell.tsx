@@ -1,4 +1,5 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import { Check, ChevronDown, Ellipsis } from "lucide-react";
 import { Group, Panel, Separator, type PanelImperativeHandle } from "react-resizable-panels";
 import { Composer } from "./ui/Composer.tsx";
 import { AutomationsPage } from "./ui/AutomationsPage.tsx";
@@ -19,7 +20,7 @@ import { TrajectoryView } from "./ui/TrajectoryView.tsx";
 import { OpsView } from "./ui/OpsView.tsx";
 import { cn } from "./ui/cn.ts";
 import { bindNavRecorder } from "./store/useNav.ts";
-import { SIDEBAR_DEFAULT, useShell, bindShellShortcuts } from "./store/useShell.ts";
+import { SIDEBAR_DEFAULT, useShell, bindShellShortcuts, type ConversationView } from "./store/useShell.ts";
 
 /**
  * 工作台外壳 —— 布局结构对齐 ZCode 的 WorkspaceShellLayout。
@@ -154,7 +155,7 @@ function ConversationSlot() {
   const terminalOpen = useShell((s) => s.terminalOpen);
   const mainView = useShell((s) => s.mainView);
   const conversationView = useShell((s) => s.conversationView);
-  const setConversationView = useShell((s) => s.setConversationView);
+  // setConversationView 由 ConversationViewBar 独占，这里不再需要
 
   return (
     <Panel defaultSize="62%" minSize="30%" className="min-w-0">
@@ -176,34 +177,12 @@ function ConversationSlot() {
               {/* 工作区头部 —— 只挂在会话视图（ZCode 的 WorkspaceHeader 是 task 级的，
                   automations 自带面包屑头） */}
               <WorkspaceHeader />
-              {/* 会话内页签（dsh ConversationSession tabs：对话 / 轨迹与 Chat 并列；
-                  终端 = 全屏终端页签（与底部 dock 终端同组件不同实例，大屏用）；
-                  Ops 是 LLM-Ops 仪表盘页签，对齐 waku dashboard 的 Ops 页签。
-                  前两者是同一会话的两种读法，composer 保持在底部；
-                  终端 / Ops 占据整个会话视口且不渲染 composer） */}
-              <div className="flex shrink-0 items-center gap-1 border-b border-line px-6">
-                {(["chat", "terminal", "trajectory", "ops"] as const).map((v) => {
-                  const label =
-                    v === "chat" ? "对话" : v === "terminal" ? "终端" : v === "trajectory" ? "轨迹" : "Ops";
-                  const active = conversationView === v;
-                  return (
-                    <button
-                      key={v}
-                      onClick={() => setConversationView(v)}
-                      role="tab"
-                      aria-selected={active}
-                      className={cn(
-                        "-mb-px border-b-2 px-3 py-2 text-body-sm",
-                        active
-                          ? "border-teal font-medium text-ink"
-                          : "border-transparent text-graphite hover:text-ink",
-                      )}
-                    >
-                      {label}
-                    </button>
-                  );
-                })}
-              </div>
+              {/* 会话内页签 → 「对话 + ⋯」。
+                  渐进披露：4 个页签常驻是一条 37px 高的固定行 + 4 枚标签，
+                  而终端/轨迹/Ops 三者里同一时刻只有一个在用。
+                  现在只有「对话」常驻，其余三个收进 ⋯，点开才占版面。
+                  仍在会话视口、composer 位置都不变。 */}
+              <ConversationViewBar />
               {conversationView === "trajectory" ? (
                 /* 轨迹视图（dsh TrajectoryView：占据会话视口，composer 保持底部） */
                 <TrajectoryView />
@@ -260,5 +239,118 @@ function SidePaneSlot() {
     >
       <SidePane ownerId={sessionId} />
     </Panel>
+  );
+}
+
+/* ------------------------------------------------- 会话内页签：对话 + ⋯ */
+
+const CONVERSATION_VIEWS: readonly { id: ConversationView; label: string }[] = [
+  { id: "chat", label: "对话" },
+  { id: "terminal", label: "终端" },
+  { id: "trajectory", label: "轨迹" },
+  { id: "ops", label: "Ops" },
+];
+
+/**
+ * 会话内视图切换条 —— 渐进披露后只剩两枚控件。
+ *
+ * 「对话」常驻：它是 95% 时间待着的那一面，必须一直可达。
+ * 其余三个（终端 / 轨迹 / Ops）收进 ⋯：
+ * - 在「对话」时，⋯ 只显示一个图标，不占文字宽度；
+ * - 已切到别的视图时，⋯ **变成当前视图名 + 箭头**，
+ *   所以"我现在不在对话里"这件事一眼可见，不会迷失在另一个视口。
+ *
+ * 四个选项在浮层里全部列出（当前项打勾）——收起的只是版面，不是入口。
+ */
+function ConversationViewBar() {
+  const view = useShell((s) => s.conversationView);
+  const setView = useShell((s) => s.setConversationView);
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const onChat = view === "chat";
+  const current = CONVERSATION_VIEWS.find((v) => v.id === view) ?? CONVERSATION_VIEWS[0]!;
+
+  const tabClass = (active: boolean) =>
+    cn(
+      "-mb-px border-b-2 px-3 py-2 text-body-sm",
+      active ? "border-teal font-medium text-ink" : "border-transparent text-graphite hover:text-ink",
+    );
+
+  return (
+    <div className="flex shrink-0 items-center gap-1 border-b border-line px-6" role="tablist">
+      <button onClick={() => setView("chat")} role="tab" aria-selected={onChat} className={tabClass(onChat)}>
+        对话
+      </button>
+
+      <div ref={ref} className="relative -mb-px ml-1">
+        <button
+          onClick={() => setOpen((o) => !o)}
+          role="tab"
+          aria-selected={!onChat}
+          aria-expanded={open}
+          aria-haspopup="listbox"
+          aria-label="切换会话视图"
+          title="切换会话视图"
+          className={cn(
+            "flex items-center gap-1 border-b-2 px-2 py-2 text-body-sm",
+            onChat
+              ? "border-transparent text-graphite hover:text-ink"
+              : "border-teal font-medium text-ink",
+          )}
+        >
+          {onChat ? <Ellipsis size={14} /> : <>{current.label}<ChevronDown size={12} className="opacity-60" /></>}
+        </button>
+
+        {open && (
+          <>
+            <span className="fixed inset-0 z-30" onClick={() => setOpen(false)} aria-hidden />
+            <div
+              role="listbox"
+              aria-label="会话视图"
+              className="absolute left-0 top-full z-40 mt-1 w-40 rounded-card border border-line bg-canvas py-1 shadow-subtle"
+            >
+              {CONVERSATION_VIEWS.map((v) => {
+                const active = v.id === view;
+                return (
+                  <button
+                    key={v.id}
+                    role="option"
+                    aria-selected={active}
+                    onClick={() => {
+                      setView(v.id);
+                      setOpen(false);
+                    }}
+                    className={cn(
+                      "flex w-full items-center gap-2 px-3 py-1.5 text-left text-body-sm",
+                      active ? "font-medium text-ink" : "text-graphite hover:bg-line-soft hover:text-ink",
+                    )}
+                  >
+                    {v.label}
+                    {active && <Check size={12} className="ml-auto text-teal" />}
+                  </button>
+                );
+              })}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
   );
 }

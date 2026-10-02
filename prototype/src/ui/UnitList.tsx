@@ -43,7 +43,7 @@ export function UnitList() {
                 "flex items-center gap-1.5 rounded-chip px-3 py-2 text-body-sm",
                 active
                   ? "bg-teal font-medium text-white"
-                  : "text-graphite hover:bg-[#e9e6e0] hover:text-ink",
+                  : "text-graphite hover:bg-surface-hover hover:text-ink",
               )}
             >
               <Icon size={12} />
@@ -70,7 +70,7 @@ export function UnitList() {
               aria-current={active}
               className={cn(
                 "mb-1 flex w-full flex-col gap-1.5 rounded-input px-3 py-3 text-left",
-                active ? "bg-teal-tint" : "hover:bg-[#e9e6e0]",
+                active ? "bg-teal-tint" : "hover:bg-surface-hover",
               )}
             >
               <div className="flex items-center gap-2">

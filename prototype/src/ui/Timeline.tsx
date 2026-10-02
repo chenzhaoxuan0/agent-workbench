@@ -92,12 +92,20 @@ function EmptyState() {
     <div className="flex flex-col items-center">
       <p className="text-caption text-ash">{greeting}</p>
       <p className="mt-1 text-body-lg text-graphite">
-        {unit?.kind === "bot" ? `给「${unit.name}」派活` : `对「${unit?.name}」下任务`}
+        {/* 同 Composer 的坑：unit 为空时 `${unit?.name}` 会印出字面量 "undefined"。
+            空单元是正常状态（还没建 bot），要给它自己的话，不要冒充项目模式。 */}
+        {!unit
+          ? "选一个工作单元开始"
+          : unit.kind === "bot"
+            ? `给「${unit.name}」派活`
+            : `对「${unit.name}」下任务`}
       </p>
       <p className="mt-1 text-body-sm text-ash">
-        {unit?.kind === "bot"
-          ? "会先读它的 AGENTS.md 当岗位说明书"
-          : "项目模式，可开 worktree 隔离"}
+        {!unit
+          ? "新建一个 bot，或添加一个项目目录"
+          : unit.kind === "bot"
+            ? "会先读它的 AGENTS.md 当岗位说明书"
+            : "项目模式，可开 worktree 隔离"}
       </p>
 
       <div className="mt-8 grid w-full grid-cols-2 gap-3">
@@ -105,7 +113,7 @@ function EmptyState() {
           <button
             key={s.title}
             onClick={() => setDraft(s.prompt)}
-            className="rounded-card bg-card px-4 py-3 text-left shadow-subtle hover:bg-[#f7f4f0]"
+            className="rounded-card bg-card px-4 py-3 text-left shadow-subtle hover:bg-surface-hover"
           >
             <p className="text-body-sm font-medium text-ink">{s.title}</p>
             <p className="mt-0.5 text-body-sm text-graphite">{s.desc}</p>

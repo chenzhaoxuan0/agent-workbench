@@ -1,10 +1,8 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlarmClock,
   Archive,
   Bot,
-  ChevronDown,
-  ChevronRight,
   FolderGit2,
   FolderPlus,
   GripVertical,
@@ -13,12 +11,20 @@ import {
   Plus,
   Search,
   Settings,
+  SlidersHorizontal,
   Unplug,
 } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
 import { useWorkbench, selectUnitSessions, type ViewMode } from "../store/useWorkbench.ts";
 import { useShell } from "../store/useShell.ts";
-import { asRuntimeId, asUnitId, type Session, type UnitId, type WorkUnit } from "../core/units.ts";
+import {
+  asRuntimeId,
+  asUnitId,
+  type Session,
+  type SessionId,
+  type UnitId,
+  type WorkUnit,
+} from "../core/units.ts";
 import { UNAVAILABLE_UNIT } from "../adapters/mock/fixtures.ts";
 import { AddBotDialog, type AddBotDraft } from "./AddBotDialog.tsx";
 import { cn } from "./cn.ts";
@@ -26,17 +32,32 @@ import { cn } from "./cn.ts";
 /**
  * 左侧栏 —— 对齐 ZCode 的 `WorkspaceSidebar` 完整功能集。
  *
- * 本轮的核心原则：**功能不能因为「当前为空」就消失。**
- * ZCode 里每一项都有对应的 message id，说明它们都是常驻能力：
+ * ## 两条原则，不是冲突的两条
  *
- *   projectsSection / addProject / noProjects
- *   conversationsSection / newConversation / noConversations
- *   organize / organizeGrouped / viewByWorkspace / organizeChronologicalList
- *   sortBy / sortByUpdated / sortByCreated
- *   toggleArchivedTasks / taskGroup.newGroup / toggleAllTaskGroups
- *   reorderSection / unavailableLocalDirectory
+ * 1. **功能不能因为「当前为空」就消失。**
+ *    ZCode 里每一项都有对应的 message id，说明它们都是常驻能力：
  *
- * 之前我把这些做成了「有数据才渲染」，于是新增功能在页面上根本看不见。
+ *      projectsSection / addProject / noProjects
+ *      conversationsSection / newConversation / noConversations
+ *      organize / organizeGrouped / viewByWorkspace / organizeChronologicalList
+ *      sortBy / sortByUpdated / sortByCreated
+ *      toggleArchivedTasks / reorderSection / unavailableLocalDirectory
+ *
+ *    之前我把这些做成了「有数据才渲染」，于是新增功能在页面上根本看不见。
+ *
+ *    ⚠ 2026-10-02：任务分组（taskGroup）已从这条清单里**删掉**。
+ *    它当时是纯 UI 壳——按钮无 onClick、无 store 状态、无过滤逻辑，
+ *    样例数组从没被 import。留着它只是让「常驻可见」这条原则被架空成形式主义。
+ *    真要做分组时，数据模型和渲染层一起加回来。
+ *
+ * 2. **但「不消失」不等于「永久占版面」**（渐进披露，第二批引入）。
+ *    区分标准只有一条 —— **用户多久会用到它**：
+ *      - 高频（工作单元切换、新建任务）→ 常驻可见；
+ *      - 低频偏好（组织方式、排序）→ 收进浮层，当前值带在 title / 折叠行里；
+ *      - 低频导航（搜索、出图、自动化）→ 去掉文字留图标，不藏进浮层。
+ *
+ *    判据是「多久用一次」，不是「功能重不重要」。自动化很重要，
+ *    但没人一天点八次自动化 —— 重要性决定它**不能消失**，不决定它要**占多大版面**。
  */
 
 /** ZCode 是 4 种：grouped / workspace / timeline / archived */
@@ -81,12 +102,13 @@ export function Sidebar() {
 
   const [organize, setOrganize] = useState<Organize>("grouped");
   const [sort, setSort] = useState<Sort>("updated");
-  const [showArchived, setShowArchived] = useState(false);
-  const [groupsOpen, setGroupsOpen] = useState(true);
   const [unitOrder, setUnitOrder] = useState<string[] | null>(null);
   const [dragUnit, setDragUnit] = useState<string | null>(null);
   const [accountOpen, setAccountOpen] = useState(false);
-  const [addBotOpen, setAddBotOpen] = useState(false);
+  const selectSession = useWorkbench((s) => s.selectSession);
+  const activeSessionId = useWorkbench((s) => s.activeSessionId);
+  // 「添加 bot」的对话框开关在 useShell —— 标题行的 ＋ 和单元区空态两个入口共用
+  const addBotOpen = useShell((s) => s.addBotOpen);
   const settingsActive = useShell((s) => s.settingsOpen);
 
   // 目录不可用的单元也要列出来（ZCode: unavailableLocalDirectory）
@@ -109,52 +131,42 @@ export function Sidebar() {
           由左上浮层（DesktopTopOverlay）承载，这里不再重复 */}
       <div className="h-12 shrink-0 border-b border-line/60" />
 
-      {/* 顶部动作区 —— 对齐 ZCode 侧栏顶部：新建任务 → 搜索 → 自动化（无品牌行按钮）
-          NewTaskButtonGroup 是 ghost 行而非实心按钮 */}
-      <div className="flex flex-col gap-0.5 px-4 pb-2">
-        <button
-          onClick={() => useShell.getState().newTask()}
-          className="flex h-8 w-full items-center gap-2 rounded-btn px-2.5 text-body-sm text-graphite hover:bg-line-soft hover:text-ink"
-        >
-          <MessageCirclePlus size={14} className="shrink-0" />
-          新建任务
-          <span className="ml-auto font-mono text-caption text-ash">⌘N</span>
-        </button>
-        <button
-          onClick={() => useShell.getState().setCommandOpen(true)}
-          className="flex h-8 w-full items-center gap-2 rounded-btn px-2.5 text-body-sm text-graphite hover:bg-line-soft hover:text-ink"
-        >
-          <Search size={14} className="shrink-0" />
-          搜索
-          <span className="ml-auto font-mono text-caption text-ash">⌘K</span>
-        </button>
-        <button
-          onClick={() => useShell.getState().setMainView("automations")}
-          aria-pressed={mainView === "automations"}
-          className={cn(
-            "flex h-8 w-full items-center gap-2 rounded-btn px-2.5 text-body-sm",
-            mainView === "automations"
-              ? "bg-teal-tint font-medium text-ink"
-              : "text-graphite hover:bg-line-soft hover:text-ink",
-          )}
-        >
-          <AlarmClock size={14} className="shrink-0" />
-          自动化
-        </button>
-        {/* 出图工作台 —— gpt_image_playground 的移植落点（OpenAI 兼容 images API） */}
-        <button
-          onClick={() => useShell.getState().setMainView("image")}
-          aria-pressed={mainView === "image"}
-          className={cn(
-            "flex h-8 w-full items-center gap-2 rounded-btn px-2.5 text-body-sm",
-            mainView === "image"
-              ? "bg-teal-tint font-medium text-ink"
-              : "text-graphite hover:bg-line-soft hover:text-ink",
-          )}
-        >
-          <ImagePlus size={14} className="shrink-0" />
-          出图
-        </button>
+      {/* 顶部动作区：五枚并排图标，全部平铺，不设 ⋯。
+          之前「新建任务」占一整行、其余收在第二行，是两段版面；
+          现在一行五枚等宽。⌘N / ⌘K 提示挂在 title 上。 */}
+      <div className="px-4 pb-2">
+        <div className="flex items-center gap-0.5">
+          <IconNavBtn
+            icon={MessageCirclePlus}
+            label="新建任务"
+            hint="⌘N"
+            onClick={() => useShell.getState().newTask()}
+          />
+          <IconNavBtn
+            icon={Search}
+            label="搜索"
+            hint="⌘K"
+            onClick={() => useShell.getState().setCommandOpen(true)}
+          />
+          <IconNavBtn
+            icon={AlarmClock}
+            label="自动化"
+            active={mainView === "automations"}
+            onClick={() => useShell.getState().setMainView("automations")}
+          />
+          {/* 出图工作台 —— gpt_image_playground 的移植落点（OpenAI 兼容 images API） */}
+          <IconNavBtn
+            icon={ImagePlus}
+            label="出图"
+            active={mainView === "image"}
+            onClick={() => useShell.getState().setMainView("image")}
+          />
+          <ArchivedMenu
+            sessions={archived}
+            onSelectSession={selectSession}
+            activeSessionId={activeSessionId}
+          />
+        </div>
       </div>
 
       {/* 分区行：身份切换（bot/项目）直接在这行完成 —— 吸收原顶部两个大按钮的职能；
@@ -180,65 +192,61 @@ export function Sidebar() {
           })}
         </div>
         <span className="tnum text-caption text-ash">{visibleUnits.length}</span>
-        <div className="ml-auto flex items-center gap-1">
-          <MenuButton
-            label={ORGANIZE_LABEL[organize]}
-            title="组织方式"
-            options={ORGANIZE_OPTIONS}
-            labels={ORGANIZE_LABEL}
-            onChange={(v) => setOrganize(v as Organize)}
-          />
-          <MenuButton
-            label={SORT_LABEL[sort]}
-            title="排序"
-            options={SORT_OPTIONS}
-            labels={SORT_LABEL}
-            onChange={(v) => setSort(v as Sort)}
-          />
-        </div>
+        <ViewOptionsMenu
+          organize={organize}
+          onOrganize={setOrganize}
+          sort={sort}
+          onSort={setSort}
+        />
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-4">
-        {/* 任务分组（ZCode: taskGroup.newGroup / toggleAllTaskGroups） */}
-        <div className="mb-2 px-2">
-          <button
-            onClick={() => setGroupsOpen((o) => !o)}
-            className="flex w-full items-center gap-1.5 rounded-btn px-1 py-1 text-caption text-ash hover:text-graphite"
-          >
-            {groupsOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-            任务分组
-            <span className="ml-auto rounded-chip bg-line-soft px-1.5 text-caption">2</span>
-            <Plus size={12} className="ml-1" />
-          </button>
-          {groupsOpen && (
-            <div className="mt-0.5 space-y-0.5">
-              {[
-                { name: "写作", color: "#016a71" },
-                { name: "巡检", color: "#A855F7" },
-              ].map((g) => (
-                <button
-                  key={g.name}
-                  className="flex w-full items-center gap-2 rounded-btn px-2 py-1 text-left text-caption text-graphite hover:bg-line-soft"
-                >
-                  <span className="h-2 w-2 rounded-full" style={{ background: g.color }} aria-hidden />
-                  {g.name}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-
-        {/* 工作单元区（ZCode: projectsSection / reorderSection / addProject） */}
-        <div className="mb-1 flex items-center gap-1 px-2">
-          <p className="flex-1 text-caption text-ash">工作单元</p>
-          <span className="text-caption text-ash">可拖拽排序</span>
-        </div>
-
-        {visibleUnits.length === 0 && (
-          <p className="px-2 py-6 text-center text-body-sm text-ash">
-            还没有{view === "bot" ? "bot" : "项目"}
+        {/* 工作单元区（ZCode: projectsSection / reorderSection / addProject）
+            「添加」就放在分区标题右侧 —— 它加的正是这一区的内容。
+            「可拖拽排序」从常驻文字降级为 title 提示：它是操作说明不是数据。 */}
+        <div className="mb-1 flex items-center gap-1 px-2 pt-2">
+          <p className="flex-1 text-caption text-ash" title="拖拽单元可调整顺序">
+            工作单元
           </p>
-        )}
+          <button
+            onClick={() => {
+              if (view === "bot") {
+                useShell.getState().openAddBot();
+              } else {
+                addUnit({
+                  id: asUnitId(`u-new-${Date.now().toString(36)}`),
+                  name: "新工作单元",
+                  rootPath: "C:/Users/chenziyu/project/Agent/<待选目录>",
+                  kind: "project",
+                  bindings: [],
+                  assets: { agentFiles: [], skillDirs: [] },
+                  tags: ["新建"],
+                });
+              }
+            }}
+            aria-label={view === "bot" ? "添加 bot" : "添加项目"}
+            title={view === "bot" ? "添加 bot" : "添加项目"}
+            className="rounded-btn p-1 text-ash hover:bg-line-soft hover:text-ink"
+          >
+            <Plus size={12} />
+          </button>
+        </div>
+
+        {/* 空态当第二个「添加 bot」入口 —— 侧栏那颗按钮收进 ⋯ 之后，
+            这里就是最该给出引导的位置，而不是一行灰字。 */}
+        {visibleUnits.length === 0 &&
+          (view === "bot" ? (
+            <button
+              onClick={() => useShell.getState().openAddBot()}
+              className="flex w-full flex-col items-center gap-1 rounded-input px-3 py-6 text-center hover:bg-line-soft"
+            >
+              <FolderPlus size={16} className="text-ash" />
+              <span className="text-body-sm text-graphite">还没有 bot</span>
+              <span className="text-caption text-ash">点一下新建，第一个 bot 从 AGENTS.md 开始</span>
+            </button>
+          ) : (
+            <p className="px-2 py-6 text-center text-body-sm text-ash">还没有项目</p>
+          ))}
 
         {visibleUnits.map((u) => {
           const active = u.id === activeUnitId;
@@ -277,58 +285,6 @@ export function Sidebar() {
           );
         })}
 
-        {/* 添加入口：bot 走高度自定义的创建对话框（核心是 AGENTS.md 岗位说明书）；
-            项目保持快速新建 */}
-        {view === "bot" ? (
-          <button
-            onClick={() => setAddBotOpen(true)}
-            className="mt-1 flex w-full items-center gap-2 rounded-btn px-2 py-2 text-body-sm text-graphite hover:bg-line-soft hover:text-ink"
-          >
-            <FolderPlus size={12} className="shrink-0" />
-            添加bot
-          </button>
-        ) : (
-          <button
-            onClick={() =>
-              addUnit({
-                id: asUnitId(`u-new-${Date.now().toString(36)}`),
-                name: "新工作单元",
-                rootPath: "C:/Users/chenziyu/project/Agent/<待选目录>",
-                kind: view,
-                bindings: [],
-                assets: { agentFiles: [], skillDirs: [] },
-                tags: ["新建"],
-              })
-            }
-            className="mt-1 flex w-full items-center gap-2 rounded-btn px-2 py-2 text-body-sm text-graphite hover:bg-line-soft hover:text-ink"
-          >
-            <FolderPlus size={12} className="shrink-0" />
-            添加项目
-          </button>
-        )}
-
-        {/* 归档任务（ZCode: toggleArchivedTasks） */}
-        <div className="mt-4 border-t border-line pt-2">
-          <button
-            onClick={() => setShowArchived((o) => !o)}
-            aria-pressed={showArchived}
-            className="flex w-full items-center gap-2 rounded-btn px-2 py-1.5 text-body-sm text-graphite hover:bg-line-soft hover:text-ink"
-          >
-            <Archive size={12} className="shrink-0" />
-            已归档
-            <span className="tnum ml-auto rounded-chip bg-line-soft px-1.5 text-caption">
-              {archived.length}
-            </span>
-            {showArchived ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-          </button>
-
-          {showArchived &&
-            (archived.length === 0 ? (
-              <p className="px-2 py-2 text-caption text-ash">归档区为空</p>
-            ) : (
-              archived.map((s) => <SessionRow key={s.id} s={s} muted />)
-            ))}
-        </div>
       </div>
 
       {/* 底部：账号 + 设置（ZCode: WorkspaceSidebarFooter —— 账号菜单 + 齿轮，
@@ -400,11 +356,12 @@ export function Sidebar() {
         </button>
       </div>
 
-      {/* 新建 bot 对话框（AGENTS.md 岗位说明书） */}
+      {/* 新建 bot 对话框（AGENTS.md 岗位说明书）。开关在 useShell，
+          侧栏 ⋯ 和单元区空态都能打开它 */}
       {addBotOpen && (
         <AddBotDialog
           open
-          onClose={() => setAddBotOpen(false)}
+          onClose={() => useShell.getState().closeAddBot()}
           onCreate={(draft) => {
             addUnit({
               id: asUnitId(`bot-${Date.now().toString(36)}`),
@@ -430,7 +387,7 @@ export function Sidebar() {
               tags: ["新建"],
               lastActiveAt: Date.now(),
             });
-            setAddBotOpen(false);
+            useShell.getState().closeAddBot();
           }}
         />
       )}
@@ -627,48 +584,236 @@ function SessionRow({
 
 /* ------------------------------------------------------------- 小组件 */
 
-function MenuButton({
-  label,
-  title,
-  options,
-  labels,
-  onChange,
+/**
+ * 已归档 —— 顶栏第五枚图标钮，点开看归档列表。
+ *
+ * 为什么它值得一枚常驻按钮而不是折叠行：它是**回溯入口**，而顶栏那一行
+ * 本来就是「全局动作」的位置，新建/搜索/自动化/出图都在那。
+ *
+ * **计数不藏**：非空时右上角挂数字角标。否则用户根本不知道有东西被归档了，
+ * 「收进浮层」就变成了「静默藏起来」。
+ */
+function ArchivedMenu({
+  sessions,
+  activeSessionId,
+  onSelectSession,
 }: {
-  label: string;
-  title: string;
-  options: readonly string[];
-  labels: Record<string, string>;
-  onChange: (v: string) => void;
+  sessions: readonly Session[];
+  activeSessionId: SessionId | null;
+  onSelectSession: (id: SessionId | null) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
   return (
-    <div className="relative">
+    <div ref={ref} className="relative">
       <button
         onClick={() => setOpen((o) => !o)}
-        title={title}
         aria-expanded={open}
-        className="flex items-center gap-0.5 rounded-btn px-1.5 py-1 text-caption text-graphite hover:bg-line-soft hover:text-ink"
+        aria-haspopup="listbox"
+        aria-label="已归档"
+        title={`已归档 · ${sessions.length} 条`}
+        className={cn(
+          "relative flex h-7 w-7 items-center justify-center rounded-btn",
+          open ? "bg-line-soft text-ink" : "text-graphite hover:bg-line-soft hover:text-ink",
+        )}
       >
-        {label}
-        <ChevronDown size={12} />
+        <Archive size={14} className="shrink-0" />
+        {sessions.length > 0 && (
+          <span
+            className="absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-ink px-1 text-[9px] leading-none font-medium text-canvas"
+            aria-hidden
+          >
+            {sessions.length}
+          </span>
+        )}
       </button>
+
+      {open && (
+        <div
+          role="listbox"
+          aria-label="已归档"
+          className="absolute left-0 top-full z-20 mt-1 max-h-[320px] w-56 overflow-y-auto rounded-card border border-line bg-canvas py-1 shadow-subtle"
+        >
+          {sessions.length === 0 ? (
+            <p className="px-3 py-2 text-body-sm text-ash">归档区为空</p>
+          ) : (
+            sessions.map((s) => (
+              <button
+                key={s.id}
+                role="option"
+                aria-selected={s.id === activeSessionId}
+                onClick={() => {
+                  onSelectSession(s.id);
+                  setOpen(false);
+                }}
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-body-sm text-graphite hover:bg-line-soft hover:text-ink"
+              >
+                <span
+                  className={cn("h-1.5 w-1.5 shrink-0 rounded-full", STATUS_DOT[s.status] ?? "bg-ash")}
+                  aria-hidden
+                />
+                <span className="min-w-0 flex-1 truncate">{s.title}</span>
+                <span className="tnum shrink-0 text-caption text-ash">
+                  {new Date(s.startedAt).toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" })}
+                </span>
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * 侧栏动作图标钮 —— 搜索 / 自动化 / 出图 共用。
+ *
+ * 三个入口的共同点：低频但需要**看得见**。所以只去掉文字（title 与
+ * aria-label 保留，键盘和读屏用户不受影响），不收进浮层 ——
+ * 浮层是给「偶尔才改的偏好」用的，导航入口收进去就等于藏起来了。
+ */
+function IconNavBtn({
+  icon: Icon,
+  label,
+  hint,
+  active,
+  onClick,
+}: {
+  icon: typeof Search;
+  label: string;
+  hint?: string;
+  active?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      aria-label={label}
+      title={hint ? `${label} · ${hint}` : label}
+      aria-pressed={active}
+      className={cn(
+        "flex h-7 w-7 items-center justify-center rounded-btn",
+        active ? "bg-teal-tint text-ink" : "text-graphite hover:bg-line-soft hover:text-ink",
+      )}
+    >
+      <Icon size={14} className="shrink-0" />
+    </button>
+  );
+}
+
+/**
+ * 组织方式 / 排序 —— 两项收成一枚 ⚙。
+ *
+ * 为什么它们配得上浮层、而上面的导航入口不配：
+ * 这两个是**纯视图偏好**。用户在一次会话里几乎不改，改了也不影响「能不能
+ * 找到东西」；而 4 个选项 × 两组共 6 行文字，正好把「bot | 项目」那一行
+ * 挤成一片小字（原来就是 264px 侧栏里最挤的一处）。
+ *
+ * 当前值不丢：触发器 title 里带「组织方式：X · 排序：Y」，
+ * 浮层里两组各带一行小标题，选项打勾。
+ */
+function ViewOptionsMenu({
+  organize,
+  onOrganize,
+  sort,
+  onSort,
+}: {
+  organize: Organize;
+  onOrganize: (v: Organize) => void;
+  sort: Sort;
+  onSort: (v: Sort) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <div ref={ref} className="relative ml-auto">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        aria-haspopup="listbox"
+        aria-label="组织方式与排序"
+        title={`组织方式：${ORGANIZE_LABEL[organize]} · 排序：${SORT_LABEL[sort]}`}
+        className={cn(
+          "flex h-6 w-6 items-center justify-center rounded-btn",
+          open ? "bg-line-soft text-ink" : "text-graphite hover:bg-line-soft hover:text-ink",
+        )}
+      >
+        <SlidersHorizontal size={13} className="shrink-0" />
+      </button>
+
       {open && (
         <>
           <span className="fixed inset-0 z-10" onClick={() => setOpen(false)} aria-hidden />
-          <div className="absolute right-0 top-full z-20 mt-1 min-w-[112px] overflow-hidden rounded-btn border border-line bg-canvas py-0.5">
-            {options.map((o) => (
+          <div
+            role="listbox"
+            aria-label="组织方式与排序"
+            className="absolute right-0 top-full z-20 mt-1 w-40 overflow-hidden rounded-card border border-line bg-canvas py-1 shadow-subtle"
+          >
+            <p className="px-3 pt-1 pb-0.5 text-caption text-ash">组织方式</p>
+            {ORGANIZE_OPTIONS.map((o) => (
               <button
                 key={o}
-                onClick={() => {
-                  onChange(o);
-                  setOpen(false);
-                }}
+                role="option"
+                aria-selected={o === organize}
+                onClick={() => onOrganize(o)}
                 className={cn(
                   "block w-full whitespace-nowrap px-3 py-1.5 text-left text-body-sm",
-                  o === label ? "bg-teal-tint font-medium text-ink" : "text-graphite hover:bg-line-soft",
+                  o === organize ? "bg-teal-tint font-medium text-ink" : "text-graphite hover:bg-line-soft",
                 )}
               >
-                {labels[o]}
+                {ORGANIZE_LABEL[o]}
+              </button>
+            ))}
+
+            <p className="mt-1 border-t border-line-soft px-3 pt-1.5 pb-0.5 text-caption text-ash">
+              排序
+            </p>
+            {SORT_OPTIONS.map((o) => (
+              <button
+                key={o}
+                role="option"
+                aria-selected={o === sort}
+                onClick={() => onSort(o)}
+                className={cn(
+                  "block w-full whitespace-nowrap px-3 py-1.5 text-left text-body-sm",
+                  o === sort ? "bg-teal-tint font-medium text-ink" : "text-graphite hover:bg-line-soft",
+                )}
+              >
+                {SORT_LABEL[o]}
               </button>
             ))}
           </div>

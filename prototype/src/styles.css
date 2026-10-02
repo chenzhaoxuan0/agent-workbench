@@ -1,38 +1,46 @@
 @import "tailwindcss";
 
 /* ==========================================================================
-   Design tokens — 源自 DESIGN.md（Perplexity 风格参考）
-   scholar's parchment behind clean glass
+   Design tokens — 中性灰阶 + 单一青色强调
+   对标 Grok @Bot 的视觉取向：黑白灰、扁平、单色克制
 
-   核心约束（来自 DESIGN.md 的 Don't 清单，逐条遵守）：
-   - 画布永远是羊皮纸，不用纯白
+   这套令牌推翻了上一版（Perplexity 羊皮纸 + 暖调墨色）的三条硬规则：
+   - 画布不再用暖白羊皮纸，也不用纯白 —— 用 #fafafa 的浅灰，
+     让纯白卡片靠「亮一档」浮起，而不是靠阴影
+   - 中性色阶全部去暖调，纯灰（R 的 G/B 同值）
+   - 卡片与画布的分离靠**色阶差 + 发丝线**，不靠投影
+
+   保留的旧规则（仍然有效）：
    - 强调色只有 Deep Teal 一个，不引入第二个彩色
    - 字重只在 400 / 500 之间，没有 600+
    - 卡片圆角 16 / 输入 12 / 按钮 6 / 胶囊 9999
-   - 扁平：除卡片那一道 1px 阴影外不加任何投影
    ========================================================================== */
 
 @theme {
-  /* ---- Surfaces：暖白纸面体系 ---- */
-  --color-canvas: #faf8f5; /* 页面画布，全局底色 */
-  --color-rail: #f2efe9; /* 左右侧栏：比画布略深一档的羊皮纸 */
-  --color-card: #fdfbfa; /* 卡片面，比画布亮一档 */
-  --color-line: #d1d1cd; /* 铅笔线，1px 发丝边框 */
-  --color-line-soft: #e7e4de; /* 更浅一档，用于卡内部分隔 */
+  /* ---- Surfaces：中性灰阶。画布最浅，卡片纯白，rail 夹在中间 ---- */
+  --color-canvas: #fafafa; /* 页面画布，全局底色 */
+  --color-rail: #f4f4f4; /* 左右侧栏 / composer 底：比画布深一档 */
+  --color-card: #ffffff; /* 卡片面：比画布亮一档，靠这个差值浮起 */
+  --color-line: #e4e4e4; /* 发丝边框 */
+  --color-line-soft: #f0f0f0; /* 更浅一档，用于卡内部分隔 */
+  --color-surface-hover: #f4f4f4; /* 通用悬停面。**新增**：替换组件里写死的羊皮纸色 hover */
 
-  /* ---- Text：墨色系，暖调深黑而非纯黑 ---- */
-  --color-ink: #27251e; /* 正文、图标填充、按钮底色 */
-  --color-graphite: #72706b; /* 次要文字、导航图标、失效标签 */
-  --color-ash: #92918b; /* 辅助说明、极次要 */
+  /* ---- Text：真中性灰 ---- */
+  --color-ink: #0a0a0a; /* 正文、图标填充、按钮底色 */
+  --color-graphite: #525252; /* 次要文字、导航图标、失效标签 */
+  --color-ash: #8a8a8a; /* 辅助说明、极次要 */
 
   /* ---- Accent：全场唯一彩色 ---- */
+  /* ⚠ 换皮**保留**了青色，没跟 Grok 一起去掉，理由见 README「视觉」章节：
+     黑白灰观感来自画布与文字（占 95% 像素），青色只出现在选中态、
+     焦点环、勾选、运行中状态点上。把它去掉不是换皮，是重写 156 处组件用法。 */
   --color-teal: #016a71; /* 选中态、激活态、品牌强调 */
-  --color-teal-tint: #e7efef; /* 选中态的浅填充 */
+  --color-teal-tint: #e6f0f0; /* 选中态的浅填充 */
   --color-teal-edge: #a9c6c8; /* 选中态边框 */
 
   /* ---- 语义色：仅用于 +/-, 成功/失败等真实语义，不做装饰 ---- */
   --color-gain: #2f6b4f; /* diff 新增 */
-  --color-loss: #9a4a3c; /* diff 删除 / 错误 */
+  --color-loss: #9a4a3c; /* diff 删除 / 错误 / 完全放行警示 */
 
   /* ---- Typography：字重锁死在 400 / 500 ---- */
   --font-sans: Inter, "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system,
@@ -57,7 +65,7 @@
   --radius-chip: 9999px;
 
   /* ---- Shadow：全场只有这一道 ---- */
-  --shadow-subtle: 0 1px 2px 0 rgb(0 0 0 / 0.08);
+  --shadow-subtle: 0 1px 2px 0 rgb(0 0 0 / 0.06);
 }
 
 /* ==========================================================================
@@ -108,17 +116,17 @@ textarea {
   color: var(--color-ink);
 }
 
-/* 发丝滚动条，融入纸面 */
+/* 发丝滚动条，融入中性底 */
 * {
   scrollbar-width: thin;
-  scrollbar-color: #cfccc5 transparent;
+  scrollbar-color: #d4d4d4 transparent;
 }
 *::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 *::-webkit-scrollbar-thumb {
-  background: #cfccc5;
+  background: #d4d4d4;
   border-radius: 4px;
 }
 *::-webkit-scrollbar-track {

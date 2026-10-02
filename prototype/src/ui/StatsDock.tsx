@@ -25,10 +25,13 @@ import { cn } from "./cn.ts";
  *
  * 数据从归一化事件流派生（core/sessionStats.ts）：dsh 从 JSONL 日志
  * 投影；工具耗时按 callId 配对、TTFT 以 usage 为轮边界近似。
- * 轮次/步数常驻（TimePill 零数据退化为纯文本），其余有数据才出现。
+ *
+ * **整条坞在空闲时不渲染**（stats 为 null 且未运行）——渐进披露的一条：
+ * 零值占位（0 轮 / 0% / —）不算信息，不该常驻占版面。跑起来或有过数据才出现。
  */
 export function StatsDock() {
   const timeline = useWorkbench((s) => s.timeline);
+  const busy = useWorkbench((s) => s.busy);
   // selectActivePair 每次返回新对象 —— 必须 useShallow（见 useWorkbench.ts 的警告注释）
   const { runtime, model } = useWorkbench(useShallow(selectActivePair));
 
@@ -58,6 +61,13 @@ export function StatsDock() {
 
   const timeLabel = `${stats?.turns ?? 0} 轮 · ${stats?.steps ?? 0} 步${stats?.tokensPerSecond !== null && stats ? ` · ${formatTokensPerSecond(stats.tokensPerSecond)} tok/s` : ""}`;
   const usageLabel = stats ? `${formatTokens(stats.totalTokens)} tok${cacheHit !== null ? ` · 缓存命中 ${cacheHit}%` : ""}` : null;
+
+  // 空闲时整条坞不渲染 —— 渐进披露。
+  //
+  // 空闲态这行原本常驻着「0 轮 · 0 步」「0%」「—」和一个 Enter 快捷键提示，
+  // 全是零值占位，纯粹占版面。第一次真正跑起来（busy）或事件流里有了数据
+  // （stats 非 null）才出现；跑完之后 stats 一直留着，所以统计不会事后消失。
+  if (stats === null && !busy) return null;
 
   return (
     <div className="mt-2 flex min-w-0 items-center gap-3 text-caption text-graphite" aria-label="会话统计">

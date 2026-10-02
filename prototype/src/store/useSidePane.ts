@@ -101,7 +101,16 @@ export const useSidePane = create<SidePaneStore>((set, get) => {
       tabs: DEFAULT_TABS.map((type) => ({ ...makeTabDraft(type, null), openedAt: Date.now() })),
       activeTabId: tabIdFor(DEFAULT_TABS[0]!, null),
     },
-    open: true,
+    // 默认收起 —— 渐进披露的核心一步。
+    //
+    // 为什么：右栏常驻会把中列从 1035px 挤到 770px（1280 视口），换来的却是
+    // 一片「未选择工作单元」的空态和 7 个图标页签。纯负收益。
+    //
+    // 注意这**不是**「功能消失」：5 个工作区级页签仍在 state 里预置好，
+    // 入口是 WorkspaceHeader 右区那颗 PanelRightOpen 开关
+    // （`openTab` / `openTabType` 仍会顺手把面板拉开）。
+    // 收进「不用时不占版面」≠ 从产品里拿掉能力。
+    open: false,
     expandedSize: readSize(),
     recentlyClosed: [],
 
