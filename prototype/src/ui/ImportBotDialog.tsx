@@ -311,11 +311,14 @@ export function ImportBotDialog({
               {branch === "blocked" && (
                 <Notice tone="loss" icon={X}>
                   {blockedReason ?? "这个目录不能导入"}
+                  {report.conflicts.alreadyRegistered !== null && (
+                    <span className="mt-1 block text-ash">它已经在侧栏里了 —— 不用再导一次，直接点它旁边的齿轮改配置就行。</span>
+                  )}
                 </Notice>
               )}
 
-              {/* 安全：git + 密钥 */}
-              {report.security.applicable && !report.security.safe && !gitignoreFixed && (
+              {/* 安全：git + 密钥。阻断时不再显示——没什么可导的，就没什么可泄漏的 */}
+              {branch !== "blocked" && report.security.applicable && !report.security.safe && !gitignoreFixed && (
                 <Notice tone="loss" icon={ShieldAlert}>
                   <p>{report.security.message}</p>
                   <button
@@ -327,21 +330,21 @@ export function ImportBotDialog({
                   </button>
                 </Notice>
               )}
-              {report.security.applicable && (report.security.safe || gitignoreFixed) && (
+              {branch !== "blocked" && report.security.applicable && (report.security.safe || gitignoreFixed) && (
                 <Notice tone="ok" icon={Check}>
                   {gitignoreFixed ? "`.agent-workbench/` 已加入 .gitignore，密钥不会被提交" : report.security.message}
                 </Notice>
               )}
 
               {/* 扫描根副作用 */}
-              {report.scanRootEffect.warning !== null && (
+              {branch !== "blocked" && report.scanRootEffect.warning !== null && (
                 <Notice tone="warn" icon={AlertTriangle}>
                   {report.scanRootEffect.warning}
                 </Notice>
               )}
 
               {/* 嵌套 */}
-              {report.conflicts.nestedInside !== null && (
+              {branch !== "blocked" && report.conflicts.nestedInside !== null && (
                 <Notice tone="warn" icon={AlertTriangle}>
                   这个文件夹在另一个 bot「{report.conflicts.nestedInside.unitId}」的工作目录内部。两个都会注册，但
                   扫描时容易混淆。
@@ -465,6 +468,24 @@ export function ImportBotDialog({
                 </button>
               </div>
             </>
+          ) : branch === "blocked" ? (
+            <>
+              <p className="text-caption text-ash">导入前就已经被拦下了，没有写入任何东西</p>
+              <div className="ml-auto flex items-center gap-2">
+                <button
+                  onClick={() => setReport(null)}
+                  className="rounded-btn border border-line px-3 py-1.5 text-body-sm text-ink hover:bg-line-soft"
+                >
+                  换个目录
+                </button>
+                <button
+                  onClick={onClose}
+                  className="rounded-btn bg-ink px-3 py-1.5 text-body-sm text-canvas hover:bg-black"
+                >
+                  知道了
+                </button>
+              </div>
+            </>
           ) : (
             <>
               <p className="text-caption text-ash">
@@ -476,7 +497,7 @@ export function ImportBotDialog({
                 </button>
                 <button
                   onClick={() => void submit()}
-                  disabled={busy || branch === "blocked" || (report.security.applicable && !report.security.safe && !gitignoreFixed)}
+                  disabled={busy || (report.security.applicable && !report.security.safe && !gitignoreFixed)}
                   title={
                     report.security.applicable && !report.security.safe && !gitignoreFixed
                       ? "先把 .agent-workbench/ 加进 .gitignore"
