@@ -30,6 +30,7 @@ import { ArenaRunner } from "./ops/arena.ts";
 import { MemoryService } from "./memory/memory.ts";
 import { BotRegistry } from "./bots/registry.ts";
 import { TelegramGateway } from "./channels/telegram.ts";
+import { FeishuGateway } from "./channels/feishu.ts";
 import { askBot } from "./channels/askBot.ts";
 import { asModelId, asSessionId, asUnitId } from "../../prototype/src/core/units.ts";
 
@@ -137,13 +138,23 @@ async function runAutomation(a: {
 const scheduler = new AutomationScheduler(store, runAutomation);
 scheduler.start();
 
-// 渠道网关（docs/08 WP-8）：bot 的 IM 入站通道；apiBase 可指向 mock（冒烟）
+// 渠道网关（docs/08 WP-8）：bot 的 IM 入站通道。
+//
+// ⚠ 2026-10-02：Telegram 从「启动时无条件 start 的全局单例」改成 reconciler。
+// 旧写法的问题是渠道状态与 bot.json 无关——用户在设置页改完渠道保存，daemon 里的
+// 连接纹丝不动，必须重启才生效。现在两家网关都定期比对盘上定义与在跑实例。
+// apiBase 可指向 mock（冒烟）。
 const telegramGateway = new TelegramGateway({
   apiBase: process.env["AGENT_WORKBENCH_TELEGRAM_API"] ?? "https://api.telegram.org",
   registry: botRegistry,
   host,
+  pollMs: 1500,
 });
 telegramGateway.start();
+
+// 飞书：每 bot 一个飞书机器人（一个飞书应用 = 一个账号 = 一个 bot 身份）
+const feishuGateway = new FeishuGateway({ registry: botRegistry, host, reconcileMs: 15_000 });
+feishuGateway.start();
 
 // ---- Ops（Phase 6）----------------------------------------------------------
 
