@@ -15,7 +15,7 @@ import {
   Unplug,
 } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
-import { useWorkbench, selectUnitSessions, type ViewMode } from "../store/useWorkbench.ts";
+import { useWorkbench, selectUnitSessions, type ViewMode, type BotWriteGuards } from "../store/useWorkbench.ts";
 import { useShell } from "../store/useShell.ts";
 import {
   asModelId,
@@ -376,37 +376,44 @@ export function Sidebar() {
             if (editingUnit) sh.closeUnitSettings();
             else sh.closeAddBot();
           }}
-          onSubmit={(draft) => {
+          onSubmit={async (draft, opts) => {
             const sh = useShell.getState();
             if (editingUnit) {
-              // 编辑：保留 id / kind / assets / tags，只换用户能改的那些字段
-              updateUnit({
-                ...editingUnit,
-                name: draft.name,
-                rootPath: draft.rootPath,
-                identity: {
-                  ...editingUnit.identity,
-                  role: draft.role,
-                  persona: draft.persona || undefined,
-                  sourcePath: "AGENTS.md",
-                  loadedAt: editingUnit.identity?.loadedAt ?? Date.now(),
+              // 编辑：保留 id / kind / assets / tags，只换用户能改的那些字段。
+              // updateUnit 会 await 并在盘上被改过时抛 conflict —— **不吞掉**，
+              // 让对话框弹「覆盖 / 重新加载 / 取消」，静默覆盖就是数据丢失。
+              await updateUnit(
+                {
+                  ...editingUnit,
+                  name: draft.name,
+                  rootPath: draft.rootPath,
+                  identity: {
+                    ...editingUnit.identity,
+                    role: draft.role,
+                    persona: draft.persona || undefined,
+                    sourcePath: "AGENTS.md",
+                    loadedAt: editingUnit.identity?.loadedAt ?? Date.now(),
+                  },
+                  // 主执行器没选（daemon 未连接）就落空绑定，run() 里 find 返回 undefined 是安全的
+                  bindings: draft.runtimeId
+                    ? [
+                        {
+                          runtimeId: asRuntimeId(draft.runtimeId),
+                          modelHint: draft.modelHint ? asModelId(draft.modelHint) : undefined,
+                          primary: true,
+                        },
+                      ]
+                    : [],
+                  agentsMd: draft.agentsMd,
+                  memory: draft.memory,
                 },
-                // 主执行器没选（daemon 未连接）就落空绑定，run() 里 find 返回 undefined 是安全的
-                bindings: draft.runtimeId
-                  ? [
-                      {
-                        runtimeId: asRuntimeId(draft.runtimeId),
-                        modelHint: draft.modelHint ? asModelId(draft.modelHint) : undefined,
-                        primary: true,
-                      },
-                    ]
-                  : [],
-                agentsMd: draft.agentsMd,
-                memory: draft.memory,
-              });
+                opts?.overwrite === true ? {} : guardsOf(editingUnit),
+              );
               sh.closeUnitSettings();
             } else {
-              addUnit({
+              // 新建：等写盘结果再关窗。目录不存在 / daemon 没起都该让用户看见，
+              // 否则侧栏多一个刷新就没了的"幽灵 bot"。
+              await addUnit({
                 id: asUnitId(`bot-${Date.now().toString(36)}`),
                 rootPath: draft.rootPath,
                 name: draft.name,
@@ -445,6 +452,15 @@ const ACCOUNT_ITEMS: readonly { label: string; value: string }[] = [
   { label: "界面语言", value: "简体中文" },
   { label: "界面主题", value: "浅色" },
 ];
+
+/**
+ * 打开设置页那一刻的盘上真值 → 保存时当乐观锁基线。
+ * revision 抓「另一个窗口/别的设备改过 bot.json」，agentsMd hash 抓「用户在 VS Code
+ * 里改了 AGENTS.md」。两者任一不符 daemon 就拒写，由对话框让用户选谁赢。
+ */
+function guardsOf(u: WorkUnit): BotWriteGuards {
+  return { ifRevision: u.revision, ifAgentsMdHash: u.agentsMdMeta?.hash ?? "" };
+}
 
 /* ------------------------------------------------------------- 单元行 */
 

@@ -110,9 +110,20 @@ interface WorkbenchState {
 
   setView: (v: ViewMode) => void;
   selectUnit: (id: UnitId) => void;
-  addUnit: (u: WorkUnit) => void;
-  /** 改已有单元（bot 设置页保存）。按 id 替换，不切 activeUnitId，同样写穿 bot.json */
-  updateUnit: (u: WorkUnit) => void;
+  addUnit: (u: WorkUnit) => Promise<void>;
+  /**
+   * 改已有单元（bot 设置页保存）。按 id 替换，不切 activeUnitId，同样写穿 bot.json
+   * 与 AGENTS.md。guards 传进入设置页时看到的 revision / AGENTS.md hash 作乐观锁基线。
+   *
+   * 盘上在这期间被改过（VS Code 改了文件 / 另一个窗口保存）时**抛 code="conflict"**，
+   * 且不会写盘——调用方负责弹「覆盖 / 重新加载 / 取消」。
+   */
+  updateUnit: (u: WorkUnit, guards?: BotWriteGuards) => Promise<void>;
+  /**
+   * 重拉某个单元的定义（settings 面板的「重新加载」）。daemon 无缓存，每次都重扫盘，
+   * 所以这能拿到用户在 VS Code 里改完的 AGENTS.md 新内容。
+   */
+  reloadUnit: (id: UnitId) => Promise<WorkUnit | null>;
   selectSession: (id: SessionId | null) => void;
   selectRuntime: (id: string) => void;
   /** 换模型。非法组合（该执行器不接这个模型）静默拒绝，不改状态 */
@@ -199,6 +210,29 @@ function persistPrefs(map: ModelPrefsMap): void {
   }
 }
 
+/** 写盘乐观锁基线：进入设置页时看到的盘上真值 */
+export interface BotWriteGuards {
+  readonly ifRevision?: number;
+  readonly ifAgentsMdHash?: string;
+}
+
+/** daemon 判定"盘上已被改过"时的错误码。前端据此弹三选一而不是静默覆盖。 */
+export const BOT_CONFLICT = "conflict";
+
+/** 写盘成功后把 daemon 回的 revision 写回 state——否则下次保存会拿旧基线撞自己。 */
+function applyPutResult(
+  set: (fn: (s: WorkbenchState) => Partial<WorkbenchState>) => void,
+  _get: () => WorkbenchState,
+  unitId: string,
+  res: unknown,
+): void {
+  const revision = (res as { revision?: unknown } | null)?.revision;
+  if (typeof revision !== "number") return;
+  set((s) => ({
+    units: s.units.map((x) => (x.id === unitId ? { ...x, revision } : x)),
+  }));
+}
+
 export const useWorkbench = create<WorkbenchState>((set, get) => ({
   // 评审后清 mock（用户指示）：初始全空，一切数据来自真实 daemon——
   // 空态是设计的一部分（ZCode 原则：功能不因空而消失），不再用样例数据撑门面
@@ -253,27 +287,42 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
 
   selectUnit: (activeUnitId) => set({ activeUnitId, activeSessionId: null }),
 
-  addUnit: (u) => {
+  addUnit: async (u) => {
     set((s) => ({
       units: [...s.units, u],
       activeUnitId: u.id,
       activeSessionId: null,
     }));
-    // WP-5 写穿：daemon 可达则落盘 <rootPath>/.agent-workbench/bot.json（fire-and-forget；
-    // 失败只影响持久化，不影响 UI——mock 模式 / daemon 未起是正常态）
-    void import("../adapters/daemon/client.ts")
-      .then(({ putBotDefinition, defaultDaemonEndpoint }) => putBotDefinition(u, defaultDaemonEndpoint()))
-      .catch((err: unknown) => console.warn("[workbench] bot 定义写盘失败（daemon 未起？）", err));
+    // WP-5 写穿：落盘 <rootPath>/.agent-workbench/bot.json 与 <rootPath>/AGENTS.md。
+    // 这里**不吞异常**——目录不存在（root_not_found）时侧栏会多一个刷新即逝的幽灵 bot，
+    // 调用方（新建对话框）需要把这句话摆到用户面前。daemon 没起时也照抛。
+    const { putBotDefinition, defaultDaemonEndpoint } = await import("../adapters/daemon/client.ts");
+    const r = await putBotDefinition(u, defaultDaemonEndpoint());
+    applyPutResult(set, get, u.id, r);
   },
 
   // 改已有单元：state 里按 id 替换 + 同样写穿 bot.json。
   // addUnit 只管新建，bot 设置页改完 AGENTS.md / 换执行器都走这里。
   // 刻意不新建条目也不切 activeUnitId —— 编辑一个后台单元不该把用户拽走。
-  updateUnit: (u) => {
+  //
+  // 与 addUnit 的区别：**await 并把冲突抛回调用方**。bot 设置页必须知道"盘上已被改过"，
+  // 否则用户在 VS Code 改完 AGENTS.md、在设置页看到旧的、点保存就静默覆盖——那是数据丢失。
+  updateUnit: async (u, guards) => {
     set((s) => ({ units: s.units.map((x) => (x.id === u.id ? u : x)) }));
-    void import("../adapters/daemon/client.ts")
-      .then(({ putBotDefinition, defaultDaemonEndpoint }) => putBotDefinition(u, defaultDaemonEndpoint()))
-      .catch((err: unknown) => console.warn("[workbench] bot 定义写盘失败（daemon 未起？）", err));
+    const { putBotDefinition, defaultDaemonEndpoint } = await import("../adapters/daemon/client.ts");
+    const r = await putBotDefinition(u, defaultDaemonEndpoint(), guards ?? {});
+    applyPutResult(set, get, u.id, r);
+  },
+
+  // 重新从盘上拉一个单元。bot.list 每次重扫盘（无缓存），所以这就是"用户在 VS Code
+  // 改完 AGENTS.md 后刷新"的那一下。合并进 units 同 id 条目并回传，供设置页预填。
+  reloadUnit: async (id) => {
+    const { listBotDefinitions, defaultDaemonEndpoint } = await import("../adapters/daemon/client.ts");
+    const defs = await listBotDefinitions(defaultDaemonEndpoint());
+    const fresh = defs.find((d) => d.id === id);
+    if (fresh === undefined) return null;
+    set((s) => ({ units: s.units.map((x) => (x.id === id ? { ...x, ...fresh } : x)) }));
+    return { ...(get().units.find((x) => x.id === id) ?? fresh) };
   },
 
   selectSession: (activeSessionId) => set({ activeSessionId }),

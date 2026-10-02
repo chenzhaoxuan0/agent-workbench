@@ -4,11 +4,12 @@ import {
   Check,
   FileText,
   Plus,
+  RefreshCw,
   Wand2,
   X,
   type LucideIcon,
 } from "lucide-react";
-import { useWorkbench, selectVisibleModels } from "../store/useWorkbench.ts";
+import { useWorkbench, selectVisibleModels, BOT_CONFLICT, type BotWriteGuards } from "../store/useWorkbench.ts";
 import type { WorkUnit } from "../core/units.ts";
 import { cn } from "./cn.ts";
 
@@ -96,7 +97,11 @@ export function AddBotDialog({
    */
   initial?: WorkUnit | null;
   onClose: () => void;
-  onSubmit: (draft: AddBotDraft) => void;
+  /**
+   * 提交。返回的 Promise 若以 code="conflict" 拒绝，表示「盘上已被改过，未写入」——
+   * 对话据展示覆盖 / 重新加载 / 取消三选一。`opts.overwrite` 让调用方跳过乐观锁。
+   */
+  onSubmit: (draft: AddBotDraft, opts?: { overwrite?: boolean }) => void | Promise<void>;
 }) {
   const runtimes = useWorkbench((s) => s.runtimes);
   const [section, setSection] = useState<Section>("identity");
@@ -111,6 +116,14 @@ export function AddBotDialog({
   const [error, setError] = useState<string | null>(null);
   const [runtimeId, setRuntimeId] = useState<string>("");
   const [modelHint, setModelHint] = useState<string | null>(null);
+  /** 打开这一刻盘上的真值，保存时当乐观锁基线传回 daemon */
+  const [baseGuards, setBaseGuards] = useState<BotWriteGuards>({});
+  /** 盘上已被改过、未写入。等用户选：覆盖 / 重新加载 / 取消 */
+  const [conflict, setConflict] = useState<{ reason: string } | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [diskNote, setDiskNote] = useState<string | null>(null);
+  /** AGENTS.md 落盘位置（编辑模式才有）。显示它，用户才知道去 VS Code 改哪个文件。 */
+  const [agentsMdMeta, setAgentsMdMeta] = useState<WorkUnit["agentsMdMeta"]>(undefined);
 
   const isEdit = Boolean(initial);
 
@@ -118,25 +131,37 @@ export function AddBotDialog({
   // 不能在此处 .map() 出新对象——那会回到 getSnapshot 无限循环的老坑
   const runtimeModelSpecs = useWorkbench(selectVisibleModels(runtimeId));
 
+  /** 用一个单元定义填满整张表单（预填与「重新加载」共用，免得两处走偏） */
+  const fillFrom = (b: WorkUnit) => {
+    const binding = b.bindings.find((x) => x.primary) ?? b.bindings[0];
+    setName(b.name);
+    setRole(b.identity?.role ?? "");
+    setRootPath(b.rootPath);
+    setAgentsMd(b.agentsMd ?? "");
+    setMdTouched(true);
+    setPersona(b.identity?.persona ?? "");
+    setPersonaTouched(true);
+    setMemory(b.memory ?? { semantic: true, episodic: true, procedural: true });
+    setRuntimeId(binding?.runtimeId ?? "");
+    setModelHint(binding?.modelHint ?? null);
+    setAgentsMdMeta(b.agentsMdMeta);
+    setBaseGuards({
+      ifRevision: b.revision,
+      ifAgentsMdHash: b.agentsMdMeta?.hash ?? "",
+    });
+  };
+
   // 打开时重置 / 预填。编辑模式**不**把 mdTouched / personaTouched 置回 false：
   // 那两个 flag 的含义是「用户没亲手改过，可以跟着名称自动重生成」。
   // 编辑一个已经写好 AGENTS.md 的 bot 时，名字一改就把岗位说明书冲掉是不可接受的。
   useEffect(() => {
     if (!open) return;
     setError(null);
+    setConflict(null);
+    setDiskNote(null);
     setSection("identity");
     if (initial) {
-      const b = initial.bindings.find((x) => x.primary) ?? initial.bindings[0];
-      setName(initial.name);
-      setRole(initial.identity?.role ?? "");
-      setRootPath(initial.rootPath);
-      setAgentsMd(initial.agentsMd ?? "");
-      setMdTouched(true);
-      setPersona(initial.identity?.persona ?? "");
-      setPersonaTouched(true);
-      setMemory(initial.memory ?? { semantic: true, episodic: true, procedural: true });
-      setRuntimeId(b?.runtimeId ?? "");
-      setModelHint(b?.modelHint ?? null);
+      fillFrom(initial);
     } else {
       setName("");
       setRole("");
@@ -153,6 +178,8 @@ export function AddBotDialog({
         useWorkbench.getState().runtimes.length > 0 ? useWorkbench.getState().activeRuntimeId : "",
       );
       setModelHint(null);
+      setAgentsMdMeta(undefined);
+      setBaseGuards({});
     }
   }, [open, initial]);
 
@@ -181,20 +208,57 @@ export function AddBotDialog({
     return () => document.removeEventListener("keydown", onKey);
   }, [open, onClose]);
 
-  const create = () => {
+  const draft = (): AddBotDraft => ({
+    name: name.trim(),
+    role: role.trim(),
+    rootPath: rootPath.trim().replace(/\/+$/, ""),
+    runtimeId,
+    modelHint,
+    persona: persona.trim(),
+    memory,
+    agentsMd,
+  });
+
+  const submit = async (overwrite = false) => {
+    if (saving) return;
     if (name.trim().length === 0) return setError("给 bot 起个名字");
     if (rootPath.trim().length === 0) return setError("工作目录不能为空");
     if (agentsMd.trim().length === 0) return setError("AGENTS.md 不能为空 —— 它就是这个 bot 的岗位说明书");
-    onSubmit({
-      name: name.trim(),
-      role: role.trim(),
-      rootPath: rootPath.trim().replace(/\/+$/, ""),
-      runtimeId,
-      modelHint,
-      persona: persona.trim(),
-      memory,
-      agentsMd: agentsMd,
-    });
+    setSaving(true);
+    setError(null);
+    try {
+      await onSubmit(draft(), overwrite ? { overwrite: true } : undefined);
+    } catch (err: unknown) {
+      const code = (err as { code?: unknown } | null)?.code;
+      if (code === BOT_CONFLICT) {
+        // 盘上已被改过，daemon 没写。这里**不做任何重试**——让用户决定谁赢。
+        const reason = String((err as { data?: { reason?: unknown } }).data?.reason ?? "");
+        setConflict({ reason });
+        setError(null);
+      } else {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  /** 重拉盘上定义（用户在 VS Code 改完 AGENTS.md 后的那一下）。daemon 无缓存，每次重扫盘。 */
+  const reloadFromDisk = async () => {
+    if (initial === undefined || initial === null) return;
+    try {
+      const fresh = await useWorkbench.getState().reloadUnit(initial.id);
+      if (fresh === null) {
+        setDiskNote("盘上找不到这个 bot 的定义了（bot.json 可能被删了）");
+        return;
+      }
+      fillFrom(fresh);
+      setConflict(null);
+      setError(null);
+      setDiskNote(null);
+    } catch (err: unknown) {
+      setDiskNote(`重新加载失败：${err instanceof Error ? err.message : String(err)}`);
+    }
   };
 
   if (!open) return null;
@@ -422,12 +486,35 @@ export function AddBotDialog({
 
             {section === "agentsmd" && (
               <div className="flex h-full min-h-0 flex-col gap-2">
-                <div className="flex shrink-0 items-center gap-1">
-                  <span className="flex items-center gap-1 text-caption text-ash">
-                    <FileText size={11} />
-                    AGENTS.md · 岗位说明书
+                {/* 落盘位置 + 重新加载：这是"文件夹即 bot"能不能被用户看见的关键一行。
+                    不显示路径，用户就不知道该去 VS Code 改哪个文件。 */}
+                <div className="flex shrink-0 items-center gap-2">
+                  <span className="flex min-w-0 items-center gap-1 text-caption text-ash">
+                    <FileText size={11} className="shrink-0" />
+                    <span className="shrink-0">AGENTS.md · 岗位说明书</span>
+                    {isEdit && agentsMdMeta && (
+                      <span
+                        className="truncate font-mono text-[10px] text-ash/80"
+                        title={`编辑这个文件 → 点右侧「重新加载」→ 内容同步进来\n${agentsMdMeta.path}`}
+                      >
+                        · {agentsMdMeta.path}
+                      </span>
+                    )}
+                    {isEdit && !agentsMdMeta && (
+                      <span className="text-[10px] text-loss">· 文件不存在，保存时会创建</span>
+                    )}
                   </span>
-                  <div className="ml-auto flex items-center gap-1">
+                  {isEdit && (
+                    <button
+                      onClick={() => void reloadFromDisk()}
+                      title="丢弃当前编辑内容，从磁盘重新读取"
+                      className="ml-auto flex shrink-0 items-center gap-1 rounded-btn px-1.5 py-0.5 text-caption text-graphite hover:bg-line-soft hover:text-ink"
+                    >
+                      <RefreshCw size={10} />
+                      重新加载
+                    </button>
+                  )}
+                  <div className={cn("flex items-center gap-1", !isEdit && "ml-auto")}>
                     {SECTION_LIBRARY.map((s) => (
                       <button
                         key={s.label}
@@ -471,30 +558,67 @@ export function AddBotDialog({
         </div>
 
         {/* 底部 */}
-        <div className="flex h-12 shrink-0 items-center gap-3 border-t border-line px-4">
-          {error ? (
-            <p className="text-caption text-loss">{error}</p>
-          ) : runtimes.length === 0 ? (
-            <p className="text-caption text-ash">
-              未连接 daemon，这个 bot 会先以「无执行器」保存 —— 之后可在设置里补
-            </p>
+        <div className="flex min-h-12 shrink-0 items-center gap-3 border-t border-line px-4 py-2">
+          {conflict !== null ? (
+            <>
+              {/* 冲突态整条换掉提示语：此刻最重要的信息是"你没写进去"，不是"保存" */}
+              <p className="min-w-0 flex-1 text-caption text-loss">
+                磁盘上的 {conflict.reason === "agents_md" ? "AGENTS.md" : "bot.json"} 在你编辑期间被改过
+                （多半是在 VS Code 里直接编辑了）。<span className="font-medium">这次没有写入。</span>
+              </p>              <div className="flex shrink-0 items-center gap-2">
+                <button
+                  onClick={() => void reloadFromDisk()}
+                  className="rounded-btn border border-line px-3 py-1.5 text-body-sm text-ink hover:bg-line-soft"
+                >
+                  重新加载
+                </button>
+                <button
+                  onClick={() => void submit(true)}
+                  className="rounded-btn px-3 py-1.5 text-body-sm text-loss hover:bg-loss/10"
+                  title="用这里的版本覆盖磁盘上的改动"
+                >
+                  仍然覆盖
+                </button>
+                <button
+                  onClick={() => setConflict(null)}
+                  className="rounded-btn bg-ink px-3 py-1.5 text-body-sm text-canvas hover:bg-black"
+                >
+                  取消
+                </button>
+              </div>
+            </>
           ) : (
-            <p className="text-caption text-ash">
-              {isEdit ? "保存后写穿到该 bot 的 bot.json" : "创建后可随时在编辑器里改 AGENTS.md 与人设"}
-            </p>
+            <>
+              {error ? (
+                <p className="text-caption text-loss">{error}</p>
+              ) : diskNote !== null ? (
+                <p className="text-caption text-loss">{diskNote}</p>
+              ) : runtimes.length === 0 ? (
+                <p className="text-caption text-ash">
+                  未连接 daemon，这个 bot 会先以「无执行器」保存 —— 之后可在设置里补
+                </p>
+              ) : (
+                <p className="text-caption text-ash">
+                  {isEdit
+                    ? "保存写穿到 bot.json 与工作目录下的 AGENTS.md"
+                    : "创建后可随时在编辑器里改 AGENTS.md 与人设"}
+                </p>
+              )}
+              <div className="ml-auto flex items-center gap-2">
+                <button onClick={onClose} className="rounded-btn px-3 py-1.5 text-body-sm text-graphite hover:bg-line-soft hover:text-ink">
+                  取消
+                </button>
+                <button
+                  onClick={() => void submit(false)}
+                  disabled={saving}
+                  className="flex items-center gap-1 rounded-btn bg-ink px-3 py-1.5 text-body-sm text-canvas hover:bg-black disabled:opacity-50"
+                >
+                  {isEdit ? <Check size={11} /> : <Plus size={11} />}
+                  {saving ? "写入中…" : isEdit ? "保存" : "创建 bot"}
+                </button>
+              </div>
+            </>
           )}
-          <div className="ml-auto flex items-center gap-2">
-            <button onClick={onClose} className="rounded-btn px-3 py-1.5 text-body-sm text-graphite hover:bg-line-soft hover:text-ink">
-              取消
-            </button>
-            <button
-              onClick={create}
-              className="flex items-center gap-1 rounded-btn bg-ink px-3 py-1.5 text-body-sm text-canvas hover:bg-black"
-            >
-              {isEdit ? <Check size={11} /> : <Plus size={11} />}
-              {isEdit ? "保存" : "创建 bot"}
-            </button>
-          </div>
         </div>
       </div>
     </div>
