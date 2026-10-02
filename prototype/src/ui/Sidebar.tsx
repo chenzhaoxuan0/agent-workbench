@@ -10,6 +10,7 @@ import {
   ImagePlus,
   MessageCirclePlus,
   Plus,
+  Radio,
   Search,
   Settings,
   SlidersHorizontal,
@@ -539,6 +540,10 @@ function UnitRow({
 }) {
   // ZCode: unavailableLocalDirectory —— 路径不可用要显式说出来，不能当成正常单元
   const unavailable = unit.tags.includes("目录不可用");
+  // 只数启用的渠道：声明了但停用的不算「找得到我」
+  const enabledChannels = (unit.channels ?? [])
+    .filter((c) => c.enabled === true)
+    .map((c) => (c.kind === "feishu" ? "飞书" : c.kind === "telegram" ? "Telegram" : c.kind === "webhook" ? "Webhook" : c.kind));
   const isBot = unit.kind === "bot";
 
   // 副标题 = 在行任务（本单元最新会话标题）优先，其次身份角色（GrokBot 的行结构）
@@ -597,6 +602,19 @@ function UnitRow({
         <span className="flex min-w-0 flex-1 flex-col gap-0.5 pt-0.5">
           <span className="flex items-baseline gap-2">
             <span className="truncate text-body font-medium text-ink">{unit.name}</span>
+            {/* 渠道徽标：「这个 bot 找得到我」这件事一眼可见（docs/09 §五）。
+                极小、灰、不抢色——它是事实提示不是状态灯。放名字后面而不是角标，
+                因为角标已经给了设置入口。 */}
+            {enabledChannels.length > 0 && (
+              <span
+                className="flex shrink-0 items-center gap-0.5 text-[10px] text-ash"
+                title={`已接渠道：${enabledChannels.join("、")}`}
+              >
+                {enabledChannels.map((k) => (
+                  <Radio key={k} size={9} />
+                ))}
+              </span>
+            )}
             {latest && (
               <span className="tnum ml-auto shrink-0 text-caption text-ash transition-opacity group-hover/row:opacity-0">
                 {lastActivityLabel(latest.startedAt)}

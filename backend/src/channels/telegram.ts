@@ -173,7 +173,7 @@ export class TelegramGateway {
   private async handleText(bot: BotDefinition, acc: TgAccountSpec, text: string): Promise<void> {
     const { botToken: token, chatId } = acc;
     try {
-      const { reply } = await runBotTurn(this.opts.host, bot, text);
+      const { reply } = await runBotTurn(this.opts.host, bot, text, { source: "telegram" });
       await this.sendTelegram(this.opts.apiBase, token, chatId, reply);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);

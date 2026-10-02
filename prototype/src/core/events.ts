@@ -9,7 +9,7 @@
  * 新增事件类型 = 改 union + 各适配器补一个 mapper，渲染层不动。
  */
 
-import type { SessionId, UnitId } from "./units.ts";
+import type { SessionId, SessionSource, UnitId } from "./units.ts";
 
 /**
  * 计划步骤的状态机。
@@ -28,7 +28,23 @@ export interface PlanStep {
 
 export type RuntimeEvent =
   // ---- 会话生命周期 ----
-  | { readonly type: "session.started"; readonly sessionId: SessionId; readonly unitId: UnitId }
+  /**
+   * 会话开始。带来源与实际生效模型，是为了让时间轴第一行就说清两件事
+   * （docs/09 §六.1 / §六.2）：
+   * - 这个会话从哪来（工作台 / 飞书 / Telegram / webhook / MCP / 自动化）
+   * - 你配的 modelHint 是不是被丢掉了，丢给了哪个
+   *
+   * 这两个字段缺了，用户就只能靠猜：以为在用便宜模型、以为在飞书里的对话
+   * 和桌面是两回事。
+   */
+  | {
+      readonly type: "session.started";
+      readonly sessionId: SessionId;
+      readonly unitId: UnitId;
+      readonly source?: SessionSource;
+      readonly modelActual?: string;
+      readonly modelHintDropped?: string;
+    }
   | { readonly type: "session.status"; readonly sessionId: SessionId; readonly status: string }
   /**
    * 执行器原生会话引用（WP-10：cherry 的 resume-token 事件化）。

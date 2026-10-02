@@ -30,7 +30,7 @@ import { ArenaRunner } from "./ops/arena.ts";
 import { MemoryService } from "./memory/memory.ts";
 import { BotRegistry } from "./bots/registry.ts";
 import { TelegramGateway } from "./channels/telegram.ts";
-import { FeishuGateway } from "./channels/feishu.ts";
+import { FeishuGateway, diagnoseFeishuAccount } from "./channels/feishu.ts";
 import { askBot } from "./channels/askBot.ts";
 import { asModelId, asSessionId, asUnitId } from "../../prototype/src/core/units.ts";
 
@@ -206,7 +206,7 @@ const httpRoutes: HttpRoute[] = [
       // 评审 P3：waitMs 默认 60s、上限 120s——慢轮次不该无限占住 HTTP 连接
       const rawWait = typeof p.waitMs === "number" ? p.waitMs : 60_000;
       const waitMs = Math.min(Math.max(rawWait, 1_000), 120_000);
-      const { sessionId, reply } = await askBot(botRegistry, host, p.botId, p.text, { waitMs });
+      const { sessionId, reply } = await askBot(botRegistry, host, p.botId, p.text, { waitMs, source: "webhook" });
       return { sessionId, reply };
     },
   },
@@ -428,6 +428,31 @@ registerMethod("bot.put", (params) => {
   if (typeof p.ifAgentsMdHash === "string") opts.ifAgentsMdHash = p.ifAgentsMdHash;
   return botRegistry.putBot(p.unit, opts);
 });
+// 渠道连通性诊断（向导第三步 / docs/09 §五）。配错了以前只有一行 warn，
+// 界面上表现为「绑了没反应」，两边对不上。
+registerMethod("channel.diagnose", async (params) => {
+  const p = (params ?? {}) as { botId?: string; accountId?: string };
+  if (typeof p.botId !== "string" || p.botId === "") {
+    throw Object.assign(new Error("botId is required"), { code: "bad_params" });
+  }
+  const specs = feishuGateway.specsOf(p.botId);
+  const one = p.accountId === undefined ? (specs[0] ?? null) : feishuGateway.specOf(p.botId, p.accountId);
+  if (one === null) {
+    throw Object.assign(
+      new Error(`bot ${p.botId} 没有可诊断的飞书账号（没配 / 已停用 / 密钥解不开）`),
+      { code: "no_channel" },
+    );
+  }
+  return diagnoseFeishuAccount(one);
+});
+// 主动出站：让 bot 主动开口（日报、告警、自动化结果）。之前只有回程。
+registerMethod("channel.send", async (params) => {
+  const p = (params ?? {}) as { botId?: string; accountId?: string; receiveId?: string; text?: string };
+  if (typeof p.botId !== "string" || p.botId === "") throw Object.assign(new Error("botId is required"), { code: "bad_params" });
+  if (typeof p.receiveId !== "string" || p.receiveId === "") throw Object.assign(new Error("receiveId (chat_id) is required"), { code: "bad_params" });
+  if (typeof p.text !== "string" || p.text === "") throw Object.assign(new Error("text is required"), { code: "bad_params" });
+  return feishuGateway.sendTo(p.botId, p.accountId ?? "main", p.receiveId, p.text);
+});
 registerMethod("bot.list", () => botRegistry.listBots());
 // 目录探测（docs/09 §七 P0-B）：纯读，导入对话框三分支全靠它决定
 registerMethod("bot.inspect", (params) => {
@@ -478,7 +503,7 @@ registerMethod("bot.ask", (params) => {
   }
   // 评审 P3：waitMs 设上限，防误设大值无限占住 WS RPC
   const waitMs = typeof p.waitMs === "number" ? Math.min(Math.max(p.waitMs, 1_000), 600_000) : undefined;
-  return askBot(botRegistry, host, p.botId, p.text, { waitMs });
+  return askBot(botRegistry, host, p.botId, p.text, { waitMs, source: "webhook" });
 });
 
 registerMethod("memory.routing.get", () => memory.getRouting());

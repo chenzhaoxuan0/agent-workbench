@@ -24,7 +24,7 @@ import type {
   UnitId,
 } from "../contract.ts";
 import { log } from "../log.ts";
-import { asSessionId } from "../../../prototype/src/core/units.ts";
+import { asSessionId, type SessionSource } from "../../../prototype/src/core/units.ts";
 import type { TraceSink } from "./trace.ts";
 import type { Store } from "../store/db.ts";
 import type { PermissionGate } from "../permissions/gate.ts";
@@ -47,6 +47,12 @@ interface HostSession {
   status: SessionStatus;
   readonly startedAt: number;
   endedAt: number | undefined;
+  /** 来源徽标（docs/09 §六.2）。缺省 = 工作台 */
+  readonly source: SessionSource;
+  /** 实际生效的模型（modelHint 失效时的回落结果） */
+  readonly modelActual: string | null;
+  /** 被丢掉的 modelHint。非空 = 界面必须弱提示（docs/09 §六.1） */
+  readonly modelHintDropped: string | null;
   stats: {
     messages: number;
     toolCalls: number;
@@ -80,6 +86,26 @@ export interface StartSessionInput {
   readonly model: ModelId | null;
   readonly mode?: StartRequest["mode"];
   readonly reasoningLevel?: string;
+  /** 这个会话从哪来（docs/09 §六.2 的来源徽标）。缺省 = 工作台 */
+  readonly source?: SessionSource;
+}
+
+/**
+ * modelHint 回落判定（docs/09 §六.1）。
+ *
+ * 回落顺序按 units.ts 契约原文：用户所选 → 这个 hint → 执行器默认。
+ * 这里把「最终用哪个」和「hint 有没有被丢掉」一起算出来交给会话，
+ * 界面才有东西可显示——只在 adapter 里默默回落的话，UI 永远不知道发生过。
+ */
+function resolveModelFor(
+  adapter: ExecutorAdapter,
+  requested: ModelId | null,
+): { model: ModelId | null; droppedHint: string | null } {
+  const supported = adapter.models;
+  if (requested === null) return { model: null, droppedHint: null };
+  if (supported.some((m) => m.id === requested)) return { model: requested, droppedHint: null };
+  // 不可用 → 落执行器默认（清单首项，与注册表口径一致），并把丢掉的那个记下来
+  return { model: supported[0]?.id ?? null, droppedHint: String(requested) };
 }
 
 export class RuntimeHost {
@@ -170,6 +196,12 @@ export class RuntimeHost {
         status: row.status as SessionStatus,
         startedAt: row.startedAt,
         endedAt: row.endedAt ?? undefined,
+        // 从盘装载的死会话：来源与模型没落 state.db（老会话更是连字段都没有），
+        // 只能按「工作台起的」处理。徽标显示成「工作台」而不是空——空会让人以为
+        // 这个字段没实现。
+        source: "workbench",
+        modelActual: null,
+        modelHintDropped: null,
         stats: { ...row.stats },
         seq: 0,
         impl: null,
@@ -221,6 +253,9 @@ export class RuntimeHost {
       status: h.status,
       startedAt: h.startedAt,
       endedAt: h.endedAt,
+      source: h.source,
+      modelActual: h.modelActual ?? undefined,
+      modelHintDropped: h.modelHintDropped ?? undefined,
       ephemeral: false,
       stats: { ...h.stats },
     };
@@ -240,6 +275,12 @@ export class RuntimeHost {
   async startSession(input: StartSessionInput): Promise<Session> {
     const adapter = this.getAdapter(input.runtimeId);
 
+    // modelHint 的回落在这里一次解决，并把「实际生效」与「被丢掉的 hint」都算出来。
+    // 契约原文说 hint 失效会被静默忽略——那正是 docs/09 §六.1 要补掉的静默：
+    // 用户以为自己在用便宜模型，实际在烧贵的。适配器自己也会回落，但只有 host
+    // 知道它回落到了哪儿，所以判定收在这一处，不散进每个 adapter。
+    const { model: effective, droppedHint } = resolveModelFor(adapter, input.model);
+
     // 晚绑定 sink：adapter.start 需要一个 sink，而台账行要等 start 返回才知道 id。
     // 适配器契约保证 start() 期间不发事件（turn 由 send 驱动），这里只是双保险。
     let sinkRef: ((event: RuntimeEvent) => void) | null = null;
@@ -249,7 +290,7 @@ export class RuntimeHost {
         unitName: input.unitName,
         rootPath: input.rootPath,
         prompt: input.prompt,
-        model: input.model,
+        model: effective,
         mode: input.mode,
         reasoningLevel: input.reasoningLevel,
       },
@@ -264,6 +305,9 @@ export class RuntimeHost {
       status: "running",
       startedAt: Date.now(),
       endedAt: undefined,
+      source: input.source ?? "workbench",
+      modelActual: effective === null ? null : String(effective),
+      modelHintDropped: droppedHint,
       stats: { messages: 0, toolCalls: 0, inputTokens: 0, outputTokens: 0, costUsd: 0, durationMs: 0 },
       seq: 0,
       impl,
@@ -291,7 +335,16 @@ export class RuntimeHost {
     });
     this.store.insertMessage(h.id, Date.now(), "user", input.prompt);
 
-    const started: RuntimeEvent = { type: "session.started", sessionId: h.id, unitId: h.unitId };
+    const started: RuntimeEvent = {
+      type: "session.started",
+      sessionId: h.id,
+      unitId: h.unitId,
+      // 透明化三细节的落点：来源徽标 + 实际生效模型 + 被丢掉的 hint，
+      // 都随第一帧事件发出去，前端在时间轴第一行就能说清（docs/09 §六）
+      source: h.source,
+      modelActual: h.modelActual ?? undefined,
+      modelHintDropped: h.modelHintDropped ?? undefined,
+    };
     this.emitStamped(h, started);
 
     // 首轮 prompt：受理即返回，turn 进展全走事件流

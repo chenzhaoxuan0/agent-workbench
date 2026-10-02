@@ -10,6 +10,7 @@ import {
   X,
 } from "lucide-react";
 import type { RuntimeEvent } from "../core/events.ts";
+import { SESSION_SOURCE_LABEL } from "../core/units.ts";
 import { useWorkbench } from "../store/useWorkbench.ts";
 import { cn } from "./cn.ts";
 
@@ -180,14 +181,63 @@ const clock = (at: number) =>
 /** 事件卡：Soft Paper 面 + 16px 圆角 + 那一道唯一的阴影 */
 const card = "rounded-card bg-card px-4 py-3 shadow-subtle";
 
+/**
+ * 「会话开始」这一行同时回答两个问题（docs/09 §六.1 / §六.2）：
+ *
+ * 1. **这轮从哪来** —— 飞书里点的和工作台里点的，是同一个 bot 的同一段对话。
+ *    来源不同只体现为这一枚徽标，不产生第二套会话体系。
+ * 2. **实际在烧哪个模型** —— 你配的 modelHint 可能被静默丢掉（那家 CLI 不接），
+ *    落到了执行器默认。这件事只在 daemon 里发生，界面不说就等于没发生：
+ *    用户以为在用便宜模型，实际在烧贵的。
+ */
+function SessionStartRow({
+  event,
+  at,
+}: {
+  event: Extract<RuntimeEvent, { type: "session.started" }>;
+  at: number;
+}) {
+  const source = event.source ?? "workbench";
+  const fromWorkbench = source === "workbench";
+  return (
+    <div className="my-6 flex flex-wrap items-center gap-x-2 gap-y-1">
+      <span className="h-px flex-1 bg-line" />
+      <span className="tnum shrink-0 text-caption text-ash">会话开始 · {clock(at)}</span>
+      {/* 来源徽标：工作台是默认面，不必占位；其他端才亮出来 */}
+      {!fromWorkbench && (
+        <span
+          className="shrink-0 rounded-btn bg-teal-tint px-1.5 py-0.5 text-[10px] text-teal"
+          title="这个会话是从这个渠道发起的，和工作台里的是同一段对话"
+        >
+          来自{SESSION_SOURCE_LABEL[source]}
+        </span>
+      )}
+      {event.modelActual !== undefined && (
+        <span className="shrink-0 rounded-btn bg-line-soft px-1.5 py-0.5 font-mono text-[10px] text-graphite" title="实际生效的模型">
+          {event.modelActual}
+        </span>
+      )}
+      {event.modelHintDropped !== undefined && (
+        <span
+          className="shrink-0 rounded-btn bg-line-soft px-1.5 py-0.5 text-[10px] text-graphite"
+          title={`你配的默认模型 ${event.modelHintDropped} 这家执行器不接，已回落到执行器默认`}
+        >
+          配的 {event.modelHintDropped} 不可用，已回落
+        </span>
+      )}
+      <span className="h-px flex-1 bg-line" />
+    </div>
+  );
+}
+
 function Row({ event, at }: { event: RuntimeEvent; at: number }) {
   switch (event.type) {
     case "session.started":
     case "session.ended": {
-      const label =
-        event.type === "session.started"
-          ? `会话开始 · ${clock(at)}`
-          : `会话结束 · ${event.reason}`;
+      if (event.type === "session.started") {
+        return <SessionStartRow event={event} at={at} />;
+      }
+      const label = `会话结束 · ${event.reason}`;
       return (
         <div className="my-6 flex items-center gap-4">
           <span className="h-px flex-1 bg-line" />

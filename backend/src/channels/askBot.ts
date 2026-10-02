@@ -7,7 +7,7 @@
 
 import type { BotDefinition } from "../bots/registry.ts";
 import type { RuntimeHost } from "../runtime/host.ts";
-import { asModelId, asSessionId, asUnitId } from "../../../prototype/src/core/units.ts";
+import { asModelId, asSessionId, asUnitId, type SessionSource } from "../../../prototype/src/core/units.ts";
 import type { ModelId } from "../contract.ts";
 import { log } from "../log.ts";
 
@@ -33,7 +33,7 @@ export async function runBotTurn(
   host: RuntimeHost,
   bot: BotDefinition,
   text: string,
-  opts: { mode?: "plan" | "build" | "edit" | "yolo"; waitMs?: number } = {},
+  opts: { mode?: "plan" | "build" | "edit" | "yolo"; waitMs?: number; source?: SessionSource } = {},
 ): Promise<BotTurnResult> {
   const unitId = typeof bot.id === "string" ? bot.id : "";
   const rootPath = typeof bot.rootPath === "string" ? bot.rootPath : "";
@@ -68,6 +68,8 @@ export async function runBotTurn(
       prompt: text,
       model,
       mode: opts.mode ?? "yolo", // faceless 渠道无审批面
+      // 来源标记：时间轴上据此显示「来自飞书 / 来自 webhook」徽标（docs/09 §六.2）
+      source: opts.source ?? "workbench",
     });
     sessionId = s.id;
   }
@@ -95,7 +97,7 @@ export async function askBot(
   host: RuntimeHost,
   botId: string,
   text: string,
-  opts?: { mode?: "plan" | "build" | "edit" | "yolo"; waitMs?: number },
+  opts?: { mode?: "plan" | "build" | "edit" | "yolo"; waitMs?: number; source?: SessionSource },
 ): Promise<BotTurnResult> {
   const bot = await registry.getBot(botId);
   if (bot === undefined) throw Object.assign(new Error(`no such bot: ${botId}`), { code: "unknown_bot" });

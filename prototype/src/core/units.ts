@@ -188,6 +188,21 @@ export type SessionStatus =
   | "failed"
   | "done";
 
+/**
+ * 会话来源。四个端是同一个 bot 的四扇窗口，来源不同**只**体现在这个字段上
+ * （docs/09 §二推论 1：会话归属 bot，不归属端）——不产生第二套会话体系。
+ */
+export type SessionSource = "workbench" | "feishu" | "telegram" | "webhook" | "mcp" | "automation";
+
+export const SESSION_SOURCE_LABEL: Record<SessionSource, string> = {
+  workbench: "工作台",
+  feishu: "飞书",
+  telegram: "Telegram",
+  webhook: "webhook",
+  mcp: "MCP",
+  automation: "自动化",
+};
+
 export interface Session {
   readonly id: SessionId;
   readonly unitId: UnitId;
@@ -196,6 +211,16 @@ export interface Session {
   readonly status: SessionStatus;
   readonly startedAt: number;
   readonly endedAt?: number;
+  /** 缺省 = 工作台 Composer 起的。IM/webhook/MCP 起的带各自标记，时间轴上显示徽标 */
+  readonly source?: SessionSource;
+  /** 实际生效的模型。hint 指向该 CLI 不接的模型时，这是回落后的那一个 */
+  readonly modelActual?: string;
+  /**
+   * 被丢掉的 modelHint（docs/09 §六.1）。
+   * 契约原文说它「会被静默忽略」——要补掉的正是这个静默：用户以为在用便宜模型，
+   * 实际在烧贵的。非空 = 界面上必须弱提示一次。
+   */
+  readonly modelHintDropped?: string;
   /** 是否为项目模式下的短寿会话（worktree 隔离） */
   readonly ephemeral: boolean;
   readonly worktree?: { readonly path: string; readonly branch: string };
