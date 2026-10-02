@@ -404,11 +404,18 @@ registerMethod("memory.list", (params) => {
 });
 // ---- Bot 注册表（docs/08 WP-5）：bot 定义的落盘面 <rootPath>/.agent-workbench/bot.json ----
 registerMethod("bot.put", (params) => {
-  const p = (params ?? {}) as { unit?: Record<string, unknown> };
+  const p = (params ?? {}) as {
+    unit?: Record<string, unknown>;
+    ifRevision?: number;
+    ifAgentsMdHash?: string;
+  };
   if (p.unit === undefined || typeof p.unit !== "object") {
     throw Object.assign(new Error("unit is required"), { code: "bad_params" });
   }
-  return botRegistry.putBot(p.unit);
+  const opts: { ifRevision?: number; ifAgentsMdHash?: string } = {};
+  if (typeof p.ifRevision === "number") opts.ifRevision = p.ifRevision;
+  if (typeof p.ifAgentsMdHash === "string") opts.ifAgentsMdHash = p.ifAgentsMdHash;
+  return botRegistry.putBot(p.unit, opts);
 });
 registerMethod("bot.list", () => botRegistry.listBots());
 registerMethod("bot.roots.add", (params) => {
