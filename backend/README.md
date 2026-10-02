@@ -41,6 +41,48 @@ pnpm smoke:phase1   # …逐 Phase 到 smoke:phase7（回归基准线，改动�
 | `AGENT_WORKBENCH_HOME` | `~/.agent-workbench` | daemon 集中存储家（state.db / traces / usage / token 落这里）；bot 身份文件不在其中，跟各自工作目录走。旧 backend/.waku 首启自动平迁 |
 | `AGENT_WORKBENCH_LOG_LEVEL` | `info` | debug / info / warn / error |
 
+## 渠道：每 bot 一个飞书机器人
+
+渠道由 `bot.json` 的 `channels` 声明，daemon 每 15s reconcile 一次——改完保存，
+不重启就生效。形态是**多账号**：一个飞书应用 = 一个账号 = 一个 bot 身份。
+
+```jsonc
+// <rootPath>/.agent-workbench/bot.json
+{
+  "id": "bot-researcher",
+  "channels": [
+    {
+      "kind": "feishu",
+      "enabled": true,
+      "accounts": [
+        {
+          "id": "main",
+          "appId": "cli_a1b2c3",
+          "appSecret": { "source": "env", "id": "FEISHU_SECRET_RESEARCHER" },
+          "mentionOnly": true,
+          "allowFrom": ["ou_xxxxx"]
+        }
+      ]
+    }
+  ]
+}
+```
+
+- `appSecret` 是**引用**不是值。`{"source":"env","id":"变量名"}` 从进程环境取。
+  这样密钥根本不在文件里，push 泄漏在形态上就不可能。
+- `allowFrom` 空 = 不限，意味着任何人都能驱动这个 bot（bot 在 `yolo` 模式下
+  对着工作目录执行）。上线前先填。
+- `mentionOnly` 默认 true：群聊里只在被 @ 时应答，否则 bot 会接话接成旁白机。
+- 飞书侧要开：机器人能力 + 事件订阅 `im.message.receive_v1` + **长连接**模式
+  （webhook 模式要公网 URL 与签名校验，本机没有）。
+
+**没实现的**（有意不做，不是 bug）：富卡片、文档/云盘/多维表格、评论、图片与
+文件消息。只做纯文本收发。openclaw 的 `extensions/feishu` 有 130 个源文件做全功能
+平台，本项目只需要「收一句话回一句话」。
+
+验：`pnpm smoke:feishu`（不需要真凭据，验解析与 reconcile）；
+真连通要真 appId/appSecret，本冒烟验不到。
+
 ## 执行器现状（诚实清单）
 
 - **zcode**：**首选 `zcode app-server`（ZCode Protocol v1）全能力**——真流式 delta、
