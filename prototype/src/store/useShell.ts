@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { useWorkbench } from "./useWorkbench.ts";
+import type { UnitId } from "../core/units.ts";
 
 /**
  * 外壳状态 —— 和业务状态（工作单元 / 会话 / 事件流）分离。
@@ -139,6 +140,9 @@ interface ShellState {
    *  「添加 bot」的按钮收进了侧栏 ⋯ 之后，单元区的空态要能当第二个入口，
    *  两处共用一个开关。 */
   addBotOpen: boolean;
+  /** 正在编辑的单元 id —— 非 null 时同一个对话框切到「保存」模式并预填该 bot。
+   *  和 addBotOpen 二选一：新建 / 编辑共用一个对话框组件，不开第二份表单状态。 */
+  editUnitId: UnitId | null;
   /** 会话内视图（dsh view-selection：对话 / 轨迹 / Ops 与 Chat 并列的页签） */
   conversationView: ConversationView;
 
@@ -159,6 +163,8 @@ interface ShellState {
   setCommandOpen: (open: boolean) => void;
   openAddBot: () => void;
   closeAddBot: () => void;
+  openUnitSettings: (id: UnitId) => void;
+  closeUnitSettings: () => void;
 }
 
 export const useShell = create<ShellState>((set, get) => ({
@@ -173,6 +179,7 @@ export const useShell = create<ShellState>((set, get) => ({
   settingsSection: "general",
   conversationView: "chat",
   addBotOpen: false,
+  editUnitId: null,
 
   setMainView: (mainView) => set({ mainView }),
 
@@ -203,8 +210,10 @@ export const useShell = create<ShellState>((set, get) => ({
 
   setCommandOpen: (commandOpen) => set({ commandOpen }),
 
-  openAddBot: () => set({ addBotOpen: true }),
+  openAddBot: () => set({ addBotOpen: true, editUnitId: null }),
   closeAddBot: () => set({ addBotOpen: false }),
+  openUnitSettings: (editUnitId) => set({ editUnitId, addBotOpen: false }),
+  closeUnitSettings: () => set({ editUnitId: null }),
 }));
 
 // ---------------------------------------------------------------------------
@@ -248,6 +257,7 @@ export function bindShellShortcuts(): () => void {
       const s = useShell.getState();
       if (s.commandOpen) s.setCommandOpen(false);
       else if (s.addBotOpen) s.closeAddBot();
+      else if (s.editUnitId !== null) s.closeUnitSettings();
       else if (s.settingsOpen) s.closeSettings();
       return;
     }

@@ -18,6 +18,7 @@ import { useShallow } from "zustand/react/shallow";
 import { useWorkbench, selectUnitSessions, type ViewMode } from "../store/useWorkbench.ts";
 import { useShell } from "../store/useShell.ts";
 import {
+  asModelId,
   asRuntimeId,
   asUnitId,
   type Session,
@@ -109,7 +110,14 @@ export function Sidebar() {
   const activeSessionId = useWorkbench((s) => s.activeSessionId);
   // 「添加 bot」的对话框开关在 useShell —— 标题行的 ＋ 和单元区空态两个入口共用
   const addBotOpen = useShell((s) => s.addBotOpen);
+  const editUnitId = useShell((s) => s.editUnitId);
+  const updateUnit = useWorkbench((s) => s.updateUnit);
   const settingsActive = useShell((s) => s.settingsOpen);
+  /** 正在编辑的单元；单元被删掉时（daemon 重载等）自动退化成 null，不会开出一个空表单 */
+  const editingUnit = useMemo(
+    () => (editUnitId ? units.find((u) => u.id === editUnitId) ?? null : null),
+    [editUnitId, units],
+  );
 
   // 目录不可用的单元也要列出来（ZCode: unavailableLocalDirectory）
   const allUnits = useMemo<readonly WorkUnit[]>(
@@ -277,6 +285,7 @@ export function Sidebar() {
                   unit={u}
                   active={active}
                   onSelect={() => selectUnit(u.id as UnitId)}
+                  onOpenSettings={() => useShell.getState().openUnitSettings(u.id as UnitId)}
                   schedule={u.schedule?.enabled ? u.schedule.description : undefined}
                 />
                 {active && <TaskList unitId={u.id as UnitId} sort={sort} />}
@@ -356,38 +365,75 @@ export function Sidebar() {
         </button>
       </div>
 
-      {/* 新建 bot 对话框（AGENTS.md 岗位说明书）。开关在 useShell，
-          侧栏 ⋯ 和单元区空态都能打开它 */}
-      {addBotOpen && (
+      {/* bot 对话框（AGENTS.md 岗位说明书）—— 新建 / 编辑共用一个组件。
+          开关在 useShell：侧栏的 ＋ 和空态卡开新建，单元行的齿轮开编辑。 */}
+      {(addBotOpen || editingUnit) && (
         <AddBotDialog
           open
-          onClose={() => useShell.getState().closeAddBot()}
-          onCreate={(draft) => {
-            addUnit({
-              id: asUnitId(`bot-${Date.now().toString(36)}`),
-              rootPath: draft.rootPath,
-              name: draft.name,
-              kind: "bot",
-              identity: {
-                role: draft.role,
-                persona: draft.persona || undefined,
-                sourcePath: "AGENTS.md",
-                loadedAt: Date.now(),
-              },
-              bindings: [
-                {
-                  runtimeId: asRuntimeId(draft.runtimeId),
-                  modelHint: (draft.modelHint ?? undefined) as Parameters<typeof addUnit>[0]["bindings"][number]["modelHint"],
-                  primary: true,
+          initial={editingUnit ?? null}
+          onClose={() => {
+            const sh = useShell.getState();
+            if (editingUnit) sh.closeUnitSettings();
+            else sh.closeAddBot();
+          }}
+          onSubmit={(draft) => {
+            const sh = useShell.getState();
+            if (editingUnit) {
+              // 编辑：保留 id / kind / assets / tags，只换用户能改的那些字段
+              updateUnit({
+                ...editingUnit,
+                name: draft.name,
+                rootPath: draft.rootPath,
+                identity: {
+                  ...editingUnit.identity,
+                  role: draft.role,
+                  persona: draft.persona || undefined,
+                  sourcePath: "AGENTS.md",
+                  loadedAt: editingUnit.identity?.loadedAt ?? Date.now(),
                 },
-              ],
-              assets: { agentFiles: ["AGENTS.md"], skillDirs: [] },
-              agentsMd: draft.agentsMd,
-              memory: draft.memory,
-              tags: ["新建"],
-              lastActiveAt: Date.now(),
-            });
-            useShell.getState().closeAddBot();
+                // 主执行器没选（daemon 未连接）就落空绑定，run() 里 find 返回 undefined 是安全的
+                bindings: draft.runtimeId
+                  ? [
+                      {
+                        runtimeId: asRuntimeId(draft.runtimeId),
+                        modelHint: draft.modelHint ? asModelId(draft.modelHint) : undefined,
+                        primary: true,
+                      },
+                    ]
+                  : [],
+                agentsMd: draft.agentsMd,
+                memory: draft.memory,
+              });
+              sh.closeUnitSettings();
+            } else {
+              addUnit({
+                id: asUnitId(`bot-${Date.now().toString(36)}`),
+                rootPath: draft.rootPath,
+                name: draft.name,
+                kind: "bot",
+                identity: {
+                  role: draft.role,
+                  persona: draft.persona || undefined,
+                  sourcePath: "AGENTS.md",
+                  loadedAt: Date.now(),
+                },
+                bindings: draft.runtimeId
+                  ? [
+                      {
+                        runtimeId: asRuntimeId(draft.runtimeId),
+                        modelHint: draft.modelHint ? asModelId(draft.modelHint) : undefined,
+                        primary: true,
+                      },
+                    ]
+                  : [],
+                assets: { agentFiles: ["AGENTS.md"], skillDirs: [] },
+                agentsMd: draft.agentsMd,
+                memory: draft.memory,
+                tags: ["新建"],
+                lastActiveAt: Date.now(),
+              });
+              sh.closeAddBot();
+            }
           }}
         />
       )}
@@ -435,11 +481,13 @@ function UnitRow({
   unit,
   active,
   onSelect,
+  onOpenSettings,
   schedule,
 }: {
   unit: WorkUnit;
   active: boolean;
   onSelect: () => void;
+  onOpenSettings: () => void;
   schedule?: string;
 }) {
   // ZCode: unavailableLocalDirectory —— 路径不可用要显式说出来，不能当成正常单元
@@ -459,58 +507,74 @@ function UnitRow({
   const avatar = botAvatarStyle(unit.name);
 
   return (
-    <button
-      onClick={onSelect}
-      aria-current={active}
-      className={cn(
-        "flex w-full items-start gap-3 rounded-input px-3 py-2.5 text-left",
-        active ? "bg-teal-tint" : "hover:bg-line-soft",
-        unavailable && "opacity-60",
-      )}
-    >
-      {isBot ? (
-        /* 彩色 blob 头像 + 双眼（GrokBot 式吉祥物形态），右下角日程角标 */
-        <span
-          aria-hidden
-          className={cn("relative flex h-11 w-11 shrink-0 items-center justify-center", avatar.shape)}
-          style={{ background: avatar.color }}
-        >
-          <span className="mt-0.5 flex gap-1">
-            <span className="h-2 w-1 rounded-full bg-white/90" />
-            <span className="h-2 w-1 rounded-full bg-white/90" />
-          </span>
-          {schedule && (
-            <span
-              className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-rail bg-teal"
-              title={schedule}
-            />
-          )}
-        </span>
-      ) : (
-        /* 项目保持方形字母文件夹标 */
-        <span
-          aria-hidden
-          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-btn bg-line-soft text-body font-medium text-graphite"
-        >
-          {unit.name.slice(0, 1)}
-        </span>
-      )}
-
-      <span className="flex min-w-0 flex-1 flex-col gap-0.5 pt-0.5">
-        <span className="flex items-baseline gap-2">
-          <span className="truncate text-body font-medium text-ink">{unit.name}</span>
-          {latest && (
-            <span className="tnum ml-auto shrink-0 text-caption text-ash">{lastActivityLabel(latest.startedAt)}</span>
-          )}
-        </span>
-        <span className="truncate text-body-sm text-graphite">
-          {subtitle || <span className="text-ash">{unit.rootPath}</span>}
-        </span>
-        {unavailable && (
-          <span className="mt-0.5 w-fit rounded-chip bg-loss/10 px-1.5 py-0.5 text-caption text-loss">目录不可用</span>
+    // 整行是 button，button 里再套 button 是非法 HTML —— 设置入口做成
+    // 绝对定位的兄弟节点，和时间戳抢同一个位置、hover 时交叉淡入淡出。
+    <div className="group/row relative">
+      <button
+        onClick={onSelect}
+        aria-current={active}
+        className={cn(
+          "flex w-full items-start gap-3 rounded-input px-3 py-2.5 text-left",
+          active ? "bg-teal-tint" : "hover:bg-line-soft",
+          unavailable && "opacity-60",
         )}
-      </span>
-    </button>
+      >
+        {isBot ? (
+          /* 彩色 blob 头像 + 双眼（GrokBot 式吉祥物形态），右下角日程角标 */
+          <span
+            aria-hidden
+            className={cn("relative flex h-11 w-11 shrink-0 items-center justify-center", avatar.shape)}
+            style={{ background: avatar.color }}
+          >
+            <span className="mt-0.5 flex gap-1">
+              <span className="h-2 w-1 rounded-full bg-white/90" />
+              <span className="h-2 w-1 rounded-full bg-white/90" />
+            </span>
+            {schedule && (
+              <span
+                className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-rail bg-teal"
+                title={schedule}
+              />
+            )}
+          </span>
+        ) : (
+          /* 项目保持方形字母文件夹标 */
+          <span
+            aria-hidden
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-btn bg-line-soft text-body font-medium text-graphite"
+          >
+            {unit.name.slice(0, 1)}
+          </span>
+        )}
+
+        <span className="flex min-w-0 flex-1 flex-col gap-0.5 pt-0.5">
+          <span className="flex items-baseline gap-2">
+            <span className="truncate text-body font-medium text-ink">{unit.name}</span>
+            {latest && (
+              <span className="tnum ml-auto shrink-0 text-caption text-ash transition-opacity group-hover/row:opacity-0">
+                {lastActivityLabel(latest.startedAt)}
+              </span>
+            )}
+          </span>
+          <span className="truncate text-body-sm text-graphite">
+            {subtitle || <span className="text-ash">{unit.rootPath}</span>}
+          </span>
+          {unavailable && (
+            <span className="mt-0.5 w-fit rounded-chip bg-loss/10 px-1.5 py-0.5 text-caption text-loss">目录不可用</span>
+          )}
+        </span>
+      </button>
+
+      {/* 设置入口 —— 重新打开同一个对话框改 AGENTS.md / 人设 / 主执行器 */}
+      <button
+        onClick={onOpenSettings}
+        aria-label={`${unit.name} 设置`}
+        title="设置 —— 改 AGENTS.md、人设、主执行器"
+        className="absolute right-2 top-2.5 rounded-btn p-1 text-ash opacity-0 transition hover:bg-line-soft hover:text-ink focus-visible:opacity-100 group-hover/row:opacity-100"
+      >
+        <Settings size={13} />
+      </button>
+    </div>
   );
 }
 

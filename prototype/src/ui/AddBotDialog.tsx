@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   Brain,
+  Check,
   FileText,
   Plus,
   Wand2,
@@ -8,6 +9,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { useWorkbench, selectVisibleModels } from "../store/useWorkbench.ts";
+import type { WorkUnit } from "../core/units.ts";
 import { cn } from "./cn.ts";
 
 /**
@@ -83,12 +85,18 @@ function agentsMdTemplate(name: string, role: string, rootPath: string): string 
 
 export function AddBotDialog({
   open,
+  initial,
   onClose,
-  onCreate,
+  onSubmit,
 }: {
   open: boolean;
+  /**
+   * 编辑模式：传入已有单元即预填、按「保存」提交；null / undefined 是新建。
+   * 和新建共用一份表单状态 —— 两套表单迟早会长歪。
+   */
+  initial?: WorkUnit | null;
   onClose: () => void;
-  onCreate: (draft: AddBotDraft) => void;
+  onSubmit: (draft: AddBotDraft) => void;
 }) {
   const runtimes = useWorkbench((s) => s.runtimes);
   const [section, setSection] = useState<Section>("identity");
@@ -101,41 +109,70 @@ export function AddBotDialog({
   const [personaTouched, setPersonaTouched] = useState(false);
   const [memory, setMemory] = useState<BotMemoryPolicy>({ semantic: true, episodic: true, procedural: true });
   const [error, setError] = useState<string | null>(null);
-  const [runtimeId, setRuntimeId] = useState<string>("zcode");
+  const [runtimeId, setRuntimeId] = useState<string>("");
   const [modelHint, setModelHint] = useState<string | null>(null);
+
+  const isEdit = Boolean(initial);
 
   // selectVisibleModels 引用稳定（visibleModelsFor 按 runtimeId 分槽缓存），
   // 不能在此处 .map() 出新对象——那会回到 getSnapshot 无限循环的老坑
   const runtimeModelSpecs = useWorkbench(selectVisibleModels(runtimeId));
 
-  // 打开时重置：rail 落到当前执行器、模板按当前名称/角色重新生成
+  // 打开时重置 / 预填。编辑模式**不**把 mdTouched / personaTouched 置回 false：
+  // 那两个 flag 的含义是「用户没亲手改过，可以跟着名称自动重生成」。
+  // 编辑一个已经写好 AGENTS.md 的 bot 时，名字一改就把岗位说明书冲掉是不可接受的。
   useEffect(() => {
     if (!open) return;
-    setName("");
-    setRole("");
-    setRootPath("C:/Users/chenziyu/project/Agent/bots/");
-    setAgentsMd("");
-    setMdTouched(false);
-    setPersona("");
-    setPersonaTouched(false);
-    setMemory({ semantic: true, episodic: true, procedural: true });
     setError(null);
-    const s = useWorkbench.getState();
-    setRuntimeId(s.activeRuntimeId);
-    setModelHint(null);
     setSection("identity");
-  }, [open]);
+    if (initial) {
+      const b = initial.bindings.find((x) => x.primary) ?? initial.bindings[0];
+      setName(initial.name);
+      setRole(initial.identity?.role ?? "");
+      setRootPath(initial.rootPath);
+      setAgentsMd(initial.agentsMd ?? "");
+      setMdTouched(true);
+      setPersona(initial.identity?.persona ?? "");
+      setPersonaTouched(true);
+      setMemory(initial.memory ?? { semantic: true, episodic: true, procedural: true });
+      setRuntimeId(b?.runtimeId ?? "");
+      setModelHint(b?.modelHint ?? null);
+    } else {
+      setName("");
+      setRole("");
+      setRootPath("C:/Users/chenziyu/project/Agent/bots/");
+      setAgentsMd("");
+      setMdTouched(false);
+      setPersona("");
+      setPersonaTouched(false);
+      setMemory({ semantic: true, episodic: true, procedural: true });
+      // activeRuntimeId 在没有 daemon 时是个残留的默认字符串（如 "zcode"），
+      // 直接用它会让「默认模型」列出某个并不存在的执行器的模型，
+      // 提交时还会写出一条指向幽灵执行器的绑定。没有可用执行器就置空。
+      setRuntimeId(
+        useWorkbench.getState().runtimes.length > 0 ? useWorkbench.getState().activeRuntimeId : "",
+      );
+      setModelHint(null);
+    }
+  }, [open, initial]);
 
-  // 名称 / 角色 → 模板自动同步，直到用户亲手编辑（AGENTS.md 与 persona 各自独立）
+  // 名称 / 角色 → 模板自动同步，直到用户亲手编辑（AGENTS.md 与 persona 各自独立）。
+  //
+  // ⚠ 必须显式排除编辑模式。两个 effect 在**同一次 commit** 里跑：prefill 先
+  // setAgentsMd(真实内容) + setMdTouched(true)，但本 effect 读到的是本次渲染
+  // 闭包里的旧值（mdTouched 还是 false、name 还是 ""），于是 setAgentsMd(空模板)
+  // 把 prefill 覆盖掉；下一轮 mdTouched 已是 true，本 effect 直接 return ——
+  // 岗位说明书被冲成空模板，而且用户点「保存」会把这个空模板写回 bot.json。
+  // 新建模式侥幸没事（初值本就是空模板），但同一个竞态，不该靠运气。
   useEffect(() => {
-    if (!open || mdTouched) return;
+    if (!open || isEdit || mdTouched) return;
     setAgentsMd(agentsMdTemplate(name, role, rootPath));
-  }, [open, mdTouched, name, role, rootPath]);
+  }, [open, isEdit, mdTouched, name, role, rootPath]);
 
   useEffect(() => {
-    if (!open || personaTouched) return;
+    if (!open || isEdit || personaTouched) return;
     setPersona(PERSONA_TEMPLATE(name, role));
-  }, [open, personaTouched, name, role]);
+  }, [open, isEdit, personaTouched, name, role]);
 
   useEffect(() => {
     if (!open) return;
@@ -148,7 +185,7 @@ export function AddBotDialog({
     if (name.trim().length === 0) return setError("给 bot 起个名字");
     if (rootPath.trim().length === 0) return setError("工作目录不能为空");
     if (agentsMd.trim().length === 0) return setError("AGENTS.md 不能为空 —— 它就是这个 bot 的岗位说明书");
-    onCreate({
+    onSubmit({
       name: name.trim(),
       role: role.trim(),
       rootPath: rootPath.trim().replace(/\/+$/, ""),
@@ -172,14 +209,14 @@ export function AddBotDialog({
       <div
         role="dialog"
         aria-modal="true"
-        aria-label="新建 bot"
+        aria-label={isEdit ? "bot 设置" : "新建 bot"}
         onClick={(e) => e.stopPropagation()}
         className="flex h-[620px] max-h-[92vh] w-[920px] max-w-[94vw] flex-col overflow-hidden rounded-card border border-line bg-canvas shadow-subtle"
       >
         {/* 头部 */}
         <div className="flex h-12 shrink-0 items-center gap-2 border-b border-line px-4">
           <FileText size={14} className="text-graphite" />
-          <p className="flex-1 text-body-sm font-medium text-ink">新建 bot</p>
+          <p className="flex-1 text-body-sm font-medium text-ink">{isEdit ? "bot 设置" : "新建 bot"}</p>
           <button onClick={onClose} aria-label="关闭" className="rounded-btn p-1 text-ash hover:bg-line-soft hover:text-ink">
             <X size={13} />
           </button>
@@ -238,63 +275,86 @@ export function AddBotDialog({
                   />
                 </Field>
                 <Field label="主执行器" hint="这个 bot 主要由哪家 CLI 执行">
-                  <div className="flex flex-wrap gap-1">
-                    {runtimes.map((r) => {
-                      const notInstalled = r.state.status === "not_installed";
-                      return (
-                        <button
-                          key={r.id}
-                          onClick={() => {
-                            setRuntimeId(r.id);
-                            setModelHint(null);
-                          }}
-                          disabled={notInstalled}
-                          title={notInstalled ? "未安装，不可选" : r.presentation.displayName}
-                          aria-pressed={runtimeId === r.id}
-                          className={cn(
-                            "rounded-btn border px-2 py-1 text-caption",
-                            runtimeId === r.id
-                              ? "border-teal-edge bg-teal-tint font-medium text-ink"
-                              : "border-line text-graphite hover:bg-line-soft hover:text-ink",
-                            notInstalled && "cursor-not-allowed opacity-50",
-                          )}
-                        >
-                          {r.presentation.displayName}
-                        </button>
-                      );
-                    })}
-                  </div>
+                  {/* 空态必须说人话。
+                      评审后清掉了 mock 兜底，daemon 不可达时 runtimes 就是空数组 ——
+                      这里原本直接 map 出零个按钮，界面上是一个**完全空白**的字段，
+                      用户既不知道发生了什么，也不知道怎么修。 */}
+                  {runtimes.length === 0 ? (
+                    <div className="rounded-input bg-rail px-3 py-2.5">
+                      <p className="text-body-sm text-graphite">暂无可用执行器</p>
+                      <p className="mt-1 text-caption leading-relaxed text-ash">
+                        本地 daemon 没有连上，所以执行器清单是空的。
+                        在 <span className="font-mono">backend/</span> 目录下跑{" "}
+                        <span className="font-mono">pnpm dev</span> 后刷新本页即可。
+                      </p>
+                      <p className="mt-1.5 text-caption text-ash">
+                        现在也可以先保存 —— 这个 bot 会以「无执行器」建好，
+                        之后打开它的设置页补上主执行器即可。
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="flex flex-wrap gap-1">
+                      {runtimes.map((r) => {
+                        const notInstalled = r.state.status === "not_installed";
+                        return (
+                          <button
+                            key={r.id}
+                            onClick={() => {
+                              setRuntimeId(r.id);
+                              setModelHint(null);
+                            }}
+                            disabled={notInstalled}
+                            title={notInstalled ? "未安装，不可选" : r.presentation.displayName}
+                            aria-pressed={runtimeId === r.id}
+                            className={cn(
+                              "rounded-btn border px-2 py-1 text-caption",
+                              runtimeId === r.id
+                                ? "border-teal-edge bg-teal-tint font-medium text-ink"
+                                : "border-line text-graphite hover:bg-line-soft hover:text-ink",
+                              notInstalled && "cursor-not-allowed opacity-50",
+                            )}
+                          >
+                            {r.presentation.displayName}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
                 </Field>
                 <Field label="默认模型（可选）" hint="不选就用执行器的默认；同样只是 hint">
-                  <div className="flex flex-wrap gap-1">
-                    <button
-                      onClick={() => setModelHint(null)}
-                      aria-pressed={modelHint === null}
-                      className={cn(
-                        "rounded-btn border px-2 py-1 text-caption",
-                        modelHint === null
-                          ? "border-teal-edge bg-teal-tint font-medium text-ink"
-                          : "border-line text-graphite hover:bg-line-soft hover:text-ink",
-                      )}
-                    >
-                      自动
-                    </button>
-                    {runtimeModelSpecs.map((m) => (
+                  {runtimeId === "" ? (
+                    <p className="text-caption text-ash">先选一个主执行器，这里才会列出它能用的模型。</p>
+                  ) : (
+                    <div className="flex flex-wrap gap-1">
                       <button
-                        key={m.id}
-                        onClick={() => setModelHint(m.id)}
-                        aria-pressed={modelHint === m.id}
+                        onClick={() => setModelHint(null)}
+                        aria-pressed={modelHint === null}
                         className={cn(
                           "rounded-btn border px-2 py-1 text-caption",
-                          modelHint === m.id
+                          modelHint === null
                             ? "border-teal-edge bg-teal-tint font-medium text-ink"
                             : "border-line text-graphite hover:bg-line-soft hover:text-ink",
                         )}
                       >
-                        {m.displayName}
+                        自动
                       </button>
-                    ))}
-                  </div>
+                      {runtimeModelSpecs.map((m) => (
+                        <button
+                          key={m.id}
+                          onClick={() => setModelHint(m.id)}
+                          aria-pressed={modelHint === m.id}
+                          className={cn(
+                            "rounded-btn border px-2 py-1 text-caption",
+                            modelHint === m.id
+                              ? "border-teal-edge bg-teal-tint font-medium text-ink"
+                              : "border-line text-graphite hover:bg-line-soft hover:text-ink",
+                          )}
+                        >
+                          {m.displayName}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </Field>
               </div>
             )}
@@ -414,8 +474,14 @@ export function AddBotDialog({
         <div className="flex h-12 shrink-0 items-center gap-3 border-t border-line px-4">
           {error ? (
             <p className="text-caption text-loss">{error}</p>
+          ) : runtimes.length === 0 ? (
+            <p className="text-caption text-ash">
+              未连接 daemon，这个 bot 会先以「无执行器」保存 —— 之后可在设置里补
+            </p>
           ) : (
-            <p className="text-caption text-ash">创建后可随时在编辑器里改 AGENTS.md 与人设</p>
+            <p className="text-caption text-ash">
+              {isEdit ? "保存后写穿到该 bot 的 bot.json" : "创建后可随时在编辑器里改 AGENTS.md 与人设"}
+            </p>
           )}
           <div className="ml-auto flex items-center gap-2">
             <button onClick={onClose} className="rounded-btn px-3 py-1.5 text-body-sm text-graphite hover:bg-line-soft hover:text-ink">
@@ -425,8 +491,8 @@ export function AddBotDialog({
               onClick={create}
               className="flex items-center gap-1 rounded-btn bg-ink px-3 py-1.5 text-body-sm text-canvas hover:bg-black"
             >
-              <Plus size={11} />
-              创建 bot
+              {isEdit ? <Check size={11} /> : <Plus size={11} />}
+              {isEdit ? "保存" : "创建 bot"}
             </button>
           </div>
         </div>

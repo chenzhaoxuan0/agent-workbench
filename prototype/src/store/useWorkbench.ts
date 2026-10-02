@@ -111,6 +111,8 @@ interface WorkbenchState {
   setView: (v: ViewMode) => void;
   selectUnit: (id: UnitId) => void;
   addUnit: (u: WorkUnit) => void;
+  /** 改已有单元（bot 设置页保存）。按 id 替换，不切 activeUnitId，同样写穿 bot.json */
+  updateUnit: (u: WorkUnit) => void;
   selectSession: (id: SessionId | null) => void;
   selectRuntime: (id: string) => void;
   /** 换模型。非法组合（该执行器不接这个模型）静默拒绝，不改状态 */
@@ -259,6 +261,16 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
     }));
     // WP-5 写穿：daemon 可达则落盘 <rootPath>/.agent-workbench/bot.json（fire-and-forget；
     // 失败只影响持久化，不影响 UI——mock 模式 / daemon 未起是正常态）
+    void import("../adapters/daemon/client.ts")
+      .then(({ putBotDefinition, defaultDaemonEndpoint }) => putBotDefinition(u, defaultDaemonEndpoint()))
+      .catch((err: unknown) => console.warn("[workbench] bot 定义写盘失败（daemon 未起？）", err));
+  },
+
+  // 改已有单元：state 里按 id 替换 + 同样写穿 bot.json。
+  // addUnit 只管新建，bot 设置页改完 AGENTS.md / 换执行器都走这里。
+  // 刻意不新建条目也不切 activeUnitId —— 编辑一个后台单元不该把用户拽走。
+  updateUnit: (u) => {
+    set((s) => ({ units: s.units.map((x) => (x.id === u.id ? u : x)) }));
     void import("../adapters/daemon/client.ts")
       .then(({ putBotDefinition, defaultDaemonEndpoint }) => putBotDefinition(u, defaultDaemonEndpoint()))
       .catch((err: unknown) => console.warn("[workbench] bot 定义写盘失败（daemon 未起？）", err));
