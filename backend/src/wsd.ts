@@ -195,7 +195,11 @@ function handleRaw(ws: WebSocket, data: unknown): void {
     .then(() => handler(f.params))
     .then(
       (result) => send(ws, { v: WIRE_VERSION, id, ok: true, result: result ?? null }),
-      (err: unknown) =>
+      (err: unknown) => {
+        const extra =
+          typeof err === "object" && err !== null && "data" in err && (err as { data: unknown }).data !== undefined
+            ? { data: (err as { data: unknown }).data }
+            : {};
         send(ws, {
           v: WIRE_VERSION,
           id,
@@ -203,8 +207,13 @@ function handleRaw(ws: WebSocket, data: unknown): void {
           error: {
             code: err instanceof Error && "code" in err && typeof err.code === "string" ? err.code : "internal",
             message: err instanceof Error ? err.message : String(err),
+            // data：结构化补充（冲突时带 reason + 盘上现值）。没有它前端只能拿到一句
+            // message 靠字符串猜「到底是 bot.json 变了还是 AGENTS.md 变了」，猜错就会
+            // 告诉用户错的那个文件。跨线的是「发生了什么」，不是「怎么排版」。
+            ...extra,
           },
-        }),
+        });
+      },
     );
 }
 
