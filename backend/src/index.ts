@@ -429,6 +429,41 @@ registerMethod("bot.put", (params) => {
   return botRegistry.putBot(p.unit, opts);
 });
 registerMethod("bot.list", () => botRegistry.listBots());
+// 目录探测（docs/09 §七 P0-B）：纯读，导入对话框三分支全靠它决定
+registerMethod("bot.inspect", (params) => {
+  const p = (params ?? {}) as { rootPath?: string };
+  if (typeof p.rootPath !== "string" || p.rootPath === "") {
+    throw Object.assign(new Error("rootPath is required"), { code: "bad_params" });
+  }
+  return botRegistry.inspect(p.rootPath);
+});
+// bot.json 里有渠道密钥时，导入一个 git 仓库前必须能一键补 .gitignore
+registerMethod("bot.gitignore.ensure", (params) => {
+  const p = (params ?? {}) as { rootPath?: string };
+  if (typeof p.rootPath !== "string" || p.rootPath === "") {
+    throw Object.assign(new Error("rootPath is required"), { code: "bad_params" });
+  }
+  return botRegistry.ensureGitignore(p.rootPath);
+});
+// 渠道运行态：bot.json 声明了什么 vs 网关实际起没起。docs/09 §五的状态徽标要靠它
+registerMethod("channel.status", async () => {
+  const bots = await botRegistry.listBots();
+  return {
+    // 各网关当前真正持有的账号数
+    gateways: { feishu: feishuGateway.activeAccounts, telegram: telegramGateway.activeAccountCount },
+    bots: bots.map((b) => {
+      const declared = Array.isArray(b.channels) ? (b.channels as Array<Record<string, unknown>>) : [];
+      return {
+        id: String(b.id ?? ""),
+        channels: declared.map((c) => ({
+          kind: String(c["kind"] ?? ""),
+          enabled: c["enabled"] === true,
+          accounts: Array.isArray(c["accounts"]) ? (c["accounts"] as unknown[]).length : 0,
+        })),
+      };
+    }),
+  };
+});
 registerMethod("bot.roots.add", (params) => {
   const p = (params ?? {}) as { dir?: string };
   if (typeof p.dir !== "string" || p.dir === "") throw Object.assign(new Error("dir is required"), { code: "bad_params" });

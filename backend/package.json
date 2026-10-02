@@ -24,7 +24,8 @@
     "smoke:phase9": "tsx scripts/smoke-phase9.ts",
     "smoke:phase10": "tsx scripts/smoke-phase10.ts",
     "smoke:phase11": "tsx scripts/smoke-phase11.ts",
-    "smoke:feishu": "tsx scripts/smoke-feishu.ts"
+    "smoke:feishu": "tsx scripts/smoke-feishu.ts",
+    "smoke:inspect": "tsx scripts/smoke-inspect.ts"
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.74.0",

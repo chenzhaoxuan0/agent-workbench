@@ -15,6 +15,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import type { Store } from "../store/db.ts";
 import { log } from "../log.ts";
+import { inspectDirectory, appendGitignore, type InspectReport } from "./inspect.ts";
 
 const ROOTS_KEY = "bot_roots";
 const BOT_DIR = ".agent-workbench";
@@ -142,6 +143,28 @@ export class BotRegistry {
     const root = path.resolve(unit.rootPath);
     if (!existsSync(root)) throw Object.assign(new Error(`rootPath not found: ${root}`), { code: "root_not_found" });
 
+    // docs/09 §七.4：同路径重复注册拒绝。允许「同一 id 原地更新」（那才是保存），
+    // 但不允许 A bot 和 B bot 抢同一个工作目录——它们会互相覆写 bot.json。
+    const all = await this.listBots();
+    const clash = all.find((b) => b.id !== unit.id && typeof b.rootPath === "string" && path.resolve(b.rootPath) === root);
+    if (clash !== undefined) {
+      throw Object.assign(
+        new Error(`rootPath already registered by bot "${String(clash.id)}" (${String(clash.name)})`),
+        { code: "root_taken", unitId: String(clash.id ?? "") },
+      );
+    }
+    // 嵌套不拒绝（子目录做独立 bot 是合法用法），但必须说清楚扫描语义
+    const container = all.find(
+      (b) => typeof b.rootPath === "string" && path.resolve(b.rootPath) !== root && root.startsWith(path.resolve(b.rootPath) + path.sep),
+    );
+    if (container !== undefined) {
+      log.warn("bot rootPath nested inside another bot's root — both are registered", {
+        id: unit.id,
+        root,
+        inside: String(container.id),
+      });
+    }
+
     const dir = path.join(root, BOT_DIR);
     const file = path.join(dir, BOT_FILE);
     const prev = await this.readFileDef(file);
@@ -202,6 +225,21 @@ export class BotRegistry {
     } catch {
       return null;
     }
+  }
+
+  // ---- 探测（纯读）----
+
+  /**
+   * 目录探测报告。导入对话框三分支全靠它决定，且**一个字节都不写**。
+   * 细节见 bots/inspect.ts。
+   */
+  async inspect(rootPath: string): Promise<{ report: InspectReport; existing: BotDefinition | null }> {
+    return inspectDirectory(rootPath, { knownBots: await this.listBots() });
+  }
+
+  /** 往目标仓库的 .gitignore 追加 .agent-workbench/（幂等）。bot.json 里有渠道密钥时这是必须项 */
+  async ensureGitignore(rootPath: string): Promise<{ changed: boolean }> {
+    return { changed: await appendGitignore(path.resolve(rootPath)) };
   }
 
   // ---- 读 ----

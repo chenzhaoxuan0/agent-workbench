@@ -105,6 +105,11 @@ export class TelegramGateway {
     this.timer = null;
   }
 
+  /** 在途轮询中的账号数（channel.status 用；轮询是每 tick 重建的，瞬时值） */
+  get activeAccountCount(): number {
+    return this.inFlight.size;
+  }
+
   /**
    * 扫盘上的 bot 定义，逐账号轮询。
    *
