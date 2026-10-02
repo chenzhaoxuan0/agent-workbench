@@ -28,7 +28,6 @@
     "smoke:inspect": "tsx scripts/smoke-inspect.ts"
   },
   "dependencies": {
-    "@larksuiteoapi/node-sdk": "^1.74.0",
     "node-pty": "^1.1.0",
     "ws": "^8.22.0"
   },
