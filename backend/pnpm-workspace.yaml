@@ -1,3 +1,14 @@
+# pnpm 11 起设置项不再读 package.json 的 pnpm 字段，一律放这里（键是 allowBuilds，
+# 不是旧版的 onlyBuiltDependencies —— 写错键名 pnpm 会静默忽略，表现为
+# ERR_PNPM_IGNORED_BUILDS：连 pnpm build 都会被拒）。
+#
+# backend 是独立的 pnpm 树（不是根 workspace 的成员），所以根上没有第二份。
+#
+# 三个包的 install/postinstall 必须跑：
+#   node-pty    — node-gyp 编原生模块 + 拷 conpty.dll（Windows 终端页签靠它）
+#   esbuild     — 装平台二进制
+#   protobufjs  — 飞书官方 SDK 的传递依赖
 allowBuilds:
-  esbuild: true
   node-pty: true
+  esbuild: true
+  protobufjs: true
