@@ -21,6 +21,7 @@
 
 import type { RuntimeCapabilities } from "../../core/adapter.ts";
 import type { RuntimeEvent } from "../../core/events.ts";
+import type { WorkUnit } from "../../core/units.ts";
 
 export interface DaemonExecutorInfo {
   readonly id: string;
@@ -229,8 +230,15 @@ export class DaemonClient {
       clearTimeout(p.timer);
       if (frame["ok"] === true) p.resolve(frame["result"]);
       else {
-        const err = frame["error"] as { code?: string; message?: string } | undefined;
-        p.reject(Object.assign(new Error(err?.message ?? "daemon rpc failed"), { code: err?.code ?? "daemon_error" }));
+        const err = frame["error"] as { code?: string; message?: string; data?: unknown } | undefined;
+        p.reject(
+          Object.assign(new Error(err?.message ?? "daemon rpc failed"), {
+            code: err?.code ?? "daemon_error",
+            // data 是后端给的结构化补充（冲突时含 reason + 盘上现值）——UI 要靠它
+            // 指名是 bot.json 还是 AGENTS.md 被改过，不能让用户去猜。
+            ...(err?.data !== undefined ? { data: err.data } : {}),
+          }),
+        );
       }
     }
   }
@@ -286,14 +294,48 @@ export async function listDaemonExecutors(endpoint: string = defaultDaemonEndpoi
   return list;
 }
 
-/** 写一个 bot 的定义到 <rootPath>/.agent-workbench/bot.json（WP-5 写穿） */
-export async function putBotDefinition(unit: unknown, endpoint: string = defaultDaemonEndpoint()): Promise<void> {
+/**
+ * 写一个 bot 的定义到 <rootPath>/.agent-workbench/bot.json，并把 AGENTS.md 正文落盘到
+ * <rootPath>/AGENTS.md（WP-5 写穿）。
+ *
+ * guards 是**外部修改检测的乐观锁**：调用方（bot 设置页）进入时拿到了当时的 revision 与
+ * AGENTS.md 内容 hash，保存时一起传回。盘上在这期间变了就抛 code="conflict"，
+ * daemon 不会覆盖——由 UI 弹「覆盖 / 重新加载 / 取消」。
+ */
+export async function putBotDefinition(
+  unit: unknown,
+  endpoint: string = defaultDaemonEndpoint(),
+  guards: { ifRevision?: number; ifAgentsMdHash?: string } = {},
+): Promise<void> {
   const client = DaemonClient.get(endpoint);
-  await client.rpc("bot.put", { unit }, 15000);
+  await client.rpc("bot.put", { unit, ...guards }, 15000);
 }
 
-/** 拉全部落盘 bot 定义（WP-5：启动合并） */
-export async function listBotDefinitions(endpoint: string = defaultDaemonEndpoint()): Promise<unknown[]> {
+/** daemon 挂在每个定义上的 $meta（后端内部字段名，前端不该看见） */
+interface RawBotMeta {
+  readonly revision?: number;
+  readonly updatedAt?: number;
+  readonly agentsMd?: WorkUnit["agentsMdMeta"] | null;
+  readonly inlineAgentsMd?: boolean;
+}
+
+/** $meta 摊平成 WorkUnit 上的 revision / agentsMdMeta，其余原样 */
+function flattenBotDef(def: unknown): WorkUnit {
+  const d = def as Record<string, unknown>;
+  const meta = d["$meta"] as RawBotMeta | undefined;
+  const out = { ...d } as Record<string, unknown>;
+  delete out.$meta;
+  if (meta !== undefined && meta !== null) {
+    if (typeof meta.revision === "number") out.revision = meta.revision;
+    // 指针在但文件缺失时后端给的是 null；这里归一成 undefined，别把 null 漏进 UI 判空
+    if (meta.agentsMd !== undefined && meta.agentsMd !== null) out.agentsMdMeta = meta.agentsMd;
+  }
+  return out as unknown as WorkUnit;
+}
+
+/** 拉全部落盘 bot 定义（WP-5：启动合并 / 刷新）。每次都重扫盘，无缓存。 */
+export async function listBotDefinitions(endpoint: string = defaultDaemonEndpoint()): Promise<WorkUnit[]> {
   const client = DaemonClient.get(endpoint);
-  return client.rpc<unknown[]>("bot.list", null, 15000);
+  const raw = await client.rpc<unknown[]>("bot.list", null, 15000);
+  return raw.map(flattenBotDef);
 }

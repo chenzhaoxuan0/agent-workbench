@@ -96,11 +96,27 @@ export interface WorkUnit {
     readonly skillDirs: readonly string[];
   };
   /**
-   * AGENTS.md 的内容。从磁盘扫描来的单元不带这个字段（文件即数据库，
-   * 内容在 rootPath/AGENTS.md 里）；通过「添加 bot」创建的单元在此
-   * 携带用户写的岗位说明书——真接入运行时后应落盘为 rootPath/AGENTS.md。
+   * AGENTS.md 的内容。**不是副本的真相**——真相在 `rootPath/<identity.sourcePath>` 那个文件里，
+   * daemon 的 listBots 每次重扫盘时读回来填这里。所以在 VS Code 里改那个文件，下次打开
+   * agent-workbench（或点重新加载）就会看到新内容；反过来设置页保存也直接写进同一个文件。
+   *
+   * 指针在、文件被删 → 这里是空串，UI 显示"文件缺失"而不是假装还有内容。
    */
   readonly agentsMd?: string;
+  /**
+   * 那个文件的当前状态。设置页要显示**路径**（用户才知道去 VS Code 改哪个文件），
+   * 保存时把它当乐观锁基线传回 daemon。
+   */
+  readonly agentsMdMeta?: {
+    readonly path: string;
+    readonly relPath: string;
+    /** sha256 前 16 hex；保存时与盘上比对，不符即报冲突 */
+    readonly hash: string;
+    readonly mtimeMs: number;
+    readonly bytes: number;
+  };
+  /** bot.json 自增版本号（daemon 维护）。第二个乐观锁维度，抓 UI 侧并发。 */
+  readonly revision?: number;
   /**
    * 记忆接入策略（对齐 waku 的记忆三柱，创建 bot 时声明）。
    * 真实运行时据此接入对应后端；原型期仅作为声明保存。
