@@ -14,7 +14,7 @@ import { writeFile, mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { BotRegistry } from "../src/bots/registry.ts";
-import { FeishuGateway } from "../src/channels/feishu.ts";
+import { FeishuGateway, diagnoseFeishuAccount } from "../src/channels/feishu.ts";
 import { Store } from "../src/store/db.ts";
 
 const home = await mkdtemp();
@@ -110,6 +110,42 @@ await writeFile(path.join(botDir, ".agent-workbench", "bot.json"), "{ not json",
 await registry.putBot(def({ channels: "not-an-array" }) as never);
 await gateway.reconcile();
 ok(true, "畸形 channels 走完 reconcile 未抛");
+
+console.log("\n[8] 回复卡片：代码块 / 行内码 / 空文本");
+{
+  const { buildTextCard } = await import("../src/channels/feishu.ts");
+  const card = buildTextCard("看这段：\n\n```python\nprint(1)\n```\n\n还有 `inline`。");
+  ok(card !== null, "非空文本产出卡片");
+  const els = (card as { body: { elements: { tag: string }[] } }).body.elements;
+  ok(els.some((e) => e.tag === "code"), "代码块变成 code 元素", els.map((e) => e.tag));
+  ok(els.some((e) => e.tag === "markdown"), "正文是 markdown 元素");
+  ok(buildTextCard("") === null, "空文本返回 null（退回纯文本）");
+  ok(JSON.stringify(buildTextCard("含 <script> & 引号")).includes("&lt;"), "HTML 被转义");
+}
+
+console.log("\n[9] 主动出站：没有账号时如实报，不假装成功");
+{
+  await registry.putBot(def({ channels: [] }) as never);
+  await gateway.reconcile();
+  const r = await gateway.sendTo("smoke-bot", "main", "oc_xxx", "日报");
+  ok(r.ok === false && r.detail.includes("没有可用的飞书账号"), "无账号时拒绝并说清原因", r.detail);
+}
+
+console.log("\n[10] 诊断：无账号时报 no_channel 那条路，不静默通过");
+{
+  const r = await diagnoseFeishuAccount({
+    key: "smoke-bot::main",
+    botId: "smoke-bot",
+    appId: "cli_invalid",
+    appSecret: "wrong",
+    domain: "feishu",
+    allowFrom: [],
+    mentionOnly: true,
+  });
+  ok(r.ok === false, "错误凭据判定为不通过", r);
+  ok(r.checks.some((c) => c.name === "凭据与鉴权" && !c.ok), "指出了具体断在哪一环", r.checks);
+  ok(r.checks.some((c) => c.detail.includes("飞书开放平台")), "事件订阅明说 API 查不到，不编检查项");
+}
 
 gateway.stop();
 store.close();
