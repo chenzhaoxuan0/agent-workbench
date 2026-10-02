@@ -339,3 +339,75 @@ export async function listBotDefinitions(endpoint: string = defaultDaemonEndpoin
   const raw = await client.rpc<unknown[]>("bot.list", null, 15000);
   return raw.map(flattenBotDef);
 }
+
+// ---------------------------------------------------------------------------
+// 目录探测与渠道运行态（docs/09 §七 P0-B / §五）
+// ---------------------------------------------------------------------------
+
+export interface BotInspectReport {
+  readonly rootPath: string;
+  readonly exists: boolean;
+  readonly readable: boolean;
+  readonly isGitRepo: boolean;
+  readonly hasAgentsMd: boolean;
+  readonly hasBotJson: boolean;
+  /** 从 AGENTS.md 派生的身份候选；没有 AGENTS.md 就是 null（不瞎猜） */
+  readonly derived: { readonly name: string; readonly role: string } | null;
+  readonly suggestedId: string;
+  readonly assets: {
+    readonly skillFiles: readonly string[];
+    readonly skillDirs: readonly string[];
+    readonly memoryFile: string | null;
+    readonly hasSoul: boolean;
+    readonly hasAutomations: boolean;
+    readonly extraAgentFiles: readonly string[];
+  };
+  readonly conflicts: {
+    readonly alreadyRegistered: { readonly unitId: string; readonly name: string } | null;
+    readonly nestedInside: { readonly unitId: string; readonly rootPath: string } | null;
+  };
+  readonly scanRootEffect: {
+    readonly parent: string;
+    readonly willBecomeScanRoot: boolean;
+    readonly siblingsFound: number;
+    readonly warning: string | null;
+  };
+  readonly security: {
+    readonly applicable: boolean;
+    readonly agentWorkbenchIgnored: boolean;
+    readonly safe: boolean;
+    readonly message: string;
+  };
+}
+
+/** 探测一个已存在的文件夹能不能被认领为 bot（纯读，不写盘） */
+export async function inspectBotFolder(
+  rootPath: string,
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<{ report: BotInspectReport; existing: WorkUnit | null }> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<{ report: BotInspectReport; existing: WorkUnit | null }>("bot.inspect", { rootPath }, 15000);
+}
+
+/** 往仓库 .gitignore 追加 `.agent-workbench/`（幂等）。bot.json 有明文密钥时这是必须项 */
+export async function ensureBotGitignore(
+  rootPath: string,
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<{ changed: boolean }> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<{ changed: boolean }>("bot.gitignore.ensure", { rootPath }, 15000);
+}
+
+export interface ChannelStatus {
+  readonly gateways: { readonly feishu: number; readonly telegram: number };
+  readonly bots: readonly {
+    readonly id: string;
+    readonly channels: readonly { readonly kind: string; readonly enabled: boolean; readonly accounts: number }[];
+  }[];
+}
+
+/** 渠道运行态：bot.json 声明了什么 vs 网关实际起没起 */
+export async function fetchChannelStatus(endpoint: string = defaultDaemonEndpoint()): Promise<ChannelStatus> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<ChannelStatus>("channel.status", null, 15000);
+}

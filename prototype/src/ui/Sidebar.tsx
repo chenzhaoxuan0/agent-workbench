@@ -4,6 +4,7 @@ import {
   Archive,
   Bot,
   FolderGit2,
+  FolderOpen,
   FolderPlus,
   GripVertical,
   ImagePlus,
@@ -28,6 +29,7 @@ import {
 } from "../core/units.ts";
 import { UNAVAILABLE_UNIT } from "../adapters/mock/fixtures.ts";
 import { AddBotDialog, type AddBotDraft } from "./AddBotDialog.tsx";
+import { ImportBotDialog } from "./ImportBotDialog.tsx";
 import { cn } from "./cn.ts";
 
 /**
@@ -110,6 +112,7 @@ export function Sidebar() {
   const activeSessionId = useWorkbench((s) => s.activeSessionId);
   // 「添加 bot」的对话框开关在 useShell —— 标题行的 ＋ 和单元区空态两个入口共用
   const addBotOpen = useShell((s) => s.addBotOpen);
+  const importBotOpen = useShell((s) => s.importBotOpen);
   const editUnitId = useShell((s) => s.editUnitId);
   const updateUnit = useWorkbench((s) => s.updateUnit);
   const settingsActive = useShell((s) => s.settingsOpen);
@@ -238,6 +241,19 @@ export function Sidebar() {
           >
             <Plus size={12} />
           </button>
+          {/* 「添加已有文件夹」——bot 区从创建器变 manager 的入口（docs/09 §七）。
+              它不建任何东西，只把一个现成文件夹登记进来，所以配自己的图标而不是复用 ＋：
+              两个动作长得一样、后果完全不同。 */}
+          {view === "bot" && (
+            <button
+              onClick={() => useShell.getState().openImportBot()}
+              aria-label="添加已有文件夹"
+              title="添加已有文件夹 —— 文件夹留在原地，只登记进管理面"
+              className="rounded-btn p-1 text-ash hover:bg-line-soft hover:text-ink"
+            >
+              <FolderOpen size={12} />
+            </button>
+          )}
         </div>
 
         {/* 空态当第二个「添加 bot」入口 —— 侧栏那颗按钮收进 ⋯ 之后，
@@ -441,6 +457,19 @@ export function Sidebar() {
               });
               sh.closeAddBot();
             }
+          }}
+        />
+      )}
+      {/* 导入已有文件夹（docs/09 §七）：只注册，不搬家 */}
+      {importBotOpen && (
+        <ImportBotDialog
+          open
+          onClose={() => useShell.getState().closeImportBot()}
+          onImported={({ unit }) => {
+            // 重新连接分支零写入（bot.json 早就在盘上），要自己并进 state；
+            // 认领/脚手架分支 addUnit 已经并过了，别重复
+            if (useWorkbench.getState().units.some((u) => u.id === unit.id)) return;
+            useWorkbench.setState((s) => ({ units: [...s.units, unit], activeUnitId: unit.id, activeSessionId: null }));
           }}
         />
       )}

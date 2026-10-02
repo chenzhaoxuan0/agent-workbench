@@ -143,6 +143,9 @@ interface ShellState {
   /** 正在编辑的单元 id —— 非 null 时同一个对话框切到「保存」模式并预填该 bot。
    *  和 addBotOpen 二选一：新建 / 编辑共用一个对话框组件，不开第二份表单状态。 */
   editUnitId: UnitId | null;
+  /** 导入已有文件夹对话框（docs/09 §七）。与 addBotOpen 互斥：两个都是「加一个 bot 进来」，
+   *  但一个建新东西、一个只登记现成文件夹，后果不同，表单也不能复用。 */
+  importBotOpen: boolean;
   /** 会话内视图（dsh view-selection：对话 / 轨迹 / Ops 与 Chat 并列的页签） */
   conversationView: ConversationView;
 
@@ -163,6 +166,8 @@ interface ShellState {
   setCommandOpen: (open: boolean) => void;
   openAddBot: () => void;
   closeAddBot: () => void;
+  openImportBot: () => void;
+  closeImportBot: () => void;
   openUnitSettings: (id: UnitId) => void;
   closeUnitSettings: () => void;
 }
@@ -180,6 +185,7 @@ export const useShell = create<ShellState>((set, get) => ({
   conversationView: "chat",
   addBotOpen: false,
   editUnitId: null,
+  importBotOpen: false,
 
   setMainView: (mainView) => set({ mainView }),
 
@@ -210,9 +216,11 @@ export const useShell = create<ShellState>((set, get) => ({
 
   setCommandOpen: (commandOpen) => set({ commandOpen }),
 
-  openAddBot: () => set({ addBotOpen: true, editUnitId: null }),
+  openAddBot: () => set({ addBotOpen: true, editUnitId: null, importBotOpen: false }),
   closeAddBot: () => set({ addBotOpen: false }),
-  openUnitSettings: (editUnitId) => set({ editUnitId, addBotOpen: false }),
+  openImportBot: () => set({ importBotOpen: true, addBotOpen: false, editUnitId: null }),
+  closeImportBot: () => set({ importBotOpen: false }),
+  openUnitSettings: (editUnitId) => set({ editUnitId, addBotOpen: false, importBotOpen: false }),
   closeUnitSettings: () => set({ editUnitId: null }),
 }));
 
@@ -257,6 +265,7 @@ export function bindShellShortcuts(): () => void {
       const s = useShell.getState();
       if (s.commandOpen) s.setCommandOpen(false);
       else if (s.addBotOpen) s.closeAddBot();
+      else if (s.importBotOpen) s.closeImportBot();
       else if (s.editUnitId !== null) s.closeUnitSettings();
       else if (s.settingsOpen) s.closeSettings();
       return;
