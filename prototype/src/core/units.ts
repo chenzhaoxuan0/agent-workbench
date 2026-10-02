@@ -54,14 +54,55 @@ export interface UnitSchedule {
 }
 
 /**
- * bot 的外联渠道（docs/08 WP-5）——"bot 找得到你"的声明面。
- * config 的键随 kind 而定（telegram: botToken/chatId；webhook: secret/url），
- * 敏感值落 bot.json 属预期：这是本机私有文件（.agent-workbench/），不是要提交的仓库资产。
+ * 密钥**引用**而非明文。对齐 openclaw 的 `SecretRef`（extensions/feishu/src/accounts.ts
+ * 用 `coerceSecretRef`）：配置里只存「去哪取」，不存值。
+ *
+ * 形态上的好处是 push 泄漏时密钥根本不在文件里——docs/09 7.5 节的 git 泄漏检查
+ * 从「安全前提」降级为「仍值得做的兜底」。
+ */
+export interface SecretRef {
+  /** env = 进程环境变量；file = 相对 rootPath 的文件 */
+  readonly source: "env" | "file";
+  /** env 模式下的变量名 / file 模式下的相对路径 */
+  readonly id: string;
+}
+
+/**
+ * 一个 bot 在某个渠道上的**一个账号**。
+ *
+ * 为什么是「多账号」而不是「多渠道」：飞书一个应用 = 一个机器人。想让每个 bot 对应
+ * 一个飞书机器人，就是给每个 bot 挂一个飞书账号。这与 openclaw 的
+ * `channels.feishu.accounts.<accountId>` 同一套结构（monitor.ts 逐账号起连接），
+ * 只是方向相反——openclaw 是一个 agent 收多个渠道，这里是一个 bot 挂一个渠道。
+ */
+export interface ChannelAccount {
+  /** 账号 id，同一渠道内唯一。缺省 "default"。 */
+  readonly id: string;
+  /** 凭据。appSecret 走 SecretRef，不落明文 */
+  readonly appId: string;
+  readonly appSecret?: SecretRef;
+  /** 海外站走 Lark。默认飞书国内站 */
+  readonly domain?: "feishu" | "lark";
+  /** 允许响应的发送者 open_id 白名单。空 = 不限（⚠️ 意味着任何人都能驱动这个 bot） */
+  readonly allowFrom?: readonly string[];
+  /** 群聊里只在被 @ 时响应。默认 true；单聊不受影响 */
+  readonly mentionOnly?: boolean;
+  /** 渠道自身的能力位（对齐 openclaw ChannelPlugin 的可选槽，只实现用得上的） */
+  readonly options?: Readonly<Record<string, string>>;
+}
+
+/**
+ * bot 的外联渠道——"bot 找得到你"的声明面。
+ *
+ * `config` 是**旧形态**（单账号、凭据明文），只为不打断已落盘的 bot.json 保留；
+ * 新写入一律走 `accounts`。
  */
 export interface BotChannel {
-  readonly kind: "telegram" | "discord" | "webhook";
+  readonly kind: "telegram" | "feishu" | "webhook";
   readonly enabled: boolean;
-  readonly config: Readonly<Record<string, string>>;
+  readonly accounts?: readonly ChannelAccount[];
+  /** @deprecated 单账号旧形态。读时若 accounts 缺省则由它归一出一个 default 账号 */
+  readonly config?: Readonly<Record<string, string>>;
 }
 
 /** 运行时绑定：一个工作单元可以同时挂多个工具。 */
