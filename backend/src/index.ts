@@ -30,7 +30,7 @@ import { ArenaRunner } from "./ops/arena.ts";
 import { MemoryService } from "./memory/memory.ts";
 import { BotRegistry } from "./bots/registry.ts";
 import { TelegramGateway } from "./channels/telegram.ts";
-import { FeishuGateway, diagnoseFeishuAccount } from "./channels/feishu.ts";
+import { FeishuGateway, diagnoseLarkAccount } from "./channels/feishu.ts";
 import { askBot } from "./channels/askBot.ts";
 import { asModelId, asSessionId, asUnitId } from "../../prototype/src/core/units.ts";
 
@@ -439,11 +439,11 @@ registerMethod("channel.diagnose", async (params) => {
   const one = p.accountId === undefined ? (specs[0] ?? null) : feishuGateway.specOf(p.botId, p.accountId);
   if (one === null) {
     throw Object.assign(
-      new Error(`bot ${p.botId} 没有可诊断的飞书账号（没配 / 已停用 / 密钥解不开）`),
+      new Error(`bot ${p.botId} 没有可诊断的飞书账号（没配 profile / 已停用）`),
       { code: "no_channel" },
     );
   }
-  return diagnoseFeishuAccount(one);
+  return diagnoseLarkAccount(one);
 });
 // 主动出站：让 bot 主动开口（日报、告警、自动化结果）。之前只有回程。
 registerMethod("channel.send", async (params) => {

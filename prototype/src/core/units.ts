@@ -72,15 +72,19 @@ export interface SecretRef {
  *
  * 为什么是「多账号」而不是「多渠道」：飞书一个应用 = 一个机器人。想让每个 bot 对应
  * 一个飞书机器人，就是给每个 bot 挂一个飞书账号。这与 openclaw 的
- * `channels.feishu.accounts.<accountId>` 同一套结构（monitor.ts 逐账号起连接），
- * 只是方向相反——openclaw 是一个 agent 收多个渠道，这里是一个 bot 挂一个渠道。
+ * `channels.feishu.accounts.<accountId>` 同一套结构，只是方向相反。
+ *
+ * 飞书账号里只填 **lark-cli 的 profile 名**，不填 appId/appSecret：本机的
+ * `lark-cli` 已经是全部飞书能力（长连接、事件解密、内容预渲染、markdown、附件、
+ * 文档、云盘）的持有者，而 `--profile` 是**按调用指定**的全局 flag —— 于是
+ * 「每 bot 一个飞书机器人」= 每 bot 一个 profile = 一条独立长连接。
+ * 凭据由 profile 自己管，agent-workbench 不碰密钥。
  */
 export interface ChannelAccount {
-  /** 账号 id，同一渠道内唯一。缺省 "default"。 */
+  /** 账号 id，同一渠道内唯一。缺省 "main"。 */
   readonly id: string;
-  /** 凭据。appSecret 走 SecretRef，不落明文 */
-  readonly appId: string;
-  readonly appSecret?: SecretRef;
+  /** lark-cli profile 名（`lark-cli profile list` 可查）。一个 profile = 一个飞书机器人 */
+  readonly profile?: string;
   /** 海外站走 Lark。默认飞书国内站 */
   readonly domain?: "feishu" | "lark";
   /** 允许响应的发送者 open_id 白名单。空 = 不限（⚠️ 意味着任何人都能驱动这个 bot） */

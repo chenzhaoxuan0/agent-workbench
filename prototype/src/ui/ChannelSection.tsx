@@ -126,13 +126,8 @@ export function ChannelSection({
   );
 }
 
-function emptyAccount(kind: BotChannel["kind"]): ChannelAccount {
-  return {
-    id: "main",
-    appId: "",
-    appSecret: { source: "env", id: kind === "feishu" ? "FEISHU_APP_SECRET" : "TELEGRAM_BOT_TOKEN" },
-    mentionOnly: true,
-  };
+function emptyAccount(_kind: BotChannel["kind"]): ChannelAccount {
+  return { id: "main", mentionOnly: true };
 }
 
 function ChannelCard({
@@ -230,14 +225,14 @@ function ImBody({
   onChange: (next: BotChannel) => void;
 }) {
   const isFeishu = channel.kind === "feishu";
-  const accounts: readonly ChannelAccount[] =
-    channel.accounts ?? [emptyAccount(channel.kind)];
+  const accounts: readonly ChannelAccount[] = accountsOf(channel);
 
   const setAccount = (i: number, patch: Partial<ChannelAccount>) => {
     const next = accounts.map((a, j) => (j === i ? { ...a, ...patch } : a));
     onChange({ ...channel, accounts: next });
   };
-  const addAccount = () => onChange({ ...channel, accounts: [...accounts, { ...emptyAccount(channel.kind), id: `a${accounts.length}` }] });
+  const addAccount = () =>
+    onChange({ ...channel, accounts: [...accounts, { id: `a${accounts.length}`, mentionOnly: true }] });
   const removeAccount = (i: number) => onChange({ ...channel, accounts: accounts.filter((_, j) => j !== i) });
 
   return (
@@ -245,53 +240,58 @@ function ImBody({
       {accounts.map((acc, i) => (
         <div key={acc.id} className="space-y-1.5 rounded-card border border-line p-2">
           <div className="flex items-center gap-1.5">
-            <span className="text-[10px] text-ash">账号 {acc.id || "default"}</span>
+            <span className="text-[10px] text-ash">账号 {acc.id || "main"}</span>
             {accounts.length > 1 && (
               <button onClick={() => removeAccount(i)} aria-label="删除账号" className="ml-auto rounded-btn p-0.5 text-ash hover:text-loss">
                 <X size={10} />
               </button>
             )}
           </div>
-          <Field label={isFeishu ? "App ID" : "Bot Token（明文）"}>
-            <input
-              value={isFeishu ? acc.appId : (acc.appSecret as { id?: string } | undefined)?.id ?? ""}
-              onChange={(e) =>
-                isFeishu
-                  ? setAccount(i, { appId: e.target.value })
-                  : setAccount(i, { appSecret: { source: "env", id: e.target.value } })
-              }
-              spellCheck={false}
-              aria-label={isFeishu ? "App ID" : "Bot Token"}
-              className="w-full rounded-input border border-transparent bg-rail px-2 py-1 font-mono text-caption text-ink outline-none focus:border-teal"
-            />
-          </Field>
-          {isFeishu && (
+          {isFeishu ? (
             <>
-              <Field label="App Secret 环境变量名" hint="只填变量名，密钥本身不落盘">
+              <Field
+                label="lark-cli profile"
+                hint="一个 profile = 一个飞书应用 = 一个飞书机器人。用 lark-cli profile list 查已有 profile"
+              >
                 <input
-                  value={(acc.appSecret as { id?: string } | undefined)?.id ?? ""}
-                  onChange={(e) => setAccount(i, { appSecret: { source: "env", id: e.target.value } })}
+                  value={acc.profile ?? ""}
+                  onChange={(e) => setAccount(i, { profile: e.target.value })}
                   spellCheck={false}
-                  aria-label="App Secret 环境变量名"
-                  className="w-full rounded-input border border-transparent bg-rail px-2 py-1 font-mono text-caption text-ink outline-none focus:border-teal"
+                  placeholder="cli_a94d3ea8b5f99cc0"
+                  aria-label="lark-cli profile"
+                  className="w-full rounded-input border border-transparent bg-rail px-2 py-1 font-mono text-caption text-ink outline-none placeholder:text-ash focus:border-teal"
                 />
               </Field>
               <label className="flex items-center gap-1.5 text-caption text-graphite">
                 <input type="checkbox" checked={acc.mentionOnly !== false} onChange={(e) => setAccount(i, { mentionOnly: e.target.checked })} />
                 群里只在被 @ 时应答
               </label>
+              <p className="text-[10px] text-ash">
+                凭据不进这里——profile 自己管。发消息/附件/文档/云盘由 agent 在轮次里调
+                <code className="font-mono"> lark-cli</code> 自己完成。
+              </p>
             </>
-          )}
-          {!isFeishu && (
-            <Field label="Chat ID" hint="只应答这个会话">
-              <input
-                value={(acc as unknown as { chatId?: string }).chatId ?? ""}
-                onChange={(e) => setAccount(i, { chatId: e.target.value } as Partial<ChannelAccount>)}
-                spellCheck={false}
-                aria-label="Chat ID"
-                className="w-full rounded-input border border-transparent bg-rail px-2 py-1 font-mono text-caption text-ink outline-none focus:border-teal"
-              />
-            </Field>
+          ) : (
+            <>
+              <Field label="Bot Token（环境变量名）" hint="只填变量名，token 本身不落盘">
+                <input
+                  value={(acc as unknown as { botTokenEnv?: string }).botTokenEnv ?? ""}
+                  onChange={(e) => setAccount(i, { botTokenEnv: e.target.value } as Partial<ChannelAccount>)}
+                  spellCheck={false}
+                  aria-label="Bot Token 环境变量名"
+                  className="w-full rounded-input border border-transparent bg-rail px-2 py-1 font-mono text-caption text-ink outline-none focus:border-teal"
+                />
+              </Field>
+              <Field label="Chat ID" hint="只应答这个会话">
+                <input
+                  value={(acc as unknown as { chatId?: string }).chatId ?? ""}
+                  onChange={(e) => setAccount(i, { chatId: e.target.value } as Partial<ChannelAccount>)}
+                  spellCheck={false}
+                  aria-label="Chat ID"
+                  className="w-full rounded-input border border-transparent bg-rail px-2 py-1 font-mono text-caption text-ink outline-none focus:border-teal"
+                />
+              </Field>
+            </>
           )}
         </div>
       ))}
@@ -301,8 +301,8 @@ function ImBody({
       </button>
       {isFeishu && (
         <p className="text-caption text-ash">
-          飞书侧要开：机器人能力 + 事件订阅 <code className="font-mono">im.message.receive_v1</code> +{" "}
-          <strong className="font-medium text-graphite">长连接</strong>模式（webhook 模式要公网 URL，本机没有）。
+          飞书侧要开：机器人能力 + 事件订阅 <code className="font-mono">im.message.receive_v1</code>
+          （CLI 走长连接，不需要公网 URL）。这些在开放平台配，配完用下面的「测一下连得通不」验证。
         </p>
       )}
     </div>
@@ -394,7 +394,7 @@ function DiagnosePanel({ botId, accounts }: { botId: string; accounts: readonly 
               {busyId === acc.id ? "诊断中…" : "测一下连得通不"}
             </button>
             <span className="truncate text-[10px] text-ash">
-              {acc.appId === "" ? "还没填 App ID" : acc.appId}
+              {acc.profile === undefined || acc.profile === "" ? "还没填 profile" : acc.profile}
             </span>
           </div>
           {result[acc.id] !== undefined && (
