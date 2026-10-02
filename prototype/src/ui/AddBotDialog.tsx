@@ -7,10 +7,12 @@ import {
   RefreshCw,
   Wand2,
   X,
+  Radio,
   type LucideIcon,
 } from "lucide-react";
 import { useWorkbench, selectVisibleModels, BOT_CONFLICT, type BotWriteGuards } from "../store/useWorkbench.ts";
-import type { WorkUnit } from "../core/units.ts";
+import type { WorkUnit, BotChannel } from "../core/units.ts";
+import { ChannelSection } from "./ChannelSection.tsx";
 import { cn } from "./cn.ts";
 
 /**
@@ -43,15 +45,17 @@ export interface AddBotDraft {
   readonly persona: string;
   readonly memory: BotMemoryPolicy;
   readonly agentsMd: string;
+  readonly channels: readonly BotChannel[];
 }
 
-type Section = "identity" | "persona" | "memory" | "agentsmd";
+type Section = "identity" | "persona" | "memory" | "agentsmd" | "channels";
 
 const SECTIONS: readonly { id: Section; label: string; icon: LucideIcon; hint: string }[] = [
   { id: "identity", label: "身份", icon: FileText, hint: "名称、角色、目录、执行器" },
   { id: "persona", label: "系统提示词", icon: Wand2, hint: "人设与语气（SOUL）" },
   { id: "memory", label: "记忆", icon: Brain, hint: "接入哪几类记忆" },
   { id: "agentsmd", label: "AGENTS.md", icon: FileText, hint: "岗位说明书本体" },
+  { id: "channels", label: "渠道", icon: Radio, hint: "把 bot 接到 IM / webhook" },
 ];
 
 const SECTION_LIBRARY: readonly { label: string; snippet: (name: string) => string }[] = [
@@ -124,6 +128,8 @@ export function AddBotDialog({
   const [diskNote, setDiskNote] = useState<string | null>(null);
   /** AGENTS.md 落盘位置（编辑模式才有）。显示它，用户才知道去 VS Code 改哪个文件。 */
   const [agentsMdMeta, setAgentsMdMeta] = useState<WorkUnit["agentsMdMeta"]>(undefined);
+  /** 渠道配置。空 = 纯工作台内 bot。改了跟着保存一起写穿 bot.json。 */
+  const [channels, setChannels] = useState<readonly BotChannel[]>(initial?.channels ?? []);
 
   const isEdit = Boolean(initial);
 
@@ -144,6 +150,7 @@ export function AddBotDialog({
     setMemory(b.memory ?? { semantic: true, episodic: true, procedural: true });
     setRuntimeId(binding?.runtimeId ?? "");
     setModelHint(binding?.modelHint ?? null);
+    setChannels(b.channels ?? []);
     setAgentsMdMeta(b.agentsMdMeta);
     setBaseGuards({
       ifRevision: b.revision,
@@ -178,6 +185,7 @@ export function AddBotDialog({
         useWorkbench.getState().runtimes.length > 0 ? useWorkbench.getState().activeRuntimeId : "",
       );
       setModelHint(null);
+      setChannels([]);
       setAgentsMdMeta(undefined);
       setBaseGuards({});
     }
@@ -217,6 +225,7 @@ export function AddBotDialog({
     persona: persona.trim(),
     memory,
     agentsMd,
+    channels,
   });
 
   const submit = async (overwrite = false) => {
@@ -553,6 +562,14 @@ export function AddBotDialog({
                   className="min-h-0 flex-1 resize-none rounded-card border border-line bg-canvas p-3 font-mono text-caption leading-relaxed text-ink outline-none focus:border-teal"
                 />
               </div>
+            )}
+
+            {section === "channels" && (
+              <ChannelSection
+                channels={channels}
+                onChange={setChannels}
+                disabled={!isEdit}
+              />
             )}
           </div>
         </div>

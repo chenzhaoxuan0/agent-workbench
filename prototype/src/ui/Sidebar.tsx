@@ -422,6 +422,7 @@ export function Sidebar() {
                     : [],
                   agentsMd: draft.agentsMd,
                   memory: draft.memory,
+                  channels: draft.channels,
                 },
                 opts?.overwrite === true ? {} : guardsOf(editingUnit),
               );
@@ -452,6 +453,7 @@ export function Sidebar() {
                 assets: { agentFiles: ["AGENTS.md"], skillDirs: [] },
                 agentsMd: draft.agentsMd,
                 memory: draft.memory,
+                channels: draft.channels,
                 tags: ["新建"],
                 lastActiveAt: Date.now(),
               });
