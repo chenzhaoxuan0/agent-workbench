@@ -44,7 +44,32 @@ pnpm smoke:phase1   # …逐 Phase 到 smoke:phase7（回归基准线，改动�
 ## 渠道：每 bot 一个飞书机器人
 
 渠道由 `bot.json` 的 `channels` 声明，daemon 每 15s reconcile 一次——改完保存，
-不重启就生效。形态是**多账号**：一个飞书应用 = 一个账号 = 一个 bot 身份。
+不重启就生效。
+
+### 驱动方式：lark-cli，不是 SDK
+
+本机装了 `lark-cli`（22 个域：im / docs / drive / base / wiki / sheets / slides /
+task / vc / minutes …），它的 `event consume` 已经把飞书长连接、事件解密、
+消息内容预渲染全做了：
+
+```bash
+lark-cli --profile <profile> event consume im.message.receive_v1 --as bot
+# stdout 是 NDJSON；[event]/[source] 进度日志走 stderr
+```
+
+**`--profile` 是按调用指定的全局 flag**，于是「每 bot 一个飞书机器人」=
+每 bot 一个 profile = 一个飞书应用 = 一条独立长连接。
+
+daemon 侧只做三件本来就是它该做的事：
+
+1. **谁响应** —— 事件从哪个 profile 来就归哪个 bot（连接一对一绑定，不需要 @ 路由表）
+2. **会话生命周期** —— 起轮 / 续聊 / 同会话串行（faceless 渠道固定 yolo）
+3. **权限如实告知** —— headless 无审批面，UI 在绑定时刻就摆出来
+
+发消息、markdown、附件、文档、云盘、多维表**不在本仓库实现**——那是 CLI 的
+能力，由 agent 在轮次里自己调。两个地方各有一套飞书实现，三个月后你不知道该信谁。
+
+### 配置
 
 ```jsonc
 // <rootPath>/.agent-workbench/bot.json
@@ -55,34 +80,39 @@ pnpm smoke:phase1   # …逐 Phase 到 smoke:phase7（回归基准线，改动�
       "kind": "feishu",
       "enabled": true,
       "accounts": [
-        {
-          "id": "main",
-          "appId": "cli_a1b2c3",
-          "appSecret": { "source": "env", "id": "FEISHU_SECRET_RESEARCHER" },
-          "mentionOnly": true,
-          "allowFrom": ["ou_xxxxx"]
-        }
+        { "id": "main", "profile": "cli_a94d3ea8b5f99cc0", "mentionOnly": true }
       ]
     }
   ]
 }
 ```
 
-- `appSecret` 是**引用**不是值。`{"source":"env","id":"变量名"}` 从进程环境取。
-  这样密钥根本不在文件里，push 泄漏在形态上就不可能。
-- `allowFrom` 空 = 不限，意味着任何人都能驱动这个 bot（bot 在 `yolo` 模式下
-  对着工作目录执行）。上线前先填。
+- **只填 profile 名，不填 appId/appSecret。** 凭据由 profile 自己管，密钥根本
+  不进 agent-workbench 的文件。`lark-cli profile list` 查已有 profile。
+- 要多个机器人就在飞书开放平台各建一个应用、各自 `lark-cli profile add`，
+  然后给同一个 bot 挂多个账号。
 - `mentionOnly` 默认 true：群聊里只在被 @ 时应答，否则 bot 会接话接成旁白机。
-- 飞书侧要开：机器人能力 + 事件订阅 `im.message.receive_v1` + **长连接**模式
-  （webhook 模式要公网 URL 与签名校验，本机没有）。
+- 飞书侧要开：机器人能力 + 事件订阅 `im.message.receive_v1`（CLI 走长连接，
+  不需要公网 URL）。这几项 CLI 查不到，`lark-cli doctor` 只能验到凭据那一层。
 
-**没实现的**（有意不做，不是 bug）：富卡片、文档/云盘/多维表格、评论、图片与
-文件消息。只做纯文本收发。openclaw 的 `extensions/feishu` 有 130 个源文件做全功能
-平台，本项目只需要「收一句话回一句话」。
+### 诊断与出站
 
-验：`pnpm smoke:feishu`（不需要真凭据，验解析与 reconcile）；
-真连通要真 appId/appSecret，本冒烟验不到。
+- `channel.diagnose { botId, accountId }` —— 逐项说清断在哪：lark-cli 在不在、
+  profile 能不能用、bot 身份 ready 没有、事件订阅要你去哪确认。查不到的明说
+  查不到，不编一条看起来有用的检查项。
+- `channel.send { botId, accountId, receiveId, text }` —— **主动出站**。
+  没有它 bot 只能被动回话，日程、告警、自动化结果全都不成立。
 
+### 验
+
+`pnpm smoke:feishu`（不需要真 profile，验解析与 reconcile）；真连通要有真
+profile + 开放平台开好事件订阅。
+
+### Windows 注意事项
+
+`lark-cli` 是 npm shim，`spawn("lark-cli")` 直接 ENOENT。走
+`runtime/exec` 的 `resolveCommand`（它把 shim 解析成 `node + 脚本`），
+**不要**用 `shell: true`——那会把 prompt 里的引号送进 cmd 转义地狱。
 ## 执行器现状（诚实清单）
 
 - **zcode**：**首选 `zcode app-server`（ZCode Protocol v1）全能力**——真流式 delta、
