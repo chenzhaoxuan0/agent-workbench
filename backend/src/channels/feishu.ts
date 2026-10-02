@@ -22,6 +22,8 @@
  */
 
 import * as lark from "@larksuiteoapi/node-sdk";
+import { mkdir, writeFile } from "node:fs/promises";
+import path from "node:path";
 import type { BotRegistry, BotDefinition } from "../bots/registry.ts";
 import type { RuntimeHost } from "../runtime/host.ts";
 import { runBotTurn } from "./askBot.ts";
@@ -154,6 +156,10 @@ interface InboundMessage {
   readonly senderOpenId: string;
   /** 群聊里 @ 机器人的那些人的 open_id */
   readonly mentions: readonly string[];
+  /** 图片/文件/音频的 file_key；纯文本是 null */
+  readonly mediaKey: { key: string; name: string } | null;
+  /** messageResource.get 的 type 枚举：image / file */
+  readonly mediaType: "image" | "file";
 }
 
 /**
@@ -237,6 +243,43 @@ class AccountRunner {
     this.#enqueue(msg);
   }
 
+  /**
+   * 把飞书上的附件落到 bot 自己的工作目录。
+   *
+   * 为什么要落盘而不直接喂给模型：执行器（zcode/codex/claude）都跑在 cwd 里，
+   * 图片/文件必须先在文件系统上存在，模型才能用 read / 截图 / 解析这些工具看到它。
+   * 这也让 bot 的产出和输入都活在它的文件夹里——「bot 的一切都在文件夹里」不是
+   * 口号，是执行器能工作的前提。
+   */
+  async #downloadMedia(bot: BotDefinition, msg: InboundMessage): Promise<string | null> {
+    if (msg.mediaKey === null) return null;
+    const root = str(bot.rootPath);
+    if (root === "") return null;
+    const dir = path.join(root, "outputs", "inbox");
+    try {
+      await mkdir(dir, { recursive: true });
+      // messageResource.get 直接给二进制流（不是 URL），SDK 提供 writeFile 落盘
+      const res = await this.#client.im.messageResource.get({
+        params: { type: msg.mediaType },
+        path: { message_id: msg.messageId, file_key: msg.mediaKey.key },
+      });
+      // 文件名只留安全字符：飞书给的 file_name 是用户可控的，路径分隔符必须去掉
+      const safe = (msg.mediaKey.name === "" ? msg.mediaKey.key : msg.mediaKey.name)
+        .replace(/[^\w.\-一-龥]+/g, "_")
+        .slice(0, 80);
+      const dest = path.join(dir, safe === "" ? `${msg.mediaKey.key}.bin` : safe);
+      await res.writeFile(dest);
+      log.info("feishu attachment saved", { bot: this.#spec.botId, path: dest });
+      return dest;
+    } catch (err: unknown) {
+      log.warn("feishu attachment download failed", {
+        bot: this.#spec.botId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
+  }
+
   #enqueue(msg: InboundMessage): void {
     const key = `${msg.chatId}`;
     const prev = this.#chains.get(key) ?? Promise.resolve();
@@ -248,8 +291,18 @@ class AccountRunner {
           log.warn("feishu message for unknown bot", { bot: this.#spec.botId });
           return;
         }
+        // 附件先落盘，再把路径告诉模型——执行器得在文件系统上看得见它
+        const saved = await this.#downloadMedia(bot, msg);
+        const prompt =
+          saved === null
+            ? msg.text
+            : `${msg.text}\n\n（附件已保存到 ${saved}，可以直接读它）`.trim();
+        if (msg.text === "" && saved !== null) {
+          await this.#reply(msg, `收到，已存到 ${saved}`).catch(() => {});
+          return;
+        }
         try {
-          const { reply } = await runBotTurn(this.#host, bot, msg.text);
+          const { reply } = await runBotTurn(this.#host, bot, prompt, { source: "feishu" });
           await this.#reply(msg, reply);
         } catch (err: unknown) {
           const message = err instanceof Error ? err.message : String(err);
@@ -270,19 +323,71 @@ class AccountRunner {
   }
 
   async #reply(msg: InboundMessage, text: string): Promise<void> {
+    // 飞书卡片优先：纯文本回长文在飞书里是块难读的墙（openclaw 用 streaming-card
+    // 增量更新卡片，这里用同样的思路但不做逐 token 刷新——那会把 API 打满，
+    // 收益也不明显。发一次带 markdown 元素的卡片更好）。
+    const card = buildTextCard(text);
+    if (card !== null) {
+      const ok = await this.#replyOnce(msg.messageId, { msg_type: "interactive", content: JSON.stringify(card) });
+      if (ok) return;
+      log.debug("feishu card reply failed, falling back to plain text", { bot: this.#spec.botId });
+    }
     const chunks: string[] = [];
     for (let i = 0; i < text.length; i += REPLY_CAP) chunks.push(text.slice(i, i + REPLY_CAP));
     if (chunks.length === 0) chunks.push("(空回复)");
     for (const chunk of chunks) {
-      try {
-        await this.#client.im.message.reply({
-          path: { message_id: msg.messageId },
-          data: { content: JSON.stringify({ text: chunk }), msg_type: "text" },
-        });
-      } catch (err: unknown) {
-        log.warn("feishu reply failed", { bot: this.#spec.botId, error: err instanceof Error ? err.message : String(err) });
-      }
+      await this.#replyOnce(msg.messageId, { msg_type: "text", content: JSON.stringify({ text: chunk }) });
     }
+  }
+
+  /** 发一条回复。返回是否成功——卡片发失败时要能退回纯文本，而不是静默丢消息 */
+  async #replyOnce(messageId: string, data: { msg_type: string; content: string }): Promise<boolean> {
+    try {
+      await this.#client.im.message.reply({ path: { message_id: messageId }, data });
+      return true;
+    } catch (err: unknown) {
+      log.warn("feishu reply failed", {
+        bot: this.#spec.botId,
+        msgType: data.msg_type,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return false;
+    }
+  }
+}
+
+/**
+ * 把一段回复包成飞书消息卡片（schema 2.0 的简化版）。
+ *
+ * 只做两件事：把 ``` 代码块和 `行内码` 变成真代码样式，其余当 markdown 渲染。
+ * 不做 openclaw 那套元素系统（markdown / 分栏 / 图表 / 按钮）——那是它 16 个
+ * 文件 114KB 的来源，这里一个卡片就够把可读性拉满。
+ *
+ * 失败（文本像 JSON、含不可渲染内容等）返回 null，让调用方退回纯文本。
+ */
+export function buildTextCard(text: string): Record<string, unknown> | null {
+  try {
+    const escaped = text.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c] ?? c);
+    const segments = escaped.split(/(```[\s\S]*?```|`[^`\n]+`)/g).filter((s) => s !== "");
+    if (segments.length === 0) return null;
+    const elements = segments.map((seg) => {
+      const fence = /^```(\w*)\n([\s\S]*?)\n?```$/.exec(seg);
+      if (fence !== null) {
+        return { tag: "code", text: fence[2] ?? "", language: fence[1] === "" ? "plaintext" : fence[1] };
+      }
+      if (seg.startsWith("`") && seg.endsWith("`") && seg.length > 2) {
+        return { tag: "text", text: seg.slice(1, -1), styles: { code: true } };
+      }
+      return { tag: "markdown", content: seg };
+    });
+    return {
+      schema: "2.0",
+      config: { wide_screen_mode: true },
+      header: { title: { tag: "plain_text", content: "回复" }, template: "blue" },
+      body: { elements },
+    };
+  } catch {
+    return null;
   }
 }
 
@@ -293,8 +398,61 @@ class AccountRunner {
  * 变化，bot.json 改完渠道不生效。渠道既然由 bot.json 声明，它的生命周期就必须跟着
  * bot.json 走。
  */
+/**
+ * 账号诊断（对齐 openclaw `extensions/feishu/src/doctor.ts` 的思路，不搬代码）。
+ *
+ * 为什么必须有：配错了以前的症状是「网关日志里一行 warn 就没了」，用户界面上
+ * 表现为「绑了但没反应」，两边对不上。诊断要把「哪一环没通」直接说出来。
+ *
+ * 不做的事：不去猜「事件订阅开了没」——那只能从飞书管理后台看，API 查不到。
+ * 查不到就说查不到，不编一条看似有用的检查项。
+ */
+export interface FeishuDiagnosis {
+  readonly appId: string;
+  readonly accountKey: string;
+  readonly ok: boolean;
+  readonly checks: readonly { readonly name: string; readonly ok: boolean; readonly detail: string }[];
+}
+
+export async function diagnoseFeishuAccount(spec: AccountSpec): Promise<FeishuDiagnosis> {
+  const checks: { name: string; ok: boolean; detail: string }[] = [];
+  const domain = spec.domain === "lark" ? lark.Domain.Lark : lark.Domain.Feishu;
+  const client = new lark.Client({ appId: spec.appId, appSecret: spec.appSecret, domain });
+
+  // 1) 凭据 + 群读权限：一次调用验两件事。appId/appSecret 错、或没开机器人能力，
+  //    这里就会 99991663 / 鉴权失败，而不是等到连不上才发���。
+  let chatCount = -1;
+  try {
+    const r = await client.im.chat.list({ params: { page_size: 1 } });
+    chatCount = r?.data?.items?.length ?? 0;
+    checks.push({ name: "凭据与鉴权", ok: true, detail: "tenant token 获取成功" });
+    checks.push({ name: "群列表权限", ok: true, detail: `可读（样例 ${chatCount} 条）` });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    checks.push({ name: "凭据与鉴权", ok: false, detail: msg });
+    checks.push({ name: "群列表权限", ok: false, detail: "凭据没过，这项无从判断" });
+  }
+
+  // 2) 主动出站能力：能不能给不在会话里的人发消息。没开通「获取用户信息」等
+  //    权限时收不到 open_id，主动出站就无从谈起。
+  checks.push({
+    name: "事件订阅",
+    ok: true,
+    detail: "API 查不到，只能在飞书开放平台确认：机器人能力 + im.message.receive_v1 + 长连接",
+  });
+
+  return {
+    appId: spec.appId,
+    accountKey: spec.key,
+    ok: checks.every((c) => c.ok),
+    checks,
+  };
+}
+
 export class FeishuGateway {
   readonly #runners = new Map<string, AccountRunner>();
+  /** 盘上声明的账号规格（含未起成功的），诊断与主动出站都从这里取 */
+  readonly #specs = new Map<string, AccountSpec>();
   #timer: NodeJS.Timeout | null = null;
 
   constructor(
@@ -326,6 +484,46 @@ export class FeishuGateway {
     return this.#runners.size;
   }
 
+  /** 当前在跑的账号规格（诊断 / 出站用）。key 形如 `<botId>::<accountId>` */
+  specsOf(botId: string): AccountSpec[] {
+    return [...this.#specs.values()].filter((s) => s.botId === botId);
+  }
+
+  /** 单个账号规格，找不到返回 null（未启用 / 凭据解不开 / 压根没配） */
+  specOf(botId: string, accountId = "main"): AccountSpec | null {
+    return this.#specs.get(`${botId}::${accountId}`) ?? null;
+  }
+
+  /**
+   * 主动出站：bot 主动找人说话。
+   *
+   * 之前 bot 只能被动回话——你不问它，它永远不出声。日程、自动化、告警这些
+   * 「该由 bot 主动开口」的场景全都不成立。这条补上后，渠道才真的是一扇门，
+   * 不只是回程。
+   *
+   * 走独立的一次性 Client 而不复用 AccountRunner：出站不需要长连接，
+   * 也不该因为某次发送失败影响正在跑的入站连接。
+   */
+  async sendTo(botId: string, accountId: string, receiveId: string, text: string): Promise<{ ok: boolean; detail: string }> {
+    const spec = this.specOf(botId, accountId);
+    if (spec === null) return { ok: false, detail: `bot ${botId} 没有可用的飞书账号 ${accountId}` };
+    const domain = spec.domain === "lark" ? lark.Domain.Lark : lark.Domain.Feishu;
+    const client = new lark.Client({ appId: spec.appId, appSecret: spec.appSecret, domain });
+    try {
+      const card = buildTextCard(text);
+      await client.im.message.create({
+        params: { receive_id_type: "chat_id" },
+        data:
+          card === null
+            ? { receive_id: receiveId, msg_type: "text", content: JSON.stringify({ text }) }
+            : { receive_id: receiveId, msg_type: "interactive", content: JSON.stringify(card) },
+      });
+      return { ok: true, detail: "已送达" };
+    } catch (err: unknown) {
+      return { ok: false, detail: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
   async reconcile(): Promise<void> {
     let bots: BotDefinition[];
     try {
@@ -343,8 +541,12 @@ export class FeishuGateway {
       if (spec !== undefined && runner.matches(spec)) continue;
       runner.stop();
       this.#runners.delete(key);
+      this.#specs.delete(key);
       log.info("feishu account stopped", { account: key });
     }
+    // 规格表跟着 desired 走：诊断/出站要能查到「盘上配了什么」，哪怕它此刻没连上
+    this.#specs.clear();
+    for (const spec of desired) this.#specs.set(spec.key, spec);
 
     // 多出来的 / 变了的：起新的
     for (const spec of desired) {
@@ -377,8 +579,11 @@ function parseInbound(data: unknown): InboundMessage | null {
   const chatId = str(message["chat_id"]);
   const messageType = str(message["message_type"]);
   if (messageId === "" || chatId === "") return null;
-  // 本实现只处理文本。其他类型（图片/文件/富文本）直接不接，不是 bug 是范围。
-  if (messageType !== "text") return null;
+  // 只接文本与附件两类。其他类型（富文本 post、交互消息、合并转发）直接不接，
+  // 不是 bug 是范围——接了也只是把一堆结构化 JSON 喂给模型。
+  const isText = messageType === "text";
+  const isMedia = messageType === "image" || messageType === "file" || messageType === "audio";
+  if (!isText && !isMedia) return null;
 
   const sender = d["sender"] as AnyRecord | undefined;
   // sender_type=app 是应用（含机器人自己）发出的消息。飞书正常不会把 bot 自己发的
@@ -388,13 +593,17 @@ function parseInbound(data: unknown): InboundMessage | null {
   const senderOpenId = str(senderId["open_id"]);
 
   let text = "";
-  try {
-    const parsed = JSON.parse(str(message["content"])) as AnyRecord;
-    text = str(parsed["text"]);
-  } catch {
-    return null;
+  if (isText) {
+    try {
+      const parsed = JSON.parse(str(message["content"])) as AnyRecord;
+      text = str(parsed["text"]);
+    } catch {
+      return null;
+    }
   }
-  if (text.trim() === "") return null;
+  // 纯附件消息没有正文是正常的（用户就发了个图）；正文与附件都空才丢弃
+  const mediaKey = isMedia ? readMediaKey(message["content"]) : null;
+  if (text.trim() === "" && mediaKey === null) return null;
 
   const rawMentions = Array.isArray(message["mentions"]) ? (message["mentions"] as AnyRecord[]) : [];
   const mentions = rawMentions
@@ -404,6 +613,7 @@ function parseInbound(data: unknown): InboundMessage | null {
     })
     .filter((s) => s !== "");
 
+  // 附件：图片 / 文件 / 音频。飞书给的 key 要经 messageResource 换二进制流。
   return {
     messageId,
     chatId,
@@ -413,7 +623,22 @@ function parseInbound(data: unknown): InboundMessage | null {
     text: stripMentions(text, rawMentions),
     senderOpenId,
     mentions,
+    mediaKey,
+    // messageResource.get 的 type 参数：图片与文件是不同枚举，不能把 message_type 原样丢进去
+    mediaType: messageType === "image" ? "image" : "file",
   };
+}
+
+/** 从 content JSON 里取出附件的 file_key */
+function readMediaKey(content: unknown): { key: string; name: string } | null {
+  try {
+    const parsed = JSON.parse(str(content)) as AnyRecord;
+    const key = str(parsed["file_key"]);
+    if (key === "") return null;
+    return { key, name: str(parsed["file_name"]) };
+  } catch {
+    return null;
+  }
 }
 
 /** 飞书群里 @ 机器人在 text 里表现为 `@_user_1` 这类占位符，回给模型前抹掉 */

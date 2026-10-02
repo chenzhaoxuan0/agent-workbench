@@ -411,3 +411,33 @@ export async function fetchChannelStatus(endpoint: string = defaultDaemonEndpoin
   const client = DaemonClient.get(endpoint);
   return client.rpc<ChannelStatus>("channel.status", null, 15000);
 }
+
+export interface DiagnosisResult {
+  readonly appId: string;
+  readonly accountKey: string;
+  readonly ok: boolean;
+  readonly checks: readonly { readonly name: string; readonly ok: boolean; readonly detail: string }[];
+}
+
+/**
+ * 诊断某个 bot 的飞书账号连得通不（向导第三步）。
+ *
+ * botId + accountId 一起传：诊断的最小单位是**账号**——一个 bot 可以挂几个飞书
+ * 应用，配错其中一个不该让另外几个也显示异常。
+ */
+export async function diagnoseChannel(
+  params: { botId: string; accountId?: string },
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<DiagnosisResult> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<DiagnosisResult>("channel.diagnose", params, 30000);
+}
+
+/** 主动出站：让 bot 主动开口（日报 / 告警 / 自动化结果） */
+export async function sendViaChannel(
+  params: { botId: string; accountId?: string; receiveId: string; text: string },
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<{ ok: boolean; detail: string }> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<{ ok: boolean; detail: string }>("channel.send", params, 30000);
+}

@@ -566,6 +566,7 @@ export function AddBotDialog({
 
             {section === "channels" && (
               <ChannelSection
+                botId={initial?.id ?? ""}
                 channels={channels}
                 onChange={setChannels}
                 disabled={!isEdit}

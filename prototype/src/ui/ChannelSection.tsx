@@ -28,10 +28,12 @@ import {
   Plus,
   Radio,
   ShieldAlert,
+  Stethoscope,
   Trash2,
   X,
   type LucideIcon,
 } from "lucide-react";
+import type { DiagnosisResult } from "../adapters/daemon/client.ts";
 import type { BotChannel, ChannelAccount } from "../core/units.ts";
 import { cn } from "./cn.ts";
 
@@ -43,10 +45,13 @@ const KINDS = [
 ];
 
 export function ChannelSection({
+  botId,
   channels,
   onChange,
   disabled,
 }: {
+  /** 诊断要用：诊断的最小单位是账号，但归属是 bot */
+  botId: string;
   channels: readonly BotChannel[];
   onChange: (next: readonly BotChannel[]) => void;
   disabled?: boolean;
@@ -92,6 +97,7 @@ export function ChannelSection({
       {channels.map((ch, i) => (
         <ChannelCard
           key={`${ch.kind}-${i}`}
+          botId={botId}
           channel={ch}
           expanded={expanded === `${ch.kind}-${i}`}
           onToggle={() => setExpanded(expanded === `${ch.kind}-${i}` ? null : `${ch.kind}-${i}`)}
@@ -130,12 +136,14 @@ function emptyAccount(kind: BotChannel["kind"]): ChannelAccount {
 }
 
 function ChannelCard({
+  botId,
   channel,
   expanded,
   onToggle,
   onChange,
   onRemove,
 }: {
+  botId: string;
   channel: BotChannel;
   expanded: boolean;
   onToggle: () => void;
@@ -188,7 +196,6 @@ function ChannelCard({
             <ImBody channel={channel} onChange={onChange} />
           )}
 
-          {/* 风险声明：只在 IM 类渠道出现，且必须摆在绑定时刻 */}
           {(channel.kind === "feishu" || channel.kind === "telegram") && (
             <div className="rounded-card border border-loss/30 bg-loss/5 p-2.5">
               <p className="flex items-center gap-1.5 text-caption font-medium text-loss">
@@ -204,6 +211,10 @@ function ChannelCard({
                 再回来启用。规则是后端强制的，比这里口头承诺可靠。
               </p>
             </div>
+          )}
+
+          {channel.kind === "feishu" && (
+            <DiagnosePanel botId={botId} accounts={accountsOf(channel)} />
           )}
         </div>
       )}
@@ -335,6 +346,74 @@ export function ChannelStatusHint() {
     <span className="text-caption text-ash">
       {checking ? <Loader2 size={9} className="inline animate-spin" /> : null} 保存后约 15 秒内生效，不用重启
     </span>
+  );
+}
+
+/** 渠道配置的账号清单（新形态 accounts，旧形态 config 归一出一个 default） */
+function accountsOf(channel: BotChannel): readonly ChannelAccount[] {
+  return channel.accounts ?? [emptyAccount(channel.kind)];
+}
+
+/**
+ * 连通性诊断（向导第三步）。
+ *
+ * 放在这里而不是设置页深处，是因为诊断的前提是「还没保存、正在配」——
+ * 保存之后渠道就生效了，那时候再诊断是另一回事（该看的是运行态）。
+ * 诊断按账号走：配了几个飞书账号就各自能独立验。
+ */
+function DiagnosePanel({ botId, accounts }: { botId: string; accounts: readonly ChannelAccount[] }) {
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [result, setResult] = useState<Record<string, DiagnosisResult>>({});
+  const [err, setErr] = useState<string | null>(null);
+
+  const run = async (acc: ChannelAccount) => {
+    setBusyId(acc.id);
+    setErr(null);
+    try {
+      const { diagnoseChannel } = await import("../adapters/daemon/client.ts");
+      const r = await diagnoseChannel({ botId, accountId: acc.id });
+      setResult((prev) => ({ ...prev, [acc.id]: r }));
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  return (
+    <div className="space-y-1.5">
+      {accounts.map((acc) => (
+        <div key={acc.id} className="space-y-1">
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => void run(acc)}
+              disabled={busyId !== null}
+              className="flex items-center gap-1 rounded-btn border border-line px-2 py-1 text-caption text-ink hover:bg-line-soft disabled:opacity-50"
+            >
+              {busyId === acc.id ? <Loader2 size={9} className="animate-spin" /> : <Stethoscope size={9} />}
+              {busyId === acc.id ? "诊断中…" : "测一下连得通不"}
+            </button>
+            <span className="truncate text-[10px] text-ash">
+              {acc.appId === "" ? "还没填 App ID" : acc.appId}
+            </span>
+          </div>
+          {result[acc.id] !== undefined && (
+            <ul className="space-y-0.5">
+              {result[acc.id]!.checks.map((c) => (
+                <li key={c.name} className="flex items-start gap-1.5 text-[10px]">
+                  <span className={c.ok ? "text-teal" : "text-loss"}>{c.ok ? "✓" : "✕"}</span>
+                  <span className="shrink-0 text-graphite">{c.name}</span>
+                  <span className="min-w-0 flex-1 truncate text-ash" title={c.detail}>
+                    {c.detail}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      ))}
+      {err !== null && <p className="text-[10px] text-loss">{err}</p>}
+    </div>
   );
 }
 
