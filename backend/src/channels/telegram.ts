@@ -13,18 +13,66 @@ import type { RuntimeHost } from "../runtime/host.ts";
 import { runBotTurn } from "./askBot.ts";
 import { log } from "../log.ts";
 
-interface TelegramChannelConf {
-  kind: "telegram";
-  enabled: boolean;
-  config: Record<string, string>;
-}
-
 interface TgUpdate {
   update_id?: number;
   message?: { chat?: { id?: number }; text?: string };
 }
 
+interface TgAccountSpec {
+  readonly key: string;
+  readonly botId: string;
+  readonly botToken: string;
+  readonly chatId: string;
+}
+
 const REPLY_CAP = 3_900; // Telegram 文本消息上限 4096，留余量
+
+/** 解析一个 bot 的 telegram 账号。SecretRef（env）与旧明文都认，迁移期兼容。 */
+function telegramAccounts(bot: BotDefinition): TgAccountSpec[] {
+  const botId = typeof bot.id === "string" ? bot.id : "";
+  if (botId === "") return [];
+  const channels = bot.channels as unknown;
+  if (!Array.isArray(channels)) return [];
+
+  const out: TgAccountSpec[] = [];
+  for (const ch of channels as Array<Record<string, unknown> | undefined>) {
+    if (ch?.["kind"] !== "telegram" || ch["enabled"] !== true) continue;
+    const raw: Array<Record<string, unknown>> =
+      Array.isArray(ch["accounts"]) && ch["accounts"].length > 0
+        ? (ch["accounts"] as Array<Record<string, unknown>>)
+        : [
+            {
+              id: "default",
+              botToken: (ch["config"] as Record<string, unknown> | undefined)?.["botToken"],
+              chatId: (ch["config"] as Record<string, unknown> | undefined)?.["chatId"],
+            },
+          ];
+    for (const acc of raw) {
+      const token = resolveSecretValue(acc["botToken"]);
+      const chatId = typeof acc["chatId"] === "string" ? acc["chatId"] : "";
+      const id = typeof acc["id"] === "string" && acc["id"] !== "" ? acc["id"] : "default";
+      // 评审 P2：单份畸形 bot.json 不许拖死排在后面的所有 bot
+      if (token === "" || chatId === "") {
+        log.warn("telegram account skipped: incomplete credentials", { bot: botId, account: id });
+        continue;
+      }
+      out.push({ key: `${botId}::${id}`, botId, botToken: token, chatId });
+    }
+  }
+  return out;
+}
+
+/** SecretRef 解析：env 查环境变量；裸字符串当明文认（迁移期兼容） */
+function resolveSecretValue(v: unknown): string {
+  if (typeof v === "string") return v;
+  if (v === null || typeof v !== "object") return "";
+  const r = v as Record<string, unknown>;
+  const id = typeof r["id"] === "string" ? r["id"] : "";
+  if (id === "") return "";
+  if (r["source"] === "env") return process.env[id] ?? "";
+  if (r["source"] === "literal") return id;
+  return "";
+}
 
 export class TelegramGateway {
   private timer: NodeJS.Timeout | null = null;
@@ -38,6 +86,8 @@ export class TelegramGateway {
       apiBase: string;
       registry: BotRegistry;
       host: RuntimeHost;
+      /** 轮询间隔。tick() 每轮都重读 bot.json，所以它本身就是 reconcile——渠道改了
+       *  最迟一个 pollMs 就生效，不必重启 daemon */
       pollMs?: number;
     },
   ) {}
@@ -55,7 +105,12 @@ export class TelegramGateway {
     this.timer = null;
   }
 
-  /** 扫描全部 bot 定义里启用的 telegram 渠道，逐 bot 轮询 */
+  /**
+   * 扫盘上的 bot 定义，逐账号轮询。
+   *
+   * ⚠ 这是「reconcile」而不是「启动时定死」：渠道由 bot.json 声明，用户在设置页改完
+   * 渠道保存，下一轮就生效，不必重启 daemon。
+   */
   private async tick(): Promise<void> {
     let bots: BotDefinition[];
     try {
@@ -66,21 +121,19 @@ export class TelegramGateway {
     for (const bot of bots) {
       // 评审 P2：单份畸形 bot.json 不许拖死排在后面的所有 bot
       try {
-        const ch = telegramChannel(bot);
-        if (ch === null) continue;
-        const lockKey = (ch.config["botToken"] ?? bot.id ?? "") ;
-        if (this.inFlight.has(lockKey)) continue;
-        this.inFlight.add(lockKey);
-        void this.pollBot(bot, ch).finally(() => this.inFlight.delete(lockKey));
+        for (const acc of telegramAccounts(bot)) {
+          if (this.inFlight.has(acc.botToken)) continue;
+          this.inFlight.add(acc.botToken);
+          void this.pollBot(bot, acc).finally(() => this.inFlight.delete(acc.botToken));
+        }
       } catch (err: unknown) {
         log.warn("telegram channel skipped", { bot: bot.id, error: err instanceof Error ? err.message : String(err) });
       }
     }
   }
 
-  private async pollBot(bot: BotDefinition, ch: TelegramChannelConf): Promise<void> {
-    const token = ch.config["botToken"] ?? "";
-    const chatId = ch.config["chatId"] ?? "";
+  private async pollBot(bot: BotDefinition, acc: TgAccountSpec): Promise<void> {
+    const { botToken: token, chatId } = acc;
     if (token === "" || chatId === "") return;
     const offset = this.offsets.get(token) ?? 0;
     let updates: TgUpdate[];
@@ -100,21 +153,20 @@ export class TelegramGateway {
       const msg = u.message;
       if (msg?.text === undefined || msg.chat?.id === undefined) continue;
       if (String(msg.chat.id) !== chatId) continue;
-      this.enqueue(bot, ch, msg.text);
+      this.enqueue(bot, acc, msg.text);
     }
   }
 
   /** 单 bot 串行链：前一条处理完才轮到下一条 */
-  private enqueue(bot: BotDefinition, ch: TelegramChannelConf, text: string): void {
+  private enqueue(bot: BotDefinition, acc: TgAccountSpec, text: string): void {
     const key = bot.id ?? "";
     const prev = this.chains.get(key) ?? Promise.resolve();
-    const next = prev.catch(() => {}).then(() => this.handleText(bot, ch, text));
+    const next = prev.catch(() => {}).then(() => this.handleText(bot, acc, text));
     this.chains.set(key, next);
   }
 
-  private async handleText(bot: BotDefinition, ch: TelegramChannelConf, text: string): Promise<void> {
-    const token = ch.config["botToken"] ?? "";
-    const chatId = ch.config["chatId"] ?? "";
+  private async handleText(bot: BotDefinition, acc: TgAccountSpec, text: string): Promise<void> {
+    const { botToken: token, chatId } = acc;
     try {
       const { reply } = await runBotTurn(this.opts.host, bot, text);
       await this.sendTelegram(this.opts.apiBase, token, chatId, reply);
@@ -141,11 +193,4 @@ export class TelegramGateway {
       if (!r.ok) log.warn("telegram sendMessage failed", { status: r.status });
     }
   }
-}
-
-function telegramChannel(bot: BotDefinition): TelegramChannelConf | null {
-  const channels = bot.channels as unknown;
-  if (!Array.isArray(channels)) return null; // 手改坏的 channels（非数组）不许炸网关
-  const ch = (channels as TelegramChannelConf[]).find((c) => c?.kind === "telegram" && c.enabled === true);
-  return ch ?? null;
 }
