@@ -24,6 +24,7 @@ import { CodexAdapter } from "./runtime/adapters/codex.ts";
 import { PiAdapter } from "./runtime/adapters/pi.ts";
 import { McodeAdapter } from "./runtime/adapters/mcode.ts";
 import { DshAdapter } from "./runtime/adapters/dsh.ts";
+import { OpencodeAdapter } from "./runtime/adapters/opencode.ts";
 import { TerminalManager } from "./terminal/terminals.ts";
 import { Store } from "./store/db.ts";
 import { AutomationScheduler } from "./automation/scheduler.ts";
@@ -69,6 +70,7 @@ host.register(new ClaudeAdapter());
 host.register(new PiAdapter());
 host.register(new McodeAdapter());
 host.register(new DshAdapter());
+host.register(new OpencodeAdapter());
 host.register(new MockPermAdapter());
 host.loadPersisted();
 
@@ -87,8 +89,9 @@ registerMethod("driver.catalog", () => [
   {
     id: "opencode",
     installed: true,
-    registered: false,
-    hint: "已安装但未配置 provider 凭据（opencode auth login）—— 配置后即可接入",
+    registered: true,
+    hint:
+      "HTTP server 形态（opencode serve）；凭据已配（MiniMax/qwen/智谱），本机默认模型 zhipuai-coding-plan 已失效，会话请选模型（minimax-cn-coding-plan/MiniMax-M2.7 实测可用）",
   },
   { id: "cursor-agent", installed: false, registered: false, hint: "未安装（cursor-agent install）" },
   { id: "grok", installed: false, registered: false, hint: "未安装" },

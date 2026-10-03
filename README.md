@@ -34,12 +34,13 @@ daemon 不可达时执行器清单为空，不再注册六家假执行器撑门�
 daemon 起来后前端会连上并打印：
 
 ```
-[workbench] 已连接本地 daemon：zcode, codex, claude, pi, mcode, dsh, mockperm
+[workbench] 已连接本地 daemon：zcode, codex, claude, pi, mcode, dsh, opencode, mockperm
 ```
 
-七家执行器两种接入形态：claude/codex/pi 走一次性进程（每轮 spawn CLI 翻 JSONL），
-zcode/mcode/dsh 走常驻协议进程（mcode、dsh 用 ACP：`mcode acp` / `dsh acp`，带真权限审批流，
-见 `docs/03` §3.3.1）。
+八家执行器三种接入形态：claude/codex/pi 走一次性进程（每轮 spawn CLI 翻 JSONL），
+zcode/mcode/dsh 走常驻 stdio 协议进程（`mcode acp` / `dsh acp`，带真权限审批流），
+opencode 走常驻 HTTP server（`opencode serve` + SSE，t3code 同款，真 patch diff），
+见 `docs/03` §3.3.1。
 
 **有执行器 ≠ 有内容。** 侧栏单元来自各 bot 工作目录下的 `.agent-workbench/bot.json`
 （bot.json 是家，store 只是运行态视图）。没建过 bot 就没有 bot.json，侧栏就是空的——

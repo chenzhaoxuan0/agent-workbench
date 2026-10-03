@@ -125,7 +125,8 @@ daemon 侧适配器有两种成熟形态，按目标 CLI 的协议能力选：
 | 形态 | 进程模型 | 适配器 | 适合的 CLI |
 |---|---|---|---|
 | **一次性进程** | 每轮 spawn 一个 CLI 进程，stdout JSONL 翻完即退 | `claude.ts` / `codex.ts` / `pi.ts` | 有 `-p` + JSON 输出模式 |
-| **常驻协议进程** | 会话首推 spawn 一次，stdin/stdout 即协议通道，断连即退 | `zcode.ts`（agent-server）/ `mcode.ts`（ACP）/ `dsh.ts`（ACP） | 有常驻服务模式（`mcode acp`、`dsh acp`，接法参考 t3code 的 `packages/effect-acp` client） |
+| **常驻 stdio 协议** | 会话首推 spawn 一次，stdin/stdout 即协议通道，断连即退 | `zcode.ts`（agent-server）/ `mcode.ts`（ACP）/ `dsh.ts`（ACP） | 有常驻服务模式（`mcode acp`、`dsh acp`，接法参考 t3code 的 `packages/effect-acp` client） |
+| **常驻 HTTP server** | spawn 无头服务（随机端口 + 密码），HTTP API 驱动 + SSE 事件流 | `opencode.ts`（`opencode serve`，t3code OpenCodeServerOwner 同款） | client-server 架构的一等接口是 HTTP 而非 stdio |
 
 - **pi**（`pi --mode json -p`）：事件流含 thinking/text/toolcall 三路 delta 与
   `tool_execution_*`，usage 带真实计费；多轮靠 `--session-id`（daemon 生成、首轮即知，
@@ -144,6 +145,15 @@ daemon 侧适配器有两种成熟形态，按目标 CLI 的协议能力选：
   实际可用的是桌面版 `cli/bin/dsh.cmd`——适配器解析 shim 内容拿到
   `DeepSeek Harness.exe` + `ELECTRON_RUN_AS_NODE=1` 原生 spawn，绕开 cmd.exe
   在带空格路径上的转发碎裂。
+- **opencode**（`opencode serve`，HTTP 形态）：Basic 认证（用户名 opencode +
+  `OPENCODE_SERVER_PASSWORD`）+ SSE `/event` 全局流按 sessionID 过滤；prompt 用
+  `prompt_async` + `session.idle` 轮完成信号（避开阻塞 POST 的 undici 5min 头超时）；
+  本轮文件变更 finalize 后 `GET /session/:id/diff` 拉真 patch（SSE 的 session.diff
+  事件是 revert 快照，实测恒空）；权限走 `permission.updated` 事件 +
+  `/permission/:id/reply {reply:"once"|"always"|"reject"}`；会话按项目落盘全局可寻址，
+  新 serve 进程凭 sessionID 直接续。本机凭据已配（MiniMax/qwen/智谱），但用户默认
+  模型 zhipuai-coding-plan 已失效，model=null 会撞 "Model not found"——catalog hint
+  有提示。
 
 选型判据：**CLI 有结构化非交互输出就别起常驻进程**（少一条生命周期要管）；
 **需要反向流（权限/审批/steer）才值得常驻**。
