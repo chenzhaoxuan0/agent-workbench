@@ -16,7 +16,7 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import os from "node:os";
 import { BotRegistry } from "../src/bots/registry.ts";
-import { FeishuGateway, larkCliAvailable, diagnoseLarkAccount, fetchLarkIdentity, larkIdentities } from "../src/channels/feishu.ts";
+import { FeishuGateway, larkCliAvailable, diagnoseLarkAccount, fetchLarkIdentity, larkIdentities, larkProfileList, addLarkProfile } from "../src/channels/feishu.ts";
 import { Store } from "../src/store/db.ts";
 
 const home = await mkdtemp();
@@ -159,6 +159,58 @@ if (cli.available) {
   ok(true, "lark-cli 不在，跳过真 profile 断言");
 }
 
+console.log("\n[11] 绑定向导：列出本机飞书机器人（带头像，不是光一串 ID）");
+const pl = await larkProfileList();
+ok(typeof pl.available === "boolean", "可探测 lark-cli 是否可用", pl.available);
+ok(Array.isArray(pl.profiles), "profile 列表是数组");
+ok(pl.profiles.every((p) => p.name !== ""), "每个 profile 都有名字");
+ok(pl.profiles.every((p) => typeof p.identity?.ok === "boolean"), "每个 profile 都带认脸结果（认不出也是 ok:false，不是「未知」）");
+if (pl.available && pl.profiles.length > 0) {
+  ok(pl.profiles.some((p) => p.identity.ok && p.identity.appName !== ""), "至少一个 profile 认得出飞书里的机器人", pl.profiles.map((p) => `${p.name}=${p.identity.appName || p.identity.detail}`));
+}
+
+console.log("\n[12] 绑定向导：建 profile 的守卫（该拒的一定拒）");
+const blank = await addLarkProfile({ name: "", appId: "", appSecret: "" });
+ok(blank.ok === false && blank.detail !== "", "三项缺一就拒，不 spawn", blank.detail);
+const badName = await addLarkProfile({ name: "有 空格", appId: "cli_x", appSecret: "x" });
+ok(badName.ok === false && /不能含空格/.test(badName.detail), "profile 名含空格/斜杠被挡（它会变成事件总线目录名）", badName.detail);
+if (pl.profiles.length > 0) {
+  const dup = await addLarkProfile({ name: pl.profiles[0]!.name, appId: "cli_whatever", appSecret: "whatever" });
+  ok(dup.ok === false && /已经有一个/.test(dup.detail), "同名不覆盖已有凭据（没有 undo）", dup.detail);
+}
+
+console.log("\n[13] 绑定向导：写盘成功 ≠ 机器人可用（实测出来的坑）");
+if (pl.available) {
+  const probeName = `aw-smoke-probe-${Date.now().toString(36)}`;
+  let created: Awaited<ReturnType<typeof addLarkProfile>> | null = null;
+  try {
+    created = await addLarkProfile({ name: probeName, appId: "cli_definitely_not_real", appSecret: "definitely-not-a-real-secret" });
+    // lark-cli profile add 拿假凭据照样返回 "OK: Profile added" 并写进配置，
+    // 所以「建好了」这件事必须靠认脸来判定，不能看 CLI 的退出码
+    ok(created.ok === false, "假 App ID 建完被判为不可用（没被 CLI 的 OK 骗过去）", { ok: created.ok, detail: created.detail });
+    ok(created.identity.ok === false, "认脸结果如实是失败");
+    ok(created.detail.includes("认不出"), "说清是「写进去了但认不出」，而不是笼统的失败", created.detail);
+    ok(!created.detail.includes("definitely-not-a-real-secret"), "回传的提示里没有 secret 片段");
+
+    const after = await larkProfileList();
+    ok(after.profiles.some((p) => p.name === probeName), "条目确实写进了 lark-cli（没偷偷回滚用户的凭据）");
+  } finally {
+    // 清理：这是冒烟自己造的垃圾，不留
+    const cmd = await resolveCommandForSmoke();
+    if (cmd !== null) {
+      await new Promise<void>((res) => {
+        const c = spawn(cmd.file, [...cmd.prefixArgs, "profile", "remove", probeName], { windowsHide: true });
+        c.on("close", () => res());
+        c.on("error", () => res());
+      });
+    }
+  }
+  const cleaned = await larkProfileList();
+  ok(!cleaned.profiles.some((p) => p.name === probeName), "清理干净，没给用户留垃圾 profile");
+} else {
+  ok(true, "lark-cli 不在，跳过建 profile 断言");
+}
+
 gateway.stop();
 store.close();
 await rm(home, { recursive: true, force: true });
@@ -167,18 +219,27 @@ process.exit(fail === 0 ? 0 : 1);
 
 /** 本机第一个 profile 名（动态取，不硬编码——换机器/换账号时测试仍有效） */
 async function firstRealProfile(): Promise<string | null> {
-  const { resolveCommand } = await import("../src/runtime/exec.ts");
+  const cmd = await resolveCommandForSmoke();
+  if (cmd === null) return null;
+  const out = await new Promise<string>((res) => {
+    const c = spawn(cmd.file, [...cmd.prefixArgs, "profile", "list"], { windowsHide: true });
+    let s = "";
+    c.stdout.on("data", (d: Buffer) => (s += d.toString("utf8")));
+    c.on("close", () => res(s));
+    c.on("error", () => res(""));
+  });
   try {
-    const cmd = await resolveCommand("lark-cli");
-    const out = await new Promise<string>((res) => {
-      const c = spawn(cmd.file, [...cmd.prefixArgs, "profile", "list"], { windowsHide: true });
-      let s = "";
-      c.stdout.on("data", (d: Buffer) => (s += d.toString("utf8")));
-      c.on("close", () => res(s));
-      c.on("error", () => res(""));
-    });
     const arr = JSON.parse(out) as Array<{ name?: string }>;
     return arr[0]?.name ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function resolveCommandForSmoke(): Promise<{ file: string; prefixArgs: readonly string[] } | null> {
+  const { resolveCommand } = await import("../src/runtime/exec.ts");
+  try {
+    return await resolveCommand("lark-cli");
   } catch {
     return null;
   }

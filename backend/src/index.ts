@@ -30,7 +30,7 @@ import { ArenaRunner } from "./ops/arena.ts";
 import { MemoryService } from "./memory/memory.ts";
 import { BotRegistry } from "./bots/registry.ts";
 import { TelegramGateway } from "./channels/telegram.ts";
-import { FeishuGateway, diagnoseLarkAccount, larkIdentities } from "./channels/feishu.ts";
+import { FeishuGateway, diagnoseLarkAccount, larkIdentities, larkProfileList, addLarkProfile } from "./channels/feishu.ts";
 import { askBot } from "./channels/askBot.ts";
 import { asModelId, asSessionId, asUnitId } from "../../prototype/src/core/units.ts";
 
@@ -505,6 +505,21 @@ registerMethod("channel.identity", async (params) => {
     for (const s of feishuGateway.specsOf(String(b.id ?? ""))) profiles.push(s.profile);
   }
   return larkIdentities(profiles);
+});
+// 绑定向导的「本机有哪些飞书机器人」。profile list 的字段用户没法用来指认，
+// 所以逐个认过脸再回——界面上才是能点的「飞书 CLI」「日报助手」而不是一串 ID。
+registerMethod("channel.profiles", () => larkProfileList());
+// 建一个新机器人（= 加一个 lark-cli profile）。
+// ⚠ appSecret 走 stdin 交给 lark-cli，不进 argv、不落盘到本仓库、不回传、
+// 不写日志。lark-cli 自己把它存进系统钥匙串，config.json 里只留一个句柄。
+// 一次调用就把「写盘结果 + 认脸结果」一起返回：CLI 写盘成功**不代表**机器人能用，
+// 界面没有机会只显示「创建成功」就骗过去。
+registerMethod("channel.profile.add", (params) => {
+  const p = (params ?? {}) as { name?: unknown; appId?: unknown; appSecret?: unknown };
+  if (typeof p.name !== "string" || typeof p.appId !== "string" || typeof p.appSecret !== "string") {
+    throw Object.assign(new Error("name / appId / appSecret are required"), { code: "bad_params" });
+  }
+  return addLarkProfile({ name: p.name, appId: p.appId, appSecret: p.appSecret });
 });
 registerMethod("bot.roots.add", (params) => {
   const p = (params ?? {}) as { dir?: string };

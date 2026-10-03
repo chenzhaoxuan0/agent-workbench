@@ -121,10 +121,17 @@ async function larkCmd(): Promise<{ file: string; prefixArgs: readonly string[] 
   return resolveCommand(CLI);
 }
 
-/** 跑一条 lark-cli 命令，返回 { code, stdout, stderr }。**不抛**——诊断要看到失败原因。 */
+/**
+ * 跑一条 lark-cli 命令，返回 { code, stdout, stderr }。**不抛**——诊断要看到失败原因。
+ *
+ * `stdin` 单独走管道而不是拼进 argv：进程参数在 `ps` / 任务管理器 / 崩溃转储里是
+ * 明文可见的。`lark-cli profile add` 特意提供 `--app-secret-stdin` 而不是
+ * `--app-secret`，就是为了这个；**不要"简化"成 argv 形式**。
+ */
 async function runCli(
   args: readonly string[],
   timeoutMs = 30_000,
+  stdin?: string,
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   let cmd: { file: string; prefixArgs: readonly string[] };
   try {
@@ -156,6 +163,13 @@ async function runCli(
       clearTimeout(timer);
       resolve({ code: code ?? -1, stdout, stderr });
     });
+    if (stdin !== undefined) {
+      // secret 只在这里出现一次，写完立刻结束这条管道；不记日志、不进 argv
+      child.stdin.on("error", () => {
+        /* CLI 可能不读 stdin 就退出（--help 之类），忽略 EPIPE */
+      });
+      child.stdin.end(stdin);
+    }
   });
 }
 
@@ -295,6 +309,154 @@ export async function larkIdentities(profiles: readonly string[]): Promise<Recor
 
 function identityFail(profile: string, detail: string): LarkBotIdentity {
   return { profile, appId: profile, appName: "", avatarUrl: "", openId: "", activateStatus: -1, ok: false, detail };
+}
+
+export interface LarkProfileEntry {
+  readonly name: string;
+  readonly appId: string;
+  readonly brand: string;
+  readonly active: boolean;
+  /** CLI 侧的 user 身份 token 状态。bot 身份不查这个——它只反映 user 那一路 */
+  readonly tokenStatus: string;
+  /** 这个 profile 背后是哪个飞书机器人。认不出就是 ok:false，不是「未知」 */
+  readonly identity: LarkBotIdentity;
+}
+
+export interface LarkProfileList {
+  readonly available: boolean;
+  readonly version: string;
+  readonly detail: string;
+  readonly profiles: readonly LarkProfileEntry[];
+}
+
+/**
+ * 本机所有飞书机器人 —— 也就是 `lark-cli profile list` 的结果，**外加每个是谁**。
+ *
+ * 为什么要多这一步：`profile list` 只给 `name / appId / active / tokenStatus`，
+ * 全是用户没法用来指认的字段。逐个认一遍脸之后，界面上才是「飞书 CLI」「日报助手」
+ * 这种能点的条目，用户不用去终端查 ID 再手抄回来。
+ *
+ * 认脸是逐个 spawn 的，所以只在这里（一次性、面向设置页）做，绝不放进 reconcile。
+ */
+export async function larkProfileList(): Promise<LarkProfileList> {
+  const cli = await larkCliAvailable();
+  if (!cli.available) return { available: false, version: "", detail: cli.detail, profiles: [] };
+
+  const r = await runCli(["profile", "list"], 20_000);
+  if (r.code !== 0) {
+    return { available: true, version: cli.version ?? "", detail: describeCliError(r.stderr, r.code), profiles: [] };
+  }
+  let rows: AnyRecord[];
+  try {
+    const j = JSON.parse(r.stdout) as unknown;
+    rows = Array.isArray(j) ? (j as AnyRecord[]) : [];
+  } catch {
+    return { available: true, version: cli.version ?? "", detail: "profile list 输出不是 JSON", profiles: [] };
+  }
+
+  const named = rows
+    .map((row) => ({ row, name: str(row["name"]).trim() }))
+    .filter((x) => x.name !== "");
+  const identities = await larkIdentities(named.map((x) => x.name));
+
+  return {
+    available: true,
+    version: cli.version ?? "",
+    detail: "",
+    profiles: named.map(({ row, name }) => ({
+      name,
+      appId: str(row["appId"]),
+      brand: str(row["brand"]) || "feishu",
+      active: row["active"] === true,
+      tokenStatus: str(row["tokenStatus"]),
+      identity: identities[name] ?? identityFail(name, "没认出这个 profile"),
+    })),
+  };
+}
+
+export interface LarkProfileAddResult {
+  readonly ok: boolean;
+  /** 给界面直接显示的一句话。**不含 secret，也不含它的任何片段** */
+  readonly detail: string;
+  readonly name: string;
+  /**
+   * 建完立刻认一次脸。
+   *
+   * `lark-cli profile add` **不做任何校验**——实测填一个不存在的 appId 加一个
+   * 假 secret，它照样返回 "OK: Profile added" 并写进配置。所以「写盘成功」
+   * 绝不等于「机器人能用」。这里把认脸结果一起带回，界面没有机会只显示
+   * 「创建成功」就骗过去。
+   */
+  readonly identity: LarkBotIdentity;
+}
+
+/**
+ * 建一个飞书机器人（= 加一个 lark-cli profile）。
+ *
+ * ## 凭据边界（用户明确拍板：可以填，但只转交、不落盘到本仓库）
+ *
+ * - secret 走 **stdin**，不进 argv（进程参数是明文可见的）
+ * - 不写日志、不回传前端、不进 bot.json
+ * - 最终由 lark-cli 存进**系统钥匙串**：`~/.lark-cli/config.json` 里只有
+ *   `{ source: "keychain", id: "<句柄>" }`，没有明文 secret
+ * - bot.json 里事后只留一个 profile 名
+ *
+ * 刻意**不加** `--use`：CLI 自己都提示 agent 别切 profile，我们全程用
+ * `--profile <name>` 按调用指定，切全局状态只会互相打架。
+ */
+export async function addLarkProfile(input: {
+  name: string;
+  appId: string;
+  appSecret: string;
+}): Promise<LarkProfileAddResult> {
+  const name = input.name.trim();
+  const appId = input.appId.trim();
+  const appSecret = input.appSecret;
+
+  if (name === "" || appId === "" || appSecret === "") {
+    return {
+      ok: false,
+      name,
+      detail: "profile 名、App ID、App Secret 三样都要填",
+      identity: identityFail(name, "参数不全"),
+    };
+  }
+  // profile 名会被拼进 --name，并且 lark-cli 用它当事件总线的目录名。
+  // 空白和路径分隔符会直接变成怪路径或参数注入，这里挡掉。
+  if (/[\s/\\]/.test(name)) {
+    return { ok: false, name, detail: "profile 名不能含空格或 / \\", identity: identityFail(name, "名字不合法") };
+  }
+
+  // 同名覆盖会毁掉别人已存好的凭据，且没有 undo。挡住。
+  const existing = await larkProfileList();
+  const dup = existing.profiles.find((p) => p.name === name);
+  if (dup !== undefined) {
+    return {
+      ok: false,
+      name,
+      detail: `已经有一个叫「${name}」的 profile 了。换一个名，或者直接在下面选它`,
+      identity: dup.identity,
+    };
+  }
+
+  const r = await runCli(
+    ["profile", "add", "--name", name, "--app-id", appId, "--app-secret-stdin"],
+    30_000,
+    appSecret,
+  );
+  if (r.code !== 0) {
+    return { ok: false, name, detail: describeCliError(r.stderr, r.code), identity: identityFail(name, "没建成") };
+  }
+
+  const identity = await fetchLarkIdentity(name, { force: true });
+  return {
+    ok: identity.ok,
+    name,
+    detail: identity.ok
+      ? `已创建并验证：这是飞书里的「${identity.appName}」`
+      : "profile 已写进 lark-cli，但认不出背后的机器人（多半是 App ID 或 Secret 填错了）。条目留着了，改对了它就能用。",
+    identity,
+  };
 }
 
 function parseIdentity(
