@@ -7,6 +7,8 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import pty from "node-pty";
 import { log } from "../log.ts";
@@ -34,10 +36,75 @@ interface TerminalSession {
 const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
 
+/** Windows 固定安装位置。MSI 装成 7.x 时在这个文件夹，MSIX 装的则不在 PATH 里。 */
+const WIN_PWSH_PATHS = [
+  "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+  "C:\\Program Files\\PowerShell\\7-preview\\pwsh.exe",
+] as const;
+
+/** 用 `where` 在 PATH 里找。返回完整路径，找不到返回 null。 */
+function whereExe(name: string): string | null {
+  try {
+    const r = spawnSync("where.exe", [name], { encoding: "utf8", windowsHide: true, timeout: 3000 });
+    if (r.status !== 0 || typeof r.stdout !== "string") return null;
+    const first = r.stdout.split(/\r?\n/).find((l) => l.trim() !== "");
+    return first === undefined ? null : first.trim();
+  } catch {
+    return null;
+  }
+}
+
+/** 探测一次就够，缓存住 —— 终端可能被频繁开关，每次 spawn `where` 没必要。 */
+let cachedWinShell: string | null = null;
+
+/**
+ * Windows 上的默认 shell：**优先 PowerShell 7**。
+ *
+ * 原来是 `process.env.ComSpec`，那是 cmd.exe。用它的理由是「Windows 自带、一定在」，
+ * 但代价是终端里没有 `&&`、没有三元、管道编码也老。
+ *
+ * 候选按这个顺序试，**逐个落到能用为止**，任何一步都可能导致终端直接起不来：
+ *   1. `AGENT_WORKBENCH_TERMINAL_SHELL` —— 显式覆盖（想指定 7-preview 时用）
+ *   2. 两个固定安装路径 —— **排在 where 前面**：MSIX 装的 pwsh 会在
+ *      `C:\Program Files\WindowsApps\…` 留一个应用别名，而 `where` 第一个返回的
+ *      往往就是它；那个路径要过 MSIX 的 ACL，在 ConPTY 下不如 MSI 装的稳。
+ *   3. PATH 里的 `pwsh.exe` —— 覆盖非标准装法
+ *   4. `powershell.exe` —— Windows 自带的 5.1，至少有个能用的
+ *   5. `ComSpec` / `cmd.exe` —— 最后兜底
+ *
+ * 非 Windows 保持 `$SHELL`：那是用户自己的 shell，替他们选 shell 越界了。
+ */
 function defaultShell(): string {
-  return process.platform === "win32"
-    ? (process.env["ComSpec"] ?? "powershell.exe")
-    : process.env["SHELL"] ?? "/bin/bash";
+  if (process.platform !== "win32") return process.env["SHELL"] ?? "/bin/bash";
+  if (cachedWinShell !== null) return cachedWinShell;
+
+  const override = process.env["AGENT_WORKBENCH_TERMINAL_SHELL"];
+  const candidates: readonly (string | null | undefined)[] = [
+    override,
+    ...WIN_PWSH_PATHS.filter((p) => existsSync(p)),
+    whereExe("pwsh.exe"),
+    whereExe("powershell.exe"),
+    "powershell.exe",
+    process.env["ComSpec"],
+    "cmd.exe",
+  ];
+
+  for (const c of candidates) {
+    if (c === null || c === undefined || c === "") continue;
+    if (c !== "cmd.exe" && !existsSync(c)) continue;
+    cachedWinShell = c;
+    // 落到 5.1 或 cmd 就说明 7 没装 —— 说清楚，否则用户只会觉得「怎么不是 pwsh」
+    if (!c.toLowerCase().includes("pwsh")) {
+      log.warn("terminal: PowerShell 7 未找到，已回退", { shell: c, hint: "装 7.x：https://aka.ms/powershell" });
+    } else {
+      log.info("terminal: 使用 PowerShell 7", { shell: c });
+    }
+    return c;
+  }
+  // 走到这说明连 ComSpec 都没有（极端定制环境）。node-pty 会自己报错，
+  // 但给个能 spawn 的名字总比给 undefined 好。
+  cachedWinShell = "cmd.exe";
+  return cachedWinShell;
 }
 
 export class TerminalManager {
