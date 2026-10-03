@@ -100,6 +100,12 @@ daemon 侧只做三件本来就是它该做的事：
 - `channel.diagnose { botId, accountId }` —— 逐项说清断在哪：lark-cli 在不在、
   profile 能不能用、bot 身份 ready 没有、事件订阅要你去哪确认。查不到的明说
   查不到，不编一条看起来有用的检查项。
+- `channel.identity { profiles? }` —— **这个 profile 是哪个飞书机器人**。走
+  `lark-cli api GET /open-apis/bot/v3/info` 拿应用名 / 头像 / open_id，成功缓存
+  10 分钟、失败 30 秒，按 profile 去重。不传 `profiles` 就是问盘上所有已启用的
+  飞书账号。界面靠它回答「哪个 bot 接的是哪个飞书机器人」——profile 字符串
+  `cli_a94d…` 谁也认不出，`bot/v3/info` 的应用名和头像是那张脸。设置页正在配、
+  还没保存的草稿 profile 也传得进来，所以绑定那一刻就看得见。
 - `channel.send { botId, accountId, receiveId, text }` —— **主动出站**。
   没有它 bot 只能被动回话，日程、告警、自动化结果全都不成立。
 

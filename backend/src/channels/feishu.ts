@@ -237,6 +237,125 @@ export interface LarkDiagnosis {
   readonly checks: readonly { readonly name: string; readonly ok: boolean; readonly detail: string }[];
 }
 
+/**
+ * 机器人身份 —— 「这个 bot 接的到底是哪个飞书机器人」。
+ *
+ * profile 字符串（cli_a94d…）在界面上认不出人。`bot/v3/info` 给的是应用名
+ * （"飞书 CLI"）+ 头像 URL + open_id，那才是能一眼认出来的东西。
+ *
+ * 走 `lark-cli api` 的 raw 通道：CLI 没有对应的 +shortcut，但端点是飞书官方的
+ * 「获取机器人信息」，只要 bot token，不需要额外 scope。
+ */
+export interface LarkBotIdentity {
+  readonly profile: string;
+  readonly appId: string;
+  /** 飞书应用名，如「飞书 CLI」。取不到就是空串——空着也比编一个强 */
+  readonly appName: string;
+  readonly avatarUrl: string;
+  readonly openId: string;
+  /** 飞书侧三态，2 = 已启用。其余只按「未启用」报，不逐态翻译（我不确定 0/1 的确切含义） */
+  readonly activateStatus: number;
+  readonly ok: boolean;
+  readonly detail: string;
+}
+
+/** 成功的身份几乎不变（应用改名/换头像才会变），缓存久一点；失败缓存短，
+ *  免得用户刚把 profile 填对却还看到上一次「认不出来」。 */
+const IDENTITY_TTL_OK_MS = 10 * 60_000;
+const IDENTITY_TTL_ERR_MS = 30_000;
+const identityCache = new Map<string, { at: number; value: LarkBotIdentity }>();
+
+/** 认一个 profile 是谁。永远不抛——界面要能显示「认不出来 + 为什么」。 */
+export async function fetchLarkIdentity(profile: string, opts?: { force?: boolean }): Promise<LarkBotIdentity> {
+  const key = profile.trim();
+  if (key === "") return { ...identityFail("", "还没填 profile"), detail: "还没填 profile" };
+
+  const hit = identityCache.get(key);
+  if (hit !== undefined && opts?.force !== true) {
+    const ttl = hit.value.ok ? IDENTITY_TTL_OK_MS : IDENTITY_TTL_ERR_MS;
+    if (Date.now() - hit.at < ttl) return hit.value;
+  }
+
+  const r = await runCli(["--profile", key, "api", "GET", "/open-apis/bot/v3/info"], 20_000);
+  const value = parseIdentity(key, r);
+  identityCache.set(key, { at: Date.now(), value });
+  return value;
+}
+
+/** 批量认。同一 profile 只跑一次 CLI——三个 bot 绑同一个机器人不该 spawn 三遍。 */
+export async function larkIdentities(profiles: readonly string[]): Promise<Record<string, LarkBotIdentity>> {
+  const uniq = [...new Set(profiles.map((p) => p.trim()).filter((p) => p !== ""))];
+  const values = await Promise.all(uniq.map((p) => fetchLarkIdentity(p)));
+  const out: Record<string, LarkBotIdentity> = {};
+  uniq.forEach((p, i) => {
+    out[p] = values[i]!;
+  });
+  return out;
+}
+
+function identityFail(profile: string, detail: string): LarkBotIdentity {
+  return { profile, appId: profile, appName: "", avatarUrl: "", openId: "", activateStatus: -1, ok: false, detail };
+}
+
+function parseIdentity(
+  profile: string,
+  r: { code: number; stdout: string; stderr: string },
+): LarkBotIdentity {
+  if (r.code !== 0) return identityFail(profile, describeCliError(r.stderr, r.code));
+  try {
+    // CLI 统一包一层 { ok, identity, data }；失败时 ok:false + msg/code
+    const j = JSON.parse(r.stdout) as {
+      ok?: boolean;
+      code?: number;
+      msg?: string;
+      data?: { app_name?: string; avatar_url?: string; open_id?: string; activate_status?: number };
+    };
+    if (j.ok !== true) return identityFail(profile, j.msg ?? `接口返回 code=${j.code ?? "?"}`);
+    const d = j.data ?? {};
+    return {
+      profile,
+      appId: profile,
+      appName: str(d.app_name),
+      avatarUrl: str(d.avatar_url),
+      openId: str(d.open_id),
+      activateStatus: typeof d.activate_status === "number" ? d.activate_status : -1,
+      ok: true,
+      detail: "",
+    };
+  } catch {
+    return identityFail(profile, "返回不是 JSON");
+  }
+}
+
+/**
+ * 把 lark-cli 的失败输出一句话讲清。
+ *
+ * 它报错时打的是 **pretty JSON**（`{ ok:false, error:{ type, subtype, message, hint } }`），
+ * 跨多行。所以「取 stderr 最后一行」会得到一个 `}`——那不是给人看的东西（第一版
+ * 就是这么错的）。先按 JSON 解析，取 `error.message`；`error.hint` 常常还带着
+ * 「可用的是这些：…」这种能直接照做的信息，一并带上。
+ */
+function describeCliError(stderr: string, code: number): string {
+  const text = stderr.trim();
+  if (text === "") return `退出码 ${code}`;
+  try {
+    const j = JSON.parse(text) as {
+      msg?: string;
+      error?: { message?: string; hint?: string; subtype?: string } | string;
+    };
+    const err = typeof j.error === "string" ? { message: j.error } : j.error;
+    const main = err?.message ?? j.msg;
+    if (typeof main === "string" && main !== "") {
+      const hint = err?.hint;
+      return (typeof hint === "string" && hint !== "" ? `${main}（${hint}）` : main).slice(0, 200);
+    }
+  } catch {
+    /* 不是 JSON */
+  }
+  const lines = text.split(/\r?\n/).filter((l) => l.trim() !== "");
+  return (lines[0] ?? text).slice(0, 200);
+}
+
 /** `whoami` 输出是 JSON——直接回显第一行等于给用户看一个「{」 */
 function describeWhoami(stdout: string): string {
   try {

@@ -12,10 +12,11 @@
  */
 
 import { writeFile, mkdir, rm } from "node:fs/promises";
+import { spawn } from "node:child_process";
 import path from "node:path";
 import os from "node:os";
 import { BotRegistry } from "../src/bots/registry.ts";
-import { FeishuGateway, larkCliAvailable, diagnoseLarkAccount } from "../src/channels/feishu.ts";
+import { FeishuGateway, larkCliAvailable, diagnoseLarkAccount, fetchLarkIdentity, larkIdentities } from "../src/channels/feishu.ts";
 import { Store } from "../src/store/db.ts";
 
 const home = await mkdtemp();
@@ -130,11 +131,58 @@ if (!cli.available) {
   ok(d.ok === false, "lark-cli 不在时整体判为不通过", d);
 }
 
+console.log("\n[10] 机器人身份：profile 是哪个飞书机器人（界面上认脸靠它）");
+const emptyId = await fetchLarkIdentity("");
+ok(emptyId.ok === false && emptyId.detail !== "", "空 profile 直接拒，不 spawn", emptyId.detail);
+const bogusId = await fetchLarkIdentity("definitely-not-a-real-profile");
+ok(bogusId.ok === false && bogusId.detail !== "", "认不出的 profile 说清原因，不抛也不编名字", bogusId.detail);
+ok(bogusId.appName === "" && bogusId.avatarUrl === "", "认不出就不给名字和头像（不拿 profile 冒充机器人）", bogusId);
+ok(bogusId.detail !== "}" && bogusId.detail.length > 5, "失败原因是人话不是一段 JSON 残渣", bogusId.detail);
+const cached = await fetchLarkIdentity("definitely-not-a-real-profile");
+ok(cached === bogusId, "失败结果进缓存，不反复 spawn", { same: cached === bogusId });
+const dedup = await larkIdentities(["p_x", "p_x", " p_x "]);
+ok(Object.keys(dedup).length === 1 && Object.keys(dedup)[0] === "p_x", "批量按 profile 去重（多个 bot 绑同一个机器人只 spawn 一次）", Object.keys(dedup));
+
+if (cli.available) {
+  const real = await firstRealProfile();
+  if (real === null) {
+    ok(true, "本机没有配置过 profile，跳过真 profile 断言");
+  } else {
+    const id = await fetchLarkIdentity(real);
+    ok(id.ok === true, `真 profile 认得出来（${real}）`, id.detail);
+    ok(id.appName !== "", "拿到应用名——界面上「这是哪个机器人」靠它", id.appName);
+    ok(id.avatarUrl.startsWith("https://"), "拿到头像 URL——侧栏那张脸靠它", id.avatarUrl);
+    ok(id.openId.startsWith("ou_"), "拿到机器人 open_id", id.openId);
+    ok(id.activateStatus === 2, "飞书侧已启用（status=2）", id.activateStatus);
+  }
+} else {
+  ok(true, "lark-cli 不在，跳过真 profile 断言");
+}
+
 gateway.stop();
 store.close();
 await rm(home, { recursive: true, force: true });
 console.log(`\n=== ${pass} passed, ${fail} failed ===\n`);
 process.exit(fail === 0 ? 0 : 1);
+
+/** 本机第一个 profile 名（动态取，不硬编码——换机器/换账号时测试仍有效） */
+async function firstRealProfile(): Promise<string | null> {
+  const { resolveCommand } = await import("../src/runtime/exec.ts");
+  try {
+    const cmd = await resolveCommand("lark-cli");
+    const out = await new Promise<string>((res) => {
+      const c = spawn(cmd.file, [...cmd.prefixArgs, "profile", "list"], { windowsHide: true });
+      let s = "";
+      c.stdout.on("data", (d: Buffer) => (s += d.toString("utf8")));
+      c.on("close", () => res(s));
+      c.on("error", () => res(""));
+    });
+    const arr = JSON.parse(out) as Array<{ name?: string }>;
+    return arr[0]?.name ?? null;
+  } catch {
+    return null;
+  }
+}
 
 async function mkdtemp(): Promise<string> {
   const dir = path.join(os.tmpdir(), `aw-feishu-smoke-${Date.now().toString(36)}`);

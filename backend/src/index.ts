@@ -30,7 +30,7 @@ import { ArenaRunner } from "./ops/arena.ts";
 import { MemoryService } from "./memory/memory.ts";
 import { BotRegistry } from "./bots/registry.ts";
 import { TelegramGateway } from "./channels/telegram.ts";
-import { FeishuGateway, diagnoseLarkAccount } from "./channels/feishu.ts";
+import { FeishuGateway, diagnoseLarkAccount, larkIdentities } from "./channels/feishu.ts";
 import { askBot } from "./channels/askBot.ts";
 import { asModelId, asSessionId, asUnitId } from "../../prototype/src/core/units.ts";
 
@@ -488,6 +488,23 @@ registerMethod("channel.status", async () => {
       };
     }),
   };
+});
+// 「这个 bot 接的是哪个飞书机器人」——名字 + 头像，不是 profile 字符串。
+// profile 形如 cli_a94d…，界面上没人认得出那是哪个机器人。
+registerMethod("channel.identity", async (params) => {
+  const p = (params ?? {}) as { profiles?: unknown };
+  // 设置页正在配、还没保存的草稿 profile 也要能认：显式传 profiles 走这条
+  if (Array.isArray(p.profiles)) {
+    return larkIdentities(p.profiles.filter((x): x is string => typeof x === "string"));
+  }
+  // 不传参数 = 盘上所有启用的飞书账号。走网关的规格表而不是 raw bot.json：
+  // 那张表已经滤掉了没 profile 的旧格式账号，认它们只会得到一片报错
+  const bots = await botRegistry.listBots();
+  const profiles: string[] = [];
+  for (const b of bots) {
+    for (const s of feishuGateway.specsOf(String(b.id ?? ""))) profiles.push(s.profile);
+  }
+  return larkIdentities(profiles);
 });
 registerMethod("bot.roots.add", (params) => {
   const p = (params ?? {}) as { dir?: string };
