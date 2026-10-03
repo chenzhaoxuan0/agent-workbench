@@ -21,6 +21,8 @@ import { RuntimeHost } from "./runtime/host.ts";
 import { TraceSink } from "./runtime/trace.ts";
 import { ZcodeAdapter } from "./runtime/adapters/zcode.ts";
 import { CodexAdapter } from "./runtime/adapters/codex.ts";
+import { PiAdapter } from "./runtime/adapters/pi.ts";
+import { McodeAdapter } from "./runtime/adapters/mcode.ts";
 import { TerminalManager } from "./terminal/terminals.ts";
 import { Store } from "./store/db.ts";
 import { AutomationScheduler } from "./automation/scheduler.ts";
@@ -63,6 +65,8 @@ const host = new RuntimeHost((event, seq) => {
 host.register(new ZcodeAdapter());
 host.register(new CodexAdapter());
 host.register(new ClaudeAdapter());
+host.register(new PiAdapter());
+host.register(new McodeAdapter());
 host.register(new MockPermAdapter());
 host.loadPersisted();
 
@@ -74,18 +78,14 @@ registerMethod("driver.catalog", () => [
   { id: "zcode", installed: true, registered: true, hint: "" },
   { id: "codex", installed: true, registered: true, hint: "" },
   { id: "claude", installed: true, registered: true, hint: "网关偶发过载时 turn 失败，恢复即用" },
+  { id: "pi", installed: true, registered: true, hint: "" },
+  { id: "mcode", installed: true, registered: true, hint: "ACP 接入（mcode acp），权限审批走反向请求流" },
   { id: "mockperm", installed: true, registered: true, hint: "权限闸试金石" },
   {
     id: "opencode",
     installed: true,
     registered: false,
     hint: "已安装但未配置 provider 凭据（opencode auth login）—— 配置后即可接入",
-  },
-  {
-    id: "pi",
-    installed: true,
-    registered: false,
-    hint: "已安装但无任何 provider 凭据（pi auth login / --api-key）—— 配置后即可接入",
   },
   { id: "cursor-agent", installed: false, registered: false, hint: "未安装（cursor-agent install）" },
   { id: "grok", installed: false, registered: false, hint: "未安装" },

@@ -118,6 +118,26 @@ ZCode 那一页看的是 agent 提计划、用户批/改/否的完整过程，�
 
 已落地：`core/events.ts` + `ui/Timeline.tsx`
 
+### 3.3.1 两种接入形态（pi / mcode 实证，2026-10-03）
+
+daemon 侧适配器有两种成熟形态，按目标 CLI 的协议能力选：
+
+| 形态 | 进程模型 | 适配器 | 适合的 CLI |
+|---|---|---|---|
+| **一次性进程** | 每轮 spawn 一个 CLI 进程，stdout JSONL 翻完即退 | `claude.ts` / `codex.ts` / `pi.ts` | 有 `-p` + JSON 输出模式 |
+| **常驻协议进程** | 会话首推 spawn 一次，stdin/stdout 即协议通道，断连即退 | `zcode.ts`（agent-server）/ `mcode.ts`（ACP） | 有常驻服务模式（`mcode acp`，接法参考 t3code 的 `packages/effect-acp` client） |
+
+- **pi**（`pi --mode json -p`）：事件流含 thinking/text/toolcall 三路 delta 与
+  `tool_execution_*`，usage 带真实计费；多轮靠 `--session-id`（daemon 生成、首轮即知，
+  externalRef 恒非空，reattach 零成本）。
+- **mcode**（`mcode acp`）：完整 ACP——`session/prompt` 阻塞到轮末，反向
+  `session/request_permission` 翻成 `permission.requested`（唯一有真审批流的非 mock 执行器），
+  `tool_call` content 块带 `{type:"diff"}`（结构化 diff 能力），`session/load` 把外部会话
+  连历史一起接回。
+
+选型判据：**CLI 有结构化非交互输出就别起常驻进程**（少一条生命周期要管）；
+**需要反向流（权限/审批/steer）才值得常驻**。
+
 ---
 
 ## 3.4 右栏页签契约
