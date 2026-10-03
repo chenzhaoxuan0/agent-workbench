@@ -466,6 +466,55 @@ export async function fetchChannelIdentity(
   );
 }
 
+export interface LarkProfileEntry {
+  readonly name: string;
+  readonly appId: string;
+  readonly brand: string;
+  readonly active: boolean;
+  /** CLI 侧 user 身份的 token 状态；bot 身份不查这个 */
+  readonly tokenStatus: string;
+  /** 这个 profile 背后是哪个飞书机器人。认不出就是 ok:false，不是「未知」 */
+  readonly identity: LarkBotIdentity;
+}
+
+export interface LarkProfileList {
+  /** lark-cli 装没装 */
+  readonly available: boolean;
+  readonly version: string;
+  readonly detail: string;
+  readonly profiles: readonly LarkProfileEntry[];
+}
+
+/** 本机所有飞书机器人（= lark-cli profile list，逐个认过脸） */
+export async function fetchLarkProfiles(endpoint: string = defaultDaemonEndpoint()): Promise<LarkProfileList> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<LarkProfileList>("channel.profiles", null, 45000);
+}
+
+export interface LarkProfileAddResult {
+  readonly ok: boolean;
+  /** 给界面显示的一句话。不含 secret，也不含它的任何片段 */
+  readonly detail: string;
+  readonly name: string;
+  /** 建完立刻认的脸。ok=false 表示「写进去了但机器人认不出」 */
+  readonly identity: LarkBotIdentity;
+}
+
+/**
+ * 建一个新飞书机器人（= 加一个 lark-cli profile）。
+ *
+ * ⚠ `appSecret` 会被送到 daemon，由它交给 lark-cli 的 **stdin**：不进进程参数、
+ * 不落盘到本工作台、不写日志、不回传。lark-cli 把它存进系统钥匙串，
+ * `~/.lark-cli/config.json` 里只留 `{source:"keychain", id:…}` 句柄。
+ */
+export async function createLarkProfile(
+  input: { name: string; appId: string; appSecret: string },
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<LarkProfileAddResult> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<LarkProfileAddResult>("channel.profile.add", input, 60000);
+}
+
 /** 主动出站：让 bot 主动开口（日报 / 告警 / 自动化结果） */
 export async function sendViaChannel(
   params: { botId: string; accountId?: string; receiveId: string; text: string },

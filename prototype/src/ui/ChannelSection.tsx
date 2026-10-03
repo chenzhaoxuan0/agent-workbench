@@ -34,10 +34,9 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react";
-import type { DiagnosisResult, LarkBotIdentity } from "../adapters/daemon/client.ts";
+import type { DiagnosisResult } from "../adapters/daemon/client.ts";
 import type { BotChannel, ChannelAccount } from "../core/units.ts";
-import { useWorkbench } from "../store/useWorkbench.ts";
-import { ChannelMark } from "./ChannelMark.tsx";
+import { FeishuSetup } from "./FeishuSetup.tsx";
 import { cn } from "./cn.ts";
 
 /** 渠道种类 → 人话。Discord 不在列：零实现，放进选项就是骗人。 */
@@ -191,7 +190,7 @@ function ChannelCard({
           {channel.kind === "webhook" ? (
             <WebhookBody channel={channel} onChange={onChange} />
           ) : (
-            <ImBody channel={channel} onChange={onChange} />
+            <ImBody botId={botId} channel={channel} onChange={onChange} />
           )}
 
           {(channel.kind === "feishu" || channel.kind === "telegram") && (
@@ -221,9 +220,11 @@ function ChannelCard({
 }
 
 function ImBody({
+  botId,
   channel,
   onChange,
 }: {
+  botId: string;
   channel: BotChannel;
   onChange: (next: BotChannel) => void;
 }) {
@@ -252,28 +253,11 @@ function ImBody({
           </div>
           {isFeishu ? (
             <>
-              <Field
-                label="lark-cli profile"
-                hint="一个 profile = 一个飞书应用 = 一个飞书机器人。用 lark-cli profile list 查已有 profile"
-              >
-                <input
-                  value={acc.profile ?? ""}
-                  onChange={(e) => setAccount(i, { profile: e.target.value })}
-                  spellCheck={false}
-                  placeholder="cli_a94d3ea8b5f99cc0"
-                  aria-label="lark-cli profile"
-                  className="w-full rounded-input border border-transparent bg-rail px-2 py-1 font-mono text-caption text-ink outline-none placeholder:text-ash focus:border-teal"
-                />
-              </Field>
+              <FeishuSetup botId={botId} account={acc} onChange={(next) => setAccount(i, next)} />
               <label className="flex items-center gap-1.5 text-caption text-graphite">
                 <input type="checkbox" checked={acc.mentionOnly !== false} onChange={(e) => setAccount(i, { mentionOnly: e.target.checked })} />
                 群里只在被 @ 时应答
               </label>
-              <LarkIdentityCard profile={acc.profile ?? ""} />
-              <p className="text-[10px] text-ash">
-                凭据不进这里——profile 自己管。发消息/附件/文档/云盘由 agent 在轮次里调
-                <code className="font-mono"> lark-cli</code> 自己完成。
-              </p>
             </>
           ) : (
             <>
@@ -303,99 +287,6 @@ function ImBody({
         <Plus size={9} />
         再加一个账号（一个飞书应用 = 一个机器人）
       </button>
-      {isFeishu && (
-        <p className="text-caption text-ash">
-          飞书侧要开：机器人能力 + 事件订阅 <code className="font-mono">im.message.receive_v1</code>
-          （CLI 走长连接，不需要公网 URL）。这些在开放平台配，配完用下面的「测一下连得通不」验证。
-        </p>
-      )}
-    </div>
-  );
-}
-
-/**
- * 「这绑的是哪个飞书机器人」。
- *
- * ## 为什么必须在绑定那一刻就能看
- *
- * profile 是一串 `cli_a94d…`，谁也认不出它是飞书里的哪一个。用户配渠道时真正
- * 要回答的问题是「我等下在飞书里 @ 谁」——所以这里把 `bot/v3/info` 的应用名和
- * 头像直接摆出来，而不是让他填完保存、再凭记忆去飞书里对。
- *
- * 刻意支持**未保存的草稿 profile**：设置向导的前提就是「还没保存、正在配」。
- * 先存后认 = 逼用户盲填一串 ID。
- *
- * 认不出来也要说清为什么，不留空白：profile 写错、lark-cli 没装、daemon 没起，
- * 三种原因的处理方式完全不同。
- */
-function LarkIdentityCard({ profile }: { profile: string }) {
-  const key = profile.trim();
-  const identity = useWorkbench((s) => (key === "" ? undefined : s.channelIdentity[key]));
-  const refresh = useWorkbench((s) => s.refreshChannelIdentity);
-  const [busy, setBusy] = useState(false);
-
-  // 打字停顿 400ms 再认。lark-cli 每次认身份要 spawn 一下，逐键去认会起进程风暴。
-  useEffect(() => {
-    if (key === "" || identity !== undefined) return;
-    let dead = false;
-    const timer = setTimeout(() => {
-      setBusy(true);
-      void refresh([key]).finally(() => {
-        if (!dead) setBusy(false);
-      });
-    }, 400);
-    return () => {
-      dead = true;
-      clearTimeout(timer);
-    };
-  }, [key, identity, refresh]);
-
-  if (key === "") {
-    return <p className="text-[10px] text-ash">填了 profile，这里会显示是飞书里的哪个机器人。</p>;
-  }
-
-  if (identity === undefined) {
-    return (
-      <p className="flex items-center gap-1 text-[10px] text-ash">
-        {busy ? <Loader2 size={9} className="animate-spin" /> : null}
-        {busy ? "在认这个机器人…" : "还没认出这个机器人"}
-      </p>
-    );
-  }
-
-  const retry = () => {
-    setBusy(true);
-    void refresh([key]).finally(() => setBusy(false));
-  };
-
-  if (!identity.ok) {
-    return (
-      <div className="space-y-1 rounded-card border border-loss/30 bg-loss/5 px-2 py-1.5">
-        <p className="flex items-start gap-1.5 text-[10px] text-loss">
-          <AlertTriangle size={9} className="mt-0.5 shrink-0" />
-          <span className="min-w-0 flex-1">认不出这个 profile 对应的机器人：{identity.detail}</span>
-        </p>
-        <div className="flex items-center gap-2">
-          <button onClick={retry} disabled={busy} className="flex items-center gap-1 text-[10px] text-graphite hover:text-ink disabled:opacity-50">
-            {busy ? <Loader2 size={9} className="animate-spin" /> : <RotateCw size={9} />}
-            重试
-          </button>
-          <span className="text-[10px] text-ash">常见原因：profile 写错 / lark-cli 没装 / 那个应用已被删</span>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="flex items-center gap-2 rounded-card border border-line bg-rail/50 px-2 py-1.5">
-      <ChannelMark kind="feishu" identity={identity} label={identity.appName} className="h-6 w-6 rounded-[4px]" />
-      <div className="min-w-0 flex-1">
-        <p className="truncate text-caption font-medium text-ink">{identity.appName || "（飞书没给应用名）"}</p>
-        <p className="truncate font-mono text-[10px] text-ash" title={`open_id ${identity.openId}`}>
-          {identity.openId === "" ? identity.profile : identity.openId}
-          {identity.activateStatus === 2 ? " · 飞书侧已启用" : ` · 飞书侧未启用（status=${identity.activateStatus}）`}
-        </p>
-      </div>
     </div>
   );
 }
