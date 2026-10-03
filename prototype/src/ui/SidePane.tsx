@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from "react";
 import {
   Activity,
   Braces,
-  Boxes,
   Check,
   ChevronDown,
   ChevronsDownUp,
@@ -14,22 +13,16 @@ import {
   FolderTree,
   Gauge,
   GitBranch,
-  Globe,
   History,
   Layers,
   ListOrdered,
-  ListTree,
-  MessageSquare,
   Minus,
   Network,
-  PenTool,
   Plus,
   PanelRightClose,
-  Radio,
   RotateCcw,
   Square,
   Terminal,
-  Workflow,
   Wrench,
   X,
 } from "lucide-react";
@@ -40,8 +33,6 @@ import {
   getVisibleTabs,
   groupTabTypesByScope,
   metaOf,
-  NEEDS_RUNTIME,
-  scopeOf,
   SCOPE_LABEL,
   shouldKeepMounted,
   TAB_META,
@@ -79,9 +70,6 @@ const ICON: Record<SidePaneTabType, typeof Layers> = {
   terminal: Terminal,
   git: GitBranch,
   "code-viewer": FileCode,
-  whiteboard: PenTool,
-  browser: Globe,
-  "browser-use": Radio,
   treemapping: Network,
   "model-trajectory": Gauge,
 
@@ -90,12 +78,6 @@ const ICON: Record<SidePaneTabType, typeof Layers> = {
   "workspace-files": FolderTree,
   trace: History,
   plan: ListOrdered,
-  "selection-chat": MessageSquare,
-  "workflow-run": Workflow,
-  "workflow-directory": ListTree,
-  "workflow-actor": CircleDot,
-  "workflow-workspace": Boxes,
-  "workflow-artifact": FileCode,
 
   // 会话树根级
   subagent: Activity,
@@ -355,7 +337,6 @@ function TabCatalog({ ownerId, onClose }: { ownerId: string | null; onClose: () 
               const open = state?.tabs.some((t) => t.type === type) ?? false;
               const enabled = canOpenTab(type, ownerId);
               const blocked = blockedReason(type, ownerId);
-              const needs = NEEDS_RUNTIME[type];
 
               return (
                 <button
@@ -378,7 +359,7 @@ function TabCatalog({ ownerId, onClose }: { ownerId: string | null; onClose: () 
                       {open && <span className="shrink-0 text-caption text-teal">已开</span>}
                     </span>
                     <span className="mt-0.5 block truncate text-caption text-ash">
-                      {blocked ?? (needs ? `待接：${needs.needs}（${needs.when}）` : meta.hint)}
+                      {blocked ?? meta.hint}
                     </span>
                   </span>
                 </button>
@@ -432,63 +413,14 @@ function TabContent({ tab, ownerId }: { tab?: SidePaneTab; ownerId: string | nul
     case "bash-output":
       return <BashOutputPane ownerId={tab.ownerId ?? ownerId} />;
 
-    /* 未接运行时：全部显式说明缺什么，不隐藏 */
+    /* 终端 —— daemon 侧 node-pty 真 PTY，不是外观 */
     case "terminal":
       return <TerminalPane />;
-    case "browser":
-    case "browser-use":
-    case "whiteboard":
-    case "selection-chat":
-      return <PendingRuntimePane type={tab.type} />;
-    case "workflow-run":
-    case "workflow-directory":
-    case "workflow-actor":
-    case "workflow-workspace":
-    case "workflow-artifact":
-      return <WorkflowPane type={tab.type} />;
     case "treemapping":
       // 按 ZCode 口径被 normalizeSidePaneState 过滤掉，正常流程到不了这里。
       // 仍然给出说明，而不是渲染空白 —— 万一旧状态漏进来，用户看得懂为什么是空的。
       return <HiddenByDesignPane type="treemapping" />;
   }
-}
-
-// ---------------------------------------------------------------------------
-// 未接运行时
-// ---------------------------------------------------------------------------
-
-function PendingRuntimePane({ type }: { type: SidePaneTabType }) {
-  const meta = TAB_META[type];
-  const needs = NEEDS_RUNTIME[type];
-  return (
-    <PaneSection title={meta.typeLabel}>
-      <p className="text-body-sm text-ink">{meta.title}</p>
-      <p className="mt-1 text-caption text-graphite">{meta.hint}</p>
-      <dl className="mt-4 space-y-2 border-t border-line pt-3">
-        <Row label="缺什么" value={needs?.needs ?? "—"} />
-        <Row label="什么时候接" value={needs?.when ?? "—"} />
-        <Row label="归属" value={SCOPE_LABEL[scopeOf(type)]} />
-      </dl>
-      <p className="mt-4 text-caption text-ash">
-        这一页已经开门、占着位置，运行时接上后内容直接落进来。
-        没有因为「现在是空的」就把它藏起来。
-      </p>
-    </PaneSection>
-  );
-}
-
-function WorkflowPane({ type }: { type: SidePaneTabType }) {
-  const meta = TAB_META[type];
-  return (
-    <PaneSection title={meta.typeLabel}>
-      <p className="text-body-sm text-ink">{meta.title}</p>
-      <p className="mt-1 text-caption text-graphite">{meta.hint}</p>
-      <p className="mt-4 text-caption text-ash">
-        ZCode 的 workflow-* 需要编排运行时。本产品已移除「更好效果 / 更短时间 / 更低成本」的编排策略
-        （见北极星），但类型与归属保留 —— 将来接回不用改右栏契约。
-      </p>
-    </PaneSection>
-  );
 }
 
 function HiddenByDesignPane({ type }: { type: SidePaneTabType }) {
@@ -1393,14 +1325,9 @@ function TerminalPane() {
 
   return (
     <>
-      <PaneSection title="内建终端">
-        <p className="text-body-sm text-ink">还没接真 PTY</p>
-        <dl className="mt-3 space-y-2 border-t border-line pt-3">
-          <Row label="缺什么" value={NEEDS_RUNTIME.terminal?.needs ?? "—"} />
-          <Row label="什么时候接" value={NEEDS_RUNTIME.terminal?.when ?? "—"} />
-          <Row label="替代" value="会话树的「后台命令」页可看已发生的命令" />
-        </dl>
-      </PaneSection>
+      {/* 原先这里还有一块「内建终端 / 还没接真 PTY」——那是从 ZCode 抄来没更新的假信息。
+          daemon 侧 node-pty 早就通了（terminal.create/input/resize/kill + WS 数据帧），
+          真实终端在 TerminalPane 里。这一页只列「已经发生过的命令」。 */}
 
       <PaneSection title={`已发生的命令 · ${cmds.length}`}>
         {cmds.length === 0 ? (

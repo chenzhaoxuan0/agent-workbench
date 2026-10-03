@@ -7,7 +7,6 @@ import {
   getVisibleTabs,
   listVisibleTabTypes,
   metaOf,
-  NEEDS_RUNTIME,
   normalizeSearchQuery,
   scopeOf,
   SCOPE_LABEL,

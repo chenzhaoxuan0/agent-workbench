@@ -30,12 +30,9 @@ export type SidePaneTabType =
   | "workspace-files" // 本项目：浏览当前工作目录的文件
   | "deliverables" // 产出归档
   | "tools" // 开发者工具
-  | "terminal" // ZCode: terminal
+  | "terminal" // ZCode: terminal（daemon 侧 node-pty 真 PTY，已接）
   | "git" // ZCode: git
   | "code-viewer" // ZCode: code-viewer
-  | "whiteboard" // ZCode: whiteboard
-  | "browser" // ZCode: browser
-  | "browser-use" // ZCode: browser-use
   | "treemapping" // ZCode: treemapping（本实现按 ZCode 口径过滤掉，见 HIDDEN_TAB_TYPES）
   | "model-trajectory" // ZCode: model-trajectory
   | "developer-tools" // ZCode: developer-tools
@@ -43,19 +40,13 @@ export type SidePaneTabType =
   | "files" // 文件变更
   | "trace" // ZCode: model-trajectory 的会话视角
   | "plan" // ZCode: plan-detail
-  | "selection-chat" // ZCode: selection-side-chat
   | "bash-output" // ZCode: bash-output（root-session 收窄）
   // 会话树根级（ZCode: rootSessionId 收窄）
   | "subagent" // ZCode: subagent-session
   | "subagent-directory" // ZCode: subagent-directory
-  // 编排级（ZCode: workflow-* 共 6 种）
-  | "workflow-run" // ZCode: workflow-run
-  | "workflow-directory" // ZCode: workflow-directory
-  | "workflow-actor" // ZCode: workflow-actor-session
-  | "workflow-workspace" // ZCode: workflow-workspace
-  | "workflow-artifact" // ZCode: workflow-artifact
-  // 注：ZCode 的 workflow-* 是 6 种，这里把 workflow-run / directory / actor /
-  // workspace / artifact 计 5 种 + plan 归到 plan-detail 位，合计对齐。
+  // 注：ZCode 的 workflow-* 一族（编排运行/目录/actor/工作区/产物）**已整体删除**。
+  // 编排不是本产品要解决的问题方向（见北极星），留着它们只会让人以为这条路还开着。
+  // 真要重做编排，这里是入口，历史实现见 git log。
 
 /** 作用域：与 ZCode `isSidePaneTabVisibleForParent` 的三类归属一一对应 */
 export type SidePaneScope = "workspace" | "session" | "root-session";
@@ -68,9 +59,6 @@ const SCOPE: Record<SidePaneTabType, SidePaneScope> = {
   git: "workspace",
   "workspace-files": "workspace",
   "code-viewer": "workspace",
-  whiteboard: "workspace",
-  browser: "workspace",
-  "browser-use": "session",
   treemapping: "workspace",
   "model-trajectory": "workspace",
   "developer-tools": "workspace",
@@ -78,17 +66,10 @@ const SCOPE: Record<SidePaneTabType, SidePaneScope> = {
   files: "session",
   trace: "session",
   plan: "session",
-  "selection-chat": "session",
   "bash-output": "root-session",
 
   subagent: "root-session",
   "subagent-directory": "root-session",
-
-  "workflow-run": "session",
-  "workflow-directory": "session",
-  "workflow-actor": "session",
-  "workflow-workspace": "session",
-  "workflow-artifact": "session",
 };
 
 export function scopeOf(type: SidePaneTabType): SidePaneScope {
@@ -115,9 +96,6 @@ export const TAB_META: Record<
   terminal: { title: "终端", typeLabel: "终端", hint: "shell terminal command 终端" },
   git: { title: "变更", typeLabel: "git diff", hint: "git diff change review 变更审查" },
   "code-viewer": { title: "查看", typeLabel: "文件查看", hint: "code viewer file open 文件查看" },
-  whiteboard: { title: "白板", typeLabel: "白板", hint: "whiteboard canvas draw 白板" },
-  browser: { title: "浏览器", typeLabel: "浏览器", hint: "url page web 浏览器" },
-  "browser-use": { title: "浏览器·Agent", typeLabel: "browser use", hint: "agent browser webview 浏览器控制" },
   treemapping: { title: "活动映射", typeLabel: "活动映射", hint: "treemapping activity map 活动映射" },
   "model-trajectory": { title: "模型轨迹", typeLabel: "模型轨迹", hint: "model io trajectory 轨迹" },
   "developer-tools": { title: "开发者工具", typeLabel: "开发者工具", hint: "devtools console 开发者工具" },
@@ -126,17 +104,10 @@ export const TAB_META: Record<
   files: { title: "文件", typeLabel: "文件变更", hint: "file change diff 文件变更" },
   trace: { title: "轨迹", typeLabel: "运行轨迹", hint: "trace event run 运行轨迹" },
   plan: { title: "计划", typeLabel: "计划详情", hint: "plan ExitPlanMode 计划详情" },
-  "selection-chat": { title: "选中追问", typeLabel: "选中追问", hint: "selection side chat 选中追问" },
   "bash-output": { title: "后台输出", typeLabel: "后台命令", hint: "background bash output 后台命令" },
 
   subagent: { title: "子代理", typeLabel: "子代理", hint: "subagent child session 子代理" },
   "subagent-directory": { title: "子代理目录", typeLabel: "子代理目录", hint: "subagent directory 目录" },
-
-  "workflow-run": { title: "编排运行", typeLabel: "工作流", hint: "workflow run 编排运行" },
-  "workflow-directory": { title: "编排目录", typeLabel: "工作流目录", hint: "workflow runs directory history 编排目录" },
-  "workflow-actor": { title: "编排 actor", typeLabel: "工作流 actor", hint: "workflow actor session actor 编排 actor" },
-  "workflow-workspace": { title: "编排工作区", typeLabel: "工作流工作区", hint: "workflow script steps workspace 编排工作区" },
-  "workflow-artifact": { title: "编排产物", typeLabel: "工作流产物", hint: "workflow artifact deliverable 编排产物" },
 };
 
 export function metaOf(type: SidePaneTabType): { readonly title: string; readonly typeLabel: string; readonly hint: string } {
@@ -159,8 +130,6 @@ const TAB_ORDER = [
   "git",
   "code-viewer",
   "terminal",
-  "browser",
-  "whiteboard",
   "model-trajectory",
   "developer-tools",
   "tools",
@@ -170,13 +139,6 @@ const TAB_ORDER = [
   "files",
   "plan",
   "trace",
-  "selection-chat",
-  "browser-use",
-  "workflow-run",
-  "workflow-directory",
-  "workflow-actor",
-  "workflow-workspace",
-  "workflow-artifact",
   // 会话树根级
   "subagent",
   "subagent-directory",
@@ -262,13 +224,10 @@ function basename(path: string): string {
 }
 
 /**
- * 需要常驻挂载的页签。
- * 对齐 ZCode：浏览器、browser-use、后台命令的运行时资源依赖 DOM 持续存在，
- * 卸载即丢状态（终端滚到底、浏览器滚动位置、命令的实时输出）。
+ * 需要常驻挂载的页签 —— 运行时资源依赖 DOM 持续存在，卸载即丢状态
+ * （终端滚到底、后台命令的实时输出）。
  */
 export const KEEP_MOUNTED_TYPES: ReadonlySet<SidePaneTabType> = new Set<SidePaneTabType>([
-  "browser",
-  "browser-use",
   "bash-output",
   "terminal",
 ]);
@@ -284,25 +243,10 @@ export function blockedReason(type: SidePaneTabType, ownerId: string | null): st
   return SCOPE[type] === "root-session" ? "需先打开一条会话" : "需先打开一条会话";
 }
 
-/**
- * 该类型当前是否依赖尚未接入的运行时。
- * 不隐藏这些页签 —— 隐藏就等于功能「看不见」；
- * 而是显式标出来缺什么。
- */
-export const NEEDS_RUNTIME: Partial<
-  Record<SidePaneTabType, { readonly needs: string; readonly when: string }>
-> = {
-  browser: { needs: "Electron webview + BrowserWindow 承载", when: "P2 桌面壳" },
-  "browser-use": { needs: "dsh / Claude Code 的 browser-use 控制通道", when: "P3 接入 dsh" },
-  terminal: { needs: "node-pty 真 PTY（当前只有外观）", when: "P2 桌面壳" },
-  whiteboard: { needs: "画布组件与持久化", when: "P5 之后" },
-  "selection-chat": { needs: "编辑器选区捕获（ZCode 用 Lexical）", when: "P2 编辑器" },
-  "workflow-run": { needs: "编排运行时（本产品已移除编排策略，见北极星）", when: "未定" },
-  "workflow-directory": { needs: "编排运行时", when: "未定" },
-  "workflow-actor": { needs: "编排运行时", when: "未定" },
-  "workflow-workspace": { needs: "编排运行时", when: "未定" },
-  "workflow-artifact": { needs: "编排运行时", when: "未定" },
-};
+// 注：原先这里有 NEEDS_RUNTIME（browser / browser-use / whiteboard / selection-chat /
+// terminal / workflow-* 各自「缺什么」），配套 PendingRuntimePane 给占位页签显示待接入说明。
+// 那批页签已整体删除 —— 留着入口只会让人以为这条路还开着。
+// 真要重新接（例如 Electron 桌面壳的 webview），从这里重建，git log 有原实现。
 
 export interface SidePaneTab {
   readonly id: string;
