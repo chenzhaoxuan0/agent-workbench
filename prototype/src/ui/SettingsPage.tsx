@@ -251,15 +251,8 @@ function SectionBody({ section }: { section: SettingsSectionDef }) {
     case "image":
       /* 出图供应商 profile 管理（gpt_image_playground 字段全集） */
       return <ImageSettingsSection />;
-    case "permissions":
-      return (
-        <div className="space-y-6">
-          <GenericSection section={section} />
-          <AutomationPolicyRows />
-        </div>
-      );
     default:
-      return <GenericSection section={section} />;
+      return null;
   }
 }
 
@@ -933,23 +926,10 @@ function Stepper({
   );
 }
 
-/** 自动化相关只剩两条全局策略，具体的任务管理已独立成主视图 */
-function AutomationPolicyRows() {
-  return (
-    <GroupCard>
-      <SettingsRow
-        label="错过时补跑"
-        description="到点时机器不在线，开机后是否补执行当天漏掉的这一轮"
-        control={<Toggle on onChange={() => {}} />}
-      />
-      <SettingsRow
-        label="常驻调度"
-        description="退出应用后仍按日程触发。原型期未实现，需要 Electron 托盘常驻"
-        control={<Badge>待实现</Badge>}
-      />
-    </GroupCard>
-  );
-}
+// 注：原「权限」分区（默认审批策略与信任范围）已删除。它当时只有两行：
+// 「错过时补跑」是个 onChange={() => {}} 的假开关，拨了什么都不发生；
+// 「常驻调度」是「待实现」徽标。整个分区 100% 是假内容。
+// 真正的审批控制在 Composer 的运行配置里（PermissionModePanel），那个是真的。
 
 function ShortcutsSection() {
   const items: readonly (readonly [string, string, string])[] = [
@@ -1009,37 +989,5 @@ function UsageSection() {
         />
       ))}
     </GroupCard>
-  );
-}
-
-/** 其余分区：给出真实的结构与占位说明，不做假开关 */
-function GenericSection({ section }: { section: SettingsSectionDef }) {
-  const unit = useWorkbench(selectActiveUnit);
-  const unitScoped = section.id === "skills" || section.id === "memory" || section.id === "hooks";
-
-  return (
-    <div className="space-y-6">
-      <GroupCard>
-        <SettingsRow
-          label="作用范围"
-          description={
-            unitScoped
-              ? "该分区随工作单元切换，读取单元目录下的对应文件"
-              : "对整个应用生效"
-          }
-          control={<Badge>{unitScoped ? unit?.name ?? "未选择" : "应用级"}</Badge>}
-        />
-        <SettingsRow
-          label="配置来源"
-          description="零迁移：直接读工作单元目录里的文件，不维护影子数据库"
-          control={<Badge>文件</Badge>}
-        />
-      </GroupCard>
-
-      <p className="rounded-card border border-line bg-card px-4 py-3 text-body-sm text-graphite">
-        「{section.title}」分区尚未实现具体表单。
-        当前只落骨架 —— 导航、面包屑、SettingsRow 排版都已就位，接真实设置项时直接往 GroupCard 里加行即可。
-      </p>
-    </div>
   );
 }

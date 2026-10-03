@@ -35,19 +35,19 @@ export type MainView = "chat" | "automations" | "image";
  */
 export type ConversationView = "chat" | "terminal" | "trajectory" | "ops";
 
-/** 设置分区 id，集合对齐 ZCode 的 SettingsSectionId */
+/**
+ * 设置分区 id。
+ *
+ * 原先对齐 ZCode 有 11 个，其中 general / appearance / skills / hooks / trace
+ * 只有「导航 + 面包屑 + 一句尚未实现」的空骨架 —— 用户能点进去、什么都改不了。
+ * 已整体移除，等真要做的时候再加回来（git log 有原形）。
+ */
 export type SettingsSectionId =
-  | "general"
-  | "appearance"
   | "models"
   | "image"
   | "shortcuts"
-  | "skills"
   | "memory"
-  | "hooks"
-  | "permissions"
-  | "usage"
-  | "trace";
+  | "usage";
 
 export type SettingsGroupId = "basics" | "agentCapabilities" | "dataAndStats";
 
@@ -74,19 +74,13 @@ export const SETTINGS_GROUPS: readonly { id: SettingsGroupId; title: string }[] 
  * **「自动化」不在此列表** —— 它是独立主视图（见 MainView 注释）
  */
 export const SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
-  { id: "general", title: "通用", desc: "工作区、启动行为、语言", groupId: "basics", icon: "settings" },
-  { id: "appearance", title: "外观", desc: "主题、字号、动效", groupId: "basics", icon: "palette" },
   { id: "models", title: "执行器与模型", desc: "执行器实例、供应商与每个 CLI 的模型清单", groupId: "basics", icon: "brain" },
   { id: "shortcuts", title: "快捷键", desc: "全局与工作区级键位", groupId: "basics", icon: "keyboard" },
 
-  { id: "skills", title: "技能", desc: "SKILL.md 目录，跨工具共享", groupId: "agentCapabilities", icon: "wand" },
   { id: "memory", title: "记忆", desc: "语义事实 / 情节事件 / 程序性技能 三层记忆（对齐 waku）", groupId: "agentCapabilities", icon: "brain" },
   { id: "image", title: "出图", desc: "图像供应商 profile 管理（gpt_image_playground 字段全集）", groupId: "agentCapabilities", icon: "image" },
-  { id: "hooks", title: "钩子", desc: "工具调用前后触发的自定义脚本", groupId: "agentCapabilities", icon: "anchor" },
-  { id: "permissions", title: "权限", desc: "默认审批策略与信任范围", groupId: "agentCapabilities", icon: "shield" },
 
   { id: "usage", title: "用量", desc: "按执行器与工作单元的消耗统计", groupId: "dataAndStats", icon: "chart" },
-  { id: "trace", title: "轨迹", desc: "运行轨迹存储位置与导出", groupId: "dataAndStats", icon: "history" },
 ];
 
 // ---------------------------------------------------------------------------
@@ -181,7 +175,7 @@ export const useShell = create<ShellState>((set, get) => ({
   commandOpen: false,
   mainView: "chat",
   settingsOpen: false,
-  settingsSection: "general",
+  settingsSection: "models",
   conversationView: "chat",
   addBotOpen: false,
   editUnitId: null,
