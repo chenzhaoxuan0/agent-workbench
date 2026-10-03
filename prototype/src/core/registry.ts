@@ -16,6 +16,8 @@ export interface RuntimeEntry {
   readonly id: RuntimeId;
   readonly presentation: AdapterFactory["presentation"];
   readonly capabilities: AdapterFactory["capabilities"];
+  /** 测试夹具（mockperm），不是真工具。UI 要照实标出来 */
+  readonly testOnly: boolean;
   /** 传输方式，UI 调试面板用 */
   readonly transportKind: string;
   /** 该执行器能用的模型（按菜单序排好），UI 靠它建模型下拉 */
@@ -64,6 +66,7 @@ export class RuntimeRegistry {
       id,
       presentation: f.presentation,
       capabilities: f.capabilities,
+      testOnly: f.testOnly === true,
       transportKind: f.transport.kind,
       models,
       defaultModel: first,

@@ -37,6 +37,8 @@ export class MockPermAdapter implements ExecutorAdapter {
   readonly id = "mockperm";
   readonly displayName = "MockPerm";
   readonly glyph = "M";
+  /** 不是真工具。界面照实标出来，别让人以为是个没听说过的厂商 CLI。 */
+  readonly testOnly = true;
   readonly models: readonly ExecutorModelInfo[] = [{ id: "mock-1" as ModelId, displayName: "Mock-1" }];
   readonly capabilities: RuntimeCapabilities = {
     resumeSession: false,

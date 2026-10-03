@@ -29,6 +29,8 @@ export interface DaemonExecutorInfo {
   readonly glyph: string;
   readonly models: readonly { id: string; displayName: string }[];
   readonly capabilities: RuntimeCapabilities;
+  /** daemon 侧标了 = 这是测试夹具（mockperm），不是真的 CLI 工具 */
+  readonly testOnly?: true;
 }
 
 /**

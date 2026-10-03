@@ -37,6 +37,14 @@ export interface AdapterInfo {
   readonly glyph: string;
   readonly models: readonly { id: ModelId; displayName: string }[];
   readonly capabilities: ExecutorAdapter["capabilities"];
+  /**
+   * 这是**测试夹具**，不是真的 CLI 工具。
+   *
+   * 目前只有 mockperm：它存在的意义是「真的会挂起等审批」，好端到端验收权限闸
+   * ——真实执行器要么 -p yolo、要么 exec never，中途不会停下来问人。
+   * 界面上必须标出来，否则用户会以为那是个没听说过的厂商工具。
+   */
+  readonly testOnly?: true;
 }
 
 interface HostSession {
@@ -231,6 +239,8 @@ export class RuntimeHost {
       glyph: a.glyph,
       models: [...a.models],
       capabilities: a.capabilities,
+      // 只在真标了的时候才带这个键，省得每个执行器都多一个 testOnly: undefined
+      ...(a.testOnly === true ? { testOnly: true as const } : {}),
     }));
   }
 

@@ -129,7 +129,7 @@ export function RuntimePanel({ onDone }: { onDone?: () => void }) {
             key={r.id}
             selected={rail === r.id}
             dimmed={r.state.status === "not_installed"}
-            title={`${r.presentation.displayName} · 可选 ${visibleModelsFor(useWorkbench.getState(), r.id).length} 个模型`}
+            title={`${r.presentation.displayName}${r.testOnly ? " · 测试夹具（假执行器）" : ""} · 可选 ${visibleModelsFor(useWorkbench.getState(), r.id).length} 个模型`}
             onClick={() => setRail(r.id)}
           >
             <span
@@ -237,7 +237,7 @@ export function RuntimePicker() {
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
         aria-haspopup="dialog"
-        title={active ? `${active.presentation.displayName} · ${label}\n${active.presentation.tagline}` : "选择执行器与模型"}
+        title={active ? `${active.presentation.displayName}${active.testOnly ? " · 测试夹具" : ""} · ${label}\n${active.presentation.tagline}` : "选择执行器与模型"}
         className={cn(
           "flex items-center gap-1.5 rounded-btn px-2 py-1.5 text-body-sm",
           open ? "bg-line-soft text-ink" : "text-graphite hover:bg-line-soft hover:text-ink",

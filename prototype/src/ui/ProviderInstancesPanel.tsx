@@ -100,6 +100,17 @@ export function ProviderInstancesPanel() {
                       <span className="truncate text-body-sm font-medium text-ink">
                         {p.displayName ?? r.presentation.displayName}
                       </span>
+                      {/* 测试夹具必须标出来。mockperm 不是厂商工具，是「每轮都真挂起
+                          等审批」的假执行器 —— 权限闸唯一的端到端验收手段。不标的话
+                          用户会以为那是个没听说过的 CLI。 */}
+                      {r.testOnly && (
+                        <span
+                          title="测试夹具：每轮都真的挂起等审批，用来端到端验收权限闸。真实执行器启动时就把权限定死了，中途不会问你。"
+                          className="shrink-0 rounded-chip border border-line bg-line-soft px-1.5 py-px text-[10px] leading-4 text-graphite"
+                        >
+                          测试
+                        </span>
+                      )}
                       {activeId === r.id && (
                         <span className="shrink-0 rounded-chip bg-ink px-1.5 py-px text-[10px] leading-4 text-canvas">
                           默认
@@ -110,7 +121,11 @@ export function ProviderInstancesPanel() {
                       )}
                     </span>
                     <span className="mt-0.5 block truncate text-caption text-ash">
-                      {isEnabled ? `${statusLabel(r.state.status)} · ${r.transportKind}` : "已停用"}
+                      {r.testOnly
+                        ? "假执行器 · 每轮发一次权限请求并挂起"
+                        : isEnabled
+                          ? `${statusLabel(r.state.status)} · ${r.transportKind}`
+                          : "已停用"}
                     </span>
                   </span>
                   <InstanceSwitch

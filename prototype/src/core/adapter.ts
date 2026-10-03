@@ -229,6 +229,11 @@ export interface AdapterFactory {
   readonly transport: TransportDescriptor;
   readonly capabilities: RuntimeCapabilities;
   /**
+   * 这是测试夹具（mockperm），不是真的 CLI 工具。
+   * 界面照实标出来 —— 否则用户会以为那是个没听说过的厂商。
+   */
+  readonly testOnly?: true;
+  /**
    * 这个 CLI 能用哪些模型 —— 强制声明，理由同 capabilities。
    *
    * Claude Code 只接 Anthropic，Codex 只接 OpenAI，

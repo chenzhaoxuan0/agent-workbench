@@ -62,6 +62,13 @@ export interface ExecutorAdapter {
   readonly displayName: string;
   /** 单字符徽标（与前端 RuntimePresentation.glyph 同语义） */
   readonly glyph: string;
+  /**
+   * 标了就是**测试夹具**，不是真的 CLI 工具。界面要照实显示出来。
+   *
+   * 目前只有 mockperm（见 adapters/mockperm.ts）：它每轮都真的挂起等审批，
+   * 是权限闸唯一的端到端验收手段 —— 真执行器启动时就把权限定死了，中途不问你。
+   */
+  readonly testOnly?: true;
   /** 非空硬要求（契约原文）：空清单的执行器注册即拒 */
   readonly models: readonly ExecutorModelInfo[];
   readonly capabilities: RuntimeCapabilities;
