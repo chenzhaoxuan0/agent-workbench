@@ -153,7 +153,16 @@ export function TerminalPanel({
         </button>
       </div>
 
-      {daemonDown ? (
+      {unit === undefined ? (
+        /* 没有工作单元就没有 cwd，PTY 起不来。
+           原来是直接 return，界面上留下一块**什么都没有的空白面板** ——
+           用户的感受是「终端打开没反应」。空白必须换成一句能照做的话。 */
+        <div className="flex min-h-0 flex-1 items-center justify-center px-4 text-center">
+          <p className="text-body-sm text-ash">
+            终端要一个工作目录才能起。先在左边选一个工作单元，它的根目录就是这里的 cwd。
+          </p>
+        </div>
+      ) : daemonDown ? (
         <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2 font-mono text-body-sm leading-relaxed text-ash">
           <p>daemon 不可达，无真实 PTY。</p>
           <p className="mt-1">当前工作单元能力：</p>
