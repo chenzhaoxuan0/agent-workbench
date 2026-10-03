@@ -701,6 +701,22 @@ void (async () => {
     runtimeRegistry.setState(factories[0]!.id, { status: "stopped" });
     useWorkbench.setState({ activeRuntimeId: factories[0]!.id });
     console.info(`[workbench] 已连接本地 daemon：${infos.map((i) => i.id).join(", ")}`);
+    // 哪些模型本地目录没收 —— **说出来**。
+    // 原来的坑：查不到就静默丢弃，models 空了 → defaultModel 为 null → 整个
+    // 执行器从列表里消失，控制台一个错都没有。现在降级显示（价格显示为未知），
+    // 必须留痕，否则「加了个执行器但界面看不到」只能靠猜。
+    //
+    // 放在这里而不是 subscribe 里：registerAll 每注册一个就 emit 一次，
+    // 在回调里打会把同一条消息刷 8 遍。
+    const unlisted = runtimeRegistry
+      .list()
+      .flatMap((r) => r.models.filter((m) => m.vendorLabel === "未收录").map((m) => `${r.presentation.displayName}/${m.id}`));
+    if (unlisted.length > 0) {
+      console.info(
+        `[workbench] ${unlisted.length} 个模型本地目录没收录，已降级显示（价格/窗口为未知）：${unlisted.join("、")}` +
+          ` —— 补进 core/models.ts 的 MODELS 就能拿到价格与档位`,
+      );
+    }
     // WP-5：daemon 可达时合并落盘 bot 定义（bot.json 是家，store 只是运行态视图）
     try {
       const { listBotDefinitions, defaultDaemonEndpoint } = await import("../adapters/daemon/client.ts");

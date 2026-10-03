@@ -20,7 +20,7 @@ import { asModelId, type ModelId } from "./units.ts";
 export { asModelId };
 export type { ModelId };
 
-export type ModelVendor = "anthropic" | "openai" | "deepseek" | "glm" | "mock";
+export type ModelVendor = "anthropic" | "openai" | "deepseek" | "glm" | "mock" | "custom";
 
 /** 档位。决定菜单排序，也决定它在列表里的位置（先按档位再按价格）。 */
 export type ModelTier = "frontier" | "balanced" | "fast";
@@ -309,7 +309,19 @@ export const MODELS: readonly ModelSpec[] = [
 const BY_ID = new Map<string, ModelSpec>(MODELS.map((m) => [m.id, m]));
 
 export function modelById(id: ModelId | string | null | undefined): ModelSpec | undefined {
-  return id ? BY_ID.get(id) : undefined;
+  if (!id) return undefined;
+  const direct = BY_ID.get(id);
+  if (direct !== undefined) return direct;
+  // daemon 常报「厂商/模型」的完整 id（实测 `deepseek-official/deepseek-v4-flash`），
+  // 本地目录记的是裸 id。这里按「去掉厂商前缀」回退匹配一次 —— 取最后一段是
+  // 有据的猜测，不是模糊匹配。
+  //
+  // 命中时**用传入的 id 覆盖目录里的**：传回 daemon 的必须是它认识的那个字符串，
+  // 换成裸 id 会让它回落成默认模型（host 的 resolveModelFor 会静默丢弃用户选择）。
+  // 覆盖只改 id，规格（价格/档位/窗口）沿用目录里的。
+  const tail = id.includes("/") ? id.slice(id.lastIndexOf("/") + 1) : "";
+  const hit = tail === "" ? undefined : BY_ID.get(tail);
+  return hit === undefined ? undefined : { ...hit, id: id as ModelId };
 }
 
 export function isKnownModel(id: string): boolean {
@@ -318,6 +330,46 @@ export function isKnownModel(id: string): boolean {
 
 /** 菜单排序：档位 → 价格。便宜的档位在前，符合「先看能不能用，再看贵不贵」 */
 const TIER_ORDER: Record<ModelTier, number> = { frontier: 0, balanced: 1, fast: 2 };
+
+/**
+ * 本地目录里没有这条模型时，构造一个「规格未知」的占位。
+ *
+ * ## 为什么不直接丢掉它
+ *
+ * daemon 才是「这个执行器支持哪些模型」的**权威来源**；这个目录只是补充信息
+ * （价格 / 档位 / 上下文窗口）。所以查不到应该**降级显示**，不是丢弃。
+ *
+ * 丢弃的实际后果比看上去严重：`sortModels` 一滤，`defaultModelFor` 就返回
+ * null，`RuntimeEntry` 整个变成 null，**执行器从列表里消失** —— 而且是静默的，
+ * 连个警告都没有。实测踩过：daemon 注册了 8 个执行器，界面只显示 4 个，消失的
+ * 四个全是模型 id 不在本地目录里的（pi / mcode / dsh / opencode）。
+ * 新加一个执行器不会顺手更新前端目录，于是这个执行器等于没接。
+ *
+ * ## 价格为什么记 0
+ *
+ * 这是本目录已有的约定，不是偷懒：订阅内含的模型（claude 网关别名、GLM 三档）
+ * 同样记 0，note 写明原因。真实成本由 daemon 侧 `usage` 事件报 `costUsd`，
+ * 用量统计不读这里的数字，所以这里填 0 不会让统计出错。
+ *
+ * 档位缺省 `balanced`：与「用户添加的自定义模型」同一处理 —— 我们不知道它多强，
+ * 就别默认它是旗舰。
+ */
+export function scaffoldModel(id: ModelId, displayName?: string): ModelSpec {
+  return {
+    id,
+    displayName: displayName ?? id,
+    vendor: "custom",
+    vendorLabel: "未收录",
+    tier: "balanced",
+    contextWindow: 0,
+    inputPerMTok: 0,
+    outputPerMTok: 0,
+    multimodal: false,
+    note: "本地没有这条模型的价格与窗口资料（由 daemon 报告，目录未收录）",
+    asOf: "",
+    source: "",
+  };
+}
 
 /** spec 版排序器。`sortModels` 与「按偏好重排」共用它，避免两套排序口径 */
 export function sortSpecs(specs: readonly ModelSpec[]): ModelSpec[] {
@@ -329,7 +381,7 @@ export function sortSpecs(specs: readonly ModelSpec[]): ModelSpec[] {
 }
 
 export function sortModels(ids: readonly ModelId[]): readonly ModelSpec[] {
-  return sortSpecs(ids.map((id) => modelById(id)).filter((m): m is ModelSpec => m !== undefined));
+  return sortSpecs(ids.map((id) => modelById(id) ?? scaffoldModel(id)));
 }
 
 /**
