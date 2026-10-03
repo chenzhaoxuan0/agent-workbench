@@ -1,6 +1,5 @@
 import { useMemo, useState } from "react";
 import {
-  AlarmClock,
   ChevronLeft,
   CircleAlert,
   CircleCheck,
@@ -44,22 +43,12 @@ export function AutomationsPage() {
   const units = useWorkbench((s) => s.units);
   const setMainView = useShell((s) => s.setMainView);
 
-  const [tab, setTab] = useState<"scheduled" | "idle">("scheduled");
   const [filter, setFilter] = useState<StatusFilter>("all");
 
   const unitName = (id: string) => units.find((u) => u.id === id)?.name ?? "—";
 
   // 口径 1：按 resolveStatusKind 分组，它就是卡片徽章的来源
-  const visible = useMemo(() => {
-    const list = tab === "scheduled" ? automations : [];
-    return filterByStatus(list, filter);
-  }, [automations, tab, filter]);
-
-  // 口径 2：切 tab 重置筛选
-  const onTab = (next: "scheduled" | "idle") => {
-    setTab(next);
-    setFilter("all");
-  };
+  const visible = useMemo(() => filterByStatus(automations, filter), [automations, filter]);
 
   return (
     <div className="h-full min-h-0 overflow-y-auto">
@@ -92,32 +81,8 @@ export function AutomationsPage() {
           </button>
         </header>
 
-        {/* tab + 状态筛选 */}
+        {/* 状态筛选 */}
         <div className="mb-4 flex flex-wrap items-center gap-2">
-          <div className="flex gap-1">
-            {(
-              [
-                ["scheduled", "定时"],
-                ["idle", "闲时"],
-              ] as const
-            ).map(([id, label]) => (
-              <button
-                key={id}
-                onClick={() => onTab(id)}
-                aria-pressed={tab === id}
-                className={cn(
-                  "rounded-chip px-3 py-1.5 text-body-sm",
-                  tab === id
-                    ? "bg-teal-tint font-medium text-ink"
-                    : "text-graphite hover:bg-line-soft hover:text-ink",
-                )}
-              >
-                {label}
-                {id === "idle" && <span className="ml-1.5 text-caption text-ash">即将推出</span>}
-              </button>
-            ))}
-          </div>
-
           <div className="ml-auto flex gap-1">
             {STATUS_FILTERS.map((f) => (
               <button
@@ -138,13 +103,7 @@ export function AutomationsPage() {
         </div>
 
         {/* 卡片网格 */}
-        {tab === "idle" ? (
-          <EmptyPanel
-            icon={<AlarmClock size={16} />}
-            title="闲时尚未实现"
-            desc="闲时任务是低优先级后台跑的任务，与定时任务共用同一组筛选与状态口径。接真实调度后这里会出现第二张 tab 的内容。"
-          />
-        ) : visible.length === 0 ? (
+        {visible.length === 0 ? (
           <EmptyPanel
             icon={<CircleAlert size={16} />}
             title={filter === "all" ? "还没有定时任务" : `没有${STATUS_FILTER_LABEL[filter]}的任务`}

@@ -13,7 +13,6 @@ import {
   Search,
   Settings,
   SlidersHorizontal,
-  Unplug,
 } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
 import { useWorkbench, selectUnitSessions, type ViewMode, type BotWriteGuards } from "../store/useWorkbench.ts";
@@ -108,7 +107,6 @@ export function Sidebar() {
   const [sort, setSort] = useState<Sort>("updated");
   const [unitOrder, setUnitOrder] = useState<string[] | null>(null);
   const [dragUnit, setDragUnit] = useState<string | null>(null);
-  const [accountOpen, setAccountOpen] = useState(false);
   const selectSession = useWorkbench((s) => s.selectSession);
   const activeSessionId = useWorkbench((s) => s.activeSessionId);
   // 「添加 bot」的对话框开关在 useShell —— 标题行的 ＋ 和单元区空态两个入口共用
@@ -313,62 +311,12 @@ export function Sidebar() {
 
       </div>
 
-      {/* 底部：账号 + 设置（ZCode: WorkspaceSidebarFooter —— 账号菜单 + 齿轮，
-          搜索/自动化在顶部区，不重复出现） */}
+      {/* 底部：只剩设置。
+          原先这里有「陈子渔 / 个人版·Pro」的硬编码账号块（点开是 界面语言 /
+          界面主题 两行 + 「连接使用」，三项都只关菜单），以及一个连 onClick 都没有的
+          「连接远端」按钮。真做多账号时从这里重建，git log 有原形。 */}
       <div className="flex shrink-0 items-center gap-1.5 border-t border-line px-4 py-2.5">
-        <div className="relative min-w-0 flex-1">
-          <button
-            onClick={() => setAccountOpen((o) => !o)}
-            aria-expanded={accountOpen}
-            className={cn(
-              "flex w-full min-w-0 items-center gap-2 rounded-btn p-1 -m-1 text-left",
-              accountOpen ? "bg-line-soft" : "hover:bg-line-soft",
-            )}
-          >
-            <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-chip bg-teal text-caption font-medium text-white">
-              陈
-            </span>
-            <span className="min-w-0 flex-1">
-              <span className="block truncate text-body-sm font-medium text-ink">陈子渔</span>
-              <span className="block truncate text-caption text-ash">个人版 · Pro</span>
-            </span>
-          </button>
-          {accountOpen && (
-            <>
-              <span className="fixed inset-0 z-30" onClick={() => setAccountOpen(false)} aria-hidden />
-              <div className="absolute bottom-full left-0 z-40 mb-1.5 w-52 rounded-card border border-line bg-canvas py-1 shadow-subtle">
-                {ACCOUNT_ITEMS.map((row) => (
-                  <button
-                    key={row.label}
-                    onClick={() => setAccountOpen(false)}
-                    title="原型占位入口"
-                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-body-sm text-graphite hover:bg-line-soft hover:text-ink"
-                  >
-                    {row.label}
-                    <span className="ml-auto text-caption text-ash">{row.value}</span>
-                  </button>
-                ))}
-                <div className="mt-1 border-t border-line-soft pt-1">
-                  <button
-                    onClick={() => setAccountOpen(false)}
-                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-body-sm text-graphite hover:bg-line-soft hover:text-ink"
-                  >
-                    <Unplug size={12} />
-                    连接使用
-                  </button>
-                </div>
-              </div>
-            </>
-          )}
-        </div>
-        {/* 连接远端 —— 与设置并排（ZCode 的远程连接入口同位级的图标钮） */}
-        <button
-          title="连接远端 · 未连接"
-          aria-label="连接远端"
-          className="shrink-0 rounded-btn p-1.5 text-graphite hover:bg-line-soft hover:text-ink"
-        >
-          <Unplug size={14} />
-        </button>
+        <span className="flex-1 text-caption text-ash">本地工作台</span>
         <button
           onClick={() => openSettings()}
           aria-label="设置"
@@ -479,11 +427,6 @@ export function Sidebar() {
     </div>
   );
 }
-
-const ACCOUNT_ITEMS: readonly { label: string; value: string }[] = [
-  { label: "界面语言", value: "简体中文" },
-  { label: "界面主题", value: "浅色" },
-];
 
 /**
  * 打开设置页那一刻的盘上真值 → 保存时当乐观锁基线。

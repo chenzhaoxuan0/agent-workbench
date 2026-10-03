@@ -12,7 +12,6 @@ import {
   type ProviderModelPrefs,
 } from "../core/modelPrefs.ts";
 import type { PermissionMode } from "../core/permission.ts";
-import type { Attachment } from "../core/units.ts";
 import type { LoopParams, RuntimeAdapter, PermissionDecision } from "../core/adapter.ts";
 import type { RuntimeEvent } from "../core/events.ts";
 import { runtimeRegistry } from "../core/registry.ts";
@@ -106,8 +105,6 @@ interface WorkbenchState {
   permissionDecisions: Readonly<Record<string, string>>;
   /** 本次运行的权限模式（composer 右侧常驻） */
   permissionMode: PermissionMode;
-  /** 本条消息携带的附件 */
-  attachments: readonly Attachment[];
   /**
    * `lark-cli profile → 那个 profile 是哪个飞书机器人`（应用名 + 头像）。
    *
@@ -148,8 +145,6 @@ interface WorkbenchState {
   applyModelPrefs: (runtimeId: string, steps: readonly ((p: ProviderModelPrefs) => ProviderModelPrefs)[]) => void;
   setDraft: (v: string) => void;
   setPermissionMode: (m: PermissionMode) => void;
-  addAttachment: (a: Attachment) => void;
-  removeAttachment: (id: string) => void;
   toggleAutomation: (id: string) => void;
   run: (prompt: string) => Promise<void>;
   /** 停止当前运行。mock 适配器没有真正的取消通道，只翻 busy 位 */
@@ -288,7 +283,6 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
   runtimePrefs: {} as Readonly<Record<string, RuntimePref>>,
   permissionDecisions: {},
   permissionMode: "ask",
-  attachments: [],
   automations: [],
   // 启动时不预置：空 map 由 bootstrap 在合并 bot 定义后拉一次。
   // ⚠ 必须是**稳定引用**，selector 会逐个组件地读它（见 Sidebar 的 UnitRow），
@@ -307,8 +301,6 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
     });
   },
 
-  addAttachment: (a) => set((s) => ({ attachments: [...s.attachments, a] })),
-  removeAttachment: (id) => set((s) => ({ attachments: s.attachments.filter((a) => a.id !== id) })),
 
   toggleAutomation: (id) =>
     set((s) => ({

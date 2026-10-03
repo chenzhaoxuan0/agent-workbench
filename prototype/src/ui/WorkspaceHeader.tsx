@@ -1,22 +1,15 @@
 import { useState } from "react";
 import {
-  Archive,
-  BookOpen,
   Check,
-  CircleHelp,
   Copy,
   Ellipsis,
   Folder,
   GitBranch,
   Hash,
   History,
-  MessageSquare,
-  MessageSquareText,
   PanelRightOpen,
   Pin,
-  SquarePen,
   SquareTerminal,
-  Users,
 } from "lucide-react";
 import { useShell } from "../store/useShell.ts";
 import { useSidePane } from "../store/useSidePane.ts";
@@ -85,8 +78,6 @@ export function WorkspaceHeader() {
 
       {/* ---- 右区：动作按钮（ZCode 的 WorkspaceHeaderActionSection）---- */}
       <div className="ml-auto flex shrink-0 items-center gap-0.5">
-        <HelpMenu />
-
         <button
           onClick={toggleTerminal}
           aria-label="终端"
@@ -117,9 +108,13 @@ export function WorkspaceHeader() {
 /* ------------------------------------------------------------- 更多菜单 */
 
 /**
- * 任务更多菜单 —— 对齐 ZCode 的 TaskActionMenuContent（标题后的 Ellipsis）。
- * 菜单结构同构：置顶 / 重命名 / 归档 — 复制组 — 轨迹 — 反馈。
- * 复制与轨迹是真实动作；置顶/重命名/归档/反馈暂为占位（标注入口）。
+ * 任务更多菜单 —— 标题后的 Ellipsis。
+ *
+ * 菜单结构同构：复制组 — 轨迹。
+ * 这两项是真实动作。
+ *
+ * 原先还有 置顶 / 重命名 / 归档 / 反馈 四项，点下去只关菜单（`placeholder: true`），
+ * 已删除。留着一排点了没反应的按钮，比没有这排按钮更让人以为功能坏了。
  */
 function MoreMenu() {
   const unit = useWorkbench(selectActiveUnit);
@@ -142,13 +137,9 @@ function MoreMenu() {
     icon: typeof Pin;
     label: string;
     hint?: string;
-    placeholder?: boolean;
     disabled?: boolean;
     onClick?: () => void;
   }[] = [
-    { key: "pin", icon: Pin, label: "置顶任务", placeholder: true },
-    { key: "rename", icon: SquarePen, label: "重命名任务", placeholder: true },
-    { key: "archive", icon: Archive, label: "归档任务", placeholder: true },
     {
       key: "copy-path",
       icon: Copy,
@@ -170,7 +161,6 @@ function MoreMenu() {
       disabled: !session,
       onClick: () => session && useSidePane.getState().openTabType("trace", session.id),
     },
-    { key: "feedback", icon: MessageSquareText, label: "反馈问题", placeholder: true },
   ];
 
   return (
@@ -189,7 +179,7 @@ function MoreMenu() {
         <>
           <span className="fixed inset-0 z-30" onClick={() => setOpen(false)} aria-hidden />
           <div className="absolute left-0 top-full z-40 mt-1 w-48 rounded-card border border-line bg-canvas py-1 shadow-subtle">
-            {rows.map(({ key, icon: Icon, label, placeholder, disabled, onClick }) => (
+            {rows.map(({ key, icon: Icon, label, disabled, onClick }) => (
               <button
                 key={key}
                 disabled={disabled}
@@ -197,7 +187,6 @@ function MoreMenu() {
                   onClick?.();
                   setOpen(false);
                 }}
-                title={placeholder ? "原型占位入口" : undefined}
                 className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-body-sm text-graphite hover:bg-line-soft hover:text-ink disabled:pointer-events-none disabled:opacity-40"
               >
                 <Icon size={12} />
@@ -283,54 +272,6 @@ function WorkspacePopover() {
                 ))}
               </div>
             )}
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
-/* ------------------------------------------------------------- 帮助菜单 */
-
-const HELP_ITEMS: readonly { icon: typeof BookOpen; label: string }[] = [
-  { icon: BookOpen, label: "使用文档" },
-  { icon: Users, label: "社区" },
-  { icon: MessageSquare, label: "问题反馈" },
-];
-
-function HelpMenu() {
-  const [open, setOpen] = useState(false);
-  return (
-    <div className="relative">
-      <button
-        onClick={() => setOpen((o) => !o)}
-        aria-expanded={open}
-        aria-label="帮助"
-        title="帮助"
-        className={cn(iconBtn, open && "bg-line-soft text-ink")}
-      >
-        <CircleHelp size={14} />
-      </button>
-
-      {open && (
-        <>
-          <span className="fixed inset-0 z-30" onClick={() => setOpen(false)} aria-hidden />
-          <div className="absolute right-0 top-full z-40 mt-1 w-44 rounded-card border border-line bg-canvas py-1 shadow-subtle">
-            {HELP_ITEMS.map(({ icon: Icon, label }) => (
-              <button
-                key={label}
-                onClick={() => setOpen(false)}
-                title="原型占位入口"
-                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-body-sm text-graphite hover:bg-line-soft hover:text-ink"
-              >
-                <Icon size={12} />
-                {label}
-              </button>
-            ))}
-            <div className="mt-1 flex items-center justify-between border-t border-line-soft px-3 py-1.5 text-caption text-ash">
-              <span>Agent Workbench</span>
-              <span className="font-mono">v0.1.0-proto</span>
-            </div>
           </div>
         </>
       )}

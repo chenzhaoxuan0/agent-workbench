@@ -1,7 +1,6 @@
 import { useEffect, useRef } from "react";
-import { ArrowUp, Square } from "lucide-react";
+import { ArrowUp, AtSign, Square } from "lucide-react";
 import { useWorkbench, selectActiveUnit } from "../store/useWorkbench.ts";
-import { AttachmentStrip, ComposerAttach } from "./ComposerAttach.tsx";
 import { RunConfigMenu } from "./RunConfigMenu.tsx";
 import { StatsDock } from "./StatsDock.tsx";
 import { cn } from "./cn.ts";
@@ -54,8 +53,6 @@ export function Composer() {
             "focus-within:shadow-[0_0_0_3px_rgb(1_106_113/0.12)]",
           )}
         >
-          <AttachmentStrip />
-
           <textarea
             ref={taRef}
             value={draft}
@@ -75,7 +72,19 @@ export function Composer() {
           {/* 左：这条消息「带什么」；右：这条消息「怎么跑」。
               分工与 ZCode 的 V4ComposerToolbar 一致。 */}
           <div className="mt-2 flex items-center gap-2">
-            <ComposerAttach />
+            {/* 「@ 引用」：在草稿里插一个 @，剩下的交给 agent 自己解析。
+                原先这里还有个回形针「添加附件」，点开是 4 个写死的假文件
+                （brief.md / palette.png / …，路径还指向别的项目），加完之后
+                attachments 根本没进任何执行器调用 —— 纯装饰。已删。
+                真要附件得先有真文件选择（Electron file dialog）+ 后端接收。 */}
+            <button
+              onClick={() => setDraft(`${draft}@`)}
+              aria-label="引用文件"
+              title="@ 引用工作单元里的文件 / 会话 / 技能"
+              className="shrink-0 rounded-btn p-1.5 text-graphite hover:bg-line-soft hover:text-ink"
+            >
+              <AtSign size={14} />
+            </button>
 
             <div className="ml-auto flex items-center gap-1.5">
               {/* 「怎么跑」的三项收进一颗 ⋯（渐进披露）。

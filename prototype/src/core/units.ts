@@ -257,15 +257,9 @@ export interface Deliverable {
   readonly summary?: string;
 }
 
-// ---------------------------------------------------------------------------
-// 附件
-// ---------------------------------------------------------------------------
+// 注：原「附件」区（Attachment 类型 + store 的 attachments/addAttachment/removeAttachment
+// + ComposerAttach 组件）已整体删除。附件面板列的是 4 个写死的假文件，加完之后
+// attachments 从没进过任何执行器调用 —— 纯装饰。
+// 真做附件需要两件事一起：真文件选择（Electron file dialog）+ 后端接收并交给执行器。
+// 从这里重建，git log 有原形。
 
-/** 本条消息携带的附件。类型住 core —— ui 依赖 core，不能反过来 */
-export interface Attachment {
-  readonly id: string;
-  readonly name: string;
-  readonly kind: "file" | "image";
-  /** 原型期只有相对路径，真实实现走 Electron 的 file dialog 拿绝对路径 */
-  readonly path: string;
-}
