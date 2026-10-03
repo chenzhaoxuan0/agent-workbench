@@ -88,6 +88,8 @@ export async function resolveCommand(name: string): Promise<ResolvedCommand> {
 
 export interface SpawnLinesOptions {
   readonly cwd?: string;
+  /** 追加环境变量（如 ELECTRON_RUN_AS_NODE），叠加在 process.env 之上 */
+  readonly env?: NodeJS.ProcessEnv;
   readonly onLine: (line: string) => void;
   readonly onStderrLine?: (line: string) => void;
   readonly onExit?: (code: number | null) => void;
@@ -104,6 +106,7 @@ export function spawnLines(cmd: ResolvedCommand, args: readonly string[], opts: 
     cwd: opts.cwd,
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
+    ...(opts.env === undefined ? {} : { env: { ...process.env, ...opts.env } }),
   });
   if (opts.closeStdin !== false) child.stdin?.end();
   createInterface({ input: child.stdout! }).on("line", opts.onLine);
@@ -119,8 +122,13 @@ export async function execLines(
   cmd: ResolvedCommand,
   args: readonly string[],
   timeoutMs = 15000,
+  opts?: { readonly env?: NodeJS.ProcessEnv },
 ): Promise<string> {
-  const child = spawn(cmd.file, [...cmd.prefixArgs, ...args], { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(cmd.file, [...cmd.prefixArgs, ...args], {
+    windowsHide: true,
+    stdio: ["ignore", "pipe", "pipe"],
+    ...(opts?.env === undefined ? {} : { env: { ...process.env, ...opts.env } }),
+  });
   return await new Promise<string>((resolve, reject) => {
     const chunks: string[] = [];
     const timer = setTimeout(() => {

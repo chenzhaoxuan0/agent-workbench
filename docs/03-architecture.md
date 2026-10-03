@@ -125,7 +125,7 @@ daemon 侧适配器有两种成熟形态，按目标 CLI 的协议能力选：
 | 形态 | 进程模型 | 适配器 | 适合的 CLI |
 |---|---|---|---|
 | **一次性进程** | 每轮 spawn 一个 CLI 进程，stdout JSONL 翻完即退 | `claude.ts` / `codex.ts` / `pi.ts` | 有 `-p` + JSON 输出模式 |
-| **常驻协议进程** | 会话首推 spawn 一次，stdin/stdout 即协议通道，断连即退 | `zcode.ts`（agent-server）/ `mcode.ts`（ACP） | 有常驻服务模式（`mcode acp`，接法参考 t3code 的 `packages/effect-acp` client） |
+| **常驻协议进程** | 会话首推 spawn 一次，stdin/stdout 即协议通道，断连即退 | `zcode.ts`（agent-server）/ `mcode.ts`（ACP）/ `dsh.ts`（ACP） | 有常驻服务模式（`mcode acp`、`dsh acp`，接法参考 t3code 的 `packages/effect-acp` client） |
 
 - **pi**（`pi --mode json -p`）：事件流含 thinking/text/toolcall 三路 delta 与
   `tool_execution_*`，usage 带真实计费；多轮靠 `--session-id`（daemon 生成、首轮即知，
@@ -134,6 +134,16 @@ daemon 侧适配器有两种成熟形态，按目标 CLI 的协议能力选：
   `session/request_permission` 翻成 `permission.requested`（唯一有真审批流的非 mock 执行器），
   `tool_call` content 块带 `{type:"diff"}`（结构化 diff 能力），`session/load` 把外部会话
   连历史一起接回。
+- **dsh**（`dsh acp`，= `--profile acp`）：automation-only ACP，与 mcode 同构但更瘦——
+  权限请求只有 allow-once/reject-once 两档、无 diff 块、usage 无成本字段；reattach 走
+  `session/resume`（要求 cwd 一致且原持有者已释放，实测跨进程恢复历史通过）。
+  cherry-studio 的接法是进程内嵌 `@deepseek-ai/dsh-sdk-client` SDK（GPL，只看思路）——
+  daemon 以子进程协议为中心，选 ACP 免厂商依赖；cherry 可借鉴的是 resume-token
+  事件化，这一点契约里已有（session.ref / externalRef）。
+  启动有个坑：npm 全局 dsh shim 指向源码 checkout（依赖 tsx，本机已失效），
+  实际可用的是桌面版 `cli/bin/dsh.cmd`——适配器解析 shim 内容拿到
+  `DeepSeek Harness.exe` + `ELECTRON_RUN_AS_NODE=1` 原生 spawn，绕开 cmd.exe
+  在带空格路径上的转发碎裂。
 
 选型判据：**CLI 有结构化非交互输出就别起常驻进程**（少一条生命周期要管）；
 **需要反向流（权限/审批/steer）才值得常驻**。

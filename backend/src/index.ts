@@ -23,6 +23,7 @@ import { ZcodeAdapter } from "./runtime/adapters/zcode.ts";
 import { CodexAdapter } from "./runtime/adapters/codex.ts";
 import { PiAdapter } from "./runtime/adapters/pi.ts";
 import { McodeAdapter } from "./runtime/adapters/mcode.ts";
+import { DshAdapter } from "./runtime/adapters/dsh.ts";
 import { TerminalManager } from "./terminal/terminals.ts";
 import { Store } from "./store/db.ts";
 import { AutomationScheduler } from "./automation/scheduler.ts";
@@ -67,6 +68,7 @@ host.register(new CodexAdapter());
 host.register(new ClaudeAdapter());
 host.register(new PiAdapter());
 host.register(new McodeAdapter());
+host.register(new DshAdapter());
 host.register(new MockPermAdapter());
 host.loadPersisted();
 
@@ -80,6 +82,7 @@ registerMethod("driver.catalog", () => [
   { id: "claude", installed: true, registered: true, hint: "网关偶发过载时 turn 失败，恢复即用" },
   { id: "pi", installed: true, registered: true, hint: "" },
   { id: "mcode", installed: true, registered: true, hint: "ACP 接入（mcode acp），权限审批走反向请求流" },
+  { id: "dsh", installed: true, registered: true, hint: "ACP 接入（dsh acp），npm 全局 shim 指向源码 checkout 已失效，走桌面版 CLI" },
   { id: "mockperm", installed: true, registered: true, hint: "权限闸试金石" },
   {
     id: "opencode",
