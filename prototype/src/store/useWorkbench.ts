@@ -18,6 +18,7 @@ import type { RuntimeEvent } from "../core/events.ts";
 import { runtimeRegistry } from "../core/registry.ts";
 import type { RuntimeEntry } from "../core/registry.ts";
 import type { Deliverable, Session, SessionId, UnitId, WorkUnit } from "../core/units.ts";
+import type { ChannelIdentityMap, LarkBotIdentity } from "../adapters/daemon/client.ts";
 
 // 注册执行器：见文件末尾的 bootstrap（优先本地 daemon，回退 mock）。
 // [BISECT] sync mock disabled
@@ -107,6 +108,19 @@ interface WorkbenchState {
   permissionMode: PermissionMode;
   /** 本条消息携带的附件 */
   attachments: readonly Attachment[];
+  /**
+   * `lark-cli profile → 那个 profile 是哪个飞书机器人`（应用名 + 头像）。
+   *
+   * 没有它，侧栏只能显示一个通用图标 + 设置页只能显示一串 cli_xxx —— 用户
+   * 无法判断哪个 bot 接的是哪个飞书机器人，而这正是「每 bot 一个机器人」的前提。
+   */
+  channelIdentity: ChannelIdentityMap;
+  /**
+   * 拉取机器人身份。不传 profiles = 问盘上所有已启用飞书账号（侧栏用）；
+   * 传了 = 只认这几个（设置页正在配、还没保存的草稿 profile）。
+   * 失败不抛：认不出来是常态，界面要显示「认不出来 + 原因」而不是空白。
+   */
+  refreshChannelIdentity: (profiles?: readonly string[]) => Promise<void>;
 
   setView: (v: ViewMode) => void;
   selectUnit: (id: UnitId) => void;
@@ -219,6 +233,24 @@ export interface BotWriteGuards {
 /** daemon 判定"盘上已被改过"时的错误码。前端据此弹三选一而不是静默覆盖。 */
 export const BOT_CONFLICT = "conflict";
 
+/**
+ * 这个单元上所有**启用中**的飞书 profile。
+ *
+ * 停用的不算：它现在接不到消息，界面上也不该显示一个机器人头像，
+ * 否则用户会以为「这个 bot 归它管」，而实际上消息根本不会来。
+ */
+export function feishuProfilesOf(unit: WorkUnit): readonly string[] {
+  const out: string[] = [];
+  for (const ch of unit.channels ?? []) {
+    if (ch.kind !== "feishu" || ch.enabled !== true) continue;
+    for (const acc of ch.accounts ?? []) {
+      const p = (acc.profile ?? "").trim();
+      if (p !== "") out.push(p);
+    }
+  }
+  return out;
+}
+
 /** 写盘成功后把 daemon 回的 revision 写回 state——否则下次保存会拿旧基线撞自己。 */
 function applyPutResult(
   set: (fn: (s: WorkbenchState) => Partial<WorkbenchState>) => void,
@@ -258,6 +290,10 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
   permissionMode: "ask",
   attachments: [],
   automations: [],
+  // 启动时不预置：空 map 由 bootstrap 在合并 bot 定义后拉一次。
+  // ⚠ 必须是**稳定引用**，selector 会逐个组件地读它（见 Sidebar 的 UnitRow），
+  // 换新对象会让所有订阅者重渲染。
+  channelIdentity: {},
 
   setDraft: (draft) => set({ draft }),
 
@@ -299,6 +335,10 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
     const { putBotDefinition, defaultDaemonEndpoint } = await import("../adapters/daemon/client.ts");
     const r = await putBotDefinition(u, defaultDaemonEndpoint());
     applyPutResult(set, get, u.id, r);
+    // 新建时就配了渠道的话，当场把「这是哪个飞书机器人」认出来——
+    // 用户在对话框里点完「接上飞书」就该看到它长什么样，而不是关了窗口再去找
+    const profiles = feishuProfilesOf(u);
+    if (profiles.length > 0) void get().refreshChannelIdentity(profiles);
   },
 
   // 改已有单元：state 里按 id 替换 + 同样写穿 bot.json。
@@ -312,6 +352,23 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
     const { putBotDefinition, defaultDaemonEndpoint } = await import("../adapters/daemon/client.ts");
     const r = await putBotDefinition(u, defaultDaemonEndpoint(), guards ?? {});
     applyPutResult(set, get, u.id, r);
+    // 渠道可能被改过（换了 profile / 刚启用 / 刚停用），侧栏头像要跟着变
+    const profiles = feishuProfilesOf(u);
+    if (profiles.length > 0) void get().refreshChannelIdentity(profiles);
+  },
+
+  // 认「哪个 profile 是哪个飞书机器人」。后端成功缓存 10 分钟，所以这里可以放心地在
+  // 保存后和启动时各调一次，不会变成 spawn 风暴。
+  refreshChannelIdentity: async (profiles) => {
+    const { fetchChannelIdentity, defaultDaemonEndpoint } = await import("../adapters/daemon/client.ts");
+    try {
+      const next = await fetchChannelIdentity(profiles, defaultDaemonEndpoint());
+      set((s) => ({ channelIdentity: { ...s.channelIdentity, ...next } }));
+    } catch (err: unknown) {
+      // 认不出来是常态（daemon 没起 / lark-cli 不在 PATH / profile 写错）。
+      // 界面回落通用图标即可，不该弹一个红框打断用户正在做的事。
+      console.info("[workbench] 机器人身份拉取失败（界面回落通用渠道图标）", err instanceof Error ? err.message : err);
+    }
   },
 
   // 重新从盘上拉一个单元。bot.list 每次重扫盘（无缓存），所以这就是"用户在 VS Code
@@ -672,6 +729,9 @@ void (async () => {
         const merged = [...current.filter((u) => !valid.some((d) => d.id === u.id)), ...valid];
         useWorkbench.setState({ units: merged });
         console.info(`[workbench] 已合并 ${valid.length} 个落盘 bot 定义${skipped > 0 ? `（跳过 ${skipped} 个不合格定义）` : ""}`);
+        // 认出「哪个 bot 接的是哪个飞书机器人」。不传 profiles = 问 daemon 盘上所有
+        // 已启用的飞书账号，它按 profile 去重，三个 bot 绑同一个机器人也只 spawn 一次。
+        void useWorkbench.getState().refreshChannelIdentity();
       }
     } catch (err: unknown) {
       console.info("[workbench] 落盘 bot 定义缺失（不致命）", err instanceof Error ? err.message : err);

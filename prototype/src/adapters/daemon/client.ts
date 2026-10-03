@@ -433,6 +433,39 @@ export async function diagnoseChannel(
   return client.rpc<DiagnosisResult>("channel.diagnose", params, 30000);
 }
 
+/**
+ * 一个 lark-cli profile 是哪个飞书机器人。
+ *
+ * 这是「界面上认得出」的唯一依据：profile 字符串谁也认不出，`appName` +
+ * `avatarUrl` 才是飞书里那个机器人的脸。后端走 `bot/v3/info`，成功缓存 10 分钟。
+ */
+export interface LarkBotIdentity {
+  readonly profile: string;
+  readonly appId: string;
+  readonly appName: string;
+  readonly avatarUrl: string;
+  readonly openId: string;
+  /** 飞书侧三态，2 = 已启用；-1 = 没拿到 */
+  readonly activateStatus: number;
+  readonly ok: boolean;
+  readonly detail: string;
+}
+
+export type ChannelIdentityMap = Record<string, LarkBotIdentity>;
+
+/** 不传 profiles = 问盘上所有已启用飞书账号；传了 = 只认这几个（草稿配置用） */
+export async function fetchChannelIdentity(
+  profiles?: readonly string[],
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<ChannelIdentityMap> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<ChannelIdentityMap>(
+    "channel.identity",
+    profiles === undefined ? null : { profiles: [...profiles] },
+    30000,
+  );
+}
+
 /** 主动出站：让 bot 主动开口（日报 / 告警 / 自动化结果） */
 export async function sendViaChannel(
   params: { botId: string; accountId?: string; receiveId: string; text: string },

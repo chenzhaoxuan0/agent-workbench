@@ -10,7 +10,6 @@ import {
   ImagePlus,
   MessageCirclePlus,
   Plus,
-  Radio,
   Search,
   Settings,
   SlidersHorizontal,
@@ -31,6 +30,7 @@ import {
 import { UNAVAILABLE_UNIT } from "../adapters/mock/fixtures.ts";
 import { AddBotDialog, type AddBotDraft } from "./AddBotDialog.tsx";
 import { ImportBotDialog } from "./ImportBotDialog.tsx";
+import { ChannelMark, channelIdentityLabel } from "./ChannelMark.tsx";
 import { cn } from "./cn.ts";
 
 /**
@@ -541,9 +541,20 @@ function UnitRow({
   // ZCode: unavailableLocalDirectory —— 路径不可用要显式说出来，不能当成正常单元
   const unavailable = unit.tags.includes("目录不可用");
   // 只数启用的渠道：声明了但停用的不算「找得到我」
+  // 飞书要**逐账号**画标记——一个 bot 可以挂几个飞书机器人，合并成一个图标
+  // 就又回到「看不出是哪个」了
   const enabledChannels = (unit.channels ?? [])
     .filter((c) => c.enabled === true)
-    .map((c) => (c.kind === "feishu" ? "飞书" : c.kind === "telegram" ? "Telegram" : c.kind === "webhook" ? "Webhook" : c.kind));
+    .map((c) => ({
+      kind: c.kind,
+      label: c.kind === "feishu" ? "飞书" : c.kind === "telegram" ? "Telegram" : c.kind === "webhook" ? "Webhook" : c.kind,
+      profiles:
+        c.kind === "feishu"
+          ? (c.accounts ?? []).map((a) => (a.profile ?? "").trim()).filter((p) => p !== "")
+          : ([] as readonly string[]),
+    }));
+  // 「哪个 bot 接的是哪个飞书机器人」——头像 + 应用名。这是这枚标记存在的全部理由
+  const identities = useWorkbench((s) => s.channelIdentity);
   const isBot = unit.kind === "bot";
 
   // 副标题 = 在行任务（本单元最新会话标题）优先，其次身份角色（GrokBot 的行结构）
@@ -602,17 +613,36 @@ function UnitRow({
         <span className="flex min-w-0 flex-1 flex-col gap-0.5 pt-0.5">
           <span className="flex items-baseline gap-2">
             <span className="truncate text-body font-medium text-ink">{unit.name}</span>
-            {/* 渠道徽标：「这个 bot 找得到我」这件事一眼可见（docs/09 §五）。
-                极小、灰、不抢色——它是事实提示不是状态灯。放名字后面而不是角标，
+            {/* 渠道徽标：「这个 bot 找得到我，而且找得到它的是哪个机器人」。
+                飞书画真实头像（认脸），其他渠道画通用图标（极小、灰、不抢色——
+                它是事实提示不是状态灯）。放名字后面而不是角标，
                 因为角标已经给了设置入口。 */}
             {enabledChannels.length > 0 && (
               <span
                 className="flex shrink-0 items-center gap-0.5 text-[10px] text-ash"
-                title={`已接渠道：${enabledChannels.join("、")}`}
+                title={enabledChannels
+                  .map((c) => {
+                    if (c.profiles.length === 0) return `已接渠道：${c.label}`;
+                    return c.profiles
+                      .map((p) => channelIdentityLabel(c.label, identities[p], p))
+                      .join("；");
+                  })
+                  .join("；")}
               >
-                {enabledChannels.map((k) => (
-                  <Radio key={k} size={9} />
-                ))}
+                {enabledChannels.map((c, ci) =>
+                  c.profiles.length === 0 ? (
+                    <ChannelMark key={`${c.kind}-${ci}`} kind={c.kind} label={c.label} />
+                  ) : (
+                    c.profiles.map((p, pi) => (
+                      <ChannelMark
+                        key={`${c.kind}-${ci}-${pi}`}
+                        kind={c.kind}
+                        identity={identities[p]}
+                        label={channelIdentityLabel(c.label, identities[p], p)}
+                      />
+                    ))
+                  ),
+                )}
               </span>
             )}
             {latest && (
