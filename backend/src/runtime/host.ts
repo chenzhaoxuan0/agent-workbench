@@ -104,6 +104,14 @@ export interface StartSessionInput {
   readonly reasoningLevel?: string;
   /** 这个会话从哪来（docs/09 §六.2 的来源徽标）。缺省 = 工作台 */
   readonly source?: SessionSource;
+  /**
+   * 会话登记就绪、**首轮 prompt 还没发出去**的那一刻回调。
+   *
+   * 存在的唯一理由：飞书/telegram 的流式输出要在 `message.delta` 到达时就刷 IM。
+   * 订阅放在 `startSession` **返回之后**会整段丢失第一个 delta —— 实测就是
+   * 订阅到 0 个事件（mockperm 几十毫秒就答完了）。
+   */
+  readonly onSessionReady?: (sessionId: SessionId) => void;
 }
 
 /**
@@ -471,6 +479,16 @@ export class RuntimeHost {
 
     // 首轮 prompt：受理即返回，turn 进展全走事件流
     //（mockperm 这类会在权限处挂起整轮，await 会把 session.start 卡死——冒烟实证）
+    //
+    // ⚠️ 顺序要紧：**先给 onSessionReady，再 send**。订阅方（飞书流式）必须赶在
+    // 第一个 message.delta 之前就位 —— 实测差几十毫秒就会整段丢失。
+    if (input.onSessionReady !== undefined) {
+      try {
+        input.onSessionReady(h.id);
+      } catch (err: unknown) {
+        log.warn("onSessionReady hook threw (turn continues)", { sessionId: h.id, error: err instanceof Error ? err.message : String(err) });
+      }
+    }
     h.turnBusy = true;
     void impl.send(effectivePrompt).catch((err: unknown) => {
       log.error("first turn failed", { sessionId: h.id, error: err instanceof Error ? err.message : String(err) });
@@ -691,11 +709,48 @@ export class RuntimeHost {
     const seq = ++h.seq;
     h.events.push({ seq, event });
     if (h.events.length > 500) h.events.splice(0, h.events.length - 500);
+    // 推送订阅者（飞书流式用它把增量文本刷到 IM）。**回调一律包 try**：
+    // 订阅方是自己的代码，它炸了不能反过来掀翻这一轮派发。
+    for (const w of [...(this.eventSubs.get(h.id) ?? [])]) {
+      if (w.type !== "" && w.type !== event.type) continue;
+      try {
+        w.cb(event, seq);
+      } catch (err: unknown) {
+        log.warn("session event subscriber threw", { sessionId: h.id, type: event.type, error: err instanceof Error ? err.message : String(err) });
+      }
+    }
     void this.trace
       .append({ seq, at: Date.now(), sessionId: h.id, unitId: h.unitId, runtimeId: h.runtimeId, event })
       .catch(() => {});
     this.broadcast(event, seq);
   }
+
+  /**
+   * 订阅某会话的事件流。返回退订函数。
+   *
+   * 用途：飞书/telegram 的**流式输出** —— 它们要在 `message.delta` 到达时
+   * 就把文本刷到 IM，而不是等整轮跑完只发一条。
+   *
+   * 为什么不复用 `waitForSessionEvent`：那是**一次性**的（等到就 resolve），
+   * 拿不到「第二个 delta」。也不复用 `sessionEvents`：那是读环形缓冲，**轮询**，
+   * 而 350ms 一次的 IM 往返经不起轮询延迟。
+   *
+   * 纯新增，不改任何既有行为。
+   */
+  onSessionEvent(sessionId: SessionId, type: string, cb: (event: RuntimeEvent, seq: number) => void): () => void {
+    const list = this.eventSubs.get(sessionId) ?? [];
+    const w = { type, cb };
+    list.push(w);
+    this.eventSubs.set(sessionId, list);
+    return () => {
+      const cur = this.eventSubs.get(sessionId);
+      if (cur === undefined) return;
+      const i = cur.indexOf(w);
+      if (i >= 0) cur.splice(i, 1);
+    };
+  }
+
+  private readonly eventSubs = new Map<SessionId, Array<{ type: string; cb: (event: RuntimeEvent, seq: number) => void }>>();
 
   /** 依次发出排队消息；当前轮仍忙或会话死挂则停手（下一轮落定会再触发） */
   private flushPendingSends(h: HostSession): void {

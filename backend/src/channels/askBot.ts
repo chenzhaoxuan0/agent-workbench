@@ -7,7 +7,7 @@
 
 import type { BotDefinition } from "../bots/registry.ts";
 import type { RuntimeHost } from "../runtime/host.ts";
-import { asModelId, asSessionId, asUnitId, type SessionSource } from "../../../prototype/src/core/units.ts";
+import { asModelId, asSessionId, asUnitId, type SessionId, type SessionSource } from "../../../prototype/src/core/units.ts";
 import type { ModelId } from "../contract.ts";
 import { log } from "../log.ts";
 
@@ -33,7 +33,19 @@ export async function runBotTurn(
   host: RuntimeHost,
   bot: BotDefinition,
   text: string,
-  opts: { mode?: "plan" | "build" | "edit" | "yolo"; waitMs?: number; source?: SessionSource } = {},
+  opts: {
+    mode?: "plan" | "build" | "edit" | "yolo";
+    waitMs?: number;
+    source?: SessionSource;
+    /**
+     * 轮次一开始（sessionId 一拿到）就回调 —— **不等这一轮跑完**。
+     *
+     * 存在的理由：飞书流式要在 `message.delta` 到达时就刷 IM，而第一个 delta
+     * 在 `startSession` 返回后几毫秒就来。只在函数末尾拿 sessionId 再订阅，
+     * 会漏掉开头那一段。
+     */
+    onTurnStart?: (sessionId: SessionId) => void;
+  } = {},
 ): Promise<BotTurnResult> {
   const unitId = typeof bot.id === "string" ? bot.id : "";
   const rootPath = typeof bot.rootPath === "string" ? bot.rootPath : "";
@@ -53,6 +65,12 @@ export async function runBotTurn(
   }
   if (sessionId !== null) {
     try {
+      // 续聊路径：钩子必须赶在 sendMessage **之前**（跟新会话同一个道理）
+      try {
+        opts.onTurnStart?.(asSessionId(sessionId));
+      } catch (err: unknown) {
+        log.warn("onTurnStart hook threw (turn continues)", { unitId, error: err instanceof Error ? err.message : String(err) });
+      }
       host.sendMessage(asSessionId(sessionId), text);
     } catch {
       sessionId = null;
@@ -70,6 +88,8 @@ export async function runBotTurn(
       mode: opts.mode ?? "yolo", // faceless 渠道无审批面
       // 来源标记：时间轴上据此显示「来自飞书 / 来自 webhook」徽标（docs/09 §六.2）
       source: opts.source ?? "workbench",
+      // 新会话路径：同样在 send 之前交出去（startSession 内部保证顺序）
+      onSessionReady: opts.onTurnStart === undefined ? undefined : (sid) => opts.onTurnStart?.(sid),
     });
     sessionId = s.id;
   }

@@ -261,6 +261,52 @@ async function main(): Promise<void> {
   check("**报错里列出本机已注册的清单**", (badEx as Error)?.message.includes("本机已注册"), (badEx as Error)?.message);
   check("报错还点破前缀问题", (badEx as Error)?.message.includes("前缀只在界面侧有效"), (badEx as Error)?.message);
 
+  // ---- 事件订阅（飞书流式输出靠它）----
+  console.log("\n[订阅] onSessionEvent —— 飞书流式的地基");
+
+  const s7 = await on.host.startSession({
+    runtimeId: "mockperm",
+    unitId: asUnitId("u7"),
+    unitName: "U7",
+    rootPath: projA,
+    prompt: "订阅测试",
+    model: asModelId("mock-1"),
+    mode: "yolo",
+  });
+  // 注意：mockperm **不发 message.delta**（它只发 message.completed），
+  // 而 7 个真实适配器都发（claude/codex/dsh/mcode/opencode/pi/zcode）。
+  // 所以这里测的是**订阅机制本身**，用 mockperm 确实会发的事件类型。
+  const seen: string[] = [];
+  const offSub = on.host.onSessionEvent(s7.id as never, "message.completed", (ev) => {
+    seen.push((ev as { text?: string }).text ?? "");
+  });
+  const before = seen.length;
+  await on.host.sendMessage(s7.id as never, "再来一轮");
+  await sleep(250);
+  check("**订阅能收到事件**", seen.length > before, { before, after: seen.length });
+  offSub();
+  const after = seen.length;
+  await on.host.sendMessage(s7.id as never, "第三轮");
+  await sleep(250);
+  check("**退订后不再收到**", seen.length === after, { after, now: seen.length });
+
+  // 订阅方自己炸了，不能掀翻这一轮
+  const s8 = await on.host.startSession({
+    runtimeId: "mockperm",
+    unitId: asUnitId("u8"),
+    unitName: "U8",
+    rootPath: projA,
+    prompt: "订阅方抛异常",
+    model: asModelId("mock-1"),
+    mode: "yolo",
+    // **钩子在首轮 send 之前触发** —— 早放几毫秒会整段丢掉第一个 delta
+    onSessionReady: (sid) => { on.host.onSessionEvent(sid, "message.completed", () => { throw new Error("subscriber exploded"); }); },
+  });
+  await sleep(250);
+  const boomAsst = on.host.sessionMessages(s8.id as never).find((m) => m.role === "assistant");
+  check("**订阅方抛异常不影响这一轮派发**", (boomAsst?.text ?? "").endsWith("订阅方抛异常"), boomAsst?.text?.slice(-40));
+  check("onSessionReady 在首轮完成前就拿到了 sessionId", s8.id !== "");
+
   console.log(`\n${failures === 0 ? "全部通过" : `${failures} 项失败`}\n`);
 }
 

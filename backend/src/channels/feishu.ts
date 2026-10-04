@@ -31,6 +31,7 @@
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import type { BotRegistry, BotDefinition } from "../bots/registry.ts";
+import type { SessionId } from "../../../prototype/src/core/units.ts";
 import type { RuntimeHost } from "../runtime/host.ts";
 import { resolveCommand } from "../runtime/exec.ts";
 import { runBotTurn } from "./askBot.ts";
@@ -47,9 +48,25 @@ const CLI = "lark-cli";
  * 而失败日志打在 debug 上、daemon 跑 info，什么都看不见。教训：表情值不猜，
  * 失败必须 warn。
  */
-type AckEmoji = "SMILE" | "DONE";
-const ACK_RECEIVED: AckEmoji = "SMILE"; // 😊 收到了，在想了
-const ACK_DONE: AckEmoji = "DONE"; // ✅ 答完了
+type AckEmoji = string;
+const ACK_RECEIVED_DEFAULT: AckEmoji = "SMILE"; // 😊 收到了，在想了
+const ACK_DONE_DEFAULT: AckEmoji = "DONE"; // ✅ 答完了
+
+/**
+ * 流式刷新的节流间隔。
+ *
+ * OpenClaw 用 160ms —— 它是 SDK 进程内调用。**这里是 1500ms**，因为每一次
+ * 刷新都要 spawn 一个 lark-cli 进程（实测单次 ~350ms），而且飞书对
+ * `messages-edit` 本身也有限流。节流太密只会把自己打成限流。
+ * 正确性由**收尾必做一次最终编辑**保证，节流只影响观感。
+ */
+const STREAM_THROTTLE_MS = 1_500;
+
+/** 占位文案：还没等到第一个 delta 时先发出去，让用户知道「开始处理了」 */
+const STREAM_PLACEHOLDER = "_正在思考…_";
+
+/** 飞书卡片/正文长度上限附近的保守切块（分片编辑，避免单条超限被拒） */
+const STREAM_MAX_CHARS = 2_000;
 /** 进程重启退避：崩了就退避重起，但不无限快 */
 const RESTART_DELAY_MS = 3_000;
 
@@ -60,12 +77,148 @@ interface LarkAccountSpec {
   readonly profile: string;
   readonly mentionOnly: boolean;
   readonly allowFrom: readonly string[];
+  /** 收到消息时的表情（用户可改；空串 = 不加） */
+  readonly ackEmoji: string;
+  /** 答完时的表情（用户可改；空串 = 不加） */
+  readonly doneEmoji: string;
+  /** 是否把生成过程流式刷到 IM（默认关：IM 里来回编辑比等结果更吵） */
+  readonly streaming: boolean;
+}
+
+/**
+ * 飞书流式输出（对齐 OpenClaw 的 `FeishuStreamingSession`）。
+ *
+ * ## 做法
+ *
+ * OpenClaw 是「发一张卡片 → 边流边编辑」，节流 160ms。它是 SDK 进程内调用。
+ * 这里每次刷新都要 spawn 一个 lark-cli 进程（实测 ~350ms），所以改成
+ * 「发一条占位消息 → 边流边编辑 → 收尾必做一次最终编辑」，节流 1500ms。
+ *
+ * **正确性靠最终编辑保证，节流只影响观感** —— 即使中途所有刷新都失败，
+ * `finish()` 也会把完整答案发出去。
+ *
+ * ## 为什么需要 host 的订阅 API
+ *
+ * 第一个 `message.delta` 在 `startSession` 返回后几毫秒就到。环形缓冲
+ * （`sessionEvents`）是轮询来的，350ms 的 IM 往返经不起那个延迟；
+ * `waitForSessionEvent` 是一次性的，拿不到第二个 delta。所以 host 上
+ * 新增了推送订阅 `onSessionEvent`（纯新增，不改既有行为）。
+ */
+class FeishuStreamer {
+  #unsubscribe: (() => void) | null = null;
+  #timer: ReturnType<typeof setTimeout> | null = null;
+  #text = "";
+  #lastSent = "";
+  /** bot 发出去那条占位消息的 id —— 编辑它，而不是再发一条 */
+  #msgId: string | null = null;
+  #busy = false;
+  #done = false;
+
+  constructor(
+    private readonly spec: LarkAccountSpec,
+    private readonly host: RuntimeHost,
+    private readonly replyTo: string,
+  ) {}
+
+  attach(sessionId: SessionId): void {
+    if (this.#unsubscribe !== null) return;
+    // 先占位：不等第一个 delta，先告诉用户「开始了」
+    void this.#send(STREAM_PLACEHOLDER);
+    this.#unsubscribe = this.host.onSessionEvent(sessionId, "message.delta", (ev) => {
+      const d = ev as { role?: string; text?: string };
+      if (d.role !== "assistant" || typeof d.text !== "string" || d.text === "") return;
+      this.#text += d.text;
+      this.#schedule();
+    });
+  }
+
+  /** 节流：到点才刷一次。中途来的 delta 只累积文本，不起新定时器。 */
+  #schedule(): void {
+    if (this.#done || this.#busy) return;
+    if (this.#timer !== null) return;
+    this.#timer = setTimeout(() => {
+      this.#timer = null;
+      void this.#flush();
+    }, STREAM_THROTTLE_MS);
+    this.#timer.unref?.();
+  }
+
+  async #flush(): Promise<void> {
+    if (this.#busy || this.#text === this.#lastSent) return;
+    this.#busy = true;
+    try {
+      await this.#send(this.#text.slice(0, STREAM_MAX_CHARS));
+      this.#lastSent = this.#text;
+    } finally {
+      this.#busy = false;
+    }
+  }
+
+  /** 收尾：停订约、清定时器、把最终答案落上去。 */
+  async finish(finalText: string): Promise<void> {
+    this.#done = true;
+    if (this.#timer !== null) {
+      clearTimeout(this.#timer);
+      this.#timer = null;
+    }
+    this.#unsubscribe?.();
+    this.#unsubscribe = null;
+    // 优先用会话累出来的文本（比事件流更全），空则用最终回复
+    const body = (this.#text.trim() === "" ? finalText : this.#text).trim();
+    await this.#send(body === "" ? "(空回复)" : body.slice(0, STREAM_MAX_CHARS));
+  }
+
+  async #send(text: string): Promise<void> {
+    try {
+      if (this.#msgId === null) {
+        const r = await runCli([
+          "--profile", this.spec.profile,
+          "im", "+messages-reply",
+          "--message-id", this.replyTo,
+          "--text", text,
+          "--idempotency-key", `stw-${this.replyTo}-${this.#msgId === null ? "first" : "x"}`,
+        ], 20_000);
+        if (r.code !== 0) {
+          log.warn("feishu: 流式首条发送失败（退回普通回复）", { code: r.code, stderr: r.stderr.slice(0, 200) });
+          return;
+        }
+        this.#msgId = this.#sentMessageId(r.stdout) ?? " keep";
+      } else {
+        await runCli([
+          "--profile", this.spec.profile,
+          "im", "+messages-edit",
+          "--message-id", this.#msgId,
+          "--text", text,
+        ], 20_000);
+      }
+    } catch (err: unknown) {
+      log.warn("feishu: 流式刷新异常（不影响最终回复）", { error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  /** 从发送响应里取自己发出去那条消息的 id（拿不到就只能首条后不再编辑） */
+  #sentMessageId(stdout: string): string | null {
+    try {
+      const body = stdout.slice(stdout.indexOf("{"));
+      const o = JSON.parse(body) as { data?: { message_id?: unknown }; message_id?: unknown };
+      const id = o.data?.message_id ?? o.message_id;
+      return typeof id === "string" && id !== "" ? id : null;
+    } catch {
+      return null;
+    }
+  }
 }
 
 type AnyRecord = Record<string, unknown>;
 
 function str(v: unknown): string {
   return typeof v === "string" ? v : "";
+}
+/** 表情值：接受大写枚举形状；用户显式给空串 = 不加。其它一律用 dflt。 */
+function emojiOr(v: unknown, dflt: string): string {
+  if (v === "") return "";
+  const s = str(v).trim().toUpperCase();
+  return /^[A-Z_]{1,24}$/.test(s) ? s : dflt;
 }
 function bool(v: unknown, dflt: boolean): boolean {
   return typeof v === "boolean" ? v : dflt;
@@ -115,6 +268,12 @@ function larkAccounts(bot: BotDefinition): LarkAccountSpec[] {
         profile,
         mentionOnly: bool(acc["mentionOnly"], true),
         allowFrom: strList(acc["allowFrom"]),
+        // 表情值用户可改，但**只接受大写字母/下划线**：这是飞书枚举的形状，
+        // 顺手挡掉「用户填了个 emoji 字符」这类必然失败的输入。
+        // 空串 = 不加这个表情（有人就不想要表情）。
+        ackEmoji: emojiOr(acc["ackEmoji"], ACK_RECEIVED_DEFAULT),
+        doneEmoji: emojiOr(acc["doneEmoji"], ACK_DONE_DEFAULT),
+        streaming: bool(acc["streaming"], false),
       });
     }
   }
@@ -703,7 +862,7 @@ class LarkCliConnection {
     // 已经不像「及时」了。
     //
     // 全程 best-effort：表情挂了绝不能影响正常回复（runBotTurn / #reply）。
-    void this.#ack(messageId, ACK_RECEIVED).catch(() => {});
+    void this.#ack(messageId, this.#spec.ackEmoji).catch(() => {});
 
     this.#enqueue({ messageId, chatId, text: stripMentions(content, mentions) });
   }
@@ -754,15 +913,25 @@ class LarkCliConnection {
           return;
         }
         try {
-          const { reply } = await runBotTurn(this.#host, bot, msg.text, { source: "feishu" });
-          await this.#reply(msg.messageId, reply);
+          if (this.#spec.streaming) {
+            // 流式：先占位 + 订阅增量，轮次跑完再落最终结果
+            const stream = new FeishuStreamer(this.#spec, this.#host, msg.messageId);
+            const { reply } = await runBotTurn(this.#host, bot, msg.text, {
+              source: "feishu",
+              onTurnStart: (sid) => { stream.attach(sid); },
+            });
+            await stream.finish(reply);
+          } else {
+            const { reply } = await runBotTurn(this.#host, bot, msg.text, { source: "feishu" });
+            await this.#reply(msg.messageId, reply);
+          }
         } catch (err: unknown) {
           const m = err instanceof Error ? err.message : String(err);
           log.warn("feishu: 轮次失败", { bot: this.#spec.botId, error: m });
           await this.#reply(msg.messageId, `出错了：${m}`).catch(() => {});
         } finally {
-          // 答完了把 😊 换成 ✅（best-effort，不影响任何东西）
-          void this.#ack(msg.messageId, ACK_DONE).catch(() => {});
+          // 答完了加第二个表情（best-effort，不影响任何东西）
+          void this.#ack(msg.messageId, this.#spec.doneEmoji).catch(() => {});
         }
       });
     this.#chains.set(msg.chatId, next);

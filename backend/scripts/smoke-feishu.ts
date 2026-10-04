@@ -122,6 +122,9 @@ const d = await diagnoseLarkAccount({
   profile: "definitely-not-a-real-profile",
   mentionOnly: true,
   allowFrom: [],
+  ackEmoji: "SMILE",
+  doneEmoji: "DONE",
+  streaming: false,
 });
 ok(typeof d.ok === "boolean", "返回 ok 布尔");
 ok(Array.isArray(d.checks) && d.checks.length > 0, "逐项检查");
