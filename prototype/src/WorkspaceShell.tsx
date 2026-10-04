@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Check, ChevronDown, Ellipsis } from "lucide-react";
 import { Group, Panel, Separator, type PanelImperativeHandle } from "react-resizable-panels";
 import { Composer } from "./ui/Composer.tsx";
+import { MemoryPanel } from "./ui/MemoryPanel.tsx";
 import { AutomationsPage } from "./ui/AutomationsPage.tsx";
 import { ImageStudioPage } from "./ui/ImageStudioPage.tsx";
 import { CommandCenter } from "./ui/CommandCenter.tsx";
@@ -198,6 +199,8 @@ function ConversationSlot() {
               {/* 权限卡片 —— 对齐 ZCode 的 V4InteractionDialogs：作为 composer 上方的
                   bottom dock 卡片打断，而不是居中模态。终端 / Ops 是非会话视图，不打断 */}
               {(conversationView === "chat" || conversationView === "trajectory") && <PermissionDialog />}
+              {/* 记忆三柱（docs/10 §五）：技能 / 记忆 / 会话搜索，压在 composer 正上方 */}
+              {(conversationView === "chat" || conversationView === "trajectory") && <MemoryPanel />}
               {(conversationView === "chat" || conversationView === "trajectory") && <Composer />}
             </main>
           </Panel>

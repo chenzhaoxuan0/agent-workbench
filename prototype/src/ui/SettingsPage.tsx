@@ -1,13 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import {
   AlarmClock,
-  Check,
-  ChevronDown,
+  ChevronLeft,
   Anchor,
   Brain,
   ChartBar,
-  ChevronLeft,
   History,
   ImagePlus,
   Keyboard,
@@ -18,8 +16,6 @@ import {
   Settings2,
   Shield,
   Wand,
-  Trash2,
-  X,
 } from "lucide-react";
 import {
   SETTINGS_GROUPS,
@@ -28,24 +24,10 @@ import {
   type SettingsSectionDef,
   type SettingsSectionId,
 } from "../store/useShell.ts";
-import { useWorkbench, visibleModelsFor, selectActiveUnit } from "../store/useWorkbench.ts";
-import {
-  useMemoryOrchestration,
-  type MemoryBackend,
-  type BackendType,
-} from "../store/useMemoryPrefs.ts";
-import { weknoraListKb, weknoraPing, weknoraSaveFact, weknoraSearch, type WeknoraConfig, type WeknoraKb } from "../core/weknora.ts";
-import {
-  dropLocalHandle,
-  indexLocalSource,
-  isIndexed,
-  loadLocalHandle,
-  pickLocalFolder,
-  requestPermission,
-  saveHandle,
-  searchAllLocal,
-  sourcePermission,
-} from "../core/localMemorySource.ts";
+import { useWorkbench, selectActiveUnit } from "../store/useWorkbench.ts";
+import type { WorkUnit } from "../core/units.ts";
+import { useMemorySettings } from "../store/useMemoryPrefs.ts";
+import { readProjectMemory, runDigestDryRun, type DigestResult } from "../store/useMemoryPanel.ts";
 import { ProviderInstancesPanel } from "./ProviderInstancesPanel.tsx";
 import { ProviderSettingsSection } from "./ProviderSettingsSection.tsx";
 import { ImageSettingsSection } from "./ImageSettingsSection.tsx";
@@ -118,10 +100,8 @@ export function SettingsPage() {
                     onClick={() => openSettings(it.id)}
                     aria-current={active}
                     className={cn(
-                      "flex w-full items-center gap-2 rounded-btn px-2 py-1.5 text-left text-body-sm",
-                      active
-                        ? "bg-teal-tint font-medium text-ink"
-                        : "text-graphite hover:bg-line-soft hover:text-ink",
+                      "flex w-full items-center gap-2 rounded-btn px-2.5 py-2 text-body-sm",
+                      active ? "bg-teal-tint font-medium text-ink" : "text-graphite hover:bg-line-soft hover:text-ink",
                     )}
                   >
                     <Icon size={12} className="shrink-0" />
@@ -222,12 +202,6 @@ function Toggle({ on, onChange }: { on: boolean; onChange?: (v: boolean) => void
   );
 }
 
-function Badge({ children }: { children: ReactNode }) {
-  return (
-    <span className="rounded-btn bg-line-soft px-2.5 py-1 text-caption text-graphite">{children}</span>
-  );
-}
-
 /* ------------------------------------------------------------- 分区内容 */
 
 function SectionBody({ section }: { section: SettingsSectionDef }) {
@@ -256,327 +230,141 @@ function SectionBody({ section }: { section: SettingsSectionDef }) {
   }
 }
 
-/** 记忆分区 —— 后端注册表 + 三层路由 + 门控整理（waku 三柱 / T3 实例逻辑） */
+/**
+ * 记忆分区 —— 项目记忆上限 + 逐 bot 跨项目检索授权 + 每日总结（docs/10 §七 WP-8）。
+ *
+ * 上一版这里是「8 种记忆后端注册表 + 三层路由 + 检索门控」，其中 5 种还标着 coming。
+ * **整套在新架构下作废**：记忆是项目文件夹里的普通 Markdown（`MEMORY.md` /
+ * `memory/daily/` / `skills/`），跨会话检索是现场扫 CLI 的源目录 ——
+ * 既没有「注册到后端」这回事，也不需要向量库和门控小模型。注册表与 coming 标记一并移除。
+ */
 function MemorySettingsSection() {
-  const prefs = useMemoryOrchestration((s) => s.prefs);
-  const addBackend = useMemoryOrchestration((s) => s.addBackend);
-  const updateBackend = useMemoryOrchestration((s) => s.updateBackend);
-  const removeBackend = useMemoryOrchestration((s) => s.removeBackend);
-  const toggleBackend = useMemoryOrchestration((s) => s.toggleBackend);
-  const setRoute = useMemoryOrchestration((s) => s.setRoute);
-  const setGate = useMemoryOrchestration((s) => s.setGate);
+  const prefs = useMemorySettings((s) => s.prefs);
+  const setPrefs = useMemorySettings((s) => s.setPrefs);
+  const units = useWorkbench((s) => s.units);
+  const updateUnit = useWorkbench((s) => s.updateUnit);
+  const activeRoot = useWorkbench(selectActiveUnit)?.rootPath ?? null;
 
-  const [addingType, setAddingType] = useState<BackendType | null>(null);
-  const [expanded, setExpanded] = useState<string | null>(null);
-  const [errors, setErrors] = useState<string[]>([]);
+  const [usage, setUsage] = useState<{ chars: number; limit: number; exists: boolean } | null>(null);
+  const [digest, setDigest] = useState<DigestResult | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
 
-  // weknora 创建草稿
-  const [wkBase, setWkBase] = useState("http://localhost:18080");
-  const [wkKey, setWkKey] = useState("");
-  const [wkKbId, setWkKbId] = useState("");
-  const [wkTesting, setWkTesting] = useState(false);
-  const [wkKbs, setWkKbs] = useState<WeknoraKb[]>([]);
-  const [wkStatus, setWkStatus] = useState<string | null>(null);
-
-  // local-folder 创建
-  const [lfBusy, setLfBusy] = useState(false);
-
-  const enabledBackends = useMemo(() => prefs.backends.filter((b) => b.enabled), [prefs.backends]);
-
-  // 门控模型选项：已启用执行器的可见模型聚合（跨执行器按模型 id 去重）
-  const runtimes = useWorkbench((s) => s.runtimes);
-  const runtimePrefs = useWorkbench((s) => s.runtimePrefs);
-  const gateModelOptions = useMemo(() => {
-    const out: { id: string; label: string }[] = [];
-    const seen = new Set<string>();
-    for (const r of runtimes) {
-      if (runtimePrefs[r.id]?.enabled === false) continue;
-      for (const m of visibleModelsFor(useWorkbench.getState(), r.id)) {
-        if (seen.has(m.id)) continue;
-        seen.add(m.id);
-        out.push({ id: m.id, label: `${m.displayName} · ${r.presentation.displayName}` });
-      }
+  // 当前项目的真实用量。**分母永远取后端给的 limit**（limits.ts 的 MEMORY_CHAR_LIMIT），
+  // 上面那个可编辑数字只是工作台侧的提醒阈值 —— 两者不是一回事，别混着显示
+  useEffect(() => {
+    let alive = true;
+    if (activeRoot === null) {
+      setUsage(null);
+      return;
     }
-    return out;
-  }, [runtimes, runtimePrefs]);
-
-  const backendTag: Record<BackendType, string> = {
-    sqlite: "SQLite",
-    weknora: "WeKnora",
-    supabase: "Supabase",
-    mem0: "Mem0",
-    zep: "Zep",
-    langmem: "LangMem",
-    notion: "Notion",
-    "local-folder": "本地文件夹",
-  };
-
-  const addTyped = (type: BackendType) => {
-    setAddingType(type);
-    if (type === "weknora") {
-      setWkBase("http://localhost:18080");
-      setWkKey("");
-      setWkKbId("");
-      setWkKbs([]);
-      setWkStatus(null);
-    }
-  };
-
-  const testWeknora = async () => {
-    setWkTesting(true);
-    try {
-      const list = await weknoraListKb({ baseUrl: wkBase, apiKey: wkKey });
-      setWkKbs(list);
-      setWkStatus(`连接成功 · ${list.length} 个知识库，已填入第一个`);
-      if (list[0]) setWkKbId(list[0].id);
-    } catch (e) {
-      setWkStatus(`连接失败：${e instanceof Error ? e.message : String(e)}`);
-    } finally {
-      setWkTesting(false);
-    }
-  };
-
-  const createBackend = async () => {
-    if (addingType === null) return;
-    const errs: string[] = [];
-    if (addingType === "weknora") {
-      if (!wkKbId.trim()) errs.push("先测试连接并选择知识库 id");
-      if (errs.length > 0) {
-        setErrors(errs);
-        return;
-      }
-      const id = addBackend({
-        type: "weknora",
-        name: `WeKnora · ${wkKbId}`,
-        enabled: true,
-        baseUrl: wkBase,
-        apiKey: wkKey,
-        kbId: wkKbId.trim(),
+    void readProjectMemory(activeRoot)
+      .then((f) => {
+        if (alive) setUsage({ chars: f.chars, limit: f.limit, exists: f.exists });
+      })
+      .catch(() => {
+        if (alive) setUsage(null);
       });
-      setRoute("semantic", [...prefs.routes.semantic, id]);
-      setAddingType(null);
-      return;
+    return () => {
+      alive = false;
+    };
+  }, [activeRoot]);
+
+  /**
+   * 跨项目检索开关落盘到 `<rootPath>/.agent-workbench/bot.json` 的 crossSearch 字段
+   * （后端 memory/steward.ts 的权限入口就在读它）。
+   *
+   * `WorkUnit` 没声明这个字段 —— `core/units.ts` 由后端共享（host.ts 从那里 import），
+   * 这次不动它；bot.list 会把 bot.json 的额外字段原样带回，bot.put 也会原样落盘。
+   */
+  const setCrossSearch = async (u: WorkUnit, on: boolean): Promise<void> => {
+    setErr(null);
+    const next: WorkUnit & { crossSearch: boolean } = { ...u, crossSearch: on };
+    try {
+      // 乐观锁用进页面时看到的盘上真值：别人改过就抛 conflict，不静默覆盖
+      await updateUnit(next, { ifRevision: u.revision, ifAgentsMdHash: u.agentsMdMeta?.hash ?? "" });
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
     }
-    if (addingType === "local-folder") {
-      setLfBusy(true);
-      try {
-        const picked = await pickLocalFolder();
-        if (picked) {
-          addBackend({
-            type: "local-folder",
-            name: `本地 · ${picked.name}`,
-            enabled: true,
-            sourceId: picked.id,
-          });
-          setAddingType(null);
-        }
-      } catch (e) {
-        setErrors([e instanceof Error ? e.message : String(e)]);
-      } finally {
-        setLfBusy(false);
-      }
-      return;
-    }
-    // sqlite 及云端类型：注册即可用（sqlite 内置；云端由真运行时接入）
-    const id = addBackend({
-      type: addingType,
-      name: backendTag[addingType],
-      enabled: true,
-    });
-    setAddingType(null);
   };
 
-  const routedChips = (layer: "semantic" | "episodic" | "procedural") => {
-    const labelMap = { semantic: "语义记忆", episodic: "情节记忆", procedural: "程序性记忆" };
-    const routed = prefs.routes[layer];
-    return (
-      <div className="flex flex-wrap items-center gap-1.5">
-        <span className="w-20 shrink-0 text-caption font-medium text-graphite">{labelMap[layer]}</span>
-        {enabledBackends.length === 0 ? (
-          <span className="text-caption text-ash">没有启用的后端</span>
-        ) : (
-          enabledBackends.map((b) => {
-            const on = routed.includes(b.id);
-            return (
-              <button
-                key={b.id}
-                onClick={() => setRoute(layer, on ? routed.filter((x) => x !== b.id) : [...routed, b.id])}
-                aria-pressed={on}
-                className={cn(
-                  "flex items-center gap-1 rounded-chip border px-2 py-0.5 text-caption",
-                  on
-                    ? "border-teal-edge bg-teal-tint font-medium text-ink"
-                    : "border-line text-graphite hover:bg-line-soft hover:text-ink",
-                )}
-              >
-                {on && <Check size={10} className="text-teal" />}
-                {b.name}
-              </button>
-            );
-          })
-        )}
-      </div>
-    );
+  const runDigest = async (): Promise<void> => {
+    setBusy(true);
+    setErr(null);
+    try {
+      setDigest(await runDigestDryRun());
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
   };
+
+  const usagePct = usage !== null && usage.limit > 0 ? Math.round((usage.chars / usage.limit) * 100) : null;
 
   return (
     <div className="space-y-6">
       <p className="-mt-2 text-body-sm leading-relaxed text-graphite">
-        三层记忆（语义 / 情节 / 程序性）各自路由到一组启用的后端：检索合并全部后端的并集，
-        写入广播到每一个——分开用有分开的用法，合起来有合起来的用法。
-        每 bot 的路由覆盖在「添加 bot」时声明。
+        记忆就是项目文件夹里的普通 Markdown：<span className="font-mono text-ink">MEMORY.md</span> 恒注入，
+        <span className="font-mono text-ink">memory/daily/</span> 按天分片、不注入，
+        <span className="font-mono text-ink">skills/</span> 是程序性记忆。跨会话检索是第四件事，单独授权、默认关。
       </p>
 
-      {/* 后端注册表 */}
+      {/* 上限 */}
       <GroupCard>
-        <div className="flex items-center justify-between gap-2 border-b border-line-soft px-4 pb-2 pt-3">
-          <p className="text-caption font-medium text-graphite">后端注册表 · {prefs.backends.length}</p>
-          <div className="flex flex-wrap items-center gap-1">
-            {(["weknora", "local-folder", "sqlite", "supabase", "mem0", "zep", "langmem", "notion"] as const).map((t) => {
-              const coming = !["weknora", "local-folder", "sqlite"].includes(t);
-              return (
-                <button
-                  key={t}
-                  onClick={() => addTyped(t)}
-                  disabled={coming}
-                  title={coming ? "真运行时接入后开放" : undefined}
-                  className={cn(
-                    "rounded-btn border px-1.5 py-0.5 text-caption",
-                    coming
-                      ? "cursor-not-allowed border-line text-ash opacity-50"
-                      : "border-line text-graphite hover:bg-line-soft hover:text-ink",
-                  )}
-                >
-                  + {backendTag[t]}
-                </button>
-              );
-            })}
-          </div>
-        </div>
+        <SettingsRow
+          label="项目记忆上限"
+          description="MEMORY.md 的字符上限。参照 hermes（2200 字符 ≈ 800 tokens）—— 限额的意义不是省 token，而是「满了写不进去」逼着 agent 先整合"
+          control={
+            <Stepper
+              value={prefs.memoryCharLimit}
+              min={1000}
+              max={8000}
+              step={100}
+              onChange={(v) => setPrefs({ memoryCharLimit: v })}
+            />
+          }
+          detail={
+            usage === null ? null : (
+              <p className="text-caption leading-relaxed text-ash">
+                当前项目实际：
+                <span className="tnum text-graphite">
+                  {usage.chars.toLocaleString("zh-CN")}/{usage.limit.toLocaleString("zh-CN")}
+                </span>{" "}
+                字符{usagePct === null ? "" : `（${usagePct}%）`}
+                {usage.exists ? "" : " · MEMORY.md 还不存在，派发时自动创建"}。
+                <span className="text-graphite">
+                  分母由后端 limits.ts 的 MEMORY_CHAR_LIMIT 决定（编译期常量 2200）
+                </span>
+                —— 改上面的数字只改工作台侧的「先整合」提醒阈值，不改后端的拒绝阈值。
+              </p>
+            )
+          }
+        />
+      </GroupCard>
 
+      {/* 跨项目检索：逐 bot 授权 */}
+      <GroupCard>
+        <div className="px-4 pb-1 pt-3">
+          <p className="text-caption font-medium text-graphite">跨项目检索</p>
+          <p className="mt-0.5 text-caption leading-relaxed text-ash">
+            默认全关。全局记忆曾经让 A 项目里冒出 B 项目的记忆，直接摧毁对 agent 的信任。
+            铁律：搜到 ≠ 注入 —— 检索结果只出现在它主动查的那一轮，永远不会进项目的 prompt。
+          </p>
+        </div>
         <ul className="divide-y divide-line-soft">
-          {prefs.backends.map((b) => {
-            const isOpen = expanded === b.id;
+          {units.length === 0 && <li className="px-4 py-2.5 text-caption text-ash">没有已注册的 bot。</li>}
+          {units.map((u) => {
+            const a = u as WorkUnit & { crossSearch?: boolean; role?: string };
+            const steward = a.role === "steward";
             return (
-              <li key={b.id}>
-                <div className="flex items-center gap-2.5 px-4 py-2.5">
-                  <span className="shrink-0 rounded-chip bg-line-soft px-1.5 py-0.5 text-caption text-graphite">
-                    {backendTag[b.type]}
-                  </span>
-                  <button
-                    onClick={() => setExpanded(isOpen ? null : b.id)}
-                    className="min-w-0 flex-1 truncate text-left text-body-sm text-ink hover:text-teal"
-                    aria-expanded={isOpen}
-                  >
-                    {b.name}
-                  </button>
-                  <Toggle on={b.enabled} onChange={(v) => toggleBackend(b.id, v)} />
-                  <button
-                    onClick={() => removeBackend(b.id)}
-                    aria-label={`移除 ${b.name}`}
-                    className="shrink-0 rounded p-0.5 text-ash hover:bg-line hover:text-loss"
-                  >
-                    <X size={11} />
-                  </button>
-                </div>
-                {isOpen && (
-                  <div className="border-t border-line-soft bg-rail px-4 py-3">
-                    {/* 名称：所有类型都可改 */}
-                    <div className="mb-2.5 grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] items-center gap-3">
-                      <span className="text-caption font-medium text-graphite">名称</span>
-                      <input
-                        value={b.name}
-                        onChange={(e) => updateBackend(b.id, { name: e.target.value })}
-                        className="w-full rounded-input border border-transparent bg-canvas px-2.5 py-1.5 text-body-sm text-ink outline-none focus:border-teal"
-                      />
-                    </div>
-                    {b.type === "weknora" && (
-                      <div className="space-y-2">
-                        <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] items-center gap-3">
-                          <span className="text-caption font-medium text-graphite">API 地址</span>
-                          <input
-                            value={b.baseUrl ?? ""}
-                            onChange={(e) => updateBackend(b.id, { baseUrl: e.target.value })}
-                            spellCheck={false}
-                            className="w-full rounded-input border border-transparent bg-canvas px-2.5 py-1.5 font-mono text-caption text-ink outline-none focus:border-teal"
-                          />
-                        </div>
-                        <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] items-center gap-3">
-                          <span className="text-caption font-medium text-graphite">API Key (X-API-Key)</span>
-                          <input
-                            type="password"
-                            value={b.apiKey ?? ""}
-                            onChange={(e) => updateBackend(b.id, { apiKey: e.target.value })}
-                            className="w-full rounded-input border border-transparent bg-canvas px-2.5 py-1.5 font-mono text-caption text-ink outline-none focus:border-teal"
-                          />
-                        </div>
-                        <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] items-center gap-3">
-                          <span className="text-caption font-medium text-graphite">知识库 ID</span>
-                          <input
-                            value={b.kbId ?? ""}
-                            onChange={(e) => updateBackend(b.id, { kbId: e.target.value })}
-                            spellCheck={false}
-                            className="w-full rounded-input border border-transparent bg-canvas px-2.5 py-1.5 font-mono text-caption text-ink outline-none focus:border-teal"
-                          />
-                        </div>
-                        <p className="text-caption text-ash">知识库列表可在「测试连接」中拉取后直接填写 id。</p>
-                      </div>
-                    )}
-                    {b.type === "local-folder" && (
-                      <div className="mt-1 flex items-center gap-2">
-                        <span className="text-caption text-ash">
-                          当前文件夹句柄已保存；换文件夹 = 重新授权新目录（原索引作废重建）。
-                        </span>
-                        <button
-                          onClick={async () => {
-                            try {
-                              const picked = await pickLocalFolder();
-                              if (!picked) return;
-                              await saveHandle(`be-${b.id}`, picked.handle);
-                              updateBackend(b.id, { sourceId: picked.id });
-                            } catch (e) {
-                              setErrors([e instanceof Error ? e.message : String(e)]);
-                            }
-                          }}
-                          className="shrink-0 rounded-btn border border-line px-2 py-1 text-caption text-graphite hover:bg-line-soft hover:text-ink"
-                        >
-                          更换文件夹
-                        </button>
-                      </div>
-                    )}
-                    {b.type === "sqlite" && (
-                      <div className="space-y-2">
-                        <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] items-center gap-3">
-                          <span className="text-caption font-medium text-graphite">数据库文件路径</span>
-                          <div className="flex items-center gap-1.5">
-                            <input
-                              value={b.dbPath ?? ".waku/state.db"}
-                              onChange={(e) => updateBackend(b.id, { dbPath: e.target.value })}
-                              placeholder=".waku/state.db"
-                              spellCheck={false}
-                              className="min-w-0 flex-1 rounded-input border border-transparent bg-canvas px-2.5 py-1.5 font-mono text-caption text-ink outline-none placeholder:text-ash focus:border-teal"
-                            />
-                            {b.dbPath && b.dbPath !== ".waku/state.db" && (
-                              <button
-                                onClick={() => updateBackend(b.id, { dbPath: undefined })}
-                                title="恢复默认 .waku/state.db"
-                                className="shrink-0 rounded-btn border border-line px-1.5 py-1 text-caption text-ash hover:bg-line-soft hover:text-ink"
-                              >
-                                默认
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                        <p className="text-caption leading-relaxed text-ash">
-                          语义 / 情节记忆的落盘文件（单文件 SQLite，含 facts / episodes / chat_log 表）。
-                          相对路径基于工作目录；真运行时接入后自动创建并迁移。
-                        </p>
-                      </div>
-                    )}
-                    {!["weknora", "local-folder", "sqlite"].includes(b.type) && (
-                      <p className="text-caption text-ash">该后端类型由真运行时提供连接配置。</p>
-                    )}
-                  </div>
+              <li key={u.id} className="flex items-center gap-2.5 px-4 py-2.5">
+                <span className="min-w-0 flex-1 truncate text-body-sm text-ink">{u.name}</span>
+                {steward ? (
+                  // 管家是干这个的，权限写死在后端（stewardDefinition.crossSearch），不给关
+                  <span className="shrink-0 text-caption text-ash">管家 · 常开</span>
+                ) : (
+                  <Toggle on={a.crossSearch === true} onChange={(v) => void setCrossSearch(u, v)} />
                 )}
               </li>
             );
@@ -584,310 +372,52 @@ function MemorySettingsSection() {
         </ul>
       </GroupCard>
 
-      {/* weknora 创建卡 */}
-      {addingType === "weknora" && (
-        <GroupCard>
-          <div className="space-y-2 px-4 py-3">
-            <RowInputLocal label="API 地址" value={wkBase} onChange={setWkBase} />
-            <RowInputLocal label="API Key (X-API-Key)" value={wkKey} onChange={setWkKey} password />
-            <RowInputLocal label="知识库 ID" value={wkKbId} onChange={setWkKbId} />
-            <button
-              onClick={() => void testWeknora()}
-              disabled={wkTesting}
-              className="rounded-btn border border-line px-2 py-1 text-caption text-graphite hover:bg-line-soft hover:text-ink disabled:opacity-40"
-            >
-              {wkTesting ? "测试中…" : "测试连接并拉取知识库"}
-            </button>
-            {wkStatus && <p className="text-caption text-ash">{wkStatus}</p>}
-          </div>
-        </GroupCard>
-      )}
-
-      {/* local-folder 创建卡 */}
-      {addingType === "local-folder" && (
-        <GroupCard>
-          <div className="space-y-2 px-4 py-3">
-            <p className="text-caption text-ash">
-              选择一个本地文件夹（markdown / 文本）作为记忆来源。授权句柄存本地 IndexedDB。
-            </p>
-            <button
-              onClick={() => void createBackend()}
-              disabled={lfBusy}
-              className="rounded-btn bg-ink px-3 py-1.5 text-body-sm text-canvas hover:bg-black disabled:opacity-40"
-            >
-              {lfBusy ? "处理中…" : "选择文件夹"}
-            </button>
-          </div>
-        </GroupCard>
-      )}
-
-      {/* 路由 */}
-      <GroupCard>
-        <div className="px-4 pb-2 pt-3">
-          <p className="text-caption font-medium text-graphite">三层路由（写入广播 / 检索并集）</p>
-        </div>
-        <div className="space-y-3 px-4 pb-3">
-          {(["semantic", "episodic", "procedural"] as const).map((layer) => routedChips(layer))}
-        </div>
-      </GroupCard>
-
-      {/* 门控 / 整理 / 镜像 / 检索条数 */}
+      {/* 每日总结 */}
       <GroupCard>
         <SettingsRow
-          label="检索门控"
-          description="小模型先判断本次是否需要检索（“2+2 等于几”不检索）。门控出错即检索（fail-open）"
-          control={<Toggle on={prefs.gateEnabled} onChange={(v) => setGate({ gateEnabled: v })} />}
+          label="每日总结"
+          description="每天 1–2 次增量读当天会话 → 写 memory/daily/<日期>.md。同日重跑整份重写（幂等）；失败只记日志，绝不影响日常对话"
+          control={<Toggle on={prefs.digestEnabled} onChange={(v) => setPrefs({ digestEnabled: v })} />}
         />
         <SettingsRow
-          label="门控模型"
-          description="执行门控判断的便宜模型（从已接入执行器的模型中选择）"
+          label="立即运行（dryRun）"
+          description="只报不写：今天会扫到哪些文件、多少块、会写到哪些项目"
           control={
-            <div className="relative w-64">
-              <select
-                value={prefs.gateModel}
-                onChange={(e) => setGate({ gateModel: e.target.value })}
-                aria-label="门控模型"
-                className="w-full appearance-none rounded-input border border-line bg-rail px-2.5 py-1.5 text-body-sm text-ink outline-none focus:border-teal"
-              >
-                {gateModelOptions.some((o) => o.id === prefs.gateModel) ? null : (
-                  <option value={prefs.gateModel}>{prefs.gateModel}（当前值不在已接入清单）</option>
-                )}
-                {gateModelOptions.map((o) => (
-                  <option key={o.id} value={o.id}>
-                    {o.label}
-                  </option>
-                ))}
-              </select>
-              <ChevronDown size={12} className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-ash" />
-            </div>
+            <button
+              onClick={() => void runDigest()}
+              disabled={busy}
+              className="rounded-btn bg-ink px-3 py-1.5 text-body-sm text-canvas disabled:opacity-40"
+            >
+              {busy ? "扫描中…" : "试跑"}
+            </button>
           }
-        />
-        <SettingsRow
-          label="整理频率"
-          description="每 N 次交换由小模型从未整理对话中提取事实与情节"
-          control={
-            <Stepper
-              value={prefs.consolidateEvery}
-              min={2}
-              max={20}
-              step={2}
-              onChange={(v) => setGate({ consolidateEvery: v })}
-            />
-          }
-        />
-        <SettingsRow
-          label="语义检索条数"
-          description="每次注入的相关事实条数（top K）"
-          control={<Stepper value={prefs.semanticTopK} min={1} max={12} step={1} onChange={(v) => setGate({ semanticTopK: v })} />}
-        />
-        <SettingsRow
-          label="MEMORY.md 人读镜像"
-          description="每轮后重新生成 .waku/MEMORY.md，人类可直接打开阅读全部记忆"
-          control={<Toggle on={prefs.mirrorMd} onChange={(v) => setGate({ mirrorMd: v })} />}
+          detail={digest === null ? null : <DigestReport result={digest} />}
         />
       </GroupCard>
 
-      {/* 配置透明化：完整 JSON + 实际存储位置 */}
-      <GroupCard>
-        <div className="px-4 pb-3 pt-3">
-          <details>
-            <summary className="flex cursor-pointer items-center justify-between gap-2 text-caption text-graphite hover:text-ink">
-              <span>配置文件（当前生效的全部编排配置）</span>
-              <span className="font-mono text-ash">localStorage · agent-workbench:memory-orchestration</span>
-            </summary>
-            <pre className="mt-2 max-h-64 overflow-auto rounded-btn bg-rail p-2.5 font-mono text-caption leading-relaxed text-graphite">
-              {JSON.stringify(prefs, null, 2)}
-            </pre>
-            <p className="mt-1.5 text-caption leading-relaxed text-ash">
-              原型期编排配置存浏览器 localStorage（上方键名）；真运行时落
-              .waku/ 目录（state.db / SOUL.md / MEMORY.md / skills/），
-              凭据按 dsh 边界移入独立凭据库、配置只留引用名。
-            </p>
-          </details>
-        </div>
-      </GroupCard>
-
-      {/* 实测：写入广播 + 检索合并 */}
-      <MemoryTestCard />
+      {err !== null && (
+        <p className="rounded-btn border border-line bg-card px-3 py-2 text-caption leading-relaxed text-loss">{err}</p>
+      )}
     </div>
   );
 }
 
-/** 语义记忆实测 —— 写入广播到语义路由的全部 weknora 后端；检索合并 weknora + 本地来源 */
-function MemoryTestCard() {
-  const prefs = useMemoryOrchestration((s) => s.prefs);
-  const [fact, setFact] = useState("");
-  const [query, setQuery] = useState("");
-  const [status, setStatus] = useState<string | null>(null);
-  const [hits, setHits] = useState<{ source: string; content: string }[] | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  const wkBackends = prefs.backends.filter((b) => b.enabled && b.type === "weknora" && b.kbId);
-  const localBackends = prefs.backends.filter((b) => b.enabled && b.type === "local-folder" && b.sourceId);
-
-  const writeFact = async () => {
-    if (fact.trim().length === 0) return;
-    setBusy(true);
-    setStatus("写入中…");
-    try {
-      const done: string[] = [];
-      for (const b of wkBackends) {
-        await weknoraSaveFact(
-          { baseUrl: b.baseUrl ?? "", apiKey: b.apiKey ?? "" },
-          b.kbId ?? "",
-          `事实 · ${new Date().toLocaleString("zh-CN")}`,
-          fact.trim(),
-        );
-        done.push(b.name);
-      }
-      setStatus(done.length > 0 ? `已广播写入：${done.join("、")}` : "没有启用的 WeKnora 写入目标");
-      setFact("");
-    } catch (e) {
-      setStatus(`写入失败：${e instanceof Error ? e.message : String(e)}`);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const search = async () => {
-    if (query.trim().length === 0) return;
-    setBusy(true);
-    setStatus("检索中…");
-    try {
-      const hits: { source: string; content: string }[] = [];
-      for (const b of prefs.backends) {
-        if (!b.enabled || b.type !== "weknora" || !b.kbId) continue;
-        const list = await weknoraSearch(
-          { baseUrl: b.baseUrl ?? "", apiKey: b.apiKey ?? "" },
-          [b.kbId],
-          query.trim(),
-          prefs.semanticTopK,
-        );
-        hits.push(...list.map((h) => ({ source: b.name, content: h.content })));
-      }
-      const localIds = localBackends.filter((b) => b.type === "local-folder" && b.sourceId).map((b) => b.sourceId!);
-      const local = searchAllLocal(localIds, query.trim(), prefs.semanticTopK);
-      hits.push(...local.map((h) => ({ source: h.path, content: h.excerpt })));
-      setHits(hits);
-      setStatus(`合并检索到 ${hits.length} 条`);
-    } catch (e) {
-      setStatus(`检索失败：${e instanceof Error ? e.message : String(e)}`);
-    } finally {
-      setBusy(false);
-    }
-  };
-
+/** 试跑报告 —— dryRun 只报不写，所以这一屏全是「本来会发生什么」 */
+function DigestReport({ result }: { result: DigestResult }) {
   return (
-    <GroupCard>
-      <div className="px-4 pb-3 pt-3">
-        <p className="text-caption font-medium text-graphite">记忆实测（写入广播 · 检索合并）</p>
-        <div className="mt-2 space-y-1.5">
-          <div className="flex items-center gap-1.5">
-            <input
-              value={fact}
-              onChange={(e) => setFact(e.target.value)}
-              placeholder="写入一条事实"
-              aria-label="写入事实"
-              className="min-w-0 flex-1 rounded-input border border-transparent bg-rail px-2 py-1 text-caption text-ink outline-none placeholder:text-ash focus:border-teal"
-            />
-            <button
-              onClick={() => void writeFact()}
-              disabled={fact.trim().length === 0 || busy}
-              className="shrink-0 rounded-btn border border-line px-2 py-1 text-caption text-graphite hover:bg-line-soft hover:text-ink disabled:opacity-40"
-            >
-              写入
-            </button>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="检索测试"
-              aria-label="检索测试"
-              className="min-w-0 flex-1 rounded-input border border-transparent bg-rail px-2 py-1 text-caption text-ink outline-none placeholder:text-ash focus:border-teal"
-            />
-            <button
-              onClick={() => void search()}
-              disabled={query.trim().length === 0 || busy}
-              className="shrink-0 rounded-btn border border-line px-2 py-1 text-caption text-graphite hover:bg-line-soft hover:text-ink disabled:opacity-40"
-            >
-              检索
-            </button>
-          </div>
-          {status && <p className="text-caption text-ash">{status}</p>}
-          {hits !== null && (
-            <ul className="space-y-1 rounded-btn bg-rail p-2">
-              {hits.length === 0 && <li className="text-caption text-ash">没有命中的内容。</li>}
-              {hits.map((h, i) => (
-                <li key={i} className="text-caption leading-relaxed text-graphite">
-                  [{h.source}] {h.content}
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      </div>
-    </GroupCard>
-  );
-}
-
-function RowInputLocal({
-  label,
-  value,
-  onChange,
-  password,
-}: {
-  label: string;
-  value: string;
-  onChange: (v: string) => void;
-  password?: boolean;
-}) {
-  return (
-    <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] items-center gap-3">
-      <span className="text-caption font-medium text-graphite">{label}</span>
-      <input
-        type={password ? "password" : "text"}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        spellCheck={false}
-        className="w-full rounded-input border border-transparent bg-rail px-2.5 py-1.5 font-mono text-caption text-ink outline-none placeholder:text-ash focus:border-teal"
-      />
-    </div>
-  );
-}
-
-
-/** 存储后端多选 chips —— 一个记忆层可同时镜像到多个后端 */
-function BackendChips<T extends string>({
-  value,
-  choices,
-  onChange,
-}: {
-  value: readonly T[];
-  choices: readonly T[];
-  onChange: (v: readonly T[]) => void;
-}) {
-  return (
-    <div className="flex flex-wrap justify-end gap-1">
-      {choices.map((c) => {
-        const on = value.includes(c);
-        return (
-          <button
-            key={c}
-            onClick={() => onChange(on ? value.filter((x) => x !== c) : [...value, c])}
-            aria-pressed={on}
-            className={cn(
-              "flex items-center gap-1 rounded-chip border px-2 py-1 text-caption",
-              on
-                ? "border-teal-edge bg-teal-tint font-medium text-ink"
-                : "border-line text-graphite hover:bg-line-soft hover:text-ink",
-            )}
-          >
-            {on && <Check size={10} className="text-teal" />}
-            {c}
-          </button>
-        );
-      })}
+    <div className="space-y-1 text-caption leading-relaxed text-graphite">
+      <p className="tnum">
+        {result.date} · 扫了 {result.scannedFiles} 个文件 / {result.freshBlocks} 块（{result.freshFiles} 个文件有新改动）
+      </p>
+      {result.wrote.length > 0 && <p>会写到：{result.wrote.join("、")}</p>}
+      {result.wrote.length === 0 && result.skipReason === undefined && !result.ran && <p className="text-ash">没有可跑的内容。</p>}
+      {result.skipped.map((s) => (
+        <p key={s.project} className="text-ash">
+          跳过 {s.project}：{s.reason}
+        </p>
+      ))}
+      {result.skipReason !== undefined && <p className="text-ash">{result.skipReason}</p>}
+      {result.error !== undefined && <p className="text-loss">{result.error}</p>}
     </div>
   );
 }
