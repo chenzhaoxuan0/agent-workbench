@@ -161,6 +161,14 @@ async function main(): Promise<void> {
   check("管家有自己的 MEMORY.md", existsSync(path.join(stewardRoot(home), "MEMORY.md")));
   check("管家目录在工作台 home 下、不占用户项目", stewardRoot(home).startsWith(home));
 
+  // 前端合并守卫（useWorkbench.ts:726）要求这四个条件，缺一个就进不了
+  // 主界面的 bot 列表 —— 症状是「设置页看得到、主界面找不到」。
+  const sd = stewardDef as Record<string, unknown>;
+  check("**管家定义带 kind=bot**（否则进不了主界面列表）", sd["kind"] === "bot", sd["kind"]);
+  check("管家满足前端最小必填面", typeof sd["id"] === "string" && typeof sd["name"] === "string" && typeof sd["rootPath"] === "string" && Array.isArray(sd["bindings"]));
+  check("管家绑的是 mcode", (sd["bindings"] as Array<{ runtimeId?: string }>)[0]?.runtimeId === "mcode", sd["bindings"]);
+  check("**管家不设 modelHint**（写死会被 resolveModelFor 静默丢弃）", !JSON.stringify(sd).includes("modelHint"), sd);
+
   // 权限在入口钉死
   let denied: unknown;
   try {

@@ -77,6 +77,11 @@ export function stewardDefinition(rootPath: string): Record<string, unknown> {
   return {
     id: STEWARD_ID,
     role: STEWARD_ID,
+    // **kind 必填**：前端的合并守卫（useWorkbench.ts:726）要求
+    // `kind === "bot" || "project"`，缺了就进不了主界面的 bot 列表 ——
+    // 症状是「设置页里能看到管家（那里走不过滤的 bot.list），主界面却找不到」。
+    // 这不是过滤掉「合成 bot」，是最小必填面守卫（跟 bot.json 手可编辑有关）。
+    kind: "bot",
     name: "总管",
     rootPath,
     crossSearch: true,

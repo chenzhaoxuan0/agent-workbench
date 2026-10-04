@@ -154,13 +154,17 @@ void ensureSteward(config.homeDir)
 /**
  * 管家定义的**规范形状**：只取我们自己管的那几个键。
  *
- * 不能拿整个对象比 —— `getBot` 返回的是 hydrate 过的定义（多出 agentsMd /
- * meta / sourcePath），跟原始定义永远不相等，会导致每次启动都白重写一次。
+ * 两个坑都在这里踩过：
+ * 1. 不能拿整个对象比 —— `getBot` 返回的是 hydrate 过的定义（多出 agentsMd /
+ *    meta / sourcePath），跟原始定义永远不相等，会导致每次启动都白重写。
+ * 2. **不能漏字段** —— 加了 `kind` 却没加进这个形状，幂等比较就说「没变化」，
+ *    新字段永远写不进盘上。形状必须覆盖 stewardDefinition 的每一个自有字段。
  */
 function stewardShape(def: Record<string, unknown>): string {
   return JSON.stringify({
     id: def["id"],
     role: def["role"],
+    kind: def["kind"],
     name: def["name"],
     rootPath: def["rootPath"],
     crossSearch: def["crossSearch"],
