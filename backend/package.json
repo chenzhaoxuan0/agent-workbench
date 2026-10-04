@@ -24,6 +24,7 @@
     "smoke": "tsx scripts/smoke-health.ts",
     "smoke:feishu": "tsx scripts/smoke-feishu.ts",
     "smoke:inspect": "tsx scripts/smoke-inspect.ts",
+    "smoke:exec": "tsx scripts/smoke-exec.ts",
     "smoke:memory1": "tsx scripts/smoke-memory1.ts",
     "smoke:memory2": "tsx scripts/smoke-memory2.ts",
     "smoke:memory3": "tsx scripts/smoke-memory3.ts",
@@ -46,3 +47,4 @@
     "typescript": "^7.0.2"
   }
 }
+
