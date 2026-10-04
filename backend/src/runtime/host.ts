@@ -116,6 +116,31 @@ function resolveModelFor(
   return { model: supported[0]?.id ?? null, droppedHint: String(requested) };
 }
 
+/**
+ * 记忆注入契约（docs/10 §4.2）。
+ *
+ * 刻意声明在 host 侧而不是从 memory 模块 import —— 依赖方向只能是
+ * host ← memory 提供的实现，不能反过来。host 不该知道 MEMORY.md 是什么。
+ */
+export interface InjectedPartInfo {
+  readonly scope: string;
+  readonly sourcePath: string;
+  readonly chars: number;
+}
+
+export interface InjectedPrompt {
+  /** 注入后的完整 prompt（block + 分隔 + 用户原话） */
+  readonly prompt: string;
+  /** 注入块本体（不含用户原话）—— 分发日志存这份就够还原「它当时知道什么」 */
+  readonly block: string;
+  readonly parts: readonly InjectedPartInfo[];
+  readonly injectedChars: number;
+}
+
+export interface MemoryInjector {
+  build(rootPath: string, userText: string): Promise<InjectedPrompt | null>;
+}
+
 export class RuntimeHost {
   private readonly adapters = new Map<string, ExecutorAdapter>();
   private readonly sessions = new Map<SessionId, HostSession>();
@@ -126,6 +151,11 @@ export class RuntimeHost {
     private readonly homeDir: string,
     private readonly store: Store,
     private readonly gate: PermissionGate,
+    /**
+     * 记忆注入器（docs/10 WP-3）。**可选**：不传 = 记忆系统关闭，
+     * 派发行为与引入记忆之前逐字节一致。所有既有冒烟因此不受影响。
+     */
+    private readonly memory?: MemoryInjector,
   ) {}
 
   /** 挂起中的权限上下文（"always" 落规则时取 kind/detail 用） */
@@ -285,6 +315,25 @@ export class RuntimeHost {
   async startSession(input: StartSessionInput): Promise<Session> {
     const adapter = this.getAdapter(input.runtimeId);
 
+    // 记忆注入（docs/10 WP-3）：**只在开新会话时注入一次**。
+    // - 冻结快照：续聊不重复注入，保住 LLM 前缀缓存（hermes 的做法）
+    // - 切换执行器会开新会话 → 冷启动时自然重新注入，这正是我们要的
+    // - daemon 重启后 resumeSession 走 CLI 自己的历史，不重复注入
+    // 注入失败绝不阻断派发 —— 记忆是增强，不是前置条件。
+    let injected: InjectedPrompt | null = null;
+    if (this.memory !== undefined) {
+      try {
+        injected = await this.memory.build(input.rootPath, input.prompt);
+      } catch (err: unknown) {
+        log.warn("memory injection skipped", {
+          root: input.rootPath,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        injected = null;
+      }
+    }
+    const effectivePrompt = injected === null ? input.prompt : injected.prompt;
+
     // modelHint 的回落在这里一次解决，并把「实际生效」与「被丢掉的 hint」都算出来。
     // 契约原文说 hint 失效会被静默忽略——那正是 docs/09 §六.1 要补掉的静默：
     // 用户以为自己在用便宜模型，实际在烧贵的。适配器自己也会回落，但只有 host
@@ -299,7 +348,7 @@ export class RuntimeHost {
         unitId: input.unitId,
         unitName: input.unitName,
         rootPath: input.rootPath,
-        prompt: input.prompt,
+        prompt: effectivePrompt,
         model: effective,
         mode: input.mode,
         reasoningLevel: input.reasoningLevel,
@@ -344,6 +393,30 @@ export class RuntimeHost {
       stats: { ...h.stats },
     });
     this.store.insertMessage(h.id, Date.now(), "user", input.prompt);
+    // 分发日志：用户原话与注入内容**分列**存（docs/10 §2.1 残件）。
+    // 有了它才能回答「这一轮它到底知道什么」—— messages 表做不到，
+    // 因为那里的 prompt 只是一整块文本，注入部分和用户原话糊在一起。
+    if (injected !== null) {
+      this.store.insertDispatch({
+        sessionId: h.id,
+        runtimeId: h.runtimeId,
+        rootPath: input.rootPath,
+        userText: input.prompt,
+        injectedBlock: injected.block,
+        injectedChars: injected.injectedChars,
+        parts: injected.parts,
+        createdAt: h.startedAt,
+      });
+      // curator 的判断全靠「上次什么时候被注入过」（docs/10 §4.7）。
+      // 这行打点漏了，curator 就永远只能把每条都当成 active。
+      for (const part of injected.parts) {
+        try {
+          this.store.markMemoryUsed(part.sourcePath, h.startedAt, part.chars);
+        } catch (err: unknown) {
+          log.warn("memory telemetry mark failed", { path: part.sourcePath, error: err instanceof Error ? err.message : String(err) });
+        }
+      }
+    }
 
     const started: RuntimeEvent = {
       type: "session.started",
@@ -360,7 +433,7 @@ export class RuntimeHost {
     // 首轮 prompt：受理即返回，turn 进展全走事件流
     //（mockperm 这类会在权限处挂起整轮，await 会把 session.start 卡死——冒烟实证）
     h.turnBusy = true;
-    void impl.send(input.prompt).catch((err: unknown) => {
+    void impl.send(effectivePrompt).catch((err: unknown) => {
       log.error("first turn failed", { sessionId: h.id, error: err instanceof Error ? err.message : String(err) });
       const errorEvent: RuntimeEvent = { type: "error", sessionId: h.id, message: err instanceof Error ? err.message : String(err), recoverable: false };
       this.emitStamped(h, errorEvent);
