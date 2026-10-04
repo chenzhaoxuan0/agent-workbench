@@ -40,6 +40,16 @@ import { log } from "../log.ts";
 const EVENT_KEY = "im.message.receive_v1";
 /** CLI 可执行名。找不到就是「这台机器上飞书渠道不可用」，不是静默降级。 */
 const CLI = "lark-cli";
+
+/**
+ * 即时回应用的表情。**只用飞书确认可用的值**。
+ * 曾用 `EYES`（想表达「在看」）→ 飞书不认，整个功能静默失灵，
+ * 而失败日志打在 debug 上、daemon 跑 info，什么都看不见。教训：表情值不猜，
+ * 失败必须 warn。
+ */
+type AckEmoji = "SMILE" | "DONE";
+const ACK_RECEIVED: AckEmoji = "SMILE"; // 😊 收到了，在想了
+const ACK_DONE: AckEmoji = "DONE"; // ✅ 答完了
 /** 进程重启退避：崩了就退避重起，但不无限快 */
 const RESTART_DELAY_MS = 3_000;
 
@@ -560,8 +570,6 @@ class LarkCliConnection {
   #restartTimer: NodeJS.Timeout | null = null;
   /** message_id 去重。飞书会重投，同一条重复起轮会白烧 token。 */
   readonly #seen = new Set<string>();
-  /** messageId → 当前挂着的 reaction_id（收到时是 👀，答完换成 ✅ 再删掉旧的） */
-  readonly #reactions = new Map<string, string>();
   /** 同会话串行：前一条处理完才轮到下一条 */
   readonly #chains = new Map<string, Promise<void>>();
 
@@ -688,30 +696,37 @@ class LarkCliConnection {
       if (first !== undefined) this.#seen.delete(first);
     }
 
-    // **即时回应**：收到就给个 👀，用户立刻知道「它收到了，在想了」。
+    // **即时回应**：收到就给个表情，用户立刻知道「它收到了，在想了」。
     //
     // 位置在**入队之前**而不是 #enqueue 里 —— enqueue 是按 chatId 串行的，
     // 排队的消息要等前一轮跑完（可能几十秒到几分钟）才有任何反馈，那时
     // 已经不像「及时」了。
     //
     // 全程 best-effort：表情挂了绝不能影响正常回复（runBotTurn / #reply）。
-    void this.#ack(messageId, "EYES").catch(() => {});
+    void this.#ack(messageId, ACK_RECEIVED).catch(() => {});
 
     this.#enqueue({ messageId, chatId, text: stripMentions(content, mentions) });
   }
 
   /**
-   * 给消息加/去一个表情。
+   * 给消息加一个表情（**只加，不删**）。
    *
    * 对齐 OpenClaw 的 `addReactionFeishu`（`extensions/feishu/src/reactions.ts`），
-   * 走 lark-cli 的 `im reactions create` / `delete`。
+   * 走 lark-cli 的 `im reactions create`。
    *
-   * 表情语义：👀(EYES) = 收到了在处理；✅(DONE) = 处理完了。
-   * 两段式比单个表情诚实 —— 用户一眼能看出「它还在想」还是「已经答了」。
+   * 两枚并存：😊 收到了 → ✅ 答完了。IM 里两枚同时挂着是自然语义
+   * （"它看到过、也答完了"），而且**刻意不回收**：
+   * - 少一个 delete 调用 = 少一类失败（曾经 delete 失败只记 debug，静默）
+   * - 表情留在消息上 → 往回翻时能看见「它确实响应过」
+   * - 不删也让「收到表情是否真的生效」可事后验证，而不是一闪而过
    *
-   * **全部 best-effort**：失败只记 debug，绝不影响正常回复。
+   * **表情值只用确认可用的**（`SMILE` / `DONE`，都在 lark-cli 官方示例里）。
+   * 曾用 `EYES`（想表达「在看」）→ 飞书不认，功能静默失灵，而失败日志还打在
+   * debug 上、daemon 跑 info，什么都看不见。教训：不猜值，失败必须 warn。
+   *
+   * **全程 best-effort**：失败不影响正常回复。
    */
-  async #ack(messageId: string, emoji: "EYES" | "DONE"): Promise<void> {
+  async #ack(messageId: string, emoji: AckEmoji): Promise<void> {
     try {
       const r = await runCli([
         "--profile", this.#spec.profile,
@@ -720,38 +735,11 @@ class LarkCliConnection {
         "--data", JSON.stringify({ reaction_type: { emoji_type: emoji } }),
       ], 15_000);
       if (r.code !== 0) {
-        log.debug("feishu: 加表情失败（不影响回复）", { emoji, code: r.code, err: r.stderr.slice(0, 160) });
-        return;
-      }
-      // 把上一枚表情收掉，避免 👀 和 ✅ 同时挂着
-      if (emoji === "DONE") {
-        const prev = this.#reactions.get(messageId);
-        if (prev !== undefined) {
-          await runCli([
-            "--profile", this.#spec.profile,
-            "im", "reactions", "delete",
-            "--message-id", messageId,
-            "--reaction-id", prev,
-          ], 15_000);
-          this.#reactions.delete(messageId);
-        }
-      } else {
-        const id = this.#reactionIdOf(r.stdout);
-        if (id !== null) this.#reactions.set(messageId, id);
+        // warn 而不是 debug：这是用户能看见的功能，它不响就该被看见。
+        log.warn("feishu: 加表情失败（不影响回复）", { emoji, code: r.code, stderr: r.stderr.slice(0, 300) });
       }
     } catch (err: unknown) {
-      log.debug("feishu: 表情回应异常（不影响回复）", { emoji, error: err instanceof Error ? err.message : String(err) });
-    }
-  }
-
-  /** 从 create 的 JSON 输出里取 reaction_id（拿不到就算了，不是关键路径） */
-  #reactionIdOf(stdout: string): string | null {
-    try {
-      const o = JSON.parse(stdout.slice(stdout.indexOf("{"))) as { data?: { reaction_id?: unknown } };
-      const id = o.data?.reaction_id;
-      return typeof id === "string" && id !== "" ? id : null;
-    } catch {
-      return null;
+      log.warn("feishu: 表情回应异常（不影响回复）", { emoji, error: err instanceof Error ? err.message : String(err) });
     }
   }
 
@@ -773,8 +761,8 @@ class LarkCliConnection {
           log.warn("feishu: 轮次失败", { bot: this.#spec.botId, error: m });
           await this.#reply(msg.messageId, `出错了：${m}`).catch(() => {});
         } finally {
-          // 答完了把 👀 换成 ✅（best-effort，不影响任何东西）
-          void this.#ack(msg.messageId, "DONE").catch(() => {});
+          // 答完了把 😊 换成 ✅（best-effort，不影响任何东西）
+          void this.#ack(msg.messageId, ACK_DONE).catch(() => {});
         }
       });
     this.#chains.set(msg.chatId, next);
