@@ -226,6 +226,41 @@ async function main(): Promise<void> {
   check("无记忆项目正常派发", (bareAssistant?.text ?? "").endsWith("空项目也要能干活"));
   check("无记忆项目不写分发日志", on.store.listDispatches(s4.id).length === 0);
 
+  // ---- 前端命名空间：界面写的 `daemon:<id>` 后端也得认 ----
+  // 界面把适配器注册成 `daemon:<id>`（prototype/src/adapters/daemon/adapter.ts:44），
+  // 后端注册的是裸 `<id>`。bot.json 的 bindings 是界面写的，所以后端必须两种都收。
+  // 症状：飞书/telegram 走 IM 路径 → `no such executor: daemon:mcode`。
+  const s5 = await on.host.startSession({
+    runtimeId: "daemon:mockperm",
+    unitId: asUnitId("u5"),
+    unitName: "U5",
+    rootPath: projA,
+    prompt: "界面命名空间的执行器也要能跑",
+    model: asModelId("mock-1"),
+    mode: "yolo",
+  });
+  await sleep(150);
+  const nsAssistant = on.host.sessionMessages(s5.id as never).find((m) => m.role === "assistant");
+  check("**`daemon:` 前缀的执行器 id 能被解析**（IM 路径的命门）", (nsAssistant?.text ?? "").endsWith("界面命名空间的执行器也要能跑"), nsAssistant?.text?.slice(0, 90));
+  check("带前缀的会话同样注入记忆", (nsAssistant?.text ?? "").includes("项目记忆"), nsAssistant?.text?.slice(0, 90));
+
+  // 真不存在的执行器仍然要拒，且报错要带可用清单
+  let badEx: unknown;
+  try {
+    await on.host.startSession({
+      runtimeId: "daemon:no-such-thing",
+      unitId: asUnitId("u6"),
+      unitName: "U6",
+      rootPath: projA,
+      prompt: "x",
+      model: asModelId("mock-1"),
+      mode: "yolo",
+    });
+  } catch (e) { badEx = e; }
+  check("真不存在的执行器仍被拒", badEx !== undefined);
+  check("**报错里列出本机已注册的清单**", (badEx as Error)?.message.includes("本机已注册"), (badEx as Error)?.message);
+  check("报错还点破前缀问题", (badEx as Error)?.message.includes("前缀只在界面侧有效"), (badEx as Error)?.message);
+
   console.log(`\n${failures === 0 ? "全部通过" : `${failures} 项失败`}\n`);
 }
 

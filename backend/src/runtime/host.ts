@@ -31,6 +31,13 @@ import type { PermissionGate } from "../permissions/gate.ts";
 import { appendJournal } from "../store/journals.ts";
 import { redact as redactText } from "../memory/redact.ts";
 
+/**
+ * 界面侧的运行时命名空间前缀。
+ * 界面把每个 daemon 执行器注册成 `daemon:<id>`，后端注册的是裸 `<id>`。
+ * bot.json 里的 bindings 是界面写的，所以后端必须两种都认。
+ */
+const FRONTEND_NS_PREFIX = "daemon:";
+
 /** 对 WS 暴露的适配器摘要 */
 export interface AdapterInfo {
   readonly id: string;
@@ -275,10 +282,33 @@ export class RuntimeHost {
     }));
   }
 
+  /**
+   * 取适配器，**同时接受前端命名空间**。
+   *
+   * bot.json 的 `bindings[].runtimeId` 是界面写进去的，而界面把适配器注册成
+   * `daemon:<id>`（prototype/src/adapters/daemon/adapter.ts:44）—— 后端注册的却是
+   * 裸 `<id>`。于是**界面路径自洽、IM 路径跨命名空间**：
+   * 飞书/telegram/webhook 走 `runBotTurn` → `getAdapter("daemon:mcode")` →
+   * `no such executor`。
+   *
+   * 之所以要在这里容错而不是让界面改写裸 id：bot.json 是**手可编辑**的，
+   * 里面早就躺着 `daemon:zcode` 这类值（老 bot 都是），改不动也不该改。
+   * 后端收下两种写法，是唯一不破坏既有数据的做法。
+   */
   getAdapter(runtimeId: string): ExecutorAdapter {
-    const a = this.adapters.get(runtimeId);
-    if (a === undefined) throw adapterError("unknown_runtime", `no such executor: ${runtimeId}`);
-    return a;
+    const direct = this.adapters.get(runtimeId);
+    if (direct !== undefined) return direct;
+    // 前端命名空间 `daemon:<id>` → 后端 `<id>`
+    const bare = runtimeId.startsWith(FRONTEND_NS_PREFIX) ? runtimeId.slice(FRONTEND_NS_PREFIX.length) : "";
+    const viaNs = bare === "" ? undefined : this.adapters.get(bare);
+    if (viaNs !== undefined) return viaNs;
+    // 报可用清单：只说「no such executor: daemon:mcode」等于把人逼去翻代码
+    const available = [...this.adapters.keys()].sort().join(", ");
+    throw adapterError(
+      "unknown_runtime",
+      `no such executor: ${runtimeId}（本机已注册：${available}）` +
+        (runtimeId.startsWith(FRONTEND_NS_PREFIX) ? `　注意：界面写的 "${runtimeId}" 里的 "${FRONTEND_NS_PREFIX}" 前缀只在界面侧有效` : ""),
+    );
   }
 
   probe(runtimeId: string): Promise<ProbeResult> {
