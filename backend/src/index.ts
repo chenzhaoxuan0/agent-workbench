@@ -6,6 +6,7 @@
  */
 
 import { mkdirSync } from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage } from "node:http";
@@ -32,6 +33,15 @@ import { parseCron } from "./automation/cron.ts";
 import { OpsRunner } from "./ops/eval.ts";
 import { ArenaRunner } from "./ops/arena.ts";
 import { MemoryService } from "./memory/memory.ts";
+import { FileMemoryInjector } from "./memory/injection.ts";
+import { readLongTerm, writeLongTerm, readDaily, listDaily } from "./memory/projectMemory.ts";
+import { DailyDigest } from "./memory/dailyDigest.ts";
+import { stewardSearch, stewardRecent, ensureSteward, stewardRoot, stewardDefinition, STEWARD_ID } from "./memory/steward.ts";
+import { runCurator, renderReport, DEFAULT_CURATOR, DbMetaStore, type CuratorConfig } from "./memory/curator.ts";
+import { MemoryScheduler } from "./memory/scheduler.ts";
+
+/** 记忆系统的后台调度（每日总结 + curator）。启动时挂上，停止时摘掉。 */
+let memoryScheduler: MemoryScheduler | undefined;
 import { BotRegistry } from "./bots/registry.ts";
 import { TelegramGateway } from "./channels/telegram.ts";
 import { FeishuGateway, diagnoseLarkAccount, larkIdentities, larkProfileList, addLarkProfile } from "./channels/feishu.ts";
@@ -63,7 +73,17 @@ const host = new RuntimeHost((event, seq) => {
       store.finishAutomationRun(runId, failed ? "failed" : "done", `ended: ${event.reason}`);
     }
   }
-}, traceSink, config.homeDir, store, gate);
+}, traceSink, config.homeDir, store, gate, new FileMemoryInjector());
+memoryScheduler = new MemoryScheduler({
+  homeDir: config.homeDir,
+  store,
+  knownProjects: () => botRegistry.roots(),
+  // 「用户最近一次有对话活动」从 sessions 表推：最后一条 message 的时间
+  lastActivityAt: () => {
+    const rows = store.listSessions();
+    return rows.reduce((max, r) => Math.max(max, r.startedAt), 0);
+  },
+});
 host.register(new ZcodeAdapter());
 host.register(new CodexAdapter());
 host.register(new ClaudeAdapter());
@@ -73,6 +93,17 @@ host.register(new DshAdapter());
 host.register(new OpencodeAdapter());
 host.register(new MockPermAdapter());
 host.loadPersisted();
+memoryScheduler?.start();
+
+// 总管 bot：初始化即就位（docs/10 §4.6）。失败不阻断启动 ——
+// 记忆是增强，不是前置条件。
+void ensureSteward(config.homeDir)
+  .then(({ rootPath }) => {
+    botRegistry.addRoot(rootPath);
+    return botRegistry.putBot(stewardDefinition(rootPath));
+  })
+  .then((id) => log.info("steward bot registered", { id }))
+  .catch((err: unknown) => log.warn("steward bot init failed", { error: err instanceof Error ? err.message : String(err) }));
 
 // ---- T3 式执行器目录（按需开启的可见性面）-----------------------------------
 // 已注册的执行器出现在 adapter.list；未注册的已知驱动在这里以真实状态列出
@@ -91,7 +122,7 @@ registerMethod("driver.catalog", () => [
     installed: true,
     registered: true,
     hint:
-      "HTTP server 形态（opencode serve）；凭据已配（MiniMax/qwen/智谱），本机默认模型 zhipuai-coding-plan 已失效，会话请选模型（minimax-cn-coding-plan/MiniMax-M2.7 实测可用）",
+      "ACP 接入（opencode acp），与 mcode/dsh 同构；不选模型即跟随 opencode 默认（实测 opencode/big-pickle），完整模型清单随 session/new 下发",
   },
   { id: "cursor-agent", installed: false, registered: false, hint: "未安装（cursor-agent install）" },
   { id: "grok", installed: false, registered: false, hint: "未安装" },
@@ -400,7 +431,139 @@ registerMethod("ops.arenaRun", (params) => {
   });
 });
 
-// ---- 记忆方法（Phase 7）-----------------------------------------------------
+// ---- 记忆方法（docs/10）-----------------------------------------------------
+//
+// 旧的 memory.save/search/list（Phase 7 三柱 + sqlite 路由）保留在下面继续可用，
+// 但**新记忆系统不走它**：项目记忆是文件（memory.project.*），跨会话检索是
+// 现场扫源目录（memory.searchAll / steward.search）。保留旧方法是刻意的 ——
+// 前端还在用，且 `memory.weknora` 配置 v2 要接着用。
+
+registerMethod("memory.project.read", (params) => {
+  const p = (params ?? {}) as { rootPath?: string };
+  if (typeof p.rootPath !== "string" || p.rootPath === "") throw Object.assign(new Error("rootPath is required"), { code: "bad_params" });
+  return readLongTerm(p.rootPath);
+});
+registerMethod("memory.project.write", (params) => {
+  const p = (params ?? {}) as { rootPath?: string; content?: string };
+  if (typeof p.rootPath !== "string" || typeof p.content !== "string") {
+    throw Object.assign(new Error("rootPath and content are required"), { code: "bad_params" });
+  }
+  return writeLongTerm(p.rootPath, p.content, { homeDir: config.homeDir });
+});
+registerMethod("memory.project.daily", (params) => {
+  const p = (params ?? {}) as { rootPath?: string; date?: string; limit?: number };
+  if (typeof p.rootPath !== "string") throw Object.assign(new Error("rootPath is required"), { code: "bad_params" });
+  if (typeof p.date === "string" && p.date !== "") return readDaily(p.rootPath, p.date);
+  return listDaily(p.rootPath);
+});
+
+/** 分发日志：这一轮注入了什么（docs/10 §5 UI 要的那一屏） */
+registerMethod("memory.dispatches", (params) => {
+  const p = (params ?? {}) as { sessionId?: string };
+  if (typeof p.sessionId !== "string" || p.sessionId === "") throw Object.assign(new Error("sessionId is required"), { code: "bad_params" });
+  return store.listDispatches(p.sessionId);
+});
+
+/** 跨会话追溯搜索。权限在这一层钉死（docs/10 红线 6）。 */
+registerMethod("steward.search", async (params) => {
+  const p = (params ?? {}) as {
+    botId?: string; query?: string; limit?: number; pathHint?: string; withContext?: boolean; halfLifeDays?: number;
+    sinceDays?: number; maxBytesPerCli?: number;
+  };
+  if (typeof p.query !== "string" || p.query.trim() === "") throw Object.assign(new Error("query is required"), { code: "bad_params" });
+
+  // 身份解析有三种情况，**不能混**：
+  // - 不给 botId            → 这是工作台自身的调用（设置页试跑等），按管家算
+  // - 给了 botId 且查得到   → 按该 bot 定义判权限
+  // - 给了 botId 但查不到   → **拒绝**。曾在这里回落成管家，等于「报个不存在的
+  //                           bot 名就能拿到跨项目检索权」——冒烟抓出来的真漏洞。
+  let requester: Record<string, unknown>;
+  if (typeof p.botId !== "string" || p.botId === "") {
+    requester = { id: STEWARD_ID, role: STEWARD_ID, crossSearch: true };
+  } else {
+    const def = await botRegistry.getBot(p.botId);
+    if (def === undefined) {
+      throw Object.assign(new Error(`没有这个 bot：${p.botId}`), { code: "unknown_bot" });
+    }
+    requester = def;
+  }
+
+  // 交互式搜索**必须有时间窗和字节上限**。
+  //
+  // 实测代价（2026-10-04，本机 1.6 GB 语料）：无索引的全量扫描是真花钱的 ——
+  // JSON.parse + 切块 + bigram，单次全量能吃掉几分钟 CPU。所以默认值取
+  // 「够快」而不是「够全」：
+  //   - since 默认 365 天前（mtime 预筛直接跳过老文件，比全量快两个数量级）
+  //   - 每家 128 MB 上限（4 家合计 512 MB 是解析成本的红线）
+  // 想要更多就把 sinceDays / maxBytesPerCli 显式调大 —— 那是用户的选择，
+  // 不该由默认值替他承担。
+  const sinceDays = p.sinceDays ?? 365;
+  const maxBytesPerCli = p.maxBytesPerCli ?? 128 * 1024 * 1024;
+
+  return stewardSearch(requester, {
+    query: p.query,
+    since: Date.now() - sinceDays * 86_400_000,
+    limitBytesPerCli: maxBytesPerCli,
+    ...(p.limit === undefined ? {} : { limit: p.limit }),
+    ...(p.pathHint === undefined ? {} : { pathHint: p.pathHint }),
+    withContext: p.withContext === true,
+    ...(p.halfLifeDays === undefined ? {} : { halfLifeDays: p.halfLifeDays }),
+  });
+});
+registerMethod("steward.recent", () => stewardRecent(config.homeDir));
+
+// ---- curator（docs/10 §4.7）------------------------------------------------
+
+/** 记忆条目的遥测视图（curator 的判断依据，也是 UI 要显示的「多久没用了」）。 */
+registerMethod("memory.telemetry", (params) => {
+  const p = (params ?? {}) as { rootPath?: string };
+  if (typeof p.rootPath === "string" && p.rootPath !== "") return store.listMemoryMeta(p.rootPath);
+  return store.listMemoryMeta();
+});
+
+registerMethod("curator.run", async (params) => {
+  const p = (params ?? {}) as {
+    rootPath?: string; dryRun?: boolean; now?: number;
+    intervalHours?: number; minIdleHours?: number; staleAfterDays?: number; archiveAfterDays?: number;
+  };
+  const rootPath = typeof p.rootPath === "string" && p.rootPath !== "" ? p.rootPath : stewardRoot(config.homeDir);
+  const cfg: CuratorConfig = {
+    ...DEFAULT_CURATOR,
+    ...(p.dryRun === undefined ? {} : { dryRun: p.dryRun }),
+    ...(p.intervalHours === undefined ? {} : { intervalHours: p.intervalHours }),
+    ...(p.minIdleHours === undefined ? {} : { minIdleHours: p.minIdleHours }),
+    ...(p.staleAfterDays === undefined ? {} : { staleAfterDays: p.staleAfterDays }),
+    ...(p.archiveAfterDays === undefined ? {} : { archiveAfterDays: p.archiveAfterDays }),
+  };
+  const r = await runCurator(
+    rootPath,
+    { meta: new DbMetaStore(store), homeDir: config.homeDir },
+    cfg,
+    p.now === undefined ? {} : { now: p.now },
+  );
+  // 报告落盘（hermes 做法）：run.json 机器可读 + REPORT.md 人读
+  try {
+    const dir = path.join(config.homeDir, "logs", "curator", new Date().toISOString().replace(/[:.]/g, "-"));
+    await mkdir(dir, { recursive: true });
+    await writeFile(path.join(dir, "run.json"), JSON.stringify(r, null, 2), "utf8");
+    await writeFile(path.join(dir, "REPORT.md"), renderReport(r, cfg), "utf8");
+    return { ...r, reportDir: dir };
+  } catch (err: unknown) {
+    log.warn("curator report write failed", { error: err instanceof Error ? err.message : String(err) });
+    return r;
+  }
+});
+
+/** 每日总结任务（docs/10 §4.5）。dryRun=true 时只报不写。 */
+registerMethod("memory.digest.run", async (params) => {
+  const p = (params ?? {}) as { date?: string; dryRun?: boolean; force?: boolean };
+  const digest = new DailyDigest(config.homeDir, { knownProjects: botRegistry.roots() });
+  return digest.run({
+    ...(p.date === undefined ? {} : { date: p.date }),
+    ...(p.dryRun === undefined ? {} : { dryRun: p.dryRun }),
+    ...(p.force === undefined ? {} : { force: p.force }),
+  });
+});
 
 registerMethod("memory.save", (params) => {
   const p = (params ?? {}) as { pillar?: string; content?: string; source?: string; backends?: string[] };
