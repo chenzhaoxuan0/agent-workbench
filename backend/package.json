@@ -8,10 +8,6 @@
     "node": ">=22"
   },
   "scripts": {
-    "dev": "tsx watch src/index.ts",
-    "start": "tsx src/index.ts",
-    "typecheck": "tsc --noEmit",
-    "smoke": "tsx scripts/smoke-health.ts",
     "smoke:phase1": "tsx scripts/smoke-phase1.ts",
     "smoke:phase1b": "tsx scripts/smoke-phase1b.ts",
     "smoke:phase2": "tsx scripts/smoke-phase2.ts",
@@ -24,8 +20,19 @@
     "smoke:phase9": "tsx scripts/smoke-phase9.ts",
     "smoke:phase10": "tsx scripts/smoke-phase10.ts",
     "smoke:phase11": "tsx scripts/smoke-phase11.ts",
+    "dev": "tsx watch src/index.ts",
+    "smoke": "tsx scripts/smoke-health.ts",
     "smoke:feishu": "tsx scripts/smoke-feishu.ts",
-    "smoke:inspect": "tsx scripts/smoke-inspect.ts"
+    "smoke:inspect": "tsx scripts/smoke-inspect.ts",
+    "smoke:memory1": "tsx scripts/smoke-memory1.ts",
+    "smoke:memory2": "tsx scripts/smoke-memory2.ts",
+    "smoke:memory3": "tsx scripts/smoke-memory3.ts",
+    "smoke:memory4": "tsx scripts/smoke-memory4.ts",
+    "smoke:memory5": "tsx scripts/smoke-memory5.ts",
+    "smoke:memory6": "tsx scripts/smoke-memory6.ts",
+    "smoke:opencode": "tsx scripts/smoke-opencode.ts",
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "node-pty": "^1.1.0",

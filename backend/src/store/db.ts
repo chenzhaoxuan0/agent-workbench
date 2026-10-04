@@ -52,8 +52,7 @@ export class Store {
 
   constructor(homeDir: string) {
     mkdirSync(homeDir, { recursive: true });
-    this.db = new DatabaseSync(path.join(homeDir, "state.db"));
-    this.db.exec(`
+    this.db = new DatabaseSync(path.join(homeDir, "state.db"));    this.db.exec(`
       PRAGMA journal_mode = WAL;
       CREATE TABLE IF NOT EXISTS sessions (
         id TEXT PRIMARY KEY,
@@ -113,6 +112,37 @@ export class Store {
         created_at INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_memory_pillar ON memory(pillar, id);
+
+      -- 分发日志（docs/10 WP-3）：用户原话与注入内容分列。
+      -- 只在**新会话**记一行（冻结快照：续聊不重复注入，就没有新注入可记）。
+      -- 不抄会话原文 —— 原文在各自 CLI 的落盘里，这里只存「我们派了什么」。
+      CREATE TABLE IF NOT EXISTS dispatches (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        runtime_id TEXT NOT NULL,
+        root_path TEXT NOT NULL,
+        user_text TEXT NOT NULL,
+        injected_block TEXT NOT NULL,
+        injected_chars INTEGER NOT NULL,
+        parts_json TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_dispatches_session ON dispatches(session_id, id);
+
+      -- curator 遥测（docs/10 WP-9）：v1 只埋表不做状态机。
+      -- 这些字段**不能后补** —— 没埋就永远算不出「14 天没用过」。
+      CREATE TABLE IF NOT EXISTS memory_meta (
+        path TEXT PRIMARY KEY,
+        bytes INTEGER NOT NULL DEFAULT 0,
+        char_used INTEGER NOT NULL DEFAULT 0,
+        use_count INTEGER NOT NULL DEFAULT 0,
+        last_used_at INTEGER,
+        hit_count INTEGER NOT NULL DEFAULT 0,
+        last_hit_at INTEGER,
+        state TEXT NOT NULL DEFAULT 'active',
+        pinned INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL
+      );
     `);
     // 旧库迁移：root_path 是 Phase 3 之后补的列（resume 需要工作目录重建 workspace）
     try {
@@ -364,6 +394,129 @@ export class Store {
       source: r["source"] === null ? null : String(r["source"]),
       createdAt: Number(r["created_at"]),
     }));
+  }
+
+  // ---- 分发日志（docs/10 WP-3）------------------------------------------------
+  insertDispatch(input: {
+    sessionId: string;
+    runtimeId: string;
+    rootPath: string;
+    userText: string;
+    injectedBlock: string;
+    injectedChars: number;
+    parts: ReadonlyArray<{ scope: string; sourcePath: string; chars: number }>;
+    createdAt: number;
+  }): number {
+    const result = this.db
+      .prepare(
+        `INSERT INTO dispatches
+         (session_id, runtime_id, root_path, user_text, injected_block, injected_chars, parts_json, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        input.sessionId,
+        input.runtimeId,
+        input.rootPath,
+        input.userText,
+        input.injectedBlock,
+        input.injectedChars,
+        JSON.stringify(input.parts),
+        input.createdAt,
+      );
+    return Number(result.lastInsertRowid);
+  }
+
+  listDispatches(sessionId: string): Array<{
+    id: number;
+    runtimeId: string;
+    rootPath: string;
+    userText: string;
+    injectedBlock: string;
+    injectedChars: number;
+    parts: Array<{ scope: string; sourcePath: string; chars: number }>;
+    createdAt: number;
+  }> {
+    const rows = this.db
+      .prepare(`SELECT * FROM dispatches WHERE session_id = ? ORDER BY id`)
+      .all(sessionId) as Array<Record<string, unknown>>;
+    return rows.map((r) => {
+      let parts: Array<{ scope: string; sourcePath: string; chars: number }> = [];
+      try {
+        parts = JSON.parse(String(r["parts_json"] ?? "[]")) as typeof parts;
+      } catch {
+        // 坏 parts 不该让整条日志读不出来
+      }
+      return {
+        id: Number(r["id"]),
+        runtimeId: String(r["runtime_id"]),
+        rootPath: String(r["root_path"]),
+        userText: String(r["user_text"]),
+        injectedBlock: String(r["injected_block"]),
+        injectedChars: Number(r["injected_chars"]),
+        parts,
+        createdAt: Number(r["created_at"]),
+      };
+    });
+  }
+
+  // ---- curator 遥测（docs/10 WP-9）--------------------------------------------
+
+  listMemoryMeta(prefix?: string): Array<{
+    path: string; bytes: number; charUsed: number; useCount: number;
+    lastUsedAt: number | null; hitCount: number; lastHitAt: number | null;
+    state: string; pinned: boolean; createdAt: number;
+  }> {
+    const rows = (
+      prefix === undefined
+        ? this.db.prepare(`SELECT * FROM memory_meta ORDER BY path`).all()
+        : this.db.prepare(`SELECT * FROM memory_meta WHERE path LIKE ? ORDER BY path`).all(`${prefix}%`)
+    ) as Array<Record<string, unknown>>;
+    return rows.map((r) => ({
+      path: String(r["path"]),
+      bytes: Number(r["bytes"]),
+      charUsed: Number(r["char_used"]),
+      useCount: Number(r["use_count"]),
+      lastUsedAt: r["last_used_at"] === null ? null : Number(r["last_used_at"]),
+      hitCount: Number(r["hit_count"]),
+      lastHitAt: r["last_hit_at"] === null ? null : Number(r["last_hit_at"]),
+      state: String(r["state"]),
+      pinned: Number(r["pinned"]) === 1,
+      createdAt: Number(r["created_at"]),
+    }));
+  }
+
+  upsertMemoryMeta(m: {
+    path: string; bytes: number; charUsed: number; useCount: number;
+    lastUsedAt: number | null; hitCount: number; lastHitAt: number | null;
+    state: string; pinned: boolean; createdAt: number;
+  }): void {
+    this.db
+      .prepare(
+        `INSERT INTO memory_meta
+         (path, bytes, char_used, use_count, last_used_at, hit_count, last_hit_at, state, pinned, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(path) DO UPDATE SET
+           bytes=excluded.bytes, char_used=excluded.char_used,
+           use_count=excluded.use_count, last_used_at=excluded.last_used_at,
+           hit_count=excluded.hit_count, last_hit_at=excluded.last_hit_at,
+           state=excluded.state, pinned=excluded.pinned`,
+      )
+      .run(
+        m.path, m.bytes, m.charUsed, m.useCount, m.lastUsedAt,
+        m.hitCount, m.lastHitAt, m.state, m.pinned ? 1 : 0, m.createdAt,
+      );
+  }
+
+  /** 记一次「被注入过」—— curator 判断「多久没用了」的唯一依据 */
+  markMemoryUsed(path: string, at: number, charUsed: number): void {
+    this.db
+      .prepare(
+        `INSERT INTO memory_meta (path, bytes, char_used, use_count, last_used_at, state, pinned, created_at)
+         VALUES (?, ?, ?, 1, ?, 'active', 0, ?)
+         ON CONFLICT(path) DO UPDATE SET
+           use_count = use_count + 1, last_used_at = excluded.last_used_at, char_used = excluded.char_used`,
+      )
+      .run(path, charUsed, charUsed, at, at);
   }
 
   private toRow(r: Record<string, unknown>): SessionRow {
