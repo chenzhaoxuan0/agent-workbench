@@ -68,13 +68,23 @@ type ImAccount = ChannelAccount & {
 
 /**
  * 表情枚举名的形状。**跟后端 `channels/feishu.ts` 的 `emojiOr` 逐字对齐**：
- * `^[A-Z_]{1,24}$`（先 trim + toUpperCase 再判）。
+ * `^[A-Za-z0-9_]{1,32}$`，只 trim、**不做大小写转换**。
  *
- * 之所以抄它的规则而不是自己写一个宽松的：这个校验存在的**唯一理由**是后端对不合规值
- * 是**静默回落**到默认值的（不报错、不提示）。规则一旦比它宽，就会出现「界面说是好的、
- * 实际上已经换回默认值」；比它严，则只是多一句提醒。两头都错，只有一条路是对的。
+ * ⚠️ 为什么必须接受大小写混用：飞书官方枚举里两种都有 ——
+ * 全大写（DONE / SMILE / HEART / THINKING / OKR…）和驼峰/带下划线
+ * （**Typing** / EatingFood / MeMeMe / LGTM / ThumbsDown / StatusReading /
+ * Status_PrivateMessage / XmasHat / 18X…）。曾经这里写的是 `^[A-Z_]{1,24}$`
+ * 且带 `toUpperCase`，那会把合法的 `Typing` 变成非法的 `TYPING`，
+ * 结果就是「表情功能静默失灵」——和填错值是同一种症状。
+ *
+ * 抄后端规则而不是自己写宽松的：不合规值后端是**静默回落**到默认值的
+ * （不报错不提示）。规则比它宽 = 界面说好的、实际已换回默认值；比它严 = 多一句提醒。
+ * 两头都错，只有一条路是对的。
  */
-const EMOJI_NAME = /^[A-Z_]{1,24}$/;
+const EMOJI_NAME = /^[A-Za-z0-9_]{1,32}$/;
+
+/** 官方枚举清单：值填错时照这个查，别猜。 */
+const EMOJI_DOC = "https://open.feishu.cn/document/server-docs/im-v1/message-reaction/emojis-introduce";
 
 export function ChannelSection({
   botId,
@@ -373,15 +383,14 @@ function EmojiField({ label, value, onChange }: { label: string; value: string; 
         <input
           value={value}
           onChange={(e) => onChange(e.target.value)}
-          // 失焦时归一化：跟后端 emojiOr 做的是同一件事（trim + 大写），所以框里
-          // 显示的就是实际生效的那个值。但**不删字符** —— 删了就看不出「你填错了」，
-          // 那句提示也就没了意义。
+          // 失焦时只 trim，**不做大小写转换** —— 官方枚举大小写混用（Typing 是驼峰、
+          // DONE 是全大写），转一下就把合法值改非法了。跟后端 emojiOr 保持一致。
           onBlur={() => {
-            if (trimmed !== value) onChange(trimmed.toUpperCase());
+            if (trimmed !== value) onChange(trimmed);
           }}
           spellCheck={false}
           autoComplete="off"
-          placeholder="SMILE"
+          placeholder={label === "收到消息" ? "Typing" : "DONE"}
           aria-label={`${label}的表情枚举名`}
           aria-invalid={invalid}
           className={cn(
@@ -401,11 +410,21 @@ function EmojiField({ label, value, onChange }: { label: string; value: string; 
       </div>
       {invalid ? (
         <p className="text-[10px] leading-relaxed text-loss">
-          这里要填飞书的表情枚举名（1–24 个大写字母或下划线，如 SMILE、DONE），
-          不是 👍 这样的表情字符 —— 填错不会报错，后端会悄悄换回默认值。
+          这里要填飞书的表情枚举名（字母/数字/下划线），不是 👍 这样的表情字符 ——
+          填错不会报错，后端会悄悄换回默认值。
         </p>
       ) : (
-        <p className="text-[10px] text-ash">枚举名，如 SMILE / DONE；留空 = 不加这个表情</p>
+        <p className="text-[10px] text-ash">
+          枚举名（大小写按官方，Typing / DONE / SMILE / HEART…）；留空 = 不加这个表情 ·{" "}
+          <a
+            href={EMOJI_DOC}
+            target="_blank"
+            rel="noreferrer"
+            className="underline decoration-line underline-offset-2 hover:text-graphite"
+          >
+            查全部枚举
+          </a>
+        </p>
       )}
     </div>
   );

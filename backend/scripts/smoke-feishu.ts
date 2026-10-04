@@ -162,6 +162,29 @@ if (cli.available) {
   ok(true, "lark-cli 不在，跳过真 profile 断言");
 }
 
+console.log("\n[14] 表情枚举：官方是大小写混用，不能被改写");
+{
+  // 三个账号：显式驼峰 / 完全缺省 / 显式留空
+  await registry.putBot(def({
+    channels: [{ kind: "feishu", enabled: true, accounts: [
+      { id: "main", profile: "p", ackEmoji: "Typing", doneEmoji: "DONE", streaming: true },
+      { id: "plain", profile: "p" },
+      { id: "off", profile: "p", ackEmoji: "", doneEmoji: "" },
+    ] }],
+  }) as never);
+  await gateway.reconcile();
+  const specs = gateway.specsOf("smoke-bot");
+  const main1 = specs.find((x) => x.key.endsWith("main"));
+  const plain = specs.find((x) => x.key.endsWith("plain"));
+  const off = specs.find((x) => x.key.endsWith("off"));
+  ok(main1?.ackEmoji === "Typing", "驼峰 Typing 原样保留（曾经被 toUpperCase 变成非法的 TYPING）", main1?.ackEmoji);
+  ok(main1?.doneEmoji === "DONE", "全大写 DONE 正常", main1?.doneEmoji);
+  ok(main1?.streaming === true, "streaming 读到", main1?.streaming);
+  ok(plain?.ackEmoji === "Typing", "缺省收到表情 = Typing", plain?.ackEmoji);
+  ok(plain?.doneEmoji === "DONE", "缺省答完表情 = DONE", plain?.doneEmoji);
+  ok(plain?.streaming === false, "缺省流式 = 关", plain?.streaming);
+  ok(off?.ackEmoji === "" && off?.doneEmoji === "", "显式留空 = 不加表情（不是回落默认）", { ack: off?.ackEmoji, done: off?.doneEmoji });
+}
 console.log("\n[11] 绑定向导：列出本机飞书机器人（带头像，不是光一串 ID）");
 const pl = await larkProfileList();
 ok(typeof pl.available === "boolean", "可探测 lark-cli 是否可用", pl.available);

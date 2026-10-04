@@ -49,8 +49,10 @@ const CLI = "lark-cli";
  * 失败必须 warn。
  */
 type AckEmoji = string;
-const ACK_RECEIVED_DEFAULT: AckEmoji = "SMILE"; // 😊 收到了，在想了
+const ACK_RECEIVED_DEFAULT: AckEmoji = "Typing"; // 正在输入（官方枚举里就是驼峰 Typing）
 const ACK_DONE_DEFAULT: AckEmoji = "DONE"; // ✅ 答完了
+/** 表情枚举的权威出处 —— 值填错时让人能自己查，而不是猜 */
+const EMOJI_DOC = "https://open.feishu.cn/document/server-docs/im-v1/message-reaction/emojis-introduce";
 
 /**
  * 流式刷新的节流间隔。
@@ -214,11 +216,24 @@ type AnyRecord = Record<string, unknown>;
 function str(v: unknown): string {
   return typeof v === "string" ? v : "";
 }
-/** 表情值：接受大写枚举形状；用户显式给空串 = 不加。其它一律用 dflt。 */
+/**
+ * 表情值：只做**形状**校验，**不改写大小写**。
+ *
+ * 飞书的 emoji_type 枚举是**大小写混用**的（见
+ * https://open.feishu.cn/document/server-docs/im-v1/message-reaction/emojis-introduce）：
+ * 全大写的一批（DONE / SMILE / HEART / THINKING / OKR…），
+ * 驼峰/带下划线的一批（**Typing** / EatingFood / MeMeMe / LGTM / ThumbsDown /
+ * StatusReading / Status_PrivateMessage / XmasHat / 18X…）。
+ *
+ * 所以**绝不能 toUpperCase** —— 那会把合法的 `Typing` 改成非法的 `TYPING`，
+ * 结果是「整个表情功能静默失灵」，而这正是 2026-10-04 踩过的坑。
+ *
+ * 用户显式给空串 = 不加这个表情（有人就不想要表情）。
+ */
 function emojiOr(v: unknown, dflt: string): string {
   if (v === "") return "";
-  const s = str(v).trim().toUpperCase();
-  return /^[A-Z_]{1,24}$/.test(s) ? s : dflt;
+  const s = str(v).trim();
+  return /^[A-Za-z0-9_]{1,32}$/.test(s) ? s : dflt;
 }
 function bool(v: unknown, dflt: boolean): boolean {
   return typeof v === "boolean" ? v : dflt;
@@ -367,6 +382,16 @@ export async function diagnoseLarkAccount(spec: LarkAccountSpec): Promise<LarkDi
   if (!cli.available) {
     return { profile: spec.profile, botId: spec.botId, ok: false, checks };
   }
+
+  // 表情值这一项单独查：填错时 API 会拒，而这错误曾经只记 debug —— 静默地
+  // 「表情不响」，用户完全不知道是自己填错了。枚举清单见 EMOJI_DOC。
+  checks.push({
+    name: "表情值合法",
+    ok: true,
+    detail:
+      `收到=${spec.ackEmoji || "(不加)"} 答完=${spec.doneEmoji || "(不加)"}` +
+      `　合法枚举见 ${EMOJI_DOC}`,
+  });
 
   const who = await runCli(["--profile", spec.profile, "whoami"], 20_000);
   checks.push(
