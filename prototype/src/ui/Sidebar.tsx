@@ -482,7 +482,9 @@ function UnitRow({
   schedule?: string;
 }) {
   // ZCode: unavailableLocalDirectory —— 路径不可用要显式说出来，不能当成正常单元
-  const unavailable = unit.tags.includes("目录不可用");
+  // **兜底 ?? []**：bot.json 是手可编辑的（见 useWorkbench 的合并守卫注释），
+  // 一个字段缺失不该让整个界面白屏。管家 bot 一度就因为没写 tags 把整页搞崩了。
+  const unavailable = (unit.tags ?? []).includes("目录不可用");
   // 只数启用的渠道：声明了但停用的不算「找得到我」
   // 飞书要**逐账号**画标记——一个 bot 可以挂几个飞书机器人，合并成一个图标
   // 就又回到「看不出是哪个」了

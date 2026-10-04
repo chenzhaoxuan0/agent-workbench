@@ -152,26 +152,25 @@ void ensureSteward(config.homeDir)
   .catch((err: unknown) => log.warn("steward bot init failed", { error: err instanceof Error ? err.message : String(err) }));
 
 /**
- * 管家定义的**规范形状**：只取我们自己管的那几个键。
+ * 管家定义的**规范形状**，用于幂等比较。
  *
- * 两个坑都在这里踩过：
- * 1. 不能拿整个对象比 —— `getBot` 返回的是 hydrate 过的定义（多出 agentsMd /
- *    meta / sourcePath），跟原始定义永远不相等，会导致每次启动都白重写。
- * 2. **不能漏字段** —— 加了 `kind` 却没加进这个形状，幂等比较就说「没变化」，
- *    新字段永远写不进盘上。形状必须覆盖 stewardDefinition 的每一个自有字段。
+ * 刻意**不手列字段**。前两版都手列过，两次都栽在同一处：
+ * 加了新字段（`kind`、又 `tags`）却忘了加进这个列表 → 比较永远说「没变化」
+ * → 新字段永远写不进盘，而且**没有任何报错**。
+ *
+ * 改成从定义本身派生：排除「hydrate 产物 + 每次都变的」那几个键，
+ * 其余全参与比较。这样新增字段自动被覆盖，这类 bug 结构上不再可能发生。
  */
+// hydrate 产物 + 每次都变的键。注意 `$meta` 带美元号 —— bot.list 里实际是这个键名。
+const STEWARD_VOLATILE = new Set(["updatedAt", "meta", "$meta", "agentsMd", "agentsMdMeta", "revision", "sourcePath"]);
+
 function stewardShape(def: Record<string, unknown>): string {
-  return JSON.stringify({
-    id: def["id"],
-    role: def["role"],
-    kind: def["kind"],
-    name: def["name"],
-    rootPath: def["rootPath"],
-    crossSearch: def["crossSearch"],
-    synthetic: def["synthetic"],
-    bindings: def["bindings"] ?? null,
-    note: def["note"] ?? null,
-  });
+  const out: Record<string, unknown> = {};
+  for (const k of Object.keys(def).sort()) {
+    if (STEWARD_VOLATILE.has(k)) continue;
+    out[k] = def[k];
+  }
+  return JSON.stringify(out);
 }
 
 // ---- T3 式执行器目录（按需开启的可见性面）-----------------------------------

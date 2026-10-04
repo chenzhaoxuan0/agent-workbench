@@ -102,7 +102,7 @@ export function UnitList() {
                     {u.schedule.description}
                   </span>
                 )}
-                {u.tags.map((t) => (
+                {(u.tags ?? []).map((t) => (
                   <span key={t} className="rounded-chip bg-line-soft px-2 py-0.5 text-caption text-graphite">
                     {t}
                   </span>

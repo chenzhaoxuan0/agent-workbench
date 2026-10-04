@@ -86,6 +86,10 @@ export function stewardDefinition(rootPath: string): Record<string, unknown> {
     rootPath,
     crossSearch: true,
     synthetic: true,
+    // **tags 必填**：`Sidebar.tsx:485` 与 `UnitList.tsx:105` 直接 `unit.tags.includes/map`，
+    // 没有兜底。缺了它 React 渲染 UnitRow 就抛 TypeError，**整个界面白屏**。
+    // 其他 bot 都有这个字段（导入时打的标记），管家是程序造的，一度漏了。
+    tags: [],
     // **必须显式给 bindings**：askBot.primaryBinding 缺省回落 mockperm ——
     // 那是权限闸试金石，管家会「能列出来但说不了话」。
     //

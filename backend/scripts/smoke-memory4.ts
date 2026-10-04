@@ -168,6 +168,9 @@ async function main(): Promise<void> {
   check("管家满足前端最小必填面", typeof sd["id"] === "string" && typeof sd["name"] === "string" && typeof sd["rootPath"] === "string" && Array.isArray(sd["bindings"]));
   check("管家绑的是 mcode", (sd["bindings"] as Array<{ runtimeId?: string }>)[0]?.runtimeId === "mcode", sd["bindings"]);
   check("**管家不设 modelHint**（写死会被 resolveModelFor 静默丢弃）", !JSON.stringify(sd).includes("modelHint"), sd);
+  // tags 缺失曾经把整个界面白屏：Sidebar.tsx:485 / UnitList.tsx:105 直接
+  // `unit.tags.includes/map`，没有兜底 → UnitRow 抛 TypeError → 整页白。
+  check("**管家定义带 tags**（渲染层直接 unit.tags.includes）", Array.isArray(sd["tags"]), sd["tags"]);
 
   // 权限在入口钉死
   let denied: unknown;
