@@ -72,6 +72,16 @@ export async function ensureSteward(homeDir: string): Promise<{ rootPath: string
 /** 管家跑在哪个执行器上。mcode：本地常驻、账号已托管、模型由它自己的默认决定。 */
 export const STEWARD_RUNTIME_ID = "mcode";
 
+/**
+ * 管家绑的 lark-cli profile。
+ *
+ * **一个 profile 只能属于一个 bot**：`FeishuGateway.reconcile` 里
+ * `if (this.#conns.has(spec.key)) continue;` —— 同一 profile 只建一条连接，
+ * 先声明的 bot 赢，后来的被静默丢弃（没有告警）。所以这不是「共享机器人」，
+ * 想要管家独占飞书就得独占这个 profile。
+ */
+export const STEWARD_FEISHU_PROFILE = "cli_a94d3ea8b5f99cc0";
+
 /** 管家的 bot 定义。放进注册表就能被 listBots / getBot 认出来。 */
 export function stewardDefinition(rootPath: string): Record<string, unknown> {
   return {
@@ -95,6 +105,21 @@ export function stewardDefinition(rootPath: string): Record<string, unknown> {
     // AGENTS.md 是**用户的**：ensureSteward 的幂等比较把 identity 排除在外，
     // 所以用户手改岗位说明书不会被启动流程覆盖回去。
     identity: { sourcePath: "AGENTS.md", role: "跨项目检索的唯一默认入口" },
+    // 飞书通道：**profile 引用，不存明文密钥**。appSecret 明文形态会被
+    // registry 判为 channels malformed 丢弃，也会被 inspect.ts 判为
+    // 「bot.json 带密钥」并要求补 .gitignore —— 所以一律用 profile。
+    //
+    // 这个 profile 原属「研究笔记整理」（一个测试 bot），2026-10-04 按用户要求
+    // 转移过来。**注意 larkAccounts 的去重是「先到先得」**：
+    // `if (this.#conns.has(spec.key)) continue;` —— 两个 bot 同时声明同一个
+    // profile，后处理的那个会被**静默丢弃**。所以这里只此一家声明。
+    channels: [
+      {
+        kind: "feishu",
+        enabled: true,
+        accounts: [{ id: "main", profile: STEWARD_FEISHU_PROFILE, mentionOnly: true }],
+      },
+    ],
     // **必须显式给 bindings**：askBot.primaryBinding 缺省回落 mockperm ——
     // 那是权限闸试金石，管家会「能列出来但说不了话」。
     //
