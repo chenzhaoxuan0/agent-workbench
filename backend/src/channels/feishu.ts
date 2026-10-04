@@ -111,8 +111,13 @@ class FeishuStreamer {
   #timer: ReturnType<typeof setTimeout> | null = null;
   #text = "";
   #lastSent = "";
-  /** bot 发出去那条占位消息的 id —— 编辑它，而不是再发一条 */
+  /** bot 发出去那条占位消息的 id —— 编辑它，而不是再发一条。
+   *  
+ull 是「首条还没发出去」的哨兵，**不是**「拿不到 id」的哨兵 —— 两者混用会重复发消息。 */
   #msgId: string | null = null;
+  /** 首条发出去了，但响应里解析不出自己的消息 id。
+   *  这时**不能编辑**（没有可编辑的对象），中间刷新丢弃，收尾那条当新消息发出去。 */
+  #canEdit = true;
   #busy = false;
   #done = false;
 
@@ -167,10 +172,11 @@ class FeishuStreamer {
     this.#unsubscribe = null;
     // 优先用会话累出来的文本（比事件流更全），空则用最终回复
     const body = (this.#text.trim() === "" ? finalText : this.#text).trim();
-    await this.#send(body === "" ? "(空回复)" : body.slice(0, STREAM_MAX_CHARS));
+    await this.#send(body === "" ? "(空回复)" : body.slice(0, STREAM_MAX_CHARS), true);
   }
 
-  async #send(text: string): Promise<void> {
+  /** inal = 这是收尾那一条。拿不到 id 时只有它值得新发一条，中间刷新丢掉即可。 */
+  async #send(text: string, final = false): Promise<void> {
     try {
       if (this.#msgId === null) {
         const r = await runCli([
@@ -184,12 +190,30 @@ class FeishuStreamer {
           log.warn("feishu: 流式首条发送失败（退回普通回复）", { code: r.code, stderr: r.stderr.slice(0, 200) });
           return;
         }
-        this.#msgId = this.#sentMessageId(r.stdout) ?? " keep";
-      } else {
+        const sentId = this.#sentMessageId(r.stdout);
+        if (sentId !== null) {
+          this.#msgId = sentId;
+        } else {
+          this.#canEdit = false;
+          log.warn("feishu: 首条已发出但解析不出 message_id，改为不再编辑（收尾会新发一条）", {
+            stdout: r.stdout.slice(0, 200),
+          });
+        }
+      } else if (this.#canEdit) {
         await runCli([
           "--profile", this.spec.profile,
           "im", "+messages-edit",
           "--message-id", this.#msgId,
+          "--text", text,
+        ], 20_000);
+      } else if (!final) {
+        return;
+      } else {
+        // 没有可编辑的对象，中间刷新全丢；收尾这条当普通新消息发出去，别让用户只看到占位符
+        await runCli([
+          "--profile", this.spec.profile,
+          "im", "+messages-reply",
+          "--message-id", this.replyTo,
           "--text", text,
         ], 20_000);
       }
