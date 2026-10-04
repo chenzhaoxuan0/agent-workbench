@@ -181,7 +181,12 @@ function GroupCard({ children }: { children: ReactNode }) {
   return <div className="overflow-hidden rounded-card border border-line bg-card">{children}</div>;
 }
 
-function Toggle({ on, onChange }: { on: boolean; onChange?: (v: boolean) => void }) {
+/**
+ * 开关。渠道账号区（ChannelSection 的「流式输出」）也用这个，所以从页面里导出，
+ * 而不是让那边再抄一份形状相同的。方向是安全的：SettingsPage 不引用 AddBotDialog，
+ * 不会绕成环。
+ */
+export function Toggle({ on, onChange }: { on: boolean; onChange?: (v: boolean) => void }) {
   return (
     <button
       role="switch"

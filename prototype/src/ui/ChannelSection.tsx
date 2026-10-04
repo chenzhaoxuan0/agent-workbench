@@ -18,6 +18,9 @@
  * 飞书：多账号、websocket 长连接、纯文本收发。卡片与附件在后续批次。
  * Telegram：长轮询，纯文本。
  * webhook：只需要一个 secret，天然 per-bot，已可用。
+ *
+ * 账号上的「流式输出 / 两个表情」是 IM 里的**表现**（它在别人面前长什么样），
+ * 与 profile / token 那些**身份**字段分开写，见 ImBody。
  */
 
 import { useEffect, useState } from "react";
@@ -37,6 +40,7 @@ import {
 import type { DiagnosisResult } from "../adapters/daemon/client.ts";
 import type { BotChannel, ChannelAccount } from "../core/units.ts";
 import { FeishuSetup } from "./FeishuSetup.tsx";
+import { Toggle } from "./SettingsPage.tsx";
 import { cn } from "./cn.ts";
 
 /** 渠道种类 → 人话。Discord 不在列：零实现，放进选项就是骗人。 */
@@ -45,6 +49,32 @@ const KINDS = [
   { kind: "telegram" as const, label: "Telegram", hint: "长轮询 · 纯文本" },
   { kind: "webhook" as const, label: "Webhook", hint: "自建服务推给这个 bot · 最简单" },
 ];
+
+/**
+ * 账号上后端已实现、但共享类型还没声明的三个字段。
+ *
+ * `core/units.ts` 是前后端共享文件（backend 的 host.ts 从那里 import），所以这里
+ * 不往里加字段 —— 跟 SettingsPage 里 crossSearch 是同一个处理。bot.list 会把
+ * bot.json 的额外字段原样带回、bot.put 也原样落盘，运行时它们本来就在对象上。
+ */
+type ImAccount = ChannelAccount & {
+  /** 收到消息时加的表情：飞书表情的**枚举名**（SMILE / DONE…），不是 emoji 字符。空串 = 不加 */
+  readonly ackEmoji?: string;
+  /** 答完时加的表情，同上 */
+  readonly doneEmoji?: string;
+  /** 是否把生成过程流式刷到 IM。缺省 = 关 */
+  readonly streaming?: boolean;
+};
+
+/**
+ * 表情枚举名的形状。**跟后端 `channels/feishu.ts` 的 `emojiOr` 逐字对齐**：
+ * `^[A-Z_]{1,24}$`（先 trim + toUpperCase 再判）。
+ *
+ * 之所以抄它的规则而不是自己写一个宽松的：这个校验存在的**唯一理由**是后端对不合规值
+ * 是**静默回落**到默认值的（不报错、不提示）。规则一旦比它宽，就会出现「界面说是好的、
+ * 实际上已经换回默认值」；比它严，则只是多一句提醒。两头都错，只有一条路是对的。
+ */
+const EMOJI_NAME = /^[A-Z_]{1,24}$/;
 
 export function ChannelSection({
   botId,
@@ -229,9 +259,15 @@ function ImBody({
   onChange: (next: BotChannel) => void;
 }) {
   const isFeishu = channel.kind === "feishu";
-  const accounts: readonly ChannelAccount[] = accountsOf(channel);
+  // 这三个字段运行时就在对象上（bot.list 原样带回），只是共享类型没声明
+  const accounts = accountsOf(channel) as readonly ImAccount[];
 
-  const setAccount = (i: number, patch: Partial<ChannelAccount>) => {
+  /**
+   * 改一个账号的字段。**只 spread、不重建** —— 账号上还有 profile / mentionOnly /
+   * allowFrom 等字段是别处（飞书向导、诊断）带回来的，重建对象就会把它们抹掉，
+   * 保存时等于静默删除用户的配置。
+   */
+  const setAccount = (i: number, patch: Partial<ImAccount>) => {
     const next = accounts.map((a, j) => (j === i ? { ...a, ...patch } : a));
     onChange({ ...channel, accounts: next });
   };
@@ -281,12 +317,96 @@ function ImBody({
               </Field>
             </>
           )}
+          <ImBehavior account={acc} onPatch={(patch) => setAccount(i, patch)} />
         </div>
       ))}
       <button onClick={addAccount} className="flex items-center gap-1 rounded-btn px-1.5 py-1 text-caption text-graphite hover:bg-line-soft hover:text-ink">
         <Plus size={9} />
         再加一个账号（一个飞书应用 = 一个机器人）
       </button>
+    </div>
+  );
+}
+
+/**
+ * 账号级的 IM 表现：流式输出 + 两个表情。
+ *
+ * 位置在飞书向导之后、诊断之前 —— 上面那些回答「它是谁」（哪个机器人、哪个 profile），
+ * 这三条回答「它在群里长什么样」，诊断回答「通不通」。三件事，挨着但不是一回事。
+ */
+function ImBehavior({ account, onPatch }: { account: ImAccount; onPatch: (patch: Partial<ImAccount>) => void }) {
+  return (
+    <div className="space-y-1.5 border-t border-line pt-2">
+      <label className="flex items-center gap-1.5 text-caption text-graphite">
+        <Toggle on={account.streaming === true} onChange={(v) => onPatch({ streaming: v })} />
+        流式输出
+      </label>
+      <p className="text-[10px] leading-relaxed text-ash">
+        开着：先发一条「正在思考…」，再边生成边反复改同一条消息。IM 里来回编辑比干等结果更吵，所以默认关。
+      </p>
+      <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+        <EmojiField label="收到消息时" value={account.ackEmoji ?? ""} onChange={(v) => onPatch({ ackEmoji: v })} />
+        <EmojiField label="答完时" value={account.doneEmoji ?? ""} onChange={(v) => onPatch({ doneEmoji: v })} />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 表情枚举名输入框。
+ *
+ * 「清空」写的是**空串，而不是把这个键删掉** —— 后端对「缺字段」和「空串」是两回事：
+ * 缺字段 = 走默认值，空串 = 明确不要这个表情。这两件事要是搞混，「清空」就变成了
+ * 「恢复默认」，用户会以为关掉了其实没关。
+ *
+ * 提示里**只举 SMILE / DONE**：后端注释里明写「表情值不猜」—— 它试过 EYES，飞书不认，
+ * 整个功能静默失灵。宁可少给两个例子，也不把没验证过的枚举名推给用户。
+ */
+function EmojiField({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
+  const trimmed = value.trim();
+  const invalid = trimmed !== "" && !EMOJI_NAME.test(trimmed);
+
+  return (
+    <div className="space-y-1">
+      <span className="block text-caption text-graphite">{label}的表情</span>
+      <div className="flex items-center gap-1">
+        <input
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          // 失焦时归一化：跟后端 emojiOr 做的是同一件事（trim + 大写），所以框里
+          // 显示的就是实际生效的那个值。但**不删字符** —— 删了就看不出「你填错了」，
+          // 那句提示也就没了意义。
+          onBlur={() => {
+            if (trimmed !== value) onChange(trimmed.toUpperCase());
+          }}
+          spellCheck={false}
+          autoComplete="off"
+          placeholder="SMILE"
+          aria-label={`${label}的表情枚举名`}
+          aria-invalid={invalid}
+          className={cn(
+            "w-full min-w-0 rounded-input border bg-rail px-2 py-1 font-mono text-caption text-ink outline-none placeholder:text-ash",
+            invalid ? "border-loss focus:border-loss" : "border-transparent focus:border-teal",
+          )}
+        />
+        {value !== "" && (
+          <button
+            onClick={() => onChange("")}
+            aria-label={`清空${label}的表情`}
+            className="shrink-0 rounded-btn border border-line px-1.5 py-1 text-[10px] text-graphite hover:bg-line-soft hover:text-ink"
+          >
+            清空
+          </button>
+        )}
+      </div>
+      {invalid ? (
+        <p className="text-[10px] leading-relaxed text-loss">
+          这里要填飞书的表情枚举名（1–24 个大写字母或下划线，如 SMILE、DONE），
+          不是 👍 这样的表情字符 —— 填错不会报错，后端会悄悄换回默认值。
+        </p>
+      ) : (
+        <p className="text-[10px] text-ash">枚举名，如 SMILE / DONE；留空 = 不加这个表情</p>
+      )}
     </div>
   );
 }
