@@ -62,7 +62,7 @@ export function PermissionDialog() {
   const mode = useWorkbench((s) => s.permissionMode);
   const unit = useWorkbench((s) => s.units.find((u) => u.id === s.activeUnitId));
 
-  // 权限模式决定「哪些请求还��弹框」：
+  // 权限模式决定「哪些请求还会弹框」：
   // bypass 全自动；plan 全部拦下；acceptEdits 只对文件写入放行。
   // 模式变了，队列里已经产生的待裁决项也要按新模式重算。
   const pending = useMemo<readonly PendingPermission[]>(
