@@ -66,11 +66,32 @@ function pickArray(json: unknown): Array<Record<string, unknown>> {
   return [];
 }
 
-async function weknoraSaveFact(cfg: WeknoraConfig, kbId: string, title: string, content: string): Promise<void> {
-  await weknoraRequest(cfg, `/knowledge-bases/${kbId}/knowledge/manual`, {
+/**
+ * 写一条事实到 WeKnora。
+ *
+ * **踩过的坑（2026-10-04 实测）**：`POST .../knowledge/manual` 返回 200，
+ * 但建出来的文档是 `parse_status: "draft"` + `enable_status: "disabled"`，
+ * **永远不会被解析、也永远搜不到** —— 而旧实现把这 200 当成功，于是
+ * 「写入成功、检索查不到」，是一个静默失败。
+ *
+ * 正确序列是三步，第二步不能省：
+ *   1. POST .../knowledge/manual   → 拿 id（draft/disabled）
+ *   2. POST /api/v1/knowledge/{id}/reparse  → 触发解析（实测这步才让 parse 转 finalizing → completed）
+ *   3. （可选）等 parse 变 completed —— 解析是异步的，本次不阻塞等待
+ */
+async function weknoraSaveFact(cfg: WeknoraConfig, kbId: string, title: string, content: string): Promise<{ knowledgeId: string; indexed: boolean }> {
+  const created = (await weknoraRequest(cfg, `/knowledge-bases/${kbId}/knowledge/manual`, {
     method: "POST",
     body: JSON.stringify({ title, content }),
-  });
+  })) as { data?: { id?: string; parse_status?: string } };
+
+  const knowledgeId = created.data?.id;
+  if (typeof knowledgeId !== "string" || knowledgeId === "") {
+    throw new Error("weknora manual knowledge 返回里没有 id");
+  }
+  // 第二步：触发解析。不做这步，文档永远是 disabled draft。
+  await weknoraRequest(cfg, `/knowledge/${knowledgeId}/reparse`, { method: "POST", body: "{}" });
+  return { knowledgeId, indexed: true };
 }
 
 async function weknoraSearch(cfg: WeknoraConfig, kbIds: readonly string[], query: string, topK: number): Promise<MemoryHit[]> {

@@ -466,10 +466,14 @@ export class Store {
     lastUsedAt: number | null; hitCount: number; lastHitAt: number | null;
     state: string; pinned: boolean; createdAt: number;
   }> {
+    // 不用 `LIKE '${prefix}%'`：`_` 和 `%` 在 LIKE 里是通配符，
+    // 而 Windows 用户目录带下划线极常见（my_project / agent_workbench）——
+    // 会把**别的项目**的遥测也捞进来，curator 的项目隔离就破了。
+    // `substr(path,1,?)=?` 是纯字符串前缀比较，没有通配符语义。
     const rows = (
       prefix === undefined
         ? this.db.prepare(`SELECT * FROM memory_meta ORDER BY path`).all()
-        : this.db.prepare(`SELECT * FROM memory_meta WHERE path LIKE ? ORDER BY path`).all(`${prefix}%`)
+        : this.db.prepare(`SELECT * FROM memory_meta WHERE substr(path, 1, ?) = ? ORDER BY path`).all(prefix.length, prefix)
     ) as Array<Record<string, unknown>>;
     return rows.map((r) => ({
       path: String(r["path"]),

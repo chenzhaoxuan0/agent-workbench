@@ -346,6 +346,24 @@ export async function runCurator(
     // 动手之前先备份（dry-run 不备份）
     const backup = cfg.dryRun ? null : await snapshot(toTouch, deps.homeDir);
 
+    // **状态必须落库**（review 抓到的阻断项）。
+    // 原来只在传了 commit（改文件）时动手，却从不让 meta 记住新 state ——
+    // 于是 memory_meta.state 永远是 'active'，每轮都算出同一条流转、永远不收敛，
+    // 而报告里还写着「状态流转已按上表应用」。用户看到的是假话。
+    //
+    // **dry-run 绝不能落库**：它存在的意义就是「只看会发生什么」，
+    // 一旦在这里写 state，后面的真跑就把该发生的变化当成已经发生过了。
+    if (!cfg.dryRun) {
+      for (const t of transitions) {
+        const m = deps.meta.get(t.path);
+        if (m === undefined) continue;
+        try {
+          deps.meta.upsert({ ...m, state: t.to });
+        } catch (err: unknown) {
+          log.warn("curator state persist failed", { path: t.path, error: err instanceof Error ? err.message : String(err) });
+        }
+      }
+    }
     if (deps.commit !== undefined) {
       for (const t of transitions) await deps.commit(t.path, t.to === "archived" ? "archive" : t.to === "stale" ? "stale" : "restore");
     }
@@ -415,13 +433,16 @@ export function renderReport(r: CuratorReport, cfg: CuratorConfig): string {
       lines.push("## 审查建议", "", "全部建议保留原样。记忆表状态健康。", "");
     }
   }
+  const applied = r.transitions.filter((t) => !r.dryRun).length;
   lines.push(
     "---",
     "",
     r.dryRun
       ? "> **这是 dry-run：以上一条都没执行。** 去掉 --dryRun 才会真的动手。"
-      : "> LLM 审查只提建议，**一条都没执行**。状态流转已按上表应用。",
-    "> pinned 的条目自动流转与审查都会跳过。归档随时可 `restore` 回来。",
+      : `> 状态流转已落库（${applied}/${r.transitions.length} 条）。` +
+        "**LLM 审查只提建议，一条都没执行。**",
+    "> 文件本身不会被删改 —— 归档只改状态标记，内容原样保留，可随时 restore。",
+    "> pinned 的条目自动流转与审查都会跳过。",
     "",
   );
   void cfg;

@@ -42,11 +42,21 @@ export async function askModel(
     onStderrLine: (l) => log.debug("askModel stderr", { line: l.slice(0, 160) }),
   });
 
-  const timedOut = new Promise<null>((resolve) => setTimeout(() => resolve(null), opts.timeoutMs ?? 180_000));
+  // 超时定时器**必须清**：Promise.race 输的一方不会自动取消，不清的话它会一直
+  // armed 到超时（curator 那条是 600s），白占 event loop 句柄，还拖住进程退出。
+  // unref 则保证它自己不会成为「让进程活着的理由」。
+  let killTimer: NodeJS.Timeout | undefined;
+  const timedOut = new Promise<null>((resolve) => {
+    killTimer = setTimeout(() => {
+      child.kill();
+      resolve(null);
+    }, opts.timeoutMs ?? 180_000);
+    killTimer.unref();
+  });
   const exited = new Promise<number | null>((resolve) => child.once("exit", (code) => resolve(code)));
   const exitCode = await Promise.race([exited, timedOut]);
+  clearTimeout(killTimer);
   if (exitCode === null) {
-    child.kill();
     return { ok: false, text: "", skipReason: `${bin} 调用超时` };
   }
 

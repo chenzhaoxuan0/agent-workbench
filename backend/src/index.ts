@@ -54,7 +54,43 @@ setLogLevel(config.logLevel);
 
 mkdirSync(config.homeDir, { recursive: true });
 
+// ---- 端口预检（必须排在一切副作用之前）-------------------------------------
+//
+// 踩过的坑：Windows 的 Hyper-V / WSL 会保留一整段动态端口（本机实测
+// 5141–5240 被占，5181 正在其中），撞上时 `listen` 报 EACCES。
+// 而在这**之后**代码还会去起 telegram / feishu 网关、automation 调度器、
+// 记忆调度器 —— 侧效应全发生了才崩，留下半启动状态。
+//
+// 所以：先探端口，探不通立刻带着**可执行的**提示退出，一个副作用都不留。
 
+async function preflightPort(port: number, host: string): Promise<void> {
+  const { createServer } = await import("node:net");
+  await new Promise<void>((resolve, reject) => {
+    const srv = createServer();
+    srv.once("error", (err: NodeJS.ErrnoException) => {
+      const hint =
+        err.code === "EACCES"
+          ? "端口被系统保留了。Windows 的 Hyper-V / WSL 会留一整段动态端口，" +
+            "用 `netsh interface ipv4 show excludedportrange protocol=tcp` 就能看到。\n" +
+            `换一个不在保留段里的端口：后端 AGENT_WORKBENCH_PORT=<新端口>，前端 VITE_AGENT_WORKBENCH_PORT=<同一个>。`
+          : err.code === "EADDRINUSE"
+            ? "端口已被占用（可能已经有一个 daemon 在跑）。换个端口，或先停掉那个。"
+            : "换个端口试试。";
+      reject(Object.assign(new Error(`daemon 端口 ${host}:${port} 不可用 —— ${err.message}\n${hint}`), { code: "port_unavailable" }));
+    });
+    srv.once("listening", () => srv.close(() => resolve()));
+    srv.listen(port, host);
+  });
+}
+
+// top-level await：**await 真的挡住了后续初始化**。写成 `void preflightPort(...)`
+// 的话预检和后面的同步代码是并发的，侧效应照样会发生，等于没加。
+try {
+  await preflightPort(config.port, "127.0.0.1");
+} catch (err: unknown) {
+  console.error(`\n启动中止：${err instanceof Error ? err.message : String(err)}\n`);
+  process.exit(1);
+}
 
 // ---- 服务与执行器（先建好，REST 路由要引用）---------------------------------
 
@@ -100,10 +136,39 @@ memoryScheduler?.start();
 void ensureSteward(config.homeDir)
   .then(({ rootPath }) => {
     botRegistry.addRoot(rootPath);
-    return botRegistry.putBot(stewardDefinition(rootPath));
+    // 幂等：已经在盘上且定义没变就别重写。
+    // 每次启动都 putBot 会把 revision 一路顶高（实测重启 5 次就 revision=5），
+    // 白写盘，还会和别处的乐观锁打架。
+    return botRegistry.getBot(STEWARD_ID).then(async (existing) => {
+      const want = stewardDefinition(rootPath);
+      if (existing !== undefined && stewardShape(existing) === stewardShape(want)) {
+        return { id: STEWARD_ID, revision: undefined, unchanged: true as const };
+      }
+      const r = await botRegistry.putBot(want);
+      return { id: STEWARD_ID, revision: r.revision, unchanged: false as const };
+    });
   })
-  .then((id) => log.info("steward bot registered", { id }))
+  .then((r) => log.info("steward bot ready", { id: r.id, revision: r.revision, unchanged: r.unchanged }))
   .catch((err: unknown) => log.warn("steward bot init failed", { error: err instanceof Error ? err.message : String(err) }));
+
+/**
+ * 管家定义的**规范形状**：只取我们自己管的那几个键。
+ *
+ * 不能拿整个对象比 —— `getBot` 返回的是 hydrate 过的定义（多出 agentsMd /
+ * meta / sourcePath），跟原始定义永远不相等，会导致每次启动都白重写一次。
+ */
+function stewardShape(def: Record<string, unknown>): string {
+  return JSON.stringify({
+    id: def["id"],
+    role: def["role"],
+    name: def["name"],
+    rootPath: def["rootPath"],
+    crossSearch: def["crossSearch"],
+    synthetic: def["synthetic"],
+    bindings: def["bindings"] ?? null,
+    note: def["note"] ?? null,
+  });
+}
 
 // ---- T3 式执行器目录（按需开启的可见性面）-----------------------------------
 // 已注册的执行器出现在 adapter.list；未注册的已知驱动在这里以真实状态列出
@@ -846,6 +911,7 @@ async function shutdown(signal: string): Promise<void> {
   shuttingDown = true;
   log.info("shutting down", { signal });
   scheduler.stop();
+  memoryScheduler?.stop(); // 之前漏了：60s interval 会活到 process.exit，正在跑的日报/curator 被从中间砍断
   telegramGateway.stop();
   terminals.shutdown();
   const force = setTimeout(() => process.exit(0), 2000).unref(); // 挂起写兜底：2s 强制退

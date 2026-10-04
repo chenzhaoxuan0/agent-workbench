@@ -23,6 +23,10 @@ export interface RuleContext {
   readonly limit?: number;
   /** 是否已过 80% 提醒线 */
   readonly nearLimit: boolean;
+  /** 是否已经超了上限（注入侧会截断） */
+  readonly over?: boolean;
+  /** 现有条目数 */
+  readonly keptEntries?: number;
 }
 
 const SEPARATOR = "─".repeat(64);
@@ -40,7 +44,11 @@ export function renderRule(ctx: RuleContext): string {
     "",
     "怎么写：用你自带的文件工具直接编辑这个文件 ——",
     `　　${ctx.memoryPath}`,
-    "改动前系统会自动备份到工作台目录。超限会拒绝写入并给出提示。",
+    "改动前系统会自动备份到工作台目录。",
+    "",
+    "⚠ 重要：**你直接改文件时不会有任何拦截**。超过上限时系统只会在下次",
+    "对话里截断注入，让你知道该整合了 —— 但它不会阻止你写下去。",
+    "所以上限要靠你自己守：写之前先看一眼上面的用量。",
     "",
     "应该写：",
     "· 用户偏好与工作方式（\"写文案先出 3 版再选\"）",
@@ -61,11 +69,16 @@ export function renderRule(ctx: RuleContext): string {
     "· 差：On January 5th, 2026, the user asked me to look at their project…",
   ];
 
-  if (ctx.nearLimit) {
+  if (ctx.over === true) {
+    lines.push(
+      "",
+      `🚨 已经超限：${ctx.used}/${limit} 字符。下面给你看的是**截断版**（${ctx.keptEntries ?? "?"} 条里的一部分）。`,
+      "　　现在就整合：把相近的条目合并，删掉已不成立的。",
+    );
+  } else if (ctx.nearLimit) {
     lines.push(
       "",
       `⚠ 已用 ${pct}%。写新条目前先整合：把相近的条目合并成一条，或删掉已不成立的。`,
-      "　　合并后再写，不要硬塞 —— 硬塞会被拒绝。",
     );
   }
 

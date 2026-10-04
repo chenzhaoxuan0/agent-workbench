@@ -34,6 +34,13 @@ export const MEMORY_TEMPLATE = [
 /** 备份保留份数。超出后按时间淘汰最旧的。 */
 export const BACKUP_KEEP = 20;
 
+/** 日报文件名只认 YYYY-MM-DD。挡住 `../../../outside/creds` 这类穿越。 */
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+export function isValidDate(date: string): boolean {
+  return DATE_RE.test(date);
+}
+
 export interface ProjectMemoryPaths {
   readonly root: string;
   readonly memoryMd: string;
@@ -84,6 +91,8 @@ export async function readLongTerm(rootPath: string): Promise<MemoryFile> {
 
 export async function readDaily(rootPath: string, date: string): Promise<MemoryFile> {
   const p = resolvePaths(rootPath);
+  // 路径穿越防护：date 直接拼进路径，必须先卡格式
+  if (!isValidDate(date)) throw Object.assign(new Error(`bad date: ${date}`), { code: "bad_params" });
   return readFileAt(path.join(p.dailyDir, `${date}.md`), Number.POSITIVE_INFINITY);
 }
 
@@ -155,6 +164,7 @@ export async function writeDaily(
   content: string,
   opts: { homeDir: string },
 ): Promise<WriteResult> {
+  if (!isValidDate(date)) throw Object.assign(new Error(`bad date: ${date}`), { code: "bad_params" });
   const p = resolvePaths(rootPath);
   const file = path.join(p.dailyDir, `${date}.md`);
   const current = await readFileAt(file, Number.POSITIVE_INFINITY);

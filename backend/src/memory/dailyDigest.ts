@@ -117,9 +117,19 @@ export class DailyDigest {
     const base: DigestResult = { ran: false, dryRun, date, scannedFiles: 0, freshFiles: 0, freshBlocks: 0, wrote: [], skipped: [] };
 
     try {
+      // 窗口起点必须在**扫描之前**取（review 抓到的阻断项）。
+      // 原来 lastRunAt 是在扫描+摘要**之后**才盖的，于是任何时间戳落在
+      // [本轮扫描开始, 本轮结束] 的会话，下一轮会被 mtime 预筛和 ts 过滤
+      // 双重跳过 —— 永久丢失、不报错、freshBlocks=0。真实场景就是
+      // 「用户正聊着，凌晨 3:17 的日报正在跑」。
+      // 记 scanStart：下一轮窗口起点 = 本轮起点，代价是少量重叠，
+      // 而日报是整份重写，重叠无害。
+      const scanStart = opts.force === true
+        ? Date.now() - (opts.lookbackHours ?? 36) * 3600_000
+        : Date.now();
       const state = opts.force === true ? EMPTY : await this.loadState();
       const since = opts.force === true
-        ? Date.now() - (opts.lookbackHours ?? 36) * 3600_000
+        ? scanStart
         : state.lastRunAt > 0
           ? state.lastRunAt
           : Date.now() - (opts.lookbackHours ?? 36) * 3600_000;
@@ -154,7 +164,7 @@ export class DailyDigest {
 
       if (byProject.size === 0) {
         const out: DigestResult = { ...base, scannedFiles, freshFiles: 0, freshBlocks: 0, skipReason: "窗口内没有可归属到已知项目的会话" };
-        if (!dryRun) await this.saveState({ ...state, lastRunAt: Date.now(), lastDate: date });
+        if (!dryRun) await this.saveState({ ...state, lastRunAt: scanStart, lastDate: date });
         return out;
       }
 
@@ -193,7 +203,7 @@ export class DailyDigest {
             // 扫完文件就没了（临时目录）→ 不记，下次自然重扫
           }
         }
-        await this.saveState({ version: 1, files: nextFiles, lastRunAt: Date.now(), lastDate: date });
+        await this.saveState({ version: 1, files: nextFiles, lastRunAt: scanStart, lastDate: date });
       }
 
       return { ran: true, dryRun, date, scannedFiles, freshFiles: seenFiles.size, freshBlocks, wrote, skipped };

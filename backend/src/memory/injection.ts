@@ -15,7 +15,8 @@
  */
 
 import { readLongTerm, resolvePaths } from "./projectMemory.ts";
-import { measure } from "./limits.ts";
+import { measure, extractEntries } from "./limits.ts";
+import { redact } from "./redact.ts";
 import {
   renderRule,
   MEMORY_BLOCK_OPEN,
@@ -62,10 +63,21 @@ export class FileMemoryInjector implements MemoryInjector {
     // 模板刚建出来、还没有任何真实记忆 → 不注入（避免每轮白烧规则 token）
     if (!file.exists || !hasRealEntries(file.content)) return null;
 
+    const over = file.chars > file.limit;
+    // **超限时截断注入**（review 抓到的阻断项）。
+    // agent 的真实写路径是「用自带文件工具直改 MEMORY.md」，那条路**绕过了
+    // limits.ts** —— 上限只守住了 memory.project.write 这条 RPC。曾经这里
+    // 不设防：10,497 字符的 MEMORY.md（4.8× 上限）会原样全文进 prompt，
+    // 之后每一轮都如此，上限形同虚设。
+    const entries = hasRealEntries(file.content) ? extractEntries(file.content) : [];
+    const body = over ? truncateToBudget(file.content, file.limit) : file.content.trim();
+
     const rule = renderRule({
       memoryPath: paths.memoryMd,
       used: file.chars,
       nearLimit: file.chars / file.limit >= 0.8,
+      over,
+      keptEntries: entries.length,
     });
 
     const block = [
@@ -73,20 +85,41 @@ export class FileMemoryInjector implements MemoryInjector {
       "",
       rule,
       "",
-      "以下是 MEMORY.md 的当前内容：",
+      over ? "以下是 MEMORY.md 的内容（**已截断**）：" : "以下是 MEMORY.md 的当前内容：",
       "",
-      file.content.trim(),
+      body,
       "",
       MEMORY_BLOCK_CLOSE,
     ].join("\n");
 
     return {
       prompt: `${block}${INJECTION_SEPARATOR}${userText}`,
-      block,
+      // 注入块会整块落进 dispatches 表、还会经 memory.dispatches 原样返回 ——
+      // MEMORY.md 里若粘了密钥，不遮蔽就是明文进库、进 RPC 响应（review 抓到的阻断项）
+      block: redact(block),
       parts: [{ scope: "semantic", sourcePath: paths.memoryMd, chars: file.chars }],
       injectedChars: measure(block),
     };
   }
+}
+
+/**
+ * 超限时保留到预算内。优先留尾部（新写的通常在后面），并加一句显式截断标记，
+ * 让模型知道「还有内容没给它」，而不是以为自己看到了全部。
+ */
+export function truncateToBudget(content: string, limit: number): string {
+  // 放得下就原样返回：不该凭空插一句「省略 0 字符」（第一版有这个瑕疵）
+  if (content.length <= limit) return content;
+  const head = limit * 0.6;
+  const tail = limit - head;
+  const keepTail = content.slice(Math.max(0, content.length - tail));
+  const keepHead = content.slice(0, Math.max(0, head));
+  const omitted = Math.max(0, content.length - keepHead.length - keepTail.length);
+  return [
+    keepHead.trimEnd(),
+    `\n…（中间省略 ${omitted} 字符：MEMORY.md 已超上限 ${limit}，需要整合）…\n`,
+    keepTail.trimStart(),
+  ].join("\n");
 }
 
 /**

@@ -93,9 +93,13 @@ async function main(): Promise<void> {
   const body2 = (await readDaily(proj, today)).content;
   check("重跑后内容长度不变（无重复段）", body2.length === body.length, { a: body.length, b: body2.length });
 
-  // 增量：无 force 时窗口落在 lastRunAt 之后，扫不到东西
+  // 增量：窗口起点 = 上一轮的 scanStart，所以**允许少量重叠**（这是修掉
+  // 「窗口期会话永久丢失」后的正确语义）。日报是整份重写，重叠无害 ——
+  // 要断言的是「不丢」和「不重复」，不是「第二次扫不到东西」。
   const r3 = await digest.run({ date: today });
-  check("增量生效：窗口内无新会话则跳过", r3.freshBlocks === 0 && r3.scannedFiles === 0, r3);
+  check("无 force 时窗口落在上一轮起点（不丢会话）", r3.ran && r3.freshBlocks > 0, r3);
+  const body3 = (await readDaily(proj, today)).content;
+  check("**重叠重跑后日报内容仍与首次一致（不重复累加）**", body3 === body, { a: body.length, b: body3.length });
 
   // force：无视台账重扫
   const r4 = await digest.run({ date: today, force: true });

@@ -29,6 +29,7 @@ import type { TraceSink } from "./trace.ts";
 import type { Store } from "../store/db.ts";
 import type { PermissionGate } from "../permissions/gate.ts";
 import { appendJournal } from "../store/journals.ts";
+import { redact as redactText } from "../memory/redact.ts";
 
 /** 对 WS 暴露的适配器摘要 */
 export interface AdapterInfo {
@@ -397,16 +398,24 @@ export class RuntimeHost {
     // 有了它才能回答「这一轮它到底知道什么」—— messages 表做不到，
     // 因为那里的 prompt 只是一整块文本，注入部分和用户原话糊在一起。
     if (injected !== null) {
-      this.store.insertDispatch({
-        sessionId: h.id,
-        runtimeId: h.runtimeId,
-        rootPath: input.rootPath,
-        userText: input.prompt,
-        injectedBlock: injected.block,
-        injectedChars: injected.injectedChars,
-        parts: injected.parts,
-        createdAt: h.startedAt,
-      });
+      // 分发日志与遥测都是**附属记录**，写不出来绝不能杀掉这一轮对话
+      // （review 抓到的阻断项：insertDispatch 原本裸调，一次 SQLITE_BUSY /
+      // 磁盘满就会让已启动的 CLI 子进程永远收不到 prompt，UI 上表现为
+      // 「会话已开但没反应」）。红线 2 的 fail-open 在这里同样成立。
+      try {
+        this.store.insertDispatch({
+          sessionId: h.id,
+          runtimeId: h.runtimeId,
+          rootPath: input.rootPath,
+          userText: redactText(input.prompt),
+          injectedBlock: injected.block, // 已在 injection 侧遮蔽过
+          injectedChars: injected.injectedChars,
+          parts: injected.parts,
+          createdAt: h.startedAt,
+        });
+      } catch (err: unknown) {
+        log.warn("dispatch log write failed (session continues)", { sessionId: h.id, error: err instanceof Error ? err.message : String(err) });
+      }
       // curator 的判断全靠「上次什么时候被注入过」（docs/10 §4.7）。
       // 这行打点漏了，curator 就永远只能把每条都当成 active。
       for (const part of injected.parts) {
