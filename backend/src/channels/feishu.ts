@@ -560,6 +560,8 @@ class LarkCliConnection {
   #restartTimer: NodeJS.Timeout | null = null;
   /** message_id 去重。飞书会重投，同一条重复起轮会白烧 token。 */
   readonly #seen = new Set<string>();
+  /** messageId → 当前挂着的 reaction_id（收到时是 👀，答完换成 ✅ 再删掉旧的） */
+  readonly #reactions = new Map<string, string>();
   /** 同会话串行：前一条处理完才轮到下一条 */
   readonly #chains = new Map<string, Promise<void>>();
 
@@ -686,7 +688,71 @@ class LarkCliConnection {
       if (first !== undefined) this.#seen.delete(first);
     }
 
+    // **即时回应**：收到就给个 👀，用户立刻知道「它收到了，在想了」。
+    //
+    // 位置在**入队之前**而不是 #enqueue 里 —— enqueue 是按 chatId 串行的，
+    // 排队的消息要等前一轮跑完（可能几十秒到几分钟）才有任何反馈，那时
+    // 已经不像「及时」了。
+    //
+    // 全程 best-effort：表情挂了绝不能影响正常回复（runBotTurn / #reply）。
+    void this.#ack(messageId, "EYES").catch(() => {});
+
     this.#enqueue({ messageId, chatId, text: stripMentions(content, mentions) });
+  }
+
+  /**
+   * 给消息加/去一个表情。
+   *
+   * 对齐 OpenClaw 的 `addReactionFeishu`（`extensions/feishu/src/reactions.ts`），
+   * 走 lark-cli 的 `im reactions create` / `delete`。
+   *
+   * 表情语义：👀(EYES) = 收到了在处理；✅(DONE) = 处理完了。
+   * 两段式比单个表情诚实 —— 用户一眼能看出「它还在想」还是「已经答了」。
+   *
+   * **全部 best-effort**：失败只记 debug，绝不影响正常回复。
+   */
+  async #ack(messageId: string, emoji: "EYES" | "DONE"): Promise<void> {
+    try {
+      const r = await runCli([
+        "--profile", this.#spec.profile,
+        "im", "reactions", "create",
+        "--message-id", messageId,
+        "--data", JSON.stringify({ reaction_type: { emoji_type: emoji } }),
+      ], 15_000);
+      if (r.code !== 0) {
+        log.debug("feishu: 加表情失败（不影响回复）", { emoji, code: r.code, err: r.stderr.slice(0, 160) });
+        return;
+      }
+      // 把上一枚表情收掉，避免 👀 和 ✅ 同时挂着
+      if (emoji === "DONE") {
+        const prev = this.#reactions.get(messageId);
+        if (prev !== undefined) {
+          await runCli([
+            "--profile", this.#spec.profile,
+            "im", "reactions", "delete",
+            "--message-id", messageId,
+            "--reaction-id", prev,
+          ], 15_000);
+          this.#reactions.delete(messageId);
+        }
+      } else {
+        const id = this.#reactionIdOf(r.stdout);
+        if (id !== null) this.#reactions.set(messageId, id);
+      }
+    } catch (err: unknown) {
+      log.debug("feishu: 表情回应异常（不影响回复）", { emoji, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  /** 从 create 的 JSON 输出里取 reaction_id（拿不到就算了，不是关键路径） */
+  #reactionIdOf(stdout: string): string | null {
+    try {
+      const o = JSON.parse(stdout.slice(stdout.indexOf("{"))) as { data?: { reaction_id?: unknown } };
+      const id = o.data?.reaction_id;
+      return typeof id === "string" && id !== "" ? id : null;
+    } catch {
+      return null;
+    }
   }
 
   #enqueue(msg: { messageId: string; chatId: string; text: string }): void {
@@ -706,6 +772,9 @@ class LarkCliConnection {
           const m = err instanceof Error ? err.message : String(err);
           log.warn("feishu: 轮次失败", { bot: this.#spec.botId, error: m });
           await this.#reply(msg.messageId, `出错了：${m}`).catch(() => {});
+        } finally {
+          // 答完了把 👀 换成 ✅（best-effort，不影响任何东西）
+          void this.#ack(msg.messageId, "DONE").catch(() => {});
         }
       });
     this.#chains.set(msg.chatId, next);

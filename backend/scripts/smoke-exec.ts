@@ -131,13 +131,39 @@ async function main(): Promise<void> {
 
   console.log("\n[已知限制] 兜底路径确实会吃掉多行（钉住它，别忘）");
 
-  // mcode 的 shim 是自更新发布器（读 current 再调 .mcode-launcher.cmd），解析不出来是**对的**
+  // mcode 的 shim 是自更新发布器（读 current 再调 .mcode-launcher.cmd），静态解析不出 node 脚本
   const mcode = await resolveCommand("mcode");
-  if (mcode.via === "shim-fallback") {
-    check("mcode 走兜底（自更新发布器形态，无法静态解析）", true, mcode);
-    check("**兜底路径的注释已写明会吃掉多行 argv**", true, "见 exec.ts 的 warn 日志与注释");
+  check("mcode 走 pwsh（.ps1 孪生兄弟）而不是 cmd.exe", mcode.via === "ps-shim" && mcode.file === "pwsh", mcode);
+  check("**pwsh 路径不带 cmd.exe**", !mcode.file.toLowerCase().includes("cmd"), mcode.file);
+
+  // claude / opencode 同理：它们的 .cmd 也解析不出 node 脚本，但有 .ps1
+  for (const n of ["claude", "opencode"]) {
+    const c = await resolveCommand(n);
+    check(`${n} 走 pwsh 而不是 cmd.exe`, c.via === "ps-shim" && !c.file.toLowerCase().includes("cmd"), c);
+  }
+
+  // dsh 是 Electron-as-node 形态（ELECTRON_RUN_AS_NODE=1 + Harness.exe --expose-internals cli.js），
+  // 要正确解析得把环境变量一并打通；而它走 ACP/stdio，argv 换行问题对它不成立，
+  // 收益为零、风险不小，所以**有意留在 cmd.exe 兜底**。这里只钉住「它确实有据可查」。
+  const dsh = await resolveCommand("dsh");
+  if (dsh.via === "shim-fallback") {
+    check("dsh 留在 cmd.exe 是有意的（Electron-as-node 形态 + 协议通道）", true, dsh);
   } else {
-    check("mcode 也解析成 node + 脚本（更好）", mcode.via === "npm-shim", mcode);
+    check(`dsh 解析成更安全的形式（${dsh.via}）`, !dsh.file.toLowerCase().includes("cmd"), dsh);
+  }
+
+  // 全局体检：**至少 7/8 的执行器不再走 cmd.exe**
+  {
+    const names = ["lark-cli", "mcode", "zcode", "codex", "claude", "pi", "opencode", "dsh"];
+    const onCmd: string[] = [];
+    for (const n of names) {
+      try {
+        const c = await resolveCommand(n);
+        if (c.file.toLowerCase().includes("cmd")) onCmd.push(n);
+      } catch { /* 没装的不算 */ }
+    }
+    check("**最多只有 1 个执行器还在 cmd.exe 上**", onCmd.length <= 1, { onCmd });
+    console.log(`       仍在 cmd.exe 的：${onCmd.length === 0 ? "（无）" : onCmd.join(", ")}`);
   }
 
   console.log(`\n${failures === 0 ? "全部通过" : `${failures} 项失败`}\n`);

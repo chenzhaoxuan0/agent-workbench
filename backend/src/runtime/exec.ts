@@ -18,15 +18,26 @@ import { log } from "../log.ts";
 const execFileP = promisify(execFile);
 
 export interface ResolvedCommand {
-  /** 要 spawn 的可执行文件（node.exe 或原生 exe） */
+  /** 要 spawn 的可执行文件（node.exe / pwsh.exe / 原生 exe） */
   readonly file: string;
-  /** file 之后的固定前缀参数（node 脚本路径） */
-  readonly prefixArgs: readonly string[];
+  /** file 之后的固定前缀参数（node 脚本路径 / pwsh -File 脚本路径） */
+  readonly prefixArgs: readonly string[] | readonly string[];
   /** 解析方式，日志与排障用 */
-  readonly via: "exe" | "npm-shim" | "shim-fallback";
+  readonly via: "exe" | "npm-shim" | "ps-shim" | "shim-fallback";
 }
 
 const cache = new Map<string, ResolvedCommand>();
+
+let pwshChecked = false;
+let pwshOk = false;
+
+/** 本机有没有 pwsh（PowerShell 7）。查一次就缓存。 */
+async function hasPwsh(): Promise<boolean> {
+  if (pwshChecked) return pwshOk;
+  pwshChecked = true;
+  pwshOk = (await locateOnPath("pwsh")).length > 0;
+  return pwshOk;
+}
 
 async function locateOnPath(name: string): Promise<string[]> {
   const out = process.platform === "win32"
@@ -98,19 +109,28 @@ export async function resolveCommand(name: string): Promise<ResolvedCommand> {
       if (parsed && existsSync(parsed.script)) {
         resolved = { file: parsed.node, prefixArgs: [parsed.script], via: "npm-shim" };
       } else {
-        // shim 解析失败的兜底：过一层 cmd.exe。
-        //
-        // ⚠️ **这条路径会吃掉参数里的换行** —— cmd.exe /c 把多行参数当命令分隔符，
-        //   只有第一行被当成命令，其余静默丢弃（实测 `unknown command "echo"`，而我们
-        //   想传的其实是 `echo 第一行\n第二行`）。所以它只对「prompt 走协议通道而非
-        //   argv」的执行器无害（ACP / app-server 这类）；**任何把多行文本塞进 argv
-        //   的调用方（飞书回复、telegram 回复）必须先确认 resolveCommand 没走这里**。
-        //   打印出来，别让它变成静音地雷。
-        log.warn("shim fallback to cmd.exe —— 多行 argv 会被截断，检查该 CLI 的 shim 形态", {
-          name,
-          shim,
-        });
-        resolved = { file: "cmd.exe", prefixArgs: ["/d", "/s", "/c", shim], via: "shim-fallback" };
+        // shim 解析不出 node 脚本时的兜底。**优先走 .ps1 孪生兄弟**：
+        // PowerShell 的参数传递比 cmd.exe 可预测得多（cmd.exe /c 会把多行参数
+        // 当命令分隔符吃掉 —— 这正是飞书回复只剩第一行的根因）。
+        // mcode 走的就是这条：它的 shim 是自更新发布器（读 `current` 再调
+        // .mcode-launcher.cmd），静态解析不出 node 脚本，但有可用的 .ps1 孪生。
+        const ps1 = shim.replace(/\.cmd$/i, ".ps1");
+        if (existsSync(ps1) && await hasPwsh()) {
+          resolved = { file: "pwsh", prefixArgs: ["-NoProfile", "-File", ps1], via: "ps-shim" };
+        } else {
+          // 兜底：过一层 cmd.exe。
+          //
+          // ⚠️ **这条路径会吃掉参数里的换行** —— cmd.exe /c 把多行参数当命令分隔符，
+          //   只有第一行被当成命令，其余静默丢弃（实测 `unknown command "echo"`，而我们
+          //   想传的其实是 `echo 第一行\n第二行`）。所以它只对「prompt 走协议通道而非
+          //   argv」的执行器无害（ACP / app-server 这类）；**任何把多行文本塞进 argv
+          //   的调用方（飞书回复、telegram 回复）必须先确认 resolveCommand 没走这里**。
+          log.warn("shim fallback to cmd.exe —— 多行 argv 会被截断，检查该 CLI 的 shim 形态", {
+            name,
+            shim,
+          });
+          resolved = { file: "cmd.exe", prefixArgs: ["/d", "/s", "/c", shim], via: "shim-fallback" };
+        }
       }
     } else if (shim) {
       resolved = { file: shim, prefixArgs: [], via: "exe" };
