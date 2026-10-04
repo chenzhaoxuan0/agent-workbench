@@ -162,7 +162,13 @@ void ensureSteward(config.homeDir)
  * 其余全参与比较。这样新增字段自动被覆盖，这类 bug 结构上不再可能发生。
  */
 // hydrate 产物 + 每次都变的键。注意 `$meta` 带美元号 —— bot.list 里实际是这个键名。
-const STEWARD_VOLATILE = new Set(["updatedAt", "meta", "$meta", "agentsMd", "agentsMdMeta", "revision", "sourcePath"]);
+//
+// `identity` 也在排除之列：它带 sourcePath 指针，而 **AGENTS.md 是用户的** ——
+// 用户手改岗位说明书时，identity 里的 loadedAt 等会变。把整块排除掉，
+// 启动流程才不会把手改内容当成「配置漂移」再覆盖回去。
+const STEWARD_VOLATILE = new Set([
+  "updatedAt", "meta", "$meta", "agentsMd", "agentsMdMeta", "revision", "sourcePath", "identity",
+]);
 
 function stewardShape(def: Record<string, unknown>): string {
   const out: Record<string, unknown> = {};

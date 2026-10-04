@@ -90,6 +90,11 @@ export function stewardDefinition(rootPath: string): Record<string, unknown> {
     // 没有兜底。缺了它 React 渲染 UnitRow 就抛 TypeError，**整个界面白屏**。
     // 其他 bot 都有这个字段（导入时打的标记），管家是程序造的，一度漏了。
     tags: [],
+    // **必须声明 sourcePath 指针**，否则 hydrate 不会去读 AGENTS.md（bot.json 里
+    // 只存指针 + hash，正文在 <rootPath>/AGENTS.md）。
+    // AGENTS.md 是**用户的**：ensureSteward 的幂等比较把 identity 排除在外，
+    // 所以用户手改岗位说明书不会被启动流程覆盖回去。
+    identity: { sourcePath: "AGENTS.md", role: "跨项目检索的唯一默认入口" },
     // **必须显式给 bindings**：askBot.primaryBinding 缺省回落 mockperm ——
     // 那是权限闸试金石，管家会「能列出来但说不了话」。
     //
