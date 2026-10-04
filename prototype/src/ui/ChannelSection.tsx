@@ -83,6 +83,19 @@ type ImAccount = ChannelAccount & {
  */
 const EMOJI_NAME = /^[A-Za-z0-9_]{1,32}$/;
 
+/**
+ * 有效默认值 —— **必须跟后端 `channels/feishu.ts` 的
+ * `ACK_RECEIVED_DEFAULT` / `ACK_DONE_DEFAULT` 逐字一致**。
+ *
+ * 为什么界面要显示它、而不是显示空：
+ * 「键缺失」在后端 = 用默认值（Typing / DONE）；「空串」= 不加这个表情。
+ * 两者**语义完全不同**。界面若把缺失显示成空，用户会以为功能是关的；
+ * 而他一旦在这个页面保存，空框就会被原样写成 `""` —— **等于把表情功能静默关掉**。
+ * 所以：缺失 → 显示默认；用户主动清空 → 才是不加。
+ */
+const DEFAULT_ACK_EMOJI = "Typing";
+const DEFAULT_DONE_EMOJI = "DONE";
+
 /** 官方枚举清单：值填错时照这个查，别猜。 */
 const EMOJI_DOC = "https://open.feishu.cn/document/server-docs/im-v1/message-reaction/emojis-introduce";
 
@@ -355,8 +368,18 @@ function ImBehavior({ account, onPatch }: { account: ImAccount; onPatch: (patch:
         开着：先发一条「正在思考…」，再边生成边反复改同一条消息。IM 里来回编辑比干等结果更吵，所以默认关。
       </p>
       <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
-        <EmojiField label="收到消息时" value={account.ackEmoji ?? ""} onChange={(v) => onPatch({ ackEmoji: v })} />
-        <EmojiField label="答完时" value={account.doneEmoji ?? ""} onChange={(v) => onPatch({ doneEmoji: v })} />
+        <EmojiField
+          label="收到消息时"
+          placeholder={DEFAULT_ACK_EMOJI}
+          value={account.ackEmoji ?? DEFAULT_ACK_EMOJI}
+          onChange={(v) => onPatch({ ackEmoji: v })}
+        />
+        <EmojiField
+          label="答完时"
+          placeholder={DEFAULT_DONE_EMOJI}
+          value={account.doneEmoji ?? DEFAULT_DONE_EMOJI}
+          onChange={(v) => onPatch({ doneEmoji: v })}
+        />
       </div>
     </div>
   );
@@ -369,10 +392,23 @@ function ImBehavior({ account, onPatch }: { account: ImAccount; onPatch: (patch:
  * 缺字段 = 走默认值，空串 = 明确不要这个表情。这两件事要是搞混，「清空」就变成了
  * 「恢复默认」，用户会以为关掉了其实没关。
  *
- * 提示里**只举 SMILE / DONE**：后端注释里明写「表情值不猜」—— 它试过 EYES，飞书不认，
- * 整个功能静默失灵。宁可少给两个例子，也不把没验证过的枚举名推给用户。
+ * 提示里**只举官方文档里确认存在的枚举名** —— 后端注释里明写「表情值不猜」：它试过
+ * EYES，飞书不认，整个功能静默失灵。宁可少举几个例子，也不把没验证过的枚举名推给用户。
+ *
+ * `placeholder` 由调用方显式传，**不靠 label 反推** —— 之前写的是 `label === "收到消息"`，而
+ * label 实际是 `"收到消息时"`，永远不匹配，两个框的 placeholder 都落成了 DONE。
  */
-function EmojiField({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
+function EmojiField({
+  label,
+  placeholder,
+  value,
+  onChange,
+}: {
+  label: string;
+  placeholder: string;
+  value: string;
+  onChange: (v: string) => void;
+}) {
   const trimmed = value.trim();
   const invalid = trimmed !== "" && !EMOJI_NAME.test(trimmed);
 
@@ -390,7 +426,7 @@ function EmojiField({ label, value, onChange }: { label: string; value: string; 
           }}
           spellCheck={false}
           autoComplete="off"
-          placeholder={label === "收到消息" ? "Typing" : "DONE"}
+          placeholder={placeholder}
           aria-label={`${label}的表情枚举名`}
           aria-invalid={invalid}
           className={cn(
