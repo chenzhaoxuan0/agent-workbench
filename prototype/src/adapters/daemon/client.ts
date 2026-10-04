@@ -34,11 +34,24 @@ export interface DaemonExecutorInfo {
 }
 
 /**
+ * daemon 端口。默认 5181，**可被 `VITE_AGENT_WORKBENCH_PORT` 覆盖**。
+ *
+ * 为什么需要这个：Windows 的 Hyper-V / WSL 会保留一整段动态端口
+ * （本机实测 5141–5240 就被占了，5181 正在其中），撞上时 `listen` 直接
+ * EACCES，daemon 起不来。而端口同时被前端硬编码了 3 处 —— 服务端单方面换端口
+ * 会让界面连不上，所以两端必须能一起改。
+ *
+ * 改法：起 daemon 时 `AGENT_WORKBENCH_PORT=5273 pnpm dev`，
+ * 跑前端时 `VITE_AGENT_WORKBENCH_PORT=5273 pnpm dev`。
+ */
+const DAEMON_PORT = (import.meta.env?.VITE_AGENT_WORKBENCH_PORT as string | undefined)?.trim() || "5181";
+
+/**
  * daemon 地址解析（WP-7 手机流程）：
  * 1. localStorage `agent-workbench:daemon-endpoint` 显式指定（最高优先）；
- * 2. 页面本身跑在非本机主机名上（手机开 http://<pc-ip>:5180）→ 自动跟随主机名，
- *    指向 <pc-ip>:5181 —— 手机端零配置连上同一台 daemon；
- * 3. 兜底 127.0.0.1:5181（本机桌面）。
+ * 2. 页面本身跑在非本机主机名上（手机开 http://<pc-ip>:5273）→ 自动跟随主机名，
+ *    指向 <pc-ip>:<DAEMON_PORT> —— 手机端零配置连上同一台 daemon；
+ * 3. 兜底 127.0.0.1:<DAEMON_PORT>（本机桌面）。
  */
 export function defaultDaemonEndpoint(): string {
   try {
@@ -48,10 +61,10 @@ export function defaultDaemonEndpoint(): string {
   if (typeof window !== "undefined") {
     const host = window.location.hostname;
     if (host !== "127.0.0.1" && host !== "localhost" && host !== "") {
-      return `http://${host}:5181`;
+      return `http://${host}:${DAEMON_PORT}`;
     }
   }
-  return "http://127.0.0.1:5181";
+  return `http://127.0.0.1:${DAEMON_PORT}`;
 }
 
 export function wsUrlOf(endpoint: string): string {

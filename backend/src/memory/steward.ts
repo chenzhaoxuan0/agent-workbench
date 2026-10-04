@@ -69,6 +69,9 @@ export async function ensureSteward(homeDir: string): Promise<{ rootPath: string
   return { rootPath: root, created: !before.exists };
 }
 
+/** 管家跑在哪个执行器上。mcode：本地常驻、账号已托管、模型由它自己的默认决定。 */
+export const STEWARD_RUNTIME_ID = "mcode";
+
 /** 管家的 bot 定义。放进注册表就能被 listBots / getBot 认出来。 */
 export function stewardDefinition(rootPath: string): Record<string, unknown> {
   return {
@@ -78,6 +81,15 @@ export function stewardDefinition(rootPath: string): Record<string, unknown> {
     rootPath,
     crossSearch: true,
     synthetic: true,
+    // **必须显式给 bindings**：askBot.primaryBinding 缺省回落 mockperm ——
+    // 那是权限闸试金石，管家会「能列出来但说不了话」。
+    //
+    // 刻意**不设 modelHint**：mcode 托管账号的默认模型就是
+    // MiniMax-M3.1-Flash-Preview（2026-10-04 实测 ACP session/new 的
+    // configOptions[model].currentValue = m:minimax:MiniMax-M3.1-Flash-Preview:v:thinking）。
+    // 写死一个 modelHint 反而会被 resolveModelFor 判为「不在可用清单」而丢弃，
+    // 只留下一条 modelHintDropped 警告 —— 那正是 docs/09 §六.1 要消除的静默。
+    bindings: [{ runtimeId: STEWARD_RUNTIME_ID, primary: true }],
     note: "跨项目检索的唯一默认入口。项目记忆不进它的注入块，检索结果只出现在它主动查的那一轮。",
   };
 }
