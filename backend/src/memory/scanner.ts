@@ -312,14 +312,10 @@ async function* readLines(file: string): AsyncGenerator<{ line: string; lineNo: 
 async function* scanOneFile(
   src: ScanSource,
   file: string,
+  mtimeMs: number,
   opts: Required<Pick<ScanOptions, "chunkChars">> & { since?: number },
 ): AsyncGenerator<ScannedBlock> {
-  let mtimeMs = 0;
-  try {
-    mtimeMs = (await stat(file)).mtimeMs;
-  } catch {
-    return;
-  }
+  // mtime 由调用方 stat 好传进来：省一次 stat，也避免 TOCTOU
   // mcode 的会话目录里还有 manifest.json，带着 sessionId 与创建时间
   let manifest: Record<string, unknown> | undefined;
   if (src.cli === "mcode") {
@@ -390,41 +386,57 @@ export async function* scan(opts: ScanOptions = {}): AsyncGenerator<ScannedBlock
 
     let used = 0;
     const cap = opts.limitBytesPerCli ?? 0;
-    const files = src.cli === "mcode" ? listMcodeSessions(src.root, 0, { n: 0 }) : listJsonl(src.root, 0, { n: 0 });
 
+    // **按 mtime 倒序枚举**，字节上限才有意义。
+    // 原来直接按 readdir 顺序截断：claude 的目录名是哈希（顺序任意），
+    // codex/mcode 是日期目录（顺序 = 从最老开始）—— 上限切在哪跟相关性毫无
+    // 关系，用户搜「上周那个」很可能正好落在被切掉的那一半里。
+    // 「追溯」天然是近的事件优先，所以上限应当是「最近 N MB」。
+    //
+    // **代价与收敛**：排序要求先把候选连同 mtime 收齐，冷缓存下这是全量
+    // stat（本机 ~1900 个，实测冷缓存要 40 秒）。所以收集**有界**：候选累计
+    // 体积一旦远超预算 newest 那些必然排在前面，再 stat 下去只是白花时间。
+    // 收集上限 = 预算 × 4（且不低于 32MB），够排序出「最近的若干个」。
+    let candidates: Array<{ file: string; mtime: number; size: number }> = [];
+    let collectedBytes = 0;
+    const collectCeiling = cap > 0 ? Math.max(cap * 4, 32 * 1024 * 1024) : Number.POSITIVE_INFINITY;
     try {
-      for await (const file of files) {
+      for await (const file of src.cli === "mcode" ? listMcodeSessions(src.root, 0, { n: 0 }) : listJsonl(src.root, 0, { n: 0 })) {
         if (opts.pathHint !== undefined && opts.pathHint !== "" && !file.includes(opts.pathHint)) continue;
-        if (cap > 0 && used >= cap) break;
-
-        // **枚举才是瓶颈**（本机 879+93+895 个文件），不是读取。
-        // since 存在时先看 mtime：老的文件整个跳过，连内容都不读。
-        let st;
+        if (collectedBytes >= collectCeiling) break;
         try {
-          st = await stat(file);
+          const st = await stat(file);
+          candidates.push({ file, mtime: st.mtimeMs, size: st.size });
+          collectedBytes += st.size;
         } catch {
           s.errors++;
-          continue;
-        }
-        if (opts.since !== undefined && st.mtimeMs < opts.since) continue;
-        if (opts.maxFileBytes !== undefined && opts.maxFileBytes > 0 && st.size > opts.maxFileBytes) continue;
-        used += st.size;
-
-        s.files++;
-        // 单文件失败只记一笔，继续下一个（红线 2）
-        try {
-          for await (const b of scanOneFile(src, file, { chunkChars, ...(opts.since === undefined ? {} : { since: opts.since }) })) {
-            s.blocks++;
-            yield b;
-          }
-        } catch (err: unknown) {
-          s.errors++;
-          log.warn("scan file failed", { cli: src.cli, file, error: err instanceof Error ? err.message : String(err) });
         }
       }
     } catch (err: unknown) {
       s.errors++;
       log.warn("scan source failed", { cli: src.cli, root: src.root, error: err instanceof Error ? err.message : String(err) });
+    }
+    candidates.sort((a, b) => b.mtime - a.mtime);
+
+    for (const c of candidates) {
+      if (cap > 0 && used >= cap) break;
+      // **枚举才是瓶颈**（本机 879+93+895 个文件），不是读取。
+      // since 存在时老的文件整个跳过，连内容都不读。
+      if (opts.since !== undefined && c.mtime < opts.since) continue;
+      if (opts.maxFileBytes !== undefined && opts.maxFileBytes > 0 && c.size > opts.maxFileBytes) continue;
+      used += c.size;
+
+      s.files++;
+      // 单文件失败只记一笔，继续下一个（红线 2）
+      try {
+        for await (const b of scanOneFile(src, c.file, c.mtime, { chunkChars, ...(opts.since === undefined ? {} : { since: opts.since }) })) {
+          s.blocks++;
+          yield b;
+        }
+      } catch (err: unknown) {
+        s.errors++;
+        log.warn("scan file failed", { cli: src.cli, file: c.file, error: err instanceof Error ? err.message : String(err) });
+      }
     }
   }
 

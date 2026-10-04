@@ -126,6 +126,18 @@ export async function search(opts: SearchOptions): Promise<SearchResult> {
 }
 
 /**
+ * 上下文加载的护栏。
+ *
+ * `loadContext` 是**从第 1 行流式丢到命中行**的（没有 seek）。命中在第 5000 行
+ * 就要先读 5000 行。而 `stewardSearch` 串行调它最多 20 次 —— 单个 codex rollout
+ * 能到几百 MB，一次 UI 搜索最坏就是几 GB 的重读。所以：
+ * - 命中太深就不给上下文（命中正文本来就已经显示给用户了）
+ * - 一次搜索里能附上下文的条数有上限
+ */
+export const CONTEXT_MAX_LINE = 2000;
+export const CONTEXT_MAX_HITS = 5;
+
+/**
  * 读命中处的上下文 —— 「翻前后文」的落点（docs/10 §4.4）。
  * 靠 lineNo 重新扫源文件，**不缓存、不建索引**。
  */
@@ -137,6 +149,8 @@ export async function loadContext(
   const before = opts.before ?? 2;
   const after = opts.after ?? 2;
   const chunkChars = opts.chunkChars ?? 400;
+  // 护栏：太深就算了，不为一条上下文把整个文件读一遍
+  if (lineNo > CONTEXT_MAX_LINE) return [];
   const out: string[] = [];
   const lo = Math.max(1, lineNo - before);
   const hi = lineNo + after;

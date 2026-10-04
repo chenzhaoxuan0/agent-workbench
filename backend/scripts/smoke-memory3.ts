@@ -254,6 +254,42 @@ async function main(): Promise<void> {
   const r8 = await search({ sources: SOURCES, query: "代理", cli: ["pi"], limit: 10 });
   check("cli 过滤生效", r8.hits.every((h) => h.block.cli === "pi"));
 
+  // 字节上限必须按**最近优先**截断（复审抓到：原来按 readdir 顺序，
+  // codex/mcode 是日期目录 = 拿到最老的文件，上限切在哪跟相关性无关）
+  {
+    // 造三份：最新的一份含关键词，另两份更老且不含
+    const rec = path.join(tmp, "home", ".claude", "projects", "C--recent");
+    mkdirSync(rec, { recursive: true });
+    const old = new Date(now - 90 * DAY);
+    const f = path.join(rec, "newest.jsonl");
+    writeFileSync(f, JSON.stringify({ cwd: "/p", sessionId: "s-new", message: { content: [{ type: "text", text: "最近这次会话里讨论了量子纠缠的通信协议细节" }] }, timestamp: now }) + "\n", "utf8");
+    const f2 = path.join(rec, "older.jsonl");
+    writeFileSync(f2, JSON.stringify({ cwd: "/p", sessionId: "s-old", message: { content: [{ type: "text", text: "很久以前的一条不相干的内容记录而已" }] }, timestamp: old.getTime() }) + "\n", "utf8");
+    const old2 = new Date(now - 120 * DAY);
+    const f3 = path.join(rec, "oldest.jsonl");
+    writeFileSync(f3, JSON.stringify({ cwd: "/p", sessionId: "s-oldest", message: { content: [{ type: "text", text: "更早的另一条不相干内容记录" }] }, timestamp: old2.getTime() }) + "\n", "utf8");
+    // **必须显式设文件 mtime，且要比同脚本其他夹具明确更新** —— 扫描器按文件
+    // mtime 排序（`since` 也用它），不是按 JSON 里的 timestamp。同一毫秒写完的
+    // 几个文件排序是随机的：这条断言会时红时绿（第一版就踩了，单跑通过、
+    // 批量跑失败；第二版设成 now 还是不稳，因为其他夹具也是 now）。
+    // 往前挪一分钟，排序就无歧义了。
+    const { utimesSync } = await import("node:fs");
+    const newest = (now + 60_000) / 1000;
+    utimesSync(f, newest, newest);
+    utimesSync(f2, old.getTime() / 1000, old.getTime() / 1000);
+    utimesSync(f3, old2.getTime() / 1000, old2.getTime() / 1000);
+    // 额度只够放下一个文件 —— 谁的 mtime 新谁进
+    const cap = Number(f.length) + 10;
+    const r9 = await search({
+      sources: SOURCES.filter((s) => s.cli === "claude"),
+      query: "量子纠缠",
+      limitBytesPerCli: cap,
+      limit: 5,
+    });
+    check("**字节上限按最近优先截断**（新文件被覆盖、老文件被跳过）", r9.hits.some((h) => h.block.sessionId === "s-new"), r9.hits.map((h) => h.block.sessionId));
+    check("超出额度的更老文件确实没被读", !r9.hits.some((h) => h.block.sessionId === "s-oldest" || h.block.sessionId === "s-old"));
+  }
+
   // ---------------------------------------------------------------- [上下文]
   console.log("\n[上下文] 翻前后文");
 

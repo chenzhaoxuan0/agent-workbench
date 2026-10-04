@@ -643,7 +643,7 @@ mtime 预筛会把老文件整个跳过，比全量快两个数量级。
 > 这个默认值同时是**产品判断**：「追溯」天然是近的事件优先，
 > 三个月前的对话本来就极少被翻出来。要全量翻就显式要求。
 
-## 十三、后端调度（WP-6 / WP-9 收尾，2026-10-04）
+## 十三A、后端调度（WP-6 / WP-9 收尾，2026-10-04）
 
 `memory/scheduler.ts` 把两件后台活挂起来（daemon 启动即 `start()`）：
 
@@ -673,8 +673,112 @@ mtime 预筛会把老文件整个跳过，比全量快两个数量级。
 **这是「不建索引」的真实代价，不是意外。** 所以 `steward.search` 的默认值取
 「够快」而不是「够全」：`since = 365 天前` + 每家 128 MB 上限。
 
-> 想更快就**给范围**：面板默认带 `pathHint`，管家按项目/按时间收窄后是秒级。
+> 想更快就**给范围**：传 `pathHint` 收窄，或放宽/收紧 `sinceDays` / `maxBytesPerCli`。
 > 这是无索引方案必须付出的使用习惯 —— 拿「每次都全扫」换「不用维护索引」。
+>
+> ⚠️ **`pathHint` 只能匹配源文件路径里的字面串**。claude / pi 的项目目录名是
+> 编码过的（`C--Users-chenziyu-project-X`），codex / mcode 是日期目录 ——
+> 所以**传「真实项目路径」会 0 命中**，得传编码后的目录名片段。
+> 面板目前**没有**传 `pathHint`，也没有做这层编码/反解的转换（v2 待办）。
+> 也就是说面板里每次搜索都退化成「时间窗 × 字节上限」的全扫，
+> 靠的是字节上限兜底而不是范围收窄。
+
+## 十四、复审与真实环境验证（2026-10-04 收工）
+
+### 独立审查抓出的四个阻断项
+
+第一轮 262 项断言全绿、`tsc` 干净，独立审查仍挖出四个阻断级问题。
+**根因不是漏写，是测试有结构性盲区**：curator 测试注入了生产里根本不传的
+`commit`；上限只从 RPC 侧验，而没从注入侧验。四个问题全是**静默失败**。
+
+| # | 问题 | 后果 |
+|---|---|---|
+| 1 | curator 只在传 `commit` 时动手，从不让 `meta` 记住新 state | 流转永远不收敛，报告还写「已按上表应用」——**用户看到的是假话** |
+| 2 | `lastRunAt` 在扫描**之后**才盖 | 扫描窗口期到达的会话**永久丢失**，不报错、`freshBlocks=0` |
+| 3 | `insertDispatch` 裸调（旁边 `markMemoryUsed` 却包了 try/catch） | 一次 SQLITE_BUSY 就留下「会话已开但没反应」的孤儿 CLI 子进程 |
+| 4 | 2200 上限只守 RPC，agent 直改文件完全绕过 | 10,497 字符（4.8× 上限）原文进 prompt，**之后每一轮都如此** |
+
+第 4 条连带发现规则文案里那句「超限会拒绝写入并给出提示」是**假话** ——
+对 agent 的真实写路径而言。已改成实话：「你直接改文件时不会有任何拦截」。
+
+**补测**：新增 `smoke:memory7` 专测生产路径（不注入 `commit`、绕开
+`writeLongTerm` 直接改文件、注入 `insertDispatch` 故障）。共 290 项断言全绿。
+
+修 #1 时我自己先犯了一个错：**dry-run 也写了 state**，被 `smoke:memory5`
+当场抓住 —— 试跑的语义就是「只看会发生什么」，一旦写 state，后面的真跑就把
+该发生的变化当成已经发生过了。
+
+### 起 dev 实测撞出来的四个真问题
+
+**A. 默认端口在这台机器上根本起不来**
+
+```
+listen EACCES: permission denied 127.0.0.1:5181
+```
+
+`netsh interface ipv4 show excludedportrange protocol=tcp` 显示 **5141–5240**
+是 Windows 保留段，5181 正在其中。而失败发生得太晚：store、8 个适配器、
+记忆调度器、telegram/feishu 网关**都已经起来了**才崩，留下半启动状态。
+
+改：加 `preflightPort()` 用 top-level await **真正挡住**后续初始化
+（写成 `void preflightPort(...)` 的话预检和后面的同步代码并发，等于没加）；
+前端端口提为 `VITE_AGENT_WORKBENCH_PORT`（原先硬编码 3 处，服务端单方面
+换端口界面就连不上）。
+
+**B. 管家没有 bindings，回落到 mockperm**
+
+`askBot.primaryBinding` 缺省回落 `mockperm` —— 那是权限闸试金石，
+管家「能列出来但说不了话」。补 `bindings: [{runtimeId: "mcode", primary: true}]`。
+
+**刻意不设 modelHint**：mcode 托管账号的默认就是 MiniMax-M3.1-Flash-Preview
+（实测 ACP `session/new` 的 `configOptions[model].currentValue =
+m:minimax:MiniMax-M3.1-Flash-Preview:v:thinking`）。写死反而会被
+`resolveModelFor` 判为「不在可用清单」而丢弃，只留一条静默警告 ——
+正是 docs/09 §六.1 要消除的那类静默。
+
+**C. WeKnora 写入静默失败**
+
+`POST /knowledge-bases/{kb}/knowledge/manual` 返回 200，但建出来的文档是
+`parse_status: "draft"` + `enable_status: "disabled"` —— **永远不会被解析、
+永远搜不到**，而旧实现把这 200 当成功。症状是「写入报 ok、检索查不到」。
+
+正确序列三步，第二步不能省：
+
+```
+POST .../knowledge/manual            → 拿 id（draft/disabled）
+POST /api/v1/knowledge/{id}/reparse  → 触发解析（实测这步才让 draft → finalizing → completed）
+```
+
+**顺带纠正我自己的一个错误判断**：先前怀疑「检索混进了别的知识库」，
+**不成立** —— 那两条 WeKnora 部署记录本来就属于同一个库，不存在跨库泄漏。
+
+**D. 字节上限按目录顺序截断**
+
+搜「TUN」「fake-IP」0 命中而搜「代理」正常。上限是按 readdir 顺序截的：
+claude 目录名是哈希（任意），**codex/mcode 是日期目录 = 从最老开始**。
+用户搜「上周那个」很容易正好落在被切掉的一半里。
+
+改：先按 mtime 倒序再套预算 ——「追溯」天然是近的事件优先。
+
+| 查询（2MB/家） | 修复前 | 修复后 |
+|---|---|---|
+| 代理 | 2 命中 / 2633 块 | 2 命中 / **5229 块** |
+| TUN | **0 命中** | 2 命中 |
+| fake-IP | **0 命中** | 2 命中 |
+
+### 端到端验证（真 mcode，不是 mockperm）
+
+管家记忆里写三条事实（daemon 端口 5273 / WeKnora API 18080 / 执行器 mcode），
+问「实际跑在哪个端口」，11.8 秒拿到答案：
+
+> 这个工作台的 daemon 实际跑在 **5273** 端口，不是默认的 5181。
+> WeKnora 知识库全功能 API 端口是 **18080**，界面走 80 端口。
+
+三条全对，且**都不在提问文本里** —— 只能来自注入的 MEMORY.md。
+分发日志记下 `injectedChars: 1112`（7% / 2200），遥测记下
+`useCount: 1 / state: active / lastUsedAt` —— **curator 从此有数据可判**。
+
+完整闭环：文件 → 注入 → 模型 → 审计日志 → 遥测。已验证。
 
 ## 十二、背景速查（给新会话的扩展阅读）
 

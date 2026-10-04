@@ -16,7 +16,7 @@
 
 import path from "node:path";
 import { log } from "../log.ts";
-import { search, loadContext, type SearchOptions, type SearchResult } from "./search.ts";
+import { search, loadContext, CONTEXT_MAX_HITS, type SearchOptions, type SearchResult } from "./search.ts";
 import { ensureLayout, readLongTerm, listDaily, readDaily } from "./projectMemory.ts";
 import type { ScanSource } from "./scanner.ts";
 
@@ -138,14 +138,14 @@ export async function stewardSearch(
   const r: SearchResult = await search(opts);
   const withCtx = opts.withContext === true;
   const hits: StewardSearchHit[] = [];
+  let ctxBudget = withCtx ? CONTEXT_MAX_HITS : 0;
   for (const h of r.hits) {
-    const context =
-      withCtx && h.score > 0
-        ? await loadContext(h.block.srcPath, h.block.lineNo, {
-            before: opts.contextBefore ?? 1,
-            after: opts.contextAfter ?? 1,
-          })
-        : [];
+    // 命中正文本身已经显示给用户了，上下文只是锦上添花 —— 预算用完就直接给空数组
+    const context = ctxBudget > 0 && h.score > 0 ? await loadContext(h.block.srcPath, h.block.lineNo, {
+      before: opts.contextBefore ?? 1,
+      after: opts.contextAfter ?? 1,
+    }) : [];
+    if (context.length > 0) ctxBudget--;
     hits.push({
       cli: h.block.cli,
       at: new Date(h.block.ts).toISOString(),
