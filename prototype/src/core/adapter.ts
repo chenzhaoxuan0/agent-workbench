@@ -243,8 +243,20 @@ export interface AdapterFactory {
    * 非空是硬要求：空清单意味着这个执行器没法开工，注册时就该被拒。
    */
   readonly models: readonly ModelId[];
-  /** 从 daemon 传来的原生模型元数据（含 displayName） */
-  readonly rawModels?: readonly { readonly id: ModelId; readonly displayName: string }[];
+  /** 从 daemon 传来的原生模型元数据（含 displayName 与上下文限制等动态对齐参数） */
+  readonly rawModels?: readonly RawExecutorModel[];
   /** 真正的适配器实例化在这里做（可能需要 spawn 进程） */
   create(): Promise<RuntimeAdapter>;
+}
+
+export interface RawExecutorModel {
+  readonly id: ModelId;
+  readonly displayName: string;
+  readonly contextWindow?: number;
+  readonly maxOutput?: number;
+  readonly reasoningLevels?: readonly string[];
+  readonly defaultReasoningLevel?: string;
+  readonly multimodal?: boolean;
+  readonly inputPerMTok?: number;
+  readonly outputPerMTok?: number;
 }

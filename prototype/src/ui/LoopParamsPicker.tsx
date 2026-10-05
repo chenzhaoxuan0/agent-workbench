@@ -15,7 +15,9 @@ export const REASONING_LEVELS: readonly { id: string; label: string; desc: strin
   { id: "low", label: "低 (low)", desc: "响应最快，适合直接指令与简单编辑" },
   { id: "medium", label: "中 (medium)", desc: "标准思考深度，平衡速度与准确性" },
   { id: "high", label: "高 (high)", desc: "较深思考，适合复杂逻辑与多步骤推理" },
+  { id: "xhigh", label: "超高 (xhigh)", desc: "高阶思考深度，适合攻坚系统级难题" },
   { id: "max", label: "极深 (max)", desc: "最深推理，耗时较长，适合攻坚疑难问题" },
+  { id: "ultra", label: "极限 (ultra)", desc: "顶级思考与自动任务委派，适合极限推理" },
 ];
 
 export const EMPTY_LOOP: LoopParamsState = {};
@@ -23,23 +25,41 @@ export const EMPTY_LOOP: LoopParamsState = {};
 /** 当前档位的一句话摘要 */
 export function summaryOfLoop(loop: LoopParamsState): string {
   const hit = REASONING_LEVELS.find((r) => r.id === (loop.reasoningLevel ?? ""));
-  return hit && hit.id !== "" ? `推理: ${hit.label}` : "推理: 默认";
+  if (hit && hit.id !== "") return `推理: ${hit.label}`;
+  return loop.reasoningLevel ? `推理: ${loop.reasoningLevel}` : "推理: 默认";
 }
 
 export function ReasoningEffortPanel({ onDone }: { onDone?: () => void }) {
   const activeRuntimeId = useWorkbench((s) => s.activeRuntimeId);
+  const activeRuntime = useWorkbench((s) => s.runtimes.find((r) => r.id === s.activeRuntimeId));
+  const activeModelId = useWorkbench((s) => s.runtimeModels[s.activeRuntimeId] ?? activeRuntime?.defaultModel);
+  const activeModel = activeRuntime?.models.find((m) => m.id === activeModelId);
   const loop = useWorkbench((s) => s.loopParams[s.activeRuntimeId] ?? EMPTY_LOOP);
   const setLoopParam = useWorkbench((s) => s.setLoopParam);
 
   const cur = loop.reasoningLevel ?? "";
 
+  // 如果模型声明了特定支持的档位，动态按模型过滤/追加；否则展示通用列表
+  const supported = activeModel?.reasoningLevels;
+  const availableLevels = supported && supported.length > 0
+    ? [
+        REASONING_LEVELS[0]!, // 默认
+        ...supported.map((id) => {
+          const known = REASONING_LEVELS.find((r) => r.id === id);
+          return known ?? { id, label: id, desc: `模型原生支持档位 (${id})` };
+        }),
+      ]
+    : REASONING_LEVELS;
+
   return (
     <div role="listbox" aria-label="推理力度" className="py-1">
       <div className="px-3 py-1.5 border-b border-line-soft mb-1">
         <p className="text-caption font-medium text-ink">推理力度 (Reasoning Effort)</p>
-        <p className="text-[11px] text-ash">按执行器记忆 · 随下一轮生效</p>
+        <p className="text-[11px] text-ash">
+          {activeModel ? `${activeModel.displayName} · 随下一轮生效` : "按执行器记忆 · 随下一轮生效"}
+        </p>
       </div>
-      {REASONING_LEVELS.map((r) => {
+      {availableLevels.map((r) => {
         const active = r.id === cur;
         return (
           <button

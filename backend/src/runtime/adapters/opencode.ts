@@ -141,19 +141,112 @@ interface OcSession {
   turn: TurnAcc | null;
 }
 
+interface OpencodeModelEntry {
+  id?: string;
+  providerID?: string;
+  name?: string;
+  limit?: { context?: number; output?: number };
+  cost?: { input?: number; output?: number };
+  capabilities?: {
+    reasoning?: boolean;
+    attachment?: boolean;
+    input?: { image?: boolean; video?: boolean; pdf?: boolean };
+  };
+  variants?: Record<string, unknown>;
+}
+
+function parseOpencodeModelsVerbose(out: string): ExecutorModelInfo[] {
+  const models: ExecutorModelInfo[] = [];
+  let depth = 0;
+  let start = -1;
+  for (let i = 0; i < out.length; i++) {
+    if (out[i] === "{") {
+      if (depth === 0) start = i;
+      depth++;
+    } else if (out[i] === "}") {
+      depth--;
+      if (depth === 0 && start >= 0) {
+        const jsonStr = out.slice(start, i + 1);
+        try {
+          const item = JSON.parse(jsonStr) as OpencodeModelEntry;
+          if (item.id && item.providerID) {
+            const fullId = `${item.providerID}/${item.id}` as ModelId;
+            const reasoningLevels =
+              item.variants && typeof item.variants === "object"
+                ? Object.keys(item.variants).filter((k) => k !== "none")
+                : undefined;
+            models.push({
+              id: fullId,
+              displayName: item.name ?? item.id,
+              contextWindow: item.limit?.context && item.limit.context > 0 ? item.limit.context : 200000,
+              maxOutput: item.limit?.output && item.limit.output > 0 ? item.limit.output : undefined,
+              reasoningLevels: reasoningLevels && reasoningLevels.length > 0 ? reasoningLevels : undefined,
+              multimodal: item.capabilities?.input?.image ?? false,
+              inputPerMTok: typeof item.cost?.input === "number" ? item.cost.input : undefined,
+              outputPerMTok: typeof item.cost?.output === "number" ? item.cost.output : undefined,
+            });
+          }
+        } catch {
+          // ignore non-JSON blocks
+        }
+        start = -1;
+      }
+    }
+  }
+  return models;
+}
+
+const DEFAULT_OPENCODE_MODELS: readonly ExecutorModelInfo[] = [
+  {
+    id: "opencode/big-pickle" as ModelId,
+    displayName: "Big Pickle（执行器默认）",
+    contextWindow: 200000,
+    maxOutput: 32000,
+    multimodal: true,
+  },
+  {
+    id: "minimax-cn-coding-plan/MiniMax-M3" as ModelId,
+    displayName: "MiniMax M3",
+    contextWindow: 1048576,
+    maxOutput: 512000,
+    reasoningLevels: ["low", "high", "max"],
+    multimodal: true,
+  },
+  {
+    id: "zhipuai-coding-plan/glm-5.3-flash" as ModelId,
+    displayName: "GLM-5.3 Flash",
+    contextWindow: 1000000,
+    maxOutput: 131072,
+    reasoningLevels: ["low", "high", "max"],
+    multimodal: true,
+  },
+];
+
 export class OpencodeAdapter implements ExecutorAdapter {
   readonly id = "opencode";
   readonly displayName = "OpenCode";
   readonly glyph = "O";
-  readonly models: readonly ExecutorModelInfo[] = [
-    // 清单首项 = opencode 自己的默认（session/new configOptions 的 currentValue 实测），
-    // hint 失效时 host 回落清单首项 —— 正好落在执行器默认上。
-    // 后两项取自 session/new 实测下发的选项；zhipuai 系旧 id 曾整体失效（Model not found），
-    // 现清单里的新 id 未复测推理可用性，失败会以 turn error 可见。
-    { id: "opencode/big-pickle" as ModelId, displayName: "Big Pickle（执行器默认）" },
-    { id: "minimax-cn-coding-plan/MiniMax-M2.7" as ModelId, displayName: "MiniMax M2.7" },
-    { id: "zhipuai-coding-plan/glm-5.3-flash" as ModelId, displayName: "GLM-5.3 Flash" },
-  ];
+  private _models: ExecutorModelInfo[] = [...DEFAULT_OPENCODE_MODELS];
+  get models(): readonly ExecutorModelInfo[] {
+    return this._models;
+  }
+
+  async syncModels(): Promise<readonly ExecutorModelInfo[]> {
+    try {
+      const cmd = await resolveCommand("opencode");
+      const out = await execLines(cmd, ["models", "--verbose"], 10000);
+      const parsed = parseOpencodeModelsVerbose(out);
+      if (parsed.length > 0) {
+        this._models = parsed;
+        log.info("opencode models synced dynamically", { count: parsed.length });
+      }
+    } catch (err: unknown) {
+      log.debug("opencode models --verbose failed, using fallback models", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    return this._models;
+  }
   readonly capabilities: RuntimeCapabilities = {
     resumeSession: true, // session/resume（会话按项目落盘全局可寻址）
     fileDiff: false, // ACP 事件翻译无 diff 流（见文件头）
@@ -176,6 +269,7 @@ export class OpencodeAdapter implements ExecutorAdapter {
     try {
       const cmd = await resolveCommand("opencode");
       const out = await execLines(cmd, ["--version"], 15000);
+      void this.syncModels().catch(() => {});
       return {
         state: { status: "ready", version: out.trim() || "unknown" },
         capabilities: this.capabilities,

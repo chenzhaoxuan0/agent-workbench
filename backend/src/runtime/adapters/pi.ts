@@ -119,15 +119,94 @@ interface PiTurnAcc {
   turnModel?: string;
 }
 
+function parsePiTokenCount(str: string): number | undefined {
+  if (!str) return undefined;
+  const s = str.trim().toUpperCase();
+  if (s.endsWith("M")) {
+    const num = parseFloat(s.slice(0, -1));
+    return isNaN(num) ? undefined : Math.round(num * 1_000_000);
+  }
+  if (s.endsWith("K")) {
+    const num = parseFloat(s.slice(0, -1));
+    return isNaN(num) ? undefined : Math.round(num * 1_000);
+  }
+  const n = parseInt(s, 10);
+  return isNaN(n) ? undefined : n;
+}
+
+const DEFAULT_PI_MODELS: readonly ExecutorModelInfo[] = [
+  {
+    id: "minimax-cn/MiniMax-M2.7" as ModelId,
+    displayName: "MiniMax M2.7",
+    contextWindow: 204800,
+    maxOutput: 131100,
+    reasoningLevels: ["low", "medium", "high", "max"],
+    multimodal: false,
+  },
+  {
+    id: "minimax-cn/MiniMax-M2.7-highspeed" as ModelId,
+    displayName: "MiniMax M2.7 Highspeed",
+    contextWindow: 204800,
+    maxOutput: 131100,
+    reasoningLevels: ["low", "medium", "high", "max"],
+    multimodal: false,
+  },
+  {
+    id: "minimax-cn/MiniMax-M3" as ModelId,
+    displayName: "MiniMax M3",
+    contextWindow: 1000000,
+    maxOutput: 512000,
+    reasoningLevels: ["low", "medium", "high", "max"],
+    multimodal: true,
+  },
+];
+
 export class PiAdapter implements ExecutorAdapter {
   readonly id = "pi";
   readonly displayName = "Pi";
   readonly glyph = "π";
-  readonly models: readonly ExecutorModelInfo[] = [
-    // pi 的模型由它自己的 provider 配置决定（本机默认 minimax-cn/MiniMax-M2.7 实测可用）；
-    // model=null 走 pi 默认，非空时透传 --model（pi 侧未配置的 id 会在 turn 内报错）
-    { id: "minimax-cn/MiniMax-M2.7" as ModelId, displayName: "MiniMax M2.7" },
-  ];
+  private _models: ExecutorModelInfo[] = [...DEFAULT_PI_MODELS];
+  get models(): readonly ExecutorModelInfo[] {
+    return this._models;
+  }
+
+  async syncModels(): Promise<readonly ExecutorModelInfo[]> {
+    try {
+      const cmd = await resolveCommand("pi");
+      const out = await execLines(cmd, ["--list-models"], 8000);
+      const lines = out.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0);
+      const dataLines = lines.filter((l) => !/^provider\s+model/i.test(l));
+      const parsed: ExecutorModelInfo[] = [];
+      for (const line of dataLines) {
+        const parts = line.split(/\s+/);
+        if (parts.length >= 2) {
+          const provider = parts[0]!;
+          const model = parts[1]!;
+          const contextStr = parts[2] ?? "";
+          const maxOutStr = parts[3] ?? "";
+          const thinkingStr = parts[4]?.toLowerCase() ?? "";
+          const imagesStr = parts[5]?.toLowerCase() ?? "";
+          parsed.push({
+            id: `${provider}/${model}` as ModelId,
+            displayName: model,
+            contextWindow: parsePiTokenCount(contextStr) ?? 204800,
+            maxOutput: parsePiTokenCount(maxOutStr),
+            reasoningLevels: thinkingStr === "yes" ? ["low", "medium", "high", "max"] : undefined,
+            multimodal: imagesStr === "yes",
+          });
+        }
+      }
+      if (parsed.length > 0) {
+        this._models = parsed;
+        log.info("pi models synced dynamically", { count: parsed.length });
+      }
+    } catch (err: unknown) {
+      log.debug("pi --list-models failed, using fallback models", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    return this._models;
+  }
   readonly capabilities: RuntimeCapabilities = {
     resumeSession: true,
     fileDiff: false, // 协议无结构化 diff；write/edit 工具只发 file.changed
@@ -150,6 +229,7 @@ export class PiAdapter implements ExecutorAdapter {
     try {
       const cmd = await resolveCommand("pi");
       const out = await execLines(cmd, ["--version"], 15000);
+      void this.syncModels().catch(() => {});
       return {
         state: { status: "ready", version: out.trim() || "unknown" },
         capabilities: this.capabilities,

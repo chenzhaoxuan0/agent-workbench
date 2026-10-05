@@ -39,6 +39,12 @@ export interface ModelSpec {
   readonly outputPerMTok: number;
   /** 是否支持图像输入 */
   readonly multimodal: boolean;
+  /** 单轮最大输出限制（token） */
+  readonly maxOutput?: number;
+  /** 支持的推理档位（low, medium, high, max, ultra 等） */
+  readonly reasoningLevels?: readonly string[];
+  /** 默认推理档位 */
+  readonly defaultReasoningLevel?: string;
   /**
    * 是否**只能**处理图像。
    *
@@ -354,20 +360,38 @@ const TIER_ORDER: Record<ModelTier, number> = { frontier: 0, balanced: 1, fast: 
  * 档位缺省 `balanced`：与「用户添加的自定义模型」同一处理 —— 我们不知道它多强，
  * 就别默认它是旗舰。
  */
-export function scaffoldModel(id: ModelId, displayName?: string): ModelSpec {
+export function scaffoldModel(
+  id: ModelId,
+  displayName?: string,
+  overrides?: {
+    readonly contextWindow?: number;
+    readonly maxOutput?: number;
+    readonly reasoningLevels?: readonly string[];
+    readonly defaultReasoningLevel?: string;
+    readonly multimodal?: boolean;
+    readonly inputPerMTok?: number;
+    readonly outputPerMTok?: number;
+  },
+): ModelSpec {
+  const hasDynamicCtx = overrides?.contextWindow !== undefined && overrides.contextWindow > 0;
   return {
     id,
     displayName: displayName ?? id,
     vendor: "custom",
-    vendorLabel: "未收录",
+    vendorLabel: hasDynamicCtx ? "CLI 动态发现" : "未收录",
     tier: "balanced",
-    contextWindow: 0,
-    inputPerMTok: 0,
-    outputPerMTok: 0,
-    multimodal: false,
-    note: "本地没有这条模型的价格与窗口资料（由 daemon 报告，目录未收录）",
+    contextWindow: overrides?.contextWindow ?? 0,
+    inputPerMTok: overrides?.inputPerMTok ?? 0,
+    outputPerMTok: overrides?.outputPerMTok ?? 0,
+    multimodal: overrides?.multimodal ?? false,
+    maxOutput: overrides?.maxOutput,
+    reasoningLevels: overrides?.reasoningLevels,
+    defaultReasoningLevel: overrides?.defaultReasoningLevel,
+    note: hasDynamicCtx
+      ? `由本机 Agent CLI 动态对齐（上下文 ${formatContext(overrides!.contextWindow!)}）`
+      : "本地没有这条模型的价格与窗口资料（由 daemon 报告，目录未收录）",
     asOf: "",
-    source: "",
+    source: hasDynamicCtx ? "daemon adapter.list" : "",
   };
 }
 

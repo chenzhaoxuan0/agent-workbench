@@ -95,9 +95,9 @@ export class ClaudeAdapter implements ExecutorAdapter {
   readonly displayName = "Claude Code";
   readonly glyph = "C";
   readonly models: readonly ExecutorModelInfo[] = [
-    { id: "sonnet" as ModelId, displayName: "Sonnet（网关别名）" },
-    { id: "opus" as ModelId, displayName: "Opus（网关别名）" },
-    { id: "haiku" as ModelId, displayName: "Haiku（网关别名）" },
+    { id: "sonnet" as ModelId, displayName: "Sonnet（网关别名）", contextWindow: 1000000, multimodal: true },
+    { id: "opus" as ModelId, displayName: "Opus（网关别名）", contextWindow: 1000000, multimodal: true },
+    { id: "haiku" as ModelId, displayName: "Haiku（网关别名）", contextWindow: 200000, multimodal: true },
   ];
   readonly capabilities: RuntimeCapabilities = {
     resumeSession: true,

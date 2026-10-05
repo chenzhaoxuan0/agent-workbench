@@ -22,6 +22,20 @@ import type {
 export interface ExecutorModelInfo {
   readonly id: ModelId;
   readonly displayName: string;
+  /** 上下文限制（token） */
+  readonly contextWindow?: number;
+  /** 最大单轮输出限制（token） */
+  readonly maxOutput?: number;
+  /** 支持的推理档位（low, medium, high, max, ultra 等） */
+  readonly reasoningLevels?: readonly string[];
+  /** 默认推理档位 */
+  readonly defaultReasoningLevel?: string;
+  /** 是否支持多模态输入（图片/附件） */
+  readonly multimodal?: boolean;
+  /** 输入价格（美元/百万 token） */
+  readonly inputPerMTok?: number;
+  /** 输出价格（美元/百万 token） */
+  readonly outputPerMTok?: number;
 }
 
 export interface StartRequest {
@@ -72,6 +86,8 @@ export interface ExecutorAdapter {
   /** 非空硬要求（契约原文）：空清单的执行器注册即拒 */
   readonly models: readonly ExecutorModelInfo[];
   readonly capabilities: RuntimeCapabilities;
+  /** 动态对齐/刷新模型清单与上下文参数（支持的 CLI 会实时查询，失败时保留 fallback） */
+  syncModels?(): Promise<readonly ExecutorModelInfo[]>;
   /** 探测本机是否可用（版本/认证），结果缓存与否由适配器自己定 */
   probe(): Promise<ProbeResult>;
   /** 建会话并开始把翻译好的事件喂给 sink；返回后 host 补发 session.started */

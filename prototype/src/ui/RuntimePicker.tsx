@@ -381,7 +381,9 @@ function ModelRow({
           <span className="tnum truncate font-mono text-caption text-ash">
             {spec.inputPerMTok > 0
               ? `${formatPrice(spec.inputPerMTok)}/${formatPrice(spec.outputPerMTok)}`
-              : "价格未知"}
+              : spec.vendorLabel === "未收录"
+                ? "价格未知"
+                : "订阅内含"}
             {spec.contextWindow > 0 ? ` · ${formatContext(spec.contextWindow)}` : ""}
           </span>
         </span>

@@ -129,6 +129,8 @@ host.register(new OpencodeAdapter());
 host.register(new MockPermAdapter());
 host.loadPersisted();
 memoryScheduler?.start();
+// 后台并发预热动态模型查询（不阻断启动）
+void host.syncAllModels();
 
 // 总管 bot：初始化即就位（docs/10 §4.6）。失败不阻断启动 ——
 // 记忆是增强，不是前置条件。
@@ -828,7 +830,10 @@ registerMethod("memory.weknora.config.set", (params) => {
 });
 registerMethod("memory.mirror", () => memory.readMirror());
 
-registerMethod("adapter.list", () => host.listAdapters());
+registerMethod("adapter.list", (params) => {
+  const p = params as { sync?: boolean } | null;
+  return host.listAdapters(p?.sync ?? false);
+});
 registerMethod("adapter.probe", (params) => {
   const { runtimeId } = (params ?? {}) as { runtimeId?: string };
   if (typeof runtimeId !== "string") throw Object.assign(new Error("runtimeId is required"), { code: "bad_params" });

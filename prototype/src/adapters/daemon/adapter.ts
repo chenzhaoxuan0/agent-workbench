@@ -59,7 +59,17 @@ export function createDaemonFactory(info: DaemonExecutorInfo, endpoint: string):
     },
     capabilities: info.capabilities,
     models: info.models.map((m) => asModelId(m.id)),
-    rawModels: info.models.map((m) => ({ id: asModelId(m.id), displayName: m.displayName })),
+    rawModels: info.models.map((m) => ({
+      id: asModelId(m.id),
+      displayName: m.displayName,
+      contextWindow: m.contextWindow,
+      maxOutput: m.maxOutput,
+      reasoningLevels: m.reasoningLevels,
+      defaultReasoningLevel: m.defaultReasoningLevel,
+      multimodal: m.multimodal,
+      inputPerMTok: m.inputPerMTok,
+      outputPerMTok: m.outputPerMTok,
+    })),
     testOnly: info.testOnly,
     create: async () => new DaemonRuntimeAdapter(runtimeId, info, client),
   };

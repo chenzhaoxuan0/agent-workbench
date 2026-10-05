@@ -23,11 +23,23 @@ import type { RuntimeCapabilities } from "../../core/adapter.ts";
 import type { RuntimeEvent } from "../../core/events.ts";
 import type { WorkUnit } from "../../core/units.ts";
 
+export interface DaemonModelInfo {
+  readonly id: string;
+  readonly displayName: string;
+  readonly contextWindow?: number;
+  readonly maxOutput?: number;
+  readonly reasoningLevels?: readonly string[];
+  readonly defaultReasoningLevel?: string;
+  readonly multimodal?: boolean;
+  readonly inputPerMTok?: number;
+  readonly outputPerMTok?: number;
+}
+
 export interface DaemonExecutorInfo {
   readonly id: string;
   readonly displayName: string;
   readonly glyph: string;
-  readonly models: readonly { id: string; displayName: string }[];
+  readonly models: readonly DaemonModelInfo[];
   readonly capabilities: RuntimeCapabilities;
   /** daemon 侧标了 = 这是测试夹具（mockperm），不是真的 CLI 工具 */
   readonly testOnly?: true;

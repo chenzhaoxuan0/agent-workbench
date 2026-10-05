@@ -11,7 +11,7 @@
  *    cli_ref 存执行器原生引用 —— resumeSession 靠它跨重启续命。
  */
 
-import type { AdapterSession, ExecutorAdapter, StartRequest } from "./adapters/types.ts";
+import type { AdapterSession, ExecutorAdapter, ExecutorModelInfo, StartRequest } from "./adapters/types.ts";
 import { adapterError } from "./adapters/types.ts";
 import type {
   ModelId,
@@ -43,7 +43,7 @@ export interface AdapterInfo {
   readonly id: string;
   readonly displayName: string;
   readonly glyph: string;
-  readonly models: readonly { id: ModelId; displayName: string }[];
+  readonly models: readonly ExecutorModelInfo[];
   readonly capabilities: ExecutorAdapter["capabilities"];
   /**
    * 这是**测试夹具**，不是真的 CLI 工具。
@@ -278,7 +278,28 @@ export class RuntimeHost {
     log.info("adapter registered", { id: adapter.id, models: adapter.models.length });
   }
 
-  listAdapters(): AdapterInfo[] {
+  /**
+   * 并发刷新所有支持动态模型发现的适配器。
+   * 单家失败或超时不会抛错阻断其余适配器。
+   */
+  async syncAllModels(): Promise<void> {
+    await Promise.allSettled(
+      [...this.adapters.values()].map(async (a) => {
+        if (typeof a.syncModels === "function") {
+          try {
+            await a.syncModels();
+          } catch (err: unknown) {
+            log.warn("syncModels failed for adapter", { id: a.id, error: err instanceof Error ? err.message : String(err) });
+          }
+        }
+      }),
+    );
+  }
+
+  async listAdapters(sync = false): Promise<AdapterInfo[]> {
+    if (sync) {
+      await this.syncAllModels();
+    }
     return [...this.adapters.values()].map((a) => ({
       id: a.id,
       displayName: a.displayName,
@@ -319,8 +340,16 @@ export class RuntimeHost {
     );
   }
 
-  probe(runtimeId: string): Promise<ProbeResult> {
-    return this.getAdapter(runtimeId).probe();
+  async probe(runtimeId: string): Promise<ProbeResult> {
+    const adapter = this.getAdapter(runtimeId);
+    if (typeof adapter.syncModels === "function") {
+      try {
+        await adapter.syncModels();
+      } catch (err: unknown) {
+        log.warn("syncModels failed during probe", { id: adapter.id, error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+    return adapter.probe();
   }
 
   private toSession(h: HostSession): Session {

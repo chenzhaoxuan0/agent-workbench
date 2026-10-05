@@ -64,9 +64,19 @@ export class RuntimeRegistry {
       models = f.rawModels.map((m) => {
         const known = modelById(m.id);
         if (known) {
-          return m.displayName ? { ...known, displayName: m.displayName } : known;
+          return {
+            ...known,
+            displayName: m.displayName || known.displayName,
+            contextWindow: m.contextWindow ?? known.contextWindow,
+            maxOutput: m.maxOutput ?? known.maxOutput,
+            reasoningLevels: m.reasoningLevels ?? known.reasoningLevels,
+            defaultReasoningLevel: m.defaultReasoningLevel ?? known.defaultReasoningLevel,
+            multimodal: m.multimodal ?? known.multimodal,
+            inputPerMTok: m.inputPerMTok ?? known.inputPerMTok,
+            outputPerMTok: m.outputPerMTok ?? known.outputPerMTok,
+          };
         }
-        return scaffoldModel(m.id, m.displayName);
+        return scaffoldModel(m.id, m.displayName, m);
       });
     } else {
       models = [...sortModels(f.models)];

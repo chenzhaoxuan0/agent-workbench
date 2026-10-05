@@ -175,9 +175,23 @@ export class DshAdapter implements ExecutorAdapter {
   readonly glyph = "D";
   readonly models: readonly ExecutorModelInfo[] = [
     // ACP configOption "model" 的实测选项（value 是 JSON 串 '["provider","model"]'）
-    { id: "deepseek-official/deepseek-v4-flash" as ModelId, displayName: "DeepSeek V4 Flash（默认）" },
-    { id: "deepseek-official/deepseek-flash" as ModelId, displayName: "DeepSeek V41 Flash" },
-    { id: "deepseek-official/deepseek-v4-pro" as ModelId, displayName: "DeepSeek V4 Pro" },
+    {
+      id: "deepseek-official/deepseek-v4-flash" as ModelId,
+      displayName: "DeepSeek V4 Flash（默认）",
+      contextWindow: 1000000,
+      reasoningLevels: ["low", "medium", "high"],
+    },
+    {
+      id: "deepseek-official/deepseek-flash" as ModelId,
+      displayName: "DeepSeek V41 Flash",
+      contextWindow: 1000000,
+    },
+    {
+      id: "deepseek-official/deepseek-v4-pro" as ModelId,
+      displayName: "DeepSeek V4 Pro",
+      contextWindow: 1000000,
+      reasoningLevels: ["low", "medium", "high", "max"],
+    },
   ];
   readonly capabilities: RuntimeCapabilities = {
     resumeSession: true, // session/resume（要求 cwd 与原会话一致）

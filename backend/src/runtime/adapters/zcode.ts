@@ -711,9 +711,30 @@ export class ZcodeAdapter implements ExecutorAdapter {
   readonly displayName = "ZCode";
   readonly glyph = "Z";
   readonly models: readonly ExecutorModelInfo[] = [
-    { id: "GLM-5.3-Flash" as ModelId, displayName: "GLM-5.3 Flash（默认）" },
-    { id: "GLM-5.3" as ModelId, displayName: "GLM-5.3" },
-    { id: "GLM-5-Turbo" as ModelId, displayName: "GLM-5 Turbo" },
+    {
+      id: "GLM-5.3-Flash" as ModelId,
+      displayName: "GLM-5.3 Flash（默认）",
+      contextWindow: 1000000,
+      maxOutput: 131072,
+      reasoningLevels: ["low", "high", "max"],
+      multimodal: true,
+    },
+    {
+      id: "GLM-5.3" as ModelId,
+      displayName: "GLM-5.3",
+      contextWindow: 1000000,
+      maxOutput: 131072,
+      reasoningLevels: ["low", "high", "max"],
+      multimodal: true,
+    },
+    {
+      id: "GLM-5-Turbo" as ModelId,
+      displayName: "GLM-5 Turbo",
+      contextWindow: 200000,
+      maxOutput: 32768,
+      reasoningLevels: ["low", "high", "max"],
+      multimodal: true,
+    },
   ];
   // 能力声明跟传输状态走（docs/08 WP-4）：app-server = 真流式；print 回退 = 批量。
   // 注册表在 probe 前读到的快照是 app-server 档——probe 返回值才是权威。

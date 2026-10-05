@@ -89,14 +89,90 @@ interface CodexTurnAcc {
   failed: string | null;
 }
 
+const DEFAULT_CODEX_MODELS: readonly ExecutorModelInfo[] = [
+  {
+    id: "gpt-6-astra" as ModelId,
+    displayName: "GPT-6 Astra",
+    contextWindow: 272000,
+    maxOutput: 128000,
+    reasoningLevels: ["low", "medium", "high", "xhigh", "max", "ultra"],
+    defaultReasoningLevel: "medium",
+    multimodal: true,
+  },
+  {
+    id: "gpt-5-1-codex" as ModelId,
+    displayName: "GPT-5.1 Codex",
+    contextWindow: 272000,
+    maxOutput: 128000,
+    reasoningLevels: ["low", "medium", "high", "xhigh", "max"],
+    defaultReasoningLevel: "medium",
+    multimodal: true,
+  },
+  {
+    id: "gpt-5.6-luna" as ModelId,
+    displayName: "GPT-5.6 Luna",
+    contextWindow: 272000,
+    maxOutput: 128000,
+    reasoningLevels: ["low", "medium", "high", "xhigh", "max"],
+    defaultReasoningLevel: "medium",
+    multimodal: true,
+  },
+];
+
 export class CodexAdapter implements ExecutorAdapter {
   readonly id = "codex";
   readonly displayName = "Codex";
   readonly glyph = "C";
-  readonly models: readonly ExecutorModelInfo[] = [
-    { id: "gpt-6-astra" as ModelId, displayName: "GPT-6 Astra" },
-    { id: "gpt-5-1-codex" as ModelId, displayName: "GPT-5.1 Codex" },
-  ];
+  private _models: ExecutorModelInfo[] = [...DEFAULT_CODEX_MODELS];
+  get models(): readonly ExecutorModelInfo[] {
+    return this._models;
+  }
+
+  async syncModels(): Promise<readonly ExecutorModelInfo[]> {
+    try {
+      const cmd = await resolveCommand("codex");
+      const out = await execLines(cmd, ["debug", "models"], 8000);
+      const parsed = JSON.parse(out) as {
+        models?: Array<{
+          slug?: string;
+          display_name?: string;
+          context_window?: number;
+          max_context_window?: number;
+          default_reasoning_level?: string;
+          supported_reasoning_levels?: Array<string | { effort?: string }>;
+          input_modalities?: string[];
+        }>;
+      };
+      if (Array.isArray(parsed.models) && parsed.models.length > 0) {
+        const synced = parsed.models
+          .filter((m): m is typeof m & { slug: string } => typeof m.slug === "string" && m.slug.length > 0)
+          .map((m) => {
+            const reasoningLevels = Array.isArray(m.supported_reasoning_levels)
+              ? m.supported_reasoning_levels
+                  .map((r) => (typeof r === "string" ? r : r.effort))
+                  .filter((r): r is string => typeof r === "string" && r.length > 0)
+              : undefined;
+            return {
+              id: m.slug as ModelId,
+              displayName: m.display_name ?? m.slug,
+              contextWindow: m.max_context_window ?? m.context_window ?? 272000,
+              reasoningLevels,
+              defaultReasoningLevel: m.default_reasoning_level,
+              multimodal: Array.isArray(m.input_modalities) ? m.input_modalities.includes("image") : true,
+            };
+          });
+        if (synced.length > 0) {
+          this._models = synced;
+          log.info("codex models synced dynamically", { count: synced.length });
+        }
+      }
+    } catch (err: unknown) {
+      log.debug("codex debug models failed, using fallback models", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    return this._models;
+  }
   readonly capabilities: RuntimeCapabilities = {
     resumeSession: true,
     fileDiff: false, // file_change 有 path+kind 无 patch，先不给 diff 能力
@@ -120,6 +196,7 @@ export class CodexAdapter implements ExecutorAdapter {
     try {
       const cmd = await resolveCommand("codex");
       const out = await execLines(cmd, ["--version"], 15000);
+      void this.syncModels().catch(() => {});
       return {
         state: { status: "ready", version: out.trim() || "unknown" },
         capabilities: this.capabilities,

@@ -167,7 +167,22 @@ export class McodeAdapter implements ExecutorAdapter {
   readonly glyph = "M";
   readonly models: readonly ExecutorModelInfo[] = [
     // 模型由 mcode 托管账号/BYOK 配置决定，ACP 侧用 configOption "model" 切
-    { id: "minimax-m2" as ModelId, displayName: "MiniMax M2（托管默认）" },
+    {
+      id: "minimax-m2" as ModelId,
+      displayName: "MiniMax M2（托管默认）",
+      contextWindow: 204800,
+      maxOutput: 131072,
+      reasoningLevels: ["low", "medium", "high", "max"],
+      multimodal: true,
+    },
+    {
+      id: "minimax-m3" as ModelId,
+      displayName: "MiniMax M3",
+      contextWindow: 1000000,
+      maxOutput: 512000,
+      reasoningLevels: ["low", "medium", "high", "max"],
+      multimodal: true,
+    },
   ];
   readonly capabilities: RuntimeCapabilities = {
     resumeSession: true,
