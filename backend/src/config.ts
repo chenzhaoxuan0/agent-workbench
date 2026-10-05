@@ -127,7 +127,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): DaemonConfig {
 
   return {
     host: env["AGENT_WORKBENCH_HOST"] ?? "127.0.0.1",
-    port: Number.parseInt(env["AGENT_WORKBENCH_PORT"] ?? "5181", 10) || 5181,
+    port: Number.parseInt(env["AGENT_WORKBENCH_PORT"] ?? "5281", 10) || 5281,
     homeDir,
     logLevel,
     version: readVersion(),

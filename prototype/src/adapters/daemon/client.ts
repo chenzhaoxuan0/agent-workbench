@@ -44,7 +44,7 @@ export interface DaemonExecutorInfo {
  * 改法：起 daemon 时 `AGENT_WORKBENCH_PORT=5273 pnpm dev`，
  * 跑前端时 `VITE_AGENT_WORKBENCH_PORT=5273 pnpm dev`。
  */
-const DAEMON_PORT = (import.meta.env?.VITE_AGENT_WORKBENCH_PORT as string | undefined)?.trim() || "5181";
+const DAEMON_PORT = (import.meta.env?.VITE_AGENT_WORKBENCH_PORT as string | undefined)?.trim() || "5281";
 
 /**
  * daemon 地址解析（WP-7 手机流程）：

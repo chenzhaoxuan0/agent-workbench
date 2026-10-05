@@ -735,7 +735,11 @@ void (async () => {
       if (valid.length > 0) {
         const current = useWorkbench.getState().units;
         const merged = [...current.filter((u) => !valid.some((d) => d.id === u.id)), ...valid];
-        useWorkbench.setState({ units: merged });
+        const curActive = useWorkbench.getState().activeUnitId;
+        const defaultActive = merged.some((u) => u.id === curActive && u.id !== "")
+          ? curActive
+          : (merged.find((u) => u.id === "steward")?.id ?? merged[0]?.id ?? asUnitId(""));
+        useWorkbench.setState({ units: merged, activeUnitId: defaultActive });
         console.info(`[workbench] 已合并 ${valid.length} 个落盘 bot 定义${skipped > 0 ? `（跳过 ${skipped} 个不合格定义）` : ""}`);
         // 认出「哪个 bot 接的是哪个飞书机器人」。不传 profiles = 问 daemon 盘上所有
         // 已启用的飞书账号，它按 profile 去重，三个 bot 绑同一个机器人也只 spawn 一次。

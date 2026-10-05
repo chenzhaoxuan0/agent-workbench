@@ -10,7 +10,7 @@ export default defineConfig(({ mode }) => {
   // 5141–5240 一整段动态端口，5180 与 5181（daemon 默认）都落在里面，
   // 且 strictPort: true 时 vite 会直接报错退出。
   const env = loadEnv(mode, process.cwd(), "");
-  const uiPort = Number(env["VITE_UI_PORT"] ?? "5180");
+  const uiPort = Number(env["VITE_UI_PORT"] ?? "5280");
 
   return {
     plugins: [react(), tailwindcss()],

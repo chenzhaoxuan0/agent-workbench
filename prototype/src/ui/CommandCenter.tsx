@@ -34,7 +34,7 @@ const SCOPES: readonly { id: Scope; label: string; icon: typeof Rocket }[] = [
   { id: "all", label: "全部", icon: Layers },
   { id: "commands", label: "命令", icon: Rocket },
   { id: "sessions", label: "会话", icon: MessageSquare },
-  { id: "units", label: "工作单元", icon: FolderGit2 },
+  { id: "units", label: "Agent", icon: Bot },
   { id: "automations", label: "自动化", icon: AlarmClock },
 ];
 
@@ -106,10 +106,10 @@ export function CommandCenter() {
       out.push({
         id: `unit-${u.id}`,
         scope: "units",
-        group: "工作单元",
-        icon: u.kind === "bot" ? Bot : FolderGit2,
+        group: "Agent 智能体",
+        icon: Bot,
         label: u.name,
-        hint: u.rootPath,
+        hint: u.identity?.role ? `${u.identity.role} · ${u.rootPath}` : u.rootPath,
         run: () => useWorkbench.getState().selectUnit(u.id),
       });
     }
@@ -311,18 +311,25 @@ function useCommands(): readonly Command[] {
 
     out.push(
       {
-        id: "view-bot",
-        label: "切到 bot 视图",
-        hint: "人 · 状态 · 日程",
+        id: "view-chat",
+        label: "切到主对话",
+        hint: "Personal Agent 对话流",
         group: "视图",
-        run: () => useWorkbench.getState().setView("bot"),
+        run: () => shell().setMainView("chat"),
       },
       {
-        id: "view-project",
-        label: "切到项目视图",
-        hint: "看板 · diff · PR",
+        id: "view-image",
+        label: "切到出图工作台",
+        hint: "AI 图像生成与实验",
         group: "视图",
-        run: () => useWorkbench.getState().setView("project"),
+        run: () => shell().setMainView("image"),
+      },
+      {
+        id: "open-automations",
+        label: "打开自动化",
+        hint: "定时任务与后台流",
+        group: "视图",
+        run: () => shell().setMainView("automations"),
       },
     );
 
@@ -340,7 +347,7 @@ function useCommands(): readonly Command[] {
     out.push(
       {
         id: "new-task",
-        label: "新建任务",
+        label: "新建会话",
         hint: "⌘N",
         group: "布局",
         run: () => shell().newTask(),
@@ -354,29 +361,31 @@ function useCommands(): readonly Command[] {
       },
       {
         id: "toggle-terminal",
-        label: shell().terminalOpen ? "关闭终端" : "打开终端",
-        hint: "⌘`",
+        label: shell().terminalOpen ? "关闭终端抽屉" : "打开终端抽屉",
+        hint: "Ctrl+`",
         group: "布局",
         run: () => shell().toggleTerminal(),
       },
       {
-        id: "toggle-sidepane",
-        label: useSidePane.getState().open ? "收起右侧面板" : "展开右侧面板",
+        id: "toggle-inspector",
+        label: useSidePane.getState().open ? "收起 Agent 档案" : "展开 Agent 档案",
+        hint: "设定 · 记忆 · 渠道 · 产出",
         group: "布局",
         run: () => useSidePane.getState().setOpen(!useSidePane.getState().open),
       },
       {
-        id: "sidepane-overview",
-        label: "面板总览与搜索",
-        hint: "切换右侧标签",
-        group: "布局",
-        run: () => useSidePane.getState().setOpen(true),
+        id: "new-agent",
+        label: "新建 Agent",
+        hint: "从 AGENTS.md 岗位说明书开始",
+        group: "Agent",
+        run: () => shell().openAddBot(),
       },
       {
-        id: "open-automations",
-        label: "打开自动化",
-        group: "视图",
-        run: () => shell().setMainView("automations"),
+        id: "import-agent",
+        label: "认领已有目录为 Agent",
+        hint: "本地文件夹挂载，侦测 AGENTS.md",
+        group: "Agent",
+        run: () => shell().openImportBot(),
       },
     );
 
