@@ -174,24 +174,24 @@ export class DshAdapter implements ExecutorAdapter {
   readonly displayName = "DeepSeek Harness";
   readonly glyph = "D";
   readonly models: readonly ExecutorModelInfo[] = [
-    // ACP configOption "model" 的实测选项（value 是 JSON 串 '["provider","model"]'）
+    // DeepSeek Harness 官方长程架构（ACP 管道直连官方端点，支持 1M 上下文调度）
     {
       id: "deepseek-official/deepseek-v4-flash" as ModelId,
       displayName: "DeepSeek V4 Flash（默认）",
-      contextWindow: 128000,
+      contextWindow: 1000000,
       reasoningLevels: ["low", "medium", "high"],
       multimodal: false,
     },
     {
       id: "deepseek-official/deepseek-flash" as ModelId,
       displayName: "DeepSeek V41 Flash",
-      contextWindow: 128000,
+      contextWindow: 1000000,
       multimodal: false,
     },
     {
       id: "deepseek-official/deepseek-v4-pro" as ModelId,
       displayName: "DeepSeek V4 Pro",
-      contextWindow: 128000,
+      contextWindow: 1000000,
       reasoningLevels: ["low", "medium", "high", "max"],
       multimodal: false,
     },
