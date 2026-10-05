@@ -18,7 +18,6 @@ import {
   type ModelId,
   type ModelSpec,
 } from "../src/core/models.ts";
-import { mockFactories } from "../src/adapters/mock/adapter.ts";
 import {
   addCustomModel,
   EMPTY_PREFS,
@@ -116,7 +115,7 @@ console.log("\n【4】排序：先档位，再价格");
   eq("旗舰排在最前", tiers[0], "frontier");
   eq("快速档排在最后", tiers.at(-1), "fast");
   ok("输入顺序不影响结果（幂等）", sortModels(sorted.map((m) => m.id)).map((m) => m.id).join() === sorted.map((m) => m.id).join());
-  ok("未知 id 被丢掉而不是塞进菜单", sortModels([...ids, asModelId("not-a-model")]).length === ids.length);
+  ok("未知 id 降级为 scaffoldModel（避免 CLI 适配器静默消失）", sortModels([...ids, asModelId("not-a-model")]).some((m) => m.id === "not-a-model" && m.vendor === "custom"));
 }
 
 console.log("\n【5】默认模型 = 相对该执行器，不存在全局默认");
@@ -150,6 +149,39 @@ console.log("\n【6】合法性：执行器与模型必须搭得上");
   ok("undefined 一律不合法", !canRuntimeUse(claude, undefined));
   ok("未知 id 不合法", !canRuntimeUse(claude, asModelId("nope")));
 }
+
+const mockFactories = [
+  {
+    id: "claude-code",
+    models: [asModelId("claude-sonnet-5"), asModelId("claude-opus-5-5"), asModelId("claude-haiku-4-5")],
+    capabilities: { multimodal: false },
+  },
+  {
+    id: "codex",
+    models: [asModelId("gpt-6-astra"), asModelId("gpt-5-1-codex"), asModelId("gpt-5-6-luna")],
+    capabilities: { multimodal: false },
+  },
+  {
+    id: "zcode",
+    models: [asModelId("GLM-5.3-Flash"), asModelId("claude-sonnet-5"), asModelId("gpt-6-astra")],
+    capabilities: { multimodal: true },
+  },
+  {
+    id: "opencode",
+    models: [asModelId("deepseek-v4-pro"), asModelId("GLM-5.3-Flash"), asModelId("claude-sonnet-5")],
+    capabilities: { multimodal: true },
+  },
+  {
+    id: "pi",
+    models: [asModelId("claude-sonnet-5"), asModelId("gpt-6-astra"), asModelId("deepseek-v4-flash")],
+    capabilities: { multimodal: false },
+  },
+  {
+    id: "dsh",
+    models: [asModelId("deepseek-v4-pro"), asModelId("deepseek-v4-flash"), asModelId("gpt-6-astra")],
+    capabilities: { multimodal: false },
+  },
+];
 
 console.log("\n【7】六家执行器都声明了非空且合法的模型清单");
 {

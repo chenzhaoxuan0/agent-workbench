@@ -26,7 +26,6 @@ import {
   type UnitId,
   type WorkUnit,
 } from "../core/units.ts";
-import { UNAVAILABLE_UNIT } from "../adapters/mock/fixtures.ts";
 import { AddBotDialog, type AddBotDraft } from "./AddBotDialog.tsx";
 import { ImportBotDialog } from "./ImportBotDialog.tsx";
 import { ChannelMark, channelIdentityLabel } from "./ChannelMark.tsx";
@@ -121,19 +120,21 @@ export function Sidebar() {
     [editUnitId, units],
   );
 
-  // 目录不可用的单元也要列出来（ZCode: unavailableLocalDirectory）
-  const allUnits = useMemo<readonly WorkUnit[]>(
-    () => [...units, UNAVAILABLE_UNIT],
-    [units],
-  );
+  const allUnits = units;
 
   const visibleUnits = useMemo(() => {
-    const list = allUnits.filter((u) => u.kind === view);
+    const list = [...allUnits].sort((a, b) => {
+      const aSteward = a.id === "steward" || (a.tags ?? []).includes("steward");
+      const bSteward = b.id === "steward" || (b.tags ?? []).includes("steward");
+      if (aSteward && !bSteward) return -1;
+      if (!aSteward && bSteward) return 1;
+      return 0;
+    });
     if (!unitOrder) return list;
     return [...list].sort(
       (a, b) => (unitOrder.indexOf(a.id) + 1 || 99) - (unitOrder.indexOf(b.id) + 1 || 99),
     );
-  }, [allUnits, view, unitOrder]);
+  }, [allUnits, unitOrder]);
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-rail">
@@ -141,14 +142,12 @@ export function Sidebar() {
           由左上浮层（DesktopTopOverlay）承载，这里不再重复 */}
       <div className="h-12 shrink-0 border-b border-line/60" />
 
-      {/* 顶部动作区：五枚并排图标，全部平铺，不设 ⋯。
-          之前「新建任务」占一整行、其余收在第二行，是两段版面；
-          现在一行五枚等宽。⌘N / ⌘K 提示挂在 title 上。 */}
+      {/* 顶部动作区：新建任务 / 搜索 / 归档 */}
       <div className="px-4 pb-2">
-        <div className="flex items-center gap-0.5">
+        <div className="flex items-center gap-1">
           <IconNavBtn
             icon={MessageCirclePlus}
-            label="新建任务"
+            label="新建会话"
             hint="⌘N"
             onClick={() => useShell.getState().newTask()}
           />
@@ -158,19 +157,6 @@ export function Sidebar() {
             hint="⌘K"
             onClick={() => useShell.getState().setCommandOpen(true)}
           />
-          <IconNavBtn
-            icon={AlarmClock}
-            label="自动化"
-            active={mainView === "automations"}
-            onClick={() => useShell.getState().setMainView("automations")}
-          />
-          {/* 出图工作台 —— gpt_image_playground 的移植落点（OpenAI 兼容 images API） */}
-          <IconNavBtn
-            icon={ImagePlus}
-            label="出图"
-            active={mainView === "image"}
-            onClick={() => useShell.getState().setMainView("image")}
-          />
           <ArchivedMenu
             sessions={archived}
             onSelectSession={selectSession}
@@ -179,97 +165,47 @@ export function Sidebar() {
         </div>
       </div>
 
-      {/* 分区行：身份切换（bot/项目）直接在这行完成 —— 吸收原顶部两个大按钮的职能；
-          右侧仍是 organize / sort（ZCode: organize / sortBy / taskViewOptions） */}
-      <div className="flex items-center gap-1.5 px-4 pb-2">
-        <div className="flex shrink-0 items-center rounded-chip bg-line-soft p-0.5" role="tablist" aria-label="身份视图">
-          {VIEWS.map((v) => {
-            const active = v.id === view;
-            return (
-              <button
-                key={v.id}
-                role="tab"
-                aria-selected={active}
-                onClick={() => setView(v.id)}
-                className={cn(
-                  "rounded-chip px-2 py-0.5 text-caption",
-                  active ? "bg-canvas font-medium text-ink" : "text-graphite hover:text-ink",
-                )}
-              >
-                {v.label}
-              </button>
-            );
-          })}
+      {/* Agent 智能体列表标题行 */}
+      <div className="flex items-center justify-between px-4 pb-2 pt-1">
+        <div className="flex items-center gap-1.5">
+          <Bot size={14} className="text-teal" />
+          <span className="text-caption font-medium text-ink">Agent 智能体</span>
+          <span className="tnum text-[11px] text-ash">({visibleUnits.length})</span>
         </div>
-        <span className="tnum text-caption text-ash">{visibleUnits.length}</span>
-        <ViewOptionsMenu
-          organize={organize}
-          onOrganize={setOrganize}
-          sort={sort}
-          onSort={setSort}
-        />
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => useShell.getState().openImportBot()}
+            aria-label="认领已有目录"
+            title="认领已有目录为 Agent（文件夹留在原地，自动探测 AGENTS.md）"
+            className="flex items-center gap-1 rounded-btn px-1.5 py-0.5 text-caption text-graphite hover:bg-line-soft hover:text-ink"
+          >
+            <FolderOpen size={12} />
+            <span>认领</span>
+          </button>
+          <button
+            onClick={() => useShell.getState().openAddBot()}
+            aria-label="新建 Agent"
+            title="新建 Agent"
+            className="flex items-center gap-1 rounded-btn bg-ink px-2 py-0.5 text-caption font-medium text-canvas hover:bg-black"
+          >
+            <Plus size={12} />
+            <span>新建</span>
+          </button>
+        </div>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-4">
-        {/* 工作单元区（ZCode: projectsSection / reorderSection / addProject）
-            「添加」就放在分区标题右侧 —— 它加的正是这一区的内容。
-            「可拖拽排序」从常驻文字降级为 title 提示：它是操作说明不是数据。 */}
-        <div className="mb-1 flex items-center gap-1 px-2 pt-2">
-          <p className="flex-1 text-caption text-ash" title="拖拽单元可调整顺序">
-            工作单元
-          </p>
+        {/* 空态引导卡 */}
+        {visibleUnits.length === 0 && (
           <button
-            onClick={() => {
-              if (view === "bot") {
-                useShell.getState().openAddBot();
-              } else {
-                addUnit({
-                  id: asUnitId(`u-new-${Date.now().toString(36)}`),
-                  name: "新工作单元",
-                  rootPath: "C:/Users/chenziyu/project/Agent/<待选目录>",
-                  kind: "project",
-                  bindings: [],
-                  assets: { agentFiles: [], skillDirs: [] },
-                  tags: ["新建"],
-                });
-              }
-            }}
-            aria-label={view === "bot" ? "添加 bot" : "添加项目"}
-            title={view === "bot" ? "添加 bot" : "添加项目"}
-            className="rounded-btn p-1 text-ash hover:bg-line-soft hover:text-ink"
+            onClick={() => useShell.getState().openAddBot()}
+            className="flex w-full flex-col items-center gap-1.5 rounded-input border border-dashed border-line px-3 py-6 text-center hover:bg-line-soft"
           >
-            <Plus size={12} />
+            <FolderPlus size={18} className="text-ash" />
+            <span className="text-body-sm font-medium text-graphite">还没有 Agent</span>
+            <span className="text-caption text-ash">新建第一个 Agent，从 AGENTS.md 岗位说明书开始</span>
           </button>
-          {/* 「添加已有文件夹」——bot 区从创建器变 manager 的入口（docs/09 §七）。
-              它不建任何东西，只把一个现成文件夹登记进来，所以配自己的图标而不是复用 ＋：
-              两个动作长得一样、后果完全不同。 */}
-          {view === "bot" && (
-            <button
-              onClick={() => useShell.getState().openImportBot()}
-              aria-label="添加已有文件夹"
-              title="添加已有文件夹 —— 文件夹留在原地，只登记进管理面"
-              className="rounded-btn p-1 text-ash hover:bg-line-soft hover:text-ink"
-            >
-              <FolderOpen size={12} />
-            </button>
-          )}
-        </div>
-
-        {/* 空态当第二个「添加 bot」入口 —— 侧栏那颗按钮收进 ⋯ 之后，
-            这里就是最该给出引导的位置，而不是一行灰字。 */}
-        {visibleUnits.length === 0 &&
-          (view === "bot" ? (
-            <button
-              onClick={() => useShell.getState().openAddBot()}
-              className="flex w-full flex-col items-center gap-1 rounded-input px-3 py-6 text-center hover:bg-line-soft"
-            >
-              <FolderPlus size={16} className="text-ash" />
-              <span className="text-body-sm text-graphite">还没有 bot</span>
-              <span className="text-caption text-ash">点一下新建，第一个 bot 从 AGENTS.md 开始</span>
-            </button>
-          ) : (
-            <p className="px-2 py-6 text-center text-body-sm text-ash">还没有项目</p>
-          ))}
+        )}
 
         {visibleUnits.map((u) => {
           const active = u.id === activeUnitId;
@@ -311,22 +247,36 @@ export function Sidebar() {
 
       </div>
 
-      {/* 底部：只剩设置。
-          原先这里有「陈子渔 / 个人版·Pro」的硬编码账号块（点开是 界面语言 /
-          界面主题 两行 + 「连接使用」，三项都只关菜单），以及一个连 onClick 都没有的
-          「连接远端」按钮。真做多账号时从这里重建，git log 有原形。 */}
-      <div className="flex shrink-0 items-center gap-1.5 border-t border-line px-4 py-2.5">
-        <span className="flex-1 text-caption text-ash">本地工作台</span>
+      {/* 底部工具条：出图工作台 + 设置 */}
+      <div className="flex shrink-0 items-center justify-between border-t border-line px-3 py-2">
+        <button
+          onClick={() => useShell.getState().setMainView(mainView === "image" ? "chat" : "image")}
+          aria-label="出图工作台"
+          title="出图工作台"
+          className={cn(
+            "flex items-center gap-1.5 rounded-btn px-2.5 py-1 text-caption transition",
+            mainView === "image"
+              ? "bg-teal-tint font-medium text-teal"
+              : "text-graphite hover:bg-line-soft hover:text-ink",
+          )}
+        >
+          <ImagePlus size={14} />
+          <span>出图</span>
+        </button>
+
         <button
           onClick={() => openSettings()}
           aria-label="设置"
           title="设置 · ⌘,"
           className={cn(
-            "shrink-0 rounded-btn p-1.5",
-            settingsActive ? "bg-teal-tint text-teal" : "text-graphite hover:bg-line-soft hover:text-ink",
+            "flex items-center gap-1.5 rounded-btn px-2.5 py-1 text-caption transition",
+            settingsActive
+              ? "bg-teal-tint font-medium text-teal"
+              : "text-graphite hover:bg-line-soft hover:text-ink",
           )}
         >
           <Settings size={14} />
+          <span>设置</span>
         </button>
       </div>
 
@@ -447,7 +397,7 @@ function guardsOf(u: WorkUnit): BotWriteGuards {
 const BOT_COLORS = ["#8b5cf6", "#3b82f6", "#22c55e", "#f59e0b", "#ef4444", "#ec4899", "#14b8a6", "#6366f1"];
 const BOT_SHAPES = ["rounded-full", "rounded-[38%]", "rounded-2xl"] as const;
 
-function botAvatarStyle(name: string): { color: string; shape: string } {
+export function botAvatarStyle(name: string): { color: string; shape: string } {
   const hash = [...name].reduce((a, c) => a + c.codePointAt(0)!, 0);
   return {
     color: BOT_COLORS[hash % BOT_COLORS.length]!,

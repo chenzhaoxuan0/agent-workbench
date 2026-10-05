@@ -247,6 +247,8 @@ export function blockedReason(type: SidePaneTabType, ownerId: string | null): st
 // terminal / workflow-* 各自「缺什么」），配套 PendingRuntimePane 给占位页签显示待接入说明。
 // 那批页签已整体删除 —— 留着入口只会让人以为这条路还开着。
 // 真要重新接（例如 Electron 桌面壳的 webview），从这里重建，git log 有原实现。
+export const NEEDS_RUNTIME: Partial<Record<SidePaneTabType, string>> = {};
+
 
 export interface SidePaneTab {
   readonly id: string;

@@ -1,8 +1,8 @@
 import { useEffect, useRef } from "react";
-import { ArrowUp, AtSign, Square } from "lucide-react";
+import { ArrowUp, AtSign, Square, SquareTerminal } from "lucide-react";
 import { useWorkbench, selectActiveUnit } from "../store/useWorkbench.ts";
+import { useShell } from "../store/useShell.ts";
 import { RunConfigMenu } from "./RunConfigMenu.tsx";
-import { StatsDock } from "./StatsDock.tsx";
 import { cn } from "./cn.ts";
 
 /**
@@ -14,6 +14,7 @@ import { cn } from "./cn.ts";
  * - 发送是全场唯一的实心按钮：墨色底 + 羊皮纸字
  */
 export function Composer() {
+  const terminalOpen = useShell((s) => s.terminalOpen);
   const draft = useWorkbench((s) => s.draft);
   const setDraft = useWorkbench((s) => s.setDraft);
   const run = useWorkbench((s) => s.run);
@@ -86,6 +87,18 @@ export function Composer() {
               <AtSign size={14} />
             </button>
 
+            <button
+              onClick={() => useShell.getState().toggleTerminal()}
+              aria-label="工作区终端"
+              title="切换工作区终端 · Ctrl+`"
+              className={cn(
+                "shrink-0 rounded-btn p-1.5 transition",
+                terminalOpen ? "bg-teal-tint text-teal" : "text-graphite hover:bg-line-soft hover:text-ink",
+              )}
+            >
+              <SquareTerminal size={14} />
+            </button>
+
             <div className="ml-auto flex items-center gap-1.5">
               {/* 「怎么跑」的三项收进一颗 ⋯（渐进披露）。
                   原来权限 / loop / 执行器三个带文字的触发器常驻右缘，
@@ -117,9 +130,6 @@ export function Composer() {
             </div>
           </div>
         </div>
-
-        {/* 统计坞 —— dsh 的真实挂位：卡片正下方。快捷键提示 + token/缓存/速度/成本 pills */}
-        <StatsDock />
       </div>
     </div>
   );

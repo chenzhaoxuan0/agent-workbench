@@ -1,138 +1,521 @@
+import { useMemo, useState } from "react";
 import {
   AlertTriangle,
   Bot,
+  Brain,
   Check,
+  ChevronDown,
   ChevronRight,
+  FileCode,
   FileDiff,
   Package,
+  Search,
   ShieldCheck,
+  Sparkles,
+  Terminal,
   Wallet,
+  Wrench,
   X,
 } from "lucide-react";
 import type { RuntimeEvent } from "../core/events.ts";
 import { SESSION_SOURCE_LABEL } from "../core/units.ts";
-import { useWorkbench } from "../store/useWorkbench.ts";
+import { useWorkbench, selectActiveUnit } from "../store/useWorkbench.ts";
+import { botAvatarStyle } from "./Sidebar.tsx";
+import { MarkdownContent } from "./MarkdownContent.tsx";
 import { cn } from "./cn.ts";
 
 /**
- * 时间线 —— 消费归一化事件流的唯一渲染层。
+ * 时间线 —— Personal Agent 归一化事件流渲染层。
  *
- * 这里是 SPI 的验收现场：无论底下是 ACP 的 JSON-RPC、pi 的 CBOR、
- * 还是 ZCode 的 HTTP，六家工具的事件都在这一套组件里渲染。
- * 接真运行时不需要动这个文件。
- *
- * 排版对齐 DESIGN.md：内容列封顶 900px 居中，保证长会话的可读行宽。
+ * 借鉴 GrokBot 与 Meta Muse：
+ * - 思考过程折叠收纳（Thinking Accordion），展示耗时/字数摘要
+ * - 工具调用卡片化（Tool Execution Pills），内联参数与输出预览
+ * - 助手回复采用 Markdown 富文本排版与代码块复制
+ * - 用户消息独立卡片排版
  */
 export function Timeline() {
   const timeline = useWorkbench((s) => s.timeline);
   const busy = useWorkbench((s) => s.busy);
+  const unit = useWorkbench(selectActiveUnit);
+
+  // 事件流归并处理：合并流式连续思考片段，配对工具调用
+  const items = useMemo(() => groupTimelineEvents(timeline), [timeline]);
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
       <div
         className={cn(
-          "mx-auto max-w-[900px] px-8 py-8",
-          timeline.length === 0 && "flex min-h-full flex-col justify-center pb-24",
+          "mx-auto max-w-[900px] px-6 py-6 sm:px-8 sm:py-8",
+          items.length === 0 && "flex min-h-full flex-col justify-center pb-24",
         )}
       >
-        {timeline.length === 0 ? (
+        {items.length === 0 ? (
           <EmptyState />
         ) : (
-          <>
-            {timeline.map(({ id, event, at }) => (
-              <Row key={id} event={event} at={at} />
+          <div className="space-y-4">
+            {items.map((item) => (
+              <TimelineItemRow key={item.id} item={item} unitName={unit?.name ?? "Agent"} busy={busy} />
             ))}
             {busy && (
-              <div className="mt-3 flex items-center gap-2 text-body-sm text-graphite">
-                <span className="h-1.5 w-1.5 rounded-full bg-teal" aria-hidden />
-                执行中…
+              <div className="flex items-center gap-2 text-body-sm text-teal">
+                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-teal" aria-hidden />
+                <span>{unit?.name ?? "Agent"} 正在思考与执行…</span>
               </div>
             )}
-          </>
+          </div>
         )}
       </div>
     </div>
   );
 }
 
-/* ---------------------------------------------------------------- 空态 */
+/* ------------------------------------------------------------- 事件归并 */
 
-const SUGGESTIONS: readonly { title: string; desc: string; prompt: string }[] = [
-  {
-    title: "今日选题",
-    desc: "读语料风格，产出 5 个可写选题",
-    prompt: "读一下已沉淀的语料风格，产出今天可写的 5 个选题",
-  },
-  {
-    title: "扫描项目",
-    desc: "巡检目录结构与 TODO，列出改进项",
-    prompt: "巡检当前项目的目录结构与 TODO，列出可执行的改进项",
-  },
-  {
-    title: "写日报",
-    desc: "汇总今日产出，生成一段日报",
-    prompt: "汇总今天所有产出，生成一段可直接发的日报",
-  },
-  {
-    title: "复盘会话",
-    desc: "从轨迹里找出可改进的环节",
-    prompt: "复盘最近的会话轨迹，找出最值得改进的环节",
-  },
-];
+interface GroupedItem {
+  id: string | number;
+  kind:
+    | "session.start"
+    | "session.end"
+    | "user.message"
+    | "thinking"
+    | "assistant.message"
+    | "tool"
+    | "permission"
+    | "subagent.spawned"
+    | "subagent.finished"
+    | "file.diff"
+    | "deliverable"
+    | "usage"
+    | "error";
+  at: number;
+  data: any;
+}
 
-function EmptyState() {
-  const setDraft = useWorkbench((s) => s.setDraft);
-  const unit = useWorkbench((s) => s.units.find((u) => u.id === s.activeUnitId));
+function groupTimelineEvents(events: readonly { id: number | string; event: RuntimeEvent; at: number }[]): GroupedItem[] {
+  const result: GroupedItem[] = [];
 
-  // 时段问候（ZCode: chat.empty.greeting.*，5/9/12/14/18/23 点换档）
-  const hour = new Date().getHours();
-  const greeting =
-    hour < 5 ? "夜深了" : hour < 9 ? "早上好" : hour < 12 ? "上午好" : hour < 14 ? "中午好" : hour < 18 ? "下午好" : "晚上好";
+  for (const entry of events) {
+    const { id, event, at } = entry;
+
+    switch (event.type) {
+      case "session.started":
+        result.push({ id, kind: "session.start", at, data: event });
+        break;
+
+      case "session.ended":
+        result.push({ id, kind: "session.end", at, data: event });
+        break;
+
+      case "message.delta":
+        if (event.role === "user") {
+          result.push({ id, kind: "user.message", at, data: { text: event.text } });
+        }
+        break;
+
+      case "reasoning.delta": {
+        const last = result[result.length - 1];
+        if (last && last.kind === "thinking") {
+          last.data.text += event.text;
+        } else {
+          result.push({ id, kind: "thinking", at, data: { text: event.text } });
+        }
+        break;
+      }
+
+      case "message.completed":
+        result.push({ id, kind: "assistant.message", at, data: { text: event.text } });
+        break;
+
+      case "tool.started":
+        result.push({
+          id,
+          kind: "tool",
+          at,
+          data: {
+            callId: event.callId,
+            toolName: event.toolName,
+            title: event.title,
+            input: event.input,
+            completed: false,
+          },
+        });
+        break;
+
+      case "tool.completed": {
+        // 回溯匹配同 callId 的 started 记录
+        const target = result.find(
+          (r) => r.kind === "tool" && r.data.callId === event.callId && !r.data.completed,
+        );
+        if (target) {
+          target.data.completed = true;
+          target.data.ok = event.ok;
+          target.data.output = event.output;
+        } else {
+          result.push({
+            id,
+            kind: "tool",
+            at,
+            data: {
+              callId: event.callId,
+              toolName: "工具执行",
+              title: "",
+              completed: true,
+              ok: event.ok,
+              output: event.output,
+            },
+          });
+        }
+        break;
+      }
+
+      case "permission.requested":
+        result.push({ id, kind: "permission", at, data: event });
+        break;
+
+      case "subagent.spawned":
+        result.push({ id, kind: "subagent.spawned", at, data: event });
+        break;
+
+      case "subagent.finished":
+        result.push({ id, kind: "subagent.finished", at, data: event });
+        break;
+
+      case "file.diff":
+        result.push({ id, kind: "file.diff", at, data: event });
+        break;
+
+      case "deliverable":
+        result.push({ id, kind: "deliverable", at, data: event });
+        break;
+
+      case "usage":
+        result.push({ id, kind: "usage", at, data: event });
+        break;
+
+      case "error":
+        result.push({ id, kind: "error", at, data: event });
+        break;
+
+      default:
+        break;
+    }
+  }
+
+  return result;
+}
+
+/* ------------------------------------------------------------- 行渲染 */
+
+function TimelineItemRow({ item, unitName, busy }: { item: GroupedItem; unitName: string; busy: boolean }) {
+  switch (item.kind) {
+    case "session.start":
+      return <SessionStartRow event={item.data} at={item.at} />;
+
+    case "session.end":
+      return (
+        <div className="my-6 flex items-center gap-4">
+          <span className="h-px flex-1 bg-line" />
+          <span className="tnum shrink-0 text-caption text-ash">会话结束 · {item.data.reason}</span>
+          <span className="h-px flex-1 bg-line" />
+        </div>
+      );
+
+    case "user.message":
+      return (
+        <div className="flex flex-col items-end">
+          <div className="max-w-[85%] rounded-[16px] rounded-tr-[4px] border border-line bg-card px-4 py-3 shadow-xs">
+            <p className="whitespace-pre-wrap text-body leading-relaxed text-ink">{item.data.text}</p>
+          </div>
+        </div>
+      );
+
+    case "thinking":
+      return <ThinkingBlock text={item.data.text} busy={busy} />;
+
+    case "tool":
+      return <ToolCallBlock data={item.data} />;
+
+    case "assistant.message":
+      return <AssistantMessageBlock text={item.data.text} unitName={unitName} at={item.at} />;
+
+    case "permission":
+      return (
+        <PermissionRow
+          requestId={item.data.requestId}
+          detail={item.data.detail}
+          risk={item.data.risk}
+        />
+      );
+
+    case "subagent.spawned":
+      return (
+        <div className="rounded-card border-l-2 border-l-teal bg-card px-4 py-3 shadow-subtle flex items-center gap-2">
+          <Package size={14} className="shrink-0 text-teal" />
+          <p className="text-body-sm text-graphite">
+            派生子代理 · 角色 <span className="font-medium text-ink">{item.data.role}</span> · 经由 {item.data.runtimeId}
+          </p>
+        </div>
+      );
+
+    case "subagent.finished":
+      return (
+        <div className="flex items-center gap-2 pl-1 text-body-sm text-graphite">
+          <Check size={14} className="shrink-0 text-gain" />
+          <span>子代理完成{item.data.summary ? ` · ${item.data.summary}` : ""}</span>
+        </div>
+      );
+
+    case "file.diff":
+      return (
+        <div className="rounded-card bg-card px-4 py-3 shadow-subtle flex items-center gap-2 border border-line/60">
+          <FileDiff size={14} className="shrink-0 text-graphite" />
+          <span className="truncate font-mono text-body-sm text-ink">{item.data.path}</span>
+          <span className="tnum ml-auto shrink-0 font-mono text-caption">
+            <span className="text-gain">+{item.data.additions}</span>{" "}
+            <span className="text-loss">−{item.data.deletions}</span>
+          </span>
+        </div>
+      );
+
+    case "deliverable":
+      return (
+        <div className="rounded-card bg-card px-4 py-3 shadow-subtle flex items-center gap-2 border border-teal/30">
+          <Package size={14} className="shrink-0 text-teal" />
+          <span className="text-body-sm font-medium text-ink">{item.data.title}</span>
+          {item.data.path && (
+            <span className="ml-auto shrink-0 font-mono text-caption text-ash">{item.data.path}</span>
+          )}
+        </div>
+      );
+
+    case "usage":
+      return (
+        <div className="flex items-center gap-2 pl-1 text-caption text-ash">
+          <Wallet size={12} />
+          <span className="font-mono">{item.data.model}</span>
+          <span className="tnum font-mono">
+            {item.data.inputTokens}↑ / {item.data.outputTokens}↓
+          </span>
+          <span className="tnum ml-auto font-mono text-graphite">${item.data.costUsd.toFixed(3)}</span>
+        </div>
+      );
+
+    case "error":
+      return (
+        <div className="rounded-card border border-loss/30 bg-loss/5 px-4 py-3 text-body-sm text-loss">
+          {item.data.message}
+        </div>
+      );
+
+    default:
+      return null;
+  }
+}
+
+/* ------------------------------------------------------------- 思考过程折叠块 */
+
+function ThinkingBlock({ text, busy }: { text: string; busy: boolean }) {
+  const [expanded, setExpanded] = useState(false);
 
   return (
-    <div className="flex flex-col items-center">
-      <p className="text-caption text-ash">{greeting}</p>
-      <p className="mt-1 text-body-lg text-graphite">
-        {/* 同 Composer 的坑：unit 为空时 `${unit?.name}` 会印出字面量 "undefined"。
-            空单元是正常状态（还没建 bot），要给它自己的话，不要冒充项目模式。 */}
-        {!unit
-          ? "选一个工作单元开始"
-          : unit.kind === "bot"
-            ? `给「${unit.name}」派活`
-            : `对「${unit.name}」下任务`}
-      </p>
-      <p className="mt-1 text-body-sm text-ash">
-        {!unit
-          ? "新建一个 bot，或添加一个项目目录"
-          : unit.kind === "bot"
-            ? "会先读它的 AGENTS.md 当岗位说明书"
-            : "项目模式，可开 worktree 隔离"}
-      </p>
+    <div className="my-1">
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="group flex items-center gap-2 rounded-btn px-2 py-1 text-caption text-graphite transition hover:bg-line-soft hover:text-ink"
+      >
+        <Sparkles size={13} className={cn("text-teal", busy && "animate-pulse")} />
+        <span className="font-medium">{busy ? "思考中…" : "深度思考"}</span>
+        <span className="font-mono text-ash text-[11px]">({text.length} 字)</span>
+        {expanded ? (
+          <ChevronDown size={12} className="text-ash transition group-hover:text-ink" />
+        ) : (
+          <ChevronRight size={12} className="text-ash transition group-hover:text-ink" />
+        )}
+      </button>
 
-      <div className="mt-8 grid w-full grid-cols-2 gap-3">
-        {SUGGESTIONS.map((s) => (
-          <button
-            key={s.title}
-            onClick={() => setDraft(s.prompt)}
-            className="rounded-card bg-card px-4 py-3 text-left shadow-subtle hover:bg-surface-hover"
-          >
-            <p className="text-body-sm font-medium text-ink">{s.title}</p>
-            <p className="mt-0.5 text-body-sm text-graphite">{s.desc}</p>
-          </button>
-        ))}
+      {expanded && (
+        <div className="mt-1.5 max-h-96 overflow-y-auto rounded-card border border-line-soft bg-rail/60 p-3.5 font-mono text-body-sm italic leading-relaxed text-graphite whitespace-pre-wrap shadow-inner">
+          {text}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------- 工具调用卡片 */
+
+function ToolCallBlock({
+  data,
+}: {
+  data: {
+    callId: string;
+    toolName: string;
+    title?: string;
+    input?: unknown;
+    completed: boolean;
+    ok?: boolean;
+    output?: string;
+  };
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  const ToolIcon = getToolIcon(data.toolName);
+  const brief = data.title || formatInputBrief(data.input);
+
+  return (
+    <div className="overflow-hidden rounded-input border border-line bg-card shadow-xs">
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="flex w-full items-center gap-2 px-3 py-2 text-left transition hover:bg-line-soft/50"
+      >
+        <ToolIcon size={13} className="shrink-0 text-teal" />
+        <span className="font-mono text-body-sm font-medium text-ink">{data.toolName}</span>
+        {brief && <span className="min-w-0 flex-1 truncate font-mono text-caption text-ash">{brief}</span>}
+
+        <div className="ml-auto flex items-center gap-2">
+          {data.completed ? (
+            data.ok ? (
+              <span className="flex items-center gap-1 text-[11px] text-gain">
+                <Check size={12} />
+                <span>完成</span>
+              </span>
+            ) : (
+              <span className="flex items-center gap-1 text-[11px] text-loss">
+                <AlertTriangle size={12} />
+                <span>失败</span>
+              </span>
+            )
+          ) : (
+            <span className="flex items-center gap-1 text-[11px] text-teal">
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-teal" />
+              <span>执行中</span>
+            </span>
+          )}
+
+          {expanded ? <ChevronDown size={12} className="text-ash" /> : <ChevronRight size={12} className="text-ash" />}
+        </div>
+      </button>
+
+      {expanded && (
+        <div className="border-t border-line/60 bg-rail/40 px-3 py-2.5 text-caption font-mono space-y-2">
+          {data.input !== undefined && (
+            <div>
+              <p className="text-ash text-[10px] mb-1">输入参数</p>
+              <pre className="max-h-40 overflow-auto rounded bg-card p-2 text-ink border border-line/50 leading-relaxed">
+                <code>{typeof data.input === "string" ? data.input : JSON.stringify(data.input, null, 2)}</code>
+              </pre>
+            </div>
+          )}
+
+          {data.output !== undefined && (
+            <div>
+              <p className="text-ash text-[10px] mb-1">执行输出</p>
+              <pre className="max-h-60 overflow-auto rounded bg-card p-2 text-graphite border border-line/50 leading-relaxed whitespace-pre-wrap">
+                <code>{data.output}</code>
+              </pre>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function getToolIcon(name: string) {
+  const n = name.toLowerCase();
+  if (n.includes("terminal") || n.includes("bash") || n.includes("exec") || n.includes("command")) return Terminal;
+  if (n.includes("file") || n.includes("read") || n.includes("write") || n.includes("edit")) return FileCode;
+  if (n.includes("search") || n.includes("grep") || n.includes("find")) return Search;
+  return Wrench;
+}
+
+function formatInputBrief(input: unknown): string {
+  if (!input) return "";
+  if (typeof input === "string") return input;
+  if (typeof input === "object") {
+    const obj = input as Record<string, unknown>;
+    const target = obj.path ?? obj.CommandLine ?? obj.command ?? obj.Query ?? obj.TargetFile ?? obj.url;
+    if (typeof target === "string") return target;
+  }
+  return "";
+}
+
+/* ------------------------------------------------------------- 助手回复消息块 */
+
+function AssistantMessageBlock({ text, unitName, at }: { text: string; unitName: string; at: number }) {
+  const avatar = botAvatarStyle(unitName);
+
+  return (
+    <div className="group/msg py-1">
+      {/* 头部：Agent 头像与名字 */}
+      <div className="mb-1.5 flex items-center gap-2">
+        <span
+          className={cn("flex h-5 w-5 shrink-0 items-center justify-center text-[11px] font-medium text-canvas", avatar.shape)}
+          style={{ backgroundColor: avatar.color }}
+        >
+          {unitName.slice(0, 1)}
+        </span>
+        <span className="text-body-sm font-medium text-ink">{unitName}</span>
+        <span className="text-caption text-ash">{clock(at)}</span>
+      </div>
+
+      {/* 正文 Markdown 渲染 */}
+      <div className="pl-7">
+        <MarkdownContent content={text} />
       </div>
     </div>
   );
 }
 
-/* ---------------------------------------------------------------- 权限卡 */
+/* ------------------------------------------------------------- 辅助组件 */
 
-/**
- * 时间线里的权限行只做**审计回迹**，交互交给 PermissionDialog。
- *
- * 对齐 ZCode：待裁决请求用模态对话框打断，不用内联卡片。
- * 这里保留一行紧凑记录，是为了时间线读起来是完整的因果链，而不是断口。
- */
+const clock = (at: number) =>
+  new Date(at).toLocaleTimeString("zh-CN", {
+    hour12: false,
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+
+function SessionStartRow({
+  event,
+  at,
+}: {
+  event: Extract<RuntimeEvent, { type: "session.started" }>;
+  at: number;
+}) {
+  const source = event.source ?? "workbench";
+  const fromWorkbench = source === "workbench";
+  return (
+    <div className="my-6 flex flex-wrap items-center gap-x-2 gap-y-1">
+      <span className="h-px flex-1 bg-line" />
+      <span className="tnum shrink-0 text-caption text-ash">会话开始 · {clock(at)}</span>
+      {!fromWorkbench && (
+        <span
+          className="shrink-0 rounded-btn bg-teal-tint px-1.5 py-0.5 text-[10px] text-teal"
+          title="这个会话是从这个渠道发起的，和工作台里的是同一段对话"
+        >
+          来自{SESSION_SOURCE_LABEL[source]}
+        </span>
+      )}
+      {event.modelActual !== undefined && (
+        <span className="shrink-0 rounded-btn bg-line-soft px-1.5 py-0.5 font-mono text-[10px] text-graphite" title="实际生效的模型">
+          {event.modelActual}
+        </span>
+      )}
+      {event.modelHintDropped !== undefined && (
+        <span
+          className="shrink-0 rounded-btn bg-line-soft px-1.5 py-0.5 text-[10px] text-graphite"
+          title={`你配的默认模型 ${event.modelHintDropped} 这家执行器不接，已回落到执行器默认`}
+        >
+          配的 {event.modelHintDropped} 不可用，已回落
+        </span>
+      )}
+      <span className="h-px flex-1 bg-line" />
+    </div>
+  );
+}
+
 function PermissionRow({
   requestId,
   detail,
@@ -170,206 +553,75 @@ const DECISION_LABEL: Record<string, string> = {
   deny: "已拒绝",
 };
 
-const clock = (at: number) =>
-  new Date(at).toLocaleTimeString("zh-CN", {
-    hour12: false,
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
+/* ------------------------------------------------------------- 空态 */
 
-/** 事件卡：Soft Paper 面 + 16px 圆角 + 那一道唯一的阴影 */
-const card = "rounded-card bg-card px-4 py-3 shadow-subtle";
+const SUGGESTIONS: readonly { title: string; desc: string; prompt: string }[] = [
+  {
+    title: "今日选题",
+    desc: "读语料风格，产出 5 个可写选题",
+    prompt: "读一下已沉淀的语料风格，产出今天可写的 5 个选题",
+  },
+  {
+    title: "扫描项目",
+    desc: "巡检目录结构与 TODO，列出改进项",
+    prompt: "巡检当前项目的目录结构与 TODO，列出可执行的改进项",
+  },
+  {
+    title: "写日报",
+    desc: "汇总今日产出，生成一段日报",
+    prompt: "汇总今天所有产出，生成一段可直接发的日报",
+  },
+  {
+    title: "复盘会话",
+    desc: "从轨迹里找出可改进的环节",
+    prompt: "复盘最近的会话轨迹，找出最值得改进的环节",
+  },
+];
 
-/**
- * 「会话开始」这一行同时回答两个问题（docs/09 §六.1 / §六.2）：
- *
- * 1. **这轮从哪来** —— 飞书里点的和工作台里点的，是同一个 bot 的同一段对话。
- *    来源不同只体现为这一枚徽标，不产生第二套会话体系。
- * 2. **实际在烧哪个模型** —— 你配的 modelHint 可能被静默丢掉（那家 CLI 不接），
- *    落到了执行器默认。这件事只在 daemon 里发生，界面不说就等于没发生：
- *    用户以为在用便宜模型，实际在烧贵的。
- */
-function SessionStartRow({
-  event,
-  at,
-}: {
-  event: Extract<RuntimeEvent, { type: "session.started" }>;
-  at: number;
-}) {
-  const source = event.source ?? "workbench";
-  const fromWorkbench = source === "workbench";
+function EmptyState() {
+  const setDraft = useWorkbench((s) => s.setDraft);
+  const unit = useWorkbench(selectActiveUnit);
+
+  const hour = new Date().getHours();
+  const greeting =
+    hour < 5 ? "夜深了" : hour < 9 ? "早上好" : hour < 12 ? "上午好" : hour < 14 ? "中午好" : hour < 18 ? "下午好" : "晚上好";
+
+  const avatar = unit ? botAvatarStyle(unit.name) : null;
+
   return (
-    <div className="my-6 flex flex-wrap items-center gap-x-2 gap-y-1">
-      <span className="h-px flex-1 bg-line" />
-      <span className="tnum shrink-0 text-caption text-ash">会话开始 · {clock(at)}</span>
-      {/* 来源徽标：工作台是默认面，不必占位；其他端才亮出来 */}
-      {!fromWorkbench && (
-        <span
-          className="shrink-0 rounded-btn bg-teal-tint px-1.5 py-0.5 text-[10px] text-teal"
-          title="这个会话是从这个渠道发起的，和工作台里的是同一段对话"
+    <div className="flex flex-col items-center">
+      {unit && (
+        <div
+          className={cn("mb-3 flex h-14 w-14 items-center justify-center text-title font-medium text-canvas shadow-subtle", avatar?.shape)}
+          style={{ backgroundColor: avatar?.color }}
         >
-          来自{SESSION_SOURCE_LABEL[source]}
-        </span>
+          {unit.id === "steward" ? "👑" : unit.name.slice(0, 1)}
+        </div>
       )}
-      {event.modelActual !== undefined && (
-        <span className="shrink-0 rounded-btn bg-line-soft px-1.5 py-0.5 font-mono text-[10px] text-graphite" title="实际生效的模型">
-          {event.modelActual}
-        </span>
-      )}
-      {event.modelHintDropped !== undefined && (
-        <span
-          className="shrink-0 rounded-btn bg-line-soft px-1.5 py-0.5 text-[10px] text-graphite"
-          title={`你配的默认模型 ${event.modelHintDropped} 这家执行器不接，已回落到执行器默认`}
-        >
-          配的 {event.modelHintDropped} 不可用，已回落
-        </span>
-      )}
-      <span className="h-px flex-1 bg-line" />
+      <p className="text-caption text-ash">{greeting}</p>
+      <p className="mt-1 text-title font-medium text-ink">
+        {!unit ? "选一个 Agent 开始" : `向「${unit.name}」交代任务`}
+      </p>
+      <p className="mt-1 text-body-sm text-graphite">
+        {!unit
+          ? "新建一个 Agent，或认领已有目录"
+          : unit.identity?.role
+            ? `已装载岗位：${unit.identity.role} · 读 AGENTS.md`
+            : "从对话或快捷任务开始"}
+      </p>
+
+      <div className="mt-8 grid w-full grid-cols-1 sm:grid-cols-2 gap-3 max-w-[640px]">
+        {SUGGESTIONS.map((s) => (
+          <button
+            key={s.title}
+            onClick={() => setDraft(s.prompt)}
+            className="rounded-card border border-line/60 bg-card px-4 py-3 text-left shadow-subtle hover:border-teal-edge hover:bg-surface-hover transition"
+          >
+            <p className="text-body-sm font-medium text-ink">{s.title}</p>
+            <p className="mt-0.5 text-body-sm text-graphite">{s.desc}</p>
+          </button>
+        ))}
+      </div>
     </div>
   );
-}
-
-function Row({ event, at }: { event: RuntimeEvent; at: number }) {
-  switch (event.type) {
-    case "session.started":
-    case "session.ended": {
-      if (event.type === "session.started") {
-        return <SessionStartRow event={event} at={at} />;
-      }
-      const label = `会话结束 · ${event.reason}`;
-      return (
-        <div className="my-6 flex items-center gap-4">
-          <span className="h-px flex-1 bg-line" />
-          <span className="tnum shrink-0 text-caption text-ash">{label}</span>
-          <span className="h-px flex-1 bg-line" />
-        </div>
-      );
-    }
-
-    case "message.delta": {
-      // 用户消息 —— ZCode 的用户行右对齐、带气泡（rounded-tr 切角是它的识别特征）
-      if (event.role !== "user") return null;
-      return (
-        <div className="mb-4 flex flex-col items-end">
-          <div className="max-w-[85%] rounded-[14px] rounded-tr-[4px] border border-line bg-card px-4 py-3">
-            <p className="whitespace-pre-wrap text-body leading-relaxed text-ink">{event.text}</p>
-          </div>
-        </div>
-      );
-    }
-
-    case "reasoning.delta":
-      return (
-        <p className="my-2 flex items-baseline gap-2 pl-1 text-body-sm text-ash">
-          <span className="tnum shrink-0 font-mono text-caption">{clock(at)}</span>
-          <span className="italic">{event.text}</span>
-        </p>
-      );
-
-    case "message.completed":
-      // ZCode 的助手行没有气泡：正文直接落在画布上，来源标识弱化为前缀行
-      return (
-        <div className="group/assistant mb-3">
-          <p className="mb-1 flex items-center gap-1.5 text-caption text-ash">
-            <Bot size={12} />
-            assistant
-          </p>
-          <p className="text-body leading-relaxed text-ink">{event.text}</p>
-        </div>
-      );
-
-    case "subagent.spawned":
-      return (
-        <div className={`${card} mb-2 flex items-center gap-2 border-l-2 border-l-teal`}>
-          <Package size={12} className="shrink-0 text-teal" />
-          <p className="text-body-sm text-graphite">
-            派生子代理 · 角色 <span className="text-ink">{event.role}</span> · 经由 {event.runtimeId}
-          </p>
-        </div>
-      );
-
-    case "subagent.finished":
-      return (
-        <div className="mb-2 flex items-center gap-2 pl-1 text-body-sm text-graphite">
-          <Check size={12} className="shrink-0 text-gain" />
-          子代理完成{event.summary ? ` · ${event.summary}` : ""}
-        </div>
-      );
-
-    case "permission.requested":
-      return (
-        <PermissionRow
-          requestId={event.requestId}
-          detail={event.detail}
-          risk={event.risk}
-        />
-      );
-
-    case "tool.started":
-      return (
-        <div className="mb-1 flex items-center gap-2 rounded-btn px-1 py-1 hover:bg-line-soft">
-          <ChevronRight size={12} className="shrink-0 text-ash" />
-          <span className="font-mono text-body-sm text-graphite">{event.toolName}</span>
-          <span className="truncate text-body-sm text-ash">{event.title}</span>
-        </div>
-      );
-
-    case "tool.completed":
-      return (
-        <div className="mb-2 flex items-center gap-2 pl-1 text-body-sm text-ash">
-          {event.ok ? (
-            <Check size={12} className="shrink-0 text-gain" />
-          ) : (
-            <AlertTriangle size={12} className="shrink-0 text-loss" />
-          )}
-          <span className="font-mono">{event.output ?? (event.ok ? "完成" : "失败")}</span>
-        </div>
-      );
-
-    case "file.diff":
-      return (
-        <div className={`${card} mb-3 flex items-center gap-2`}>
-          <FileDiff size={12} className="shrink-0 text-graphite" />
-          <span className="truncate font-mono text-body-sm text-ink">{event.path}</span>
-          <span className="tnum ml-auto shrink-0 font-mono text-caption">
-            <span className="text-gain">+{event.additions}</span>{" "}
-            <span className="text-loss">−{event.deletions}</span>
-          </span>
-        </div>
-      );
-
-    case "usage":
-      return (
-        <div className="mb-2 flex items-center gap-2 pl-1 text-caption text-ash">
-          <Wallet size={12} />
-          <span className="font-mono">{event.model}</span>
-          <span className="tnum font-mono">
-            {event.inputTokens}↑ / {event.outputTokens}↓
-          </span>
-          <span className="tnum ml-auto font-mono text-graphite">${event.costUsd.toFixed(3)}</span>
-        </div>
-      );
-
-    case "deliverable":
-      return (
-        <div className={`${card} mb-3 flex items-center gap-2`}>
-          <Package size={12} className="shrink-0 text-teal" />
-          <span className="text-body-sm text-ink">{event.title}</span>
-          {event.path && (
-            <span className="ml-auto shrink-0 font-mono text-caption text-ash">{event.path}</span>
-          )}
-        </div>
-      );
-
-    case "error":
-      return (
-        <div className="mb-3 rounded-card border border-loss/30 bg-loss/5 px-4 py-3 text-body-sm text-loss">
-          {event.message}
-        </div>
-      );
-
-    default:
-      return null;
-  }
 }

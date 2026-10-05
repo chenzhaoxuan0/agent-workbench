@@ -26,14 +26,9 @@ import type { UnitId } from "../core/units.ts";
 export type MainView = "chat" | "automations" | "image";
 
 /**
- * 会话内视图 —— 对齐 dsh 的 view-selection（ConversationSession tabs）。
- * - chat / trajectory：同一个会话的两种读法，composer 都保持在底部；
- * - terminal：全屏终端页签（与底部 dock 终端同组件不同实例），
- *   大屏下全屏使用各 provider CLI 的 TUI；
- * - ops：LLM-Ops 仪表盘（对齐 waku dashboard 的 Ops 页签）。
- * 后两者占据整个会话视口且**不渲染 composer**——它们不是会话的另一种读法。
+ * 会话内视图：chat 为主对话，trajectory 为审计轨迹。
  */
-export type ConversationView = "chat" | "terminal" | "trajectory" | "ops";
+export type ConversationView = "chat" | "trajectory";
 
 /**
  * 设置分区 id。

@@ -1,12 +1,15 @@
 import { useState } from "react";
 import {
+  Brain,
   Check,
+  ChevronRight,
   Copy,
   Ellipsis,
   Folder,
   GitBranch,
   Hash,
   History,
+  PanelRightClose,
   PanelRightOpen,
   Pin,
   SquareTerminal,
@@ -14,25 +17,8 @@ import {
 import { useShell } from "../store/useShell.ts";
 import { useSidePane } from "../store/useSidePane.ts";
 import { useWorkbench, selectActiveUnit } from "../store/useWorkbench.ts";
+import { botAvatarStyle } from "./Sidebar.tsx";
 import { cn } from "./cn.ts";
-
-/**
- * 工作区头部栏 —— 对齐 ZCode 的 WorkspaceHeader + DesktopTopOverlay。
- *
- * ZCode 里这两层是分开的：DesktopTopOverlay 浮在侧栏区上（logo / 侧栏开关 /
- * 任务前进后退 / 新建任务），WorkspaceHeader 横在会话区顶（路径 / 标题 /
- * 右侧动作按钮）。本原型是 web 布局，没有自绘窗口拖拽区，两层合成一条
- * 48px 头部：左区导航与工作区上下文，右区动作按钮。
- *
- * 按钮集与 ZCode 一一对应：
- *   侧栏开关   ← DesktopTopOverlay 的 PanelLeftClose/Open
- *   前进/后退  ← DesktopTopOverlay 的任务历史导航（canBack/canForward 禁用态）
- *   工作区     ← WorkspaceHeaderTitleSection 的 Folder 按钮（点开路径弹层）
- *   新建任务   ← DesktopTopOverlay 的 MessageCirclePlus
- *   帮助       ← WorkspaceHelpMenuButton
- *   终端开关   ← WorkspaceTerminalToggleButton
- *   右栏开关   ← WorkspaceSidePaneToggleButton
- */
 
 /** 图标按钮的统一规格：28px 命中区（ZCode 的 icon-md），14px 图标 */
 const iconBtn =
@@ -41,8 +27,6 @@ const iconBtn =
 const pressedBtn = "bg-teal-tint text-teal hover:bg-teal-tint hover:text-teal";
 
 export function WorkspaceHeader() {
-  // 侧栏收起后，左上浮层（DesktopTopOverlay）悬在内容区上，头部让出安全区
-  // （ZCode：headerWindowControlsPaddingClass 的 pl-38 ≈ 152px）
   const sidebarCollapsed = useShell((s) => s.sidebarCollapsed);
   const terminalOpen = useShell((s) => s.terminalOpen);
   const toggleTerminal = useShell((s) => s.toggleTerminal);
@@ -52,54 +36,106 @@ export function WorkspaceHeader() {
 
   const unit = useWorkbench(selectActiveUnit);
   const session = useWorkbench((s) => s.sessions.find((x) => x.id === s.activeSessionId));
+  const busy = useWorkbench((s) => s.busy);
+
+  const avatar = unit ? botAvatarStyle(unit.name) : null;
+  const isSteward = unit?.id === "steward";
 
   return (
     <header
       className={cn(
-        "flex h-12 shrink-0 items-center gap-1 border-b border-line/60 bg-canvas transition-[padding] duration-300",
-        sidebarCollapsed ? "pl-[152px]" : "px-3",
+        "flex h-12 shrink-0 items-center gap-2 border-b border-line/60 bg-canvas transition-[padding] duration-300",
+        sidebarCollapsed ? "pl-[152px]" : "px-4",
       )}
       aria-label="工作区"
     >
-      {/* ---- 左区：工作区上下文 + 标题 ---- */}
-      {/* 侧栏开关 / 前进 / 后退在左上浮层（DesktopTopOverlay），这里不再重复 —— ZCode 同构 */}
-      <WorkspacePopover />
+      {/* ---- 左区：Agent 身份卡片 + 会话标题 ---- */}
+      {unit ? (
+        <div className="flex min-w-0 items-center gap-2">
+          {/* 可点击的 Agent 头衔（点击打开 Agent 档案） */}
+          <button
+            onClick={() => setPaneOpen(true)}
+            title="查看与编辑 Agent 档案（设定 / 记忆 / 渠道）"
+            className="group flex min-w-0 items-center gap-2 rounded-btn px-2 py-1 transition hover:bg-line-soft"
+          >
+            {/* 头像 Blob */}
+            <span
+              className={cn("flex h-6 w-6 shrink-0 items-center justify-center text-[12px] font-medium text-canvas shadow-xs", avatar?.shape)}
+              style={{ backgroundColor: avatar?.color }}
+            >
+              {isSteward ? "👑" : unit.name.slice(0, 1)}
+            </span>
+            {/* 名字 */}
+            <span className="truncate text-body font-medium text-ink group-hover:text-teal">
+              {unit.name}
+            </span>
+            {/* 身份/角色徽标 */}
+            <span className="shrink-0 rounded-chip bg-line-soft px-1.5 py-0.5 text-[10px] text-graphite group-hover:bg-teal-tint group-hover:text-teal">
+              {isSteward ? "总管" : unit.identity?.role || "Agent"}
+            </span>
+            {/* 运行状态 */}
+            {busy ? (
+              <span className="flex items-center gap-1 text-[11px] text-teal">
+                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-teal" />
+                工作中
+              </span>
+            ) : (
+              <span className="h-1.5 w-1.5 rounded-full bg-line" title="就绪" />
+            )}
+          </button>
 
-      {/* 标题：单元名 + 当前任务。ZCode 是 h1 truncate，字重封顶 500 用 font-medium */}
-      <h1 className="ml-1 flex min-w-0 items-baseline gap-1.5 text-body">
-        <span className="shrink-0 font-medium text-ink">{unit?.name ?? "未选择工作单元"}</span>
-        {session && (
-          <span className="min-w-0 truncate text-body-sm text-graphite">/ {session.title}</span>
-        )}
-      </h1>
+          {/* 会话名称 */}
+          {session && (
+            <span className="flex min-w-0 items-center gap-1.5 text-body-sm text-graphite">
+              <span className="text-ash">/</span>
+              <span className="truncate max-w-[200px]" title={session.title}>{session.title}</span>
+            </span>
+          )}
 
-      {/* ZCode 的 TID_WORKSPACE_MORE_BUTTON：任务级操作菜单 */}
-      <MoreMenu />
+          {/* 路径与绑定弹层 */}
+          <WorkspacePopover />
+          {/* 任务更多菜单 */}
+          <MoreMenu />
+        </div>
+      ) : (
+        <span className="text-body-sm text-ash">未选择 Agent</span>
+      )}
 
-      {/* ---- 右区：动作按钮（ZCode 的 WorkspaceHeaderActionSection）---- */}
-      <div className="ml-auto flex shrink-0 items-center gap-0.5">
+      {/* ---- 右区：动作按钮 ---- */}
+      <div className="ml-auto flex shrink-0 items-center gap-1.5">
+        {/* 终端抽屉开关 */}
         <button
           onClick={toggleTerminal}
           aria-label="终端"
           aria-pressed={terminalOpen}
-          title="终端 · Ctrl+`"
-          className={cn(iconBtn, terminalOpen && pressedBtn)}
+          title="终端抽屉 · Ctrl+`"
+          className={cn(
+            "flex items-center gap-1.5 rounded-btn px-2.5 py-1 text-body-sm transition",
+            terminalOpen
+              ? "bg-teal-tint font-medium text-teal"
+              : "text-graphite hover:bg-line-soft hover:text-ink",
+          )}
         >
           <SquareTerminal size={14} />
+          <span className="hidden sm:inline">终端</span>
         </button>
 
-        {/* ZCode 的 WorkspaceHeaderActionSection：右栏开着时头部开关不渲染，
-            关闭动作由右栏自己的标签条承担（PanelRightClose） */}
-        {!paneOpen && (
-          <button
-            onClick={() => setPaneOpen(true)}
-            aria-label="展开右侧面板"
-            title="展开右侧面板"
-            className={iconBtn}
-          >
-            <PanelRightOpen size={14} />
-          </button>
-        )}
+        {/* Agent 档案 (设定/记忆/渠道/产出) 开关 */}
+        <button
+          onClick={() => setPaneOpen(!paneOpen)}
+          aria-label={paneOpen ? "关闭 Agent 档案" : "展开 Agent 档案"}
+          aria-pressed={paneOpen}
+          title="Agent 档案 (设定 / 记忆 / 渠道)"
+          className={cn(
+            "flex items-center gap-1.5 rounded-btn px-2.5 py-1 text-body-sm transition",
+            paneOpen
+              ? "bg-teal-tint font-medium text-teal"
+              : "text-graphite hover:bg-line-soft hover:text-ink",
+          )}
+        >
+          <Brain size={14} className={paneOpen ? "text-teal" : "text-graphite"} />
+          <span className="hidden sm:inline">档案</span>
+        </button>
       </div>
     </header>
   );
@@ -159,7 +195,9 @@ function MoreMenu() {
       icon: History,
       label: "查看调用轨迹",
       disabled: !session,
-      onClick: () => session && useSidePane.getState().openTabType("trace", session.id),
+      onClick: () => {
+        useShell.getState().setConversationView("trajectory");
+      },
     },
   ];
 

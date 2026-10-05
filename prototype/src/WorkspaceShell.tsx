@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import { Check, ChevronDown, Ellipsis } from "lucide-react";
+import { useEffect, useRef } from "react";
+import { ArrowLeft } from "lucide-react";
 import { Group, Panel, Separator, type PanelImperativeHandle } from "react-resizable-panels";
 import { Composer } from "./ui/Composer.tsx";
 import { MemoryPanel } from "./ui/MemoryPanel.tsx";
@@ -9,19 +9,17 @@ import { CommandCenter } from "./ui/CommandCenter.tsx";
 import { DesktopTopOverlay } from "./ui/DesktopTopOverlay.tsx";
 import { PermissionDialog } from "./ui/PermissionDialog.tsx";
 import { SettingsPage } from "./ui/SettingsPage.tsx";
-import { SidePane } from "./ui/SidePane.tsx";
+import { AgentInspector } from "./ui/AgentInspector.tsx";
 import { useSidePane } from "./store/useSidePane.ts";
 import { useWorkbench } from "./store/useWorkbench.ts";
 import { Sidebar } from "./ui/Sidebar.tsx";
 import { TerminalPanel } from "./ui/TerminalPanel.tsx";
-import { TerminalPage } from "./ui/TerminalPage.tsx";
 import { Timeline } from "./ui/Timeline.tsx";
 import { WorkspaceHeader } from "./ui/WorkspaceHeader.tsx";
 import { TrajectoryView } from "./ui/TrajectoryView.tsx";
-import { OpsView } from "./ui/OpsView.tsx";
 import { cn } from "./ui/cn.ts";
 import { bindNavRecorder } from "./store/useNav.ts";
-import { SIDEBAR_DEFAULT, useShell, bindShellShortcuts, type ConversationView } from "./store/useShell.ts";
+import { useShell, bindShellShortcuts } from "./store/useShell.ts";
 
 /**
  * 工作台外壳 —— 布局结构对齐 ZCode 的 WorkspaceShellLayout。
@@ -156,18 +154,17 @@ function ConversationSlot() {
   const terminalOpen = useShell((s) => s.terminalOpen);
   const mainView = useShell((s) => s.mainView);
   const conversationView = useShell((s) => s.conversationView);
-  // setConversationView 由 ConversationViewBar 独占，这里不再需要
+  const setConversationView = useShell((s) => s.setConversationView);
 
   return (
     <Panel defaultSize="62%" minSize="30%" className="min-w-0">
-      {/* 主视图只有 chat / automations 两种（ZCode 的 WorkspaceMainView）；
-          设置是覆盖层、搜索是命令中心，都不占主列 */}
+      {/* 主视图只有 chat / automations / image */}
       {mainView === "automations" ? (
         <main className="h-full min-h-0" aria-label="自动化">
           <AutomationsPage />
         </main>
       ) : mainView === "image" ? (
-        /* 出图工作台 —— gpt_image_playground 逻辑移植的落点（独立功能主视图） */
+        /* 出图工作台（独立主视图） */
         <main className="h-full min-h-0" aria-label="出图">
           <ImageStudioPage />
         </main>
@@ -175,31 +172,29 @@ function ConversationSlot() {
         <Group orientation="vertical" id="workbench-conversation">
           <Panel defaultSize="100%" minSize="30%" className="min-h-0">
             <main className="flex h-full min-h-0 flex-col" aria-label="会话">
-              {/* 工作区头部 —— 只挂在会话视图（ZCode 的 WorkspaceHeader 是 task 级的，
-                  automations 自带面包屑头） */}
+              {/* 工作区头部：展示 Agent 身份卡、终端抽屉开关、Agent 档案抽屉开关 */}
               <WorkspaceHeader />
-              {/* 会话内页签 → 「对话 + ⋯」。
-                  渐进披露：4 个页签常驻是一条 37px 高的固定行 + 4 枚标签，
-                  而终端/轨迹/Ops 三者里同一时刻只有一个在用。
-                  现在只有「对话」常驻，其余三个收进 ⋯，点开才占版面。
-                  仍在会话视口、composer 位置都不变。 */}
-              <ConversationViewBar />
+
               {conversationView === "trajectory" ? (
-                /* 轨迹视图（dsh TrajectoryView：占据会话视口，composer 保持底部） */
-                <TrajectoryView />
-              ) : conversationView === "terminal" ? (
-                /* 终端页签（多窗格并开工作台；与底部 dock 终端同组件不同实例，可同屏共存） */
-                <TerminalPage />
-              ) : conversationView === "ops" ? (
-                /* Ops 视图（waku dashboard 的 Ops 页签：发布门 / 两类 eval / Arena / 花费账本） */
-                <OpsView />
+                <>
+                  <div className="flex shrink-0 items-center justify-between border-b border-line bg-canvas px-6 py-2">
+                    <button
+                      onClick={() => setConversationView("chat")}
+                      className="flex items-center gap-1.5 rounded-btn px-2.5 py-1 text-body-sm text-graphite hover:bg-line-soft hover:text-ink transition"
+                    >
+                      <ArrowLeft size={13} />
+                      <span>返回对话</span>
+                    </button>
+                    <span className="text-caption text-ash font-mono">调用轨迹视图</span>
+                  </div>
+                  <TrajectoryView />
+                </>
               ) : (
                 <Timeline />
               )}
-              {/* 权限卡片 —— 对齐 ZCode 的 V4InteractionDialogs：作为 composer 上方的
-                  bottom dock 卡片打断，而不是居中模态。终端 / Ops 是非会话视图，不打断 */}
+              {/* 权限卡片 */}
               {(conversationView === "chat" || conversationView === "trajectory") && <PermissionDialog />}
-              {/* 记忆三柱（docs/10 §五）：技能 / 记忆 / 会话搜索，压在 composer 正上方 */}
+              {/* 记忆三柱：技能 / 记忆 / 会话搜索，压在 composer 正上方 */}
               {(conversationView === "chat" || conversationView === "trajectory") && <MemoryPanel />}
               {(conversationView === "chat" || conversationView === "trajectory") && <Composer />}
             </main>
@@ -240,120 +235,8 @@ function SidePaneSlot() {
       maxSize="45%"
       className="overflow-hidden"
     >
-      <SidePane ownerId={sessionId} />
+      <AgentInspector />
     </Panel>
   );
 }
 
-/* ------------------------------------------------- 会话内页签：对话 + ⋯ */
-
-const CONVERSATION_VIEWS: readonly { id: ConversationView; label: string }[] = [
-  { id: "chat", label: "对话" },
-  { id: "terminal", label: "终端" },
-  { id: "trajectory", label: "轨迹" },
-  { id: "ops", label: "Ops" },
-];
-
-/**
- * 会话内视图切换条 —— 渐进披露后只剩两枚控件。
- *
- * 「对话」常驻：它是 95% 时间待着的那一面，必须一直可达。
- * 其余三个（终端 / 轨迹 / Ops）收进 ⋯：
- * - 在「对话」时，⋯ 只显示一个图标，不占文字宽度；
- * - 已切到别的视图时，⋯ **变成当前视图名 + 箭头**，
- *   所以"我现在不在对话里"这件事一眼可见，不会迷失在另一个视口。
- *
- * 四个选项在浮层里全部列出（当前项打勾）——收起的只是版面，不是入口。
- */
-function ConversationViewBar() {
-  const view = useShell((s) => s.conversationView);
-  const setView = useShell((s) => s.setConversationView);
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
-  const onChat = view === "chat";
-  const current = CONVERSATION_VIEWS.find((v) => v.id === view) ?? CONVERSATION_VIEWS[0]!;
-
-  const tabClass = (active: boolean) =>
-    cn(
-      "-mb-px border-b-2 px-3 py-2 text-body-sm",
-      active ? "border-teal font-medium text-ink" : "border-transparent text-graphite hover:text-ink",
-    );
-
-  return (
-    <div className="flex shrink-0 items-center gap-1 border-b border-line px-6" role="tablist">
-      <button onClick={() => setView("chat")} role="tab" aria-selected={onChat} className={tabClass(onChat)}>
-        对话
-      </button>
-
-      <div ref={ref} className="relative -mb-px ml-1">
-        <button
-          onClick={() => setOpen((o) => !o)}
-          role="tab"
-          aria-selected={!onChat}
-          aria-expanded={open}
-          aria-haspopup="listbox"
-          aria-label="切换会话视图"
-          title="切换会话视图"
-          className={cn(
-            "flex items-center gap-1 border-b-2 px-2 py-2 text-body-sm",
-            onChat
-              ? "border-transparent text-graphite hover:text-ink"
-              : "border-teal font-medium text-ink",
-          )}
-        >
-          {onChat ? <Ellipsis size={14} /> : <>{current.label}<ChevronDown size={12} className="opacity-60" /></>}
-        </button>
-
-        {open && (
-          <>
-            <span className="fixed inset-0 z-30" onClick={() => setOpen(false)} aria-hidden />
-            <div
-              role="listbox"
-              aria-label="会话视图"
-              className="absolute left-0 top-full z-40 mt-1 w-40 rounded-card border border-line bg-canvas py-1 shadow-subtle"
-            >
-              {CONVERSATION_VIEWS.map((v) => {
-                const active = v.id === view;
-                return (
-                  <button
-                    key={v.id}
-                    role="option"
-                    aria-selected={active}
-                    onClick={() => {
-                      setView(v.id);
-                      setOpen(false);
-                    }}
-                    className={cn(
-                      "flex w-full items-center gap-2 px-3 py-1.5 text-left text-body-sm",
-                      active ? "font-medium text-ink" : "text-graphite hover:bg-line-soft hover:text-ink",
-                    )}
-                  >
-                    {v.label}
-                    {active && <Check size={12} className="ml-auto text-teal" />}
-                  </button>
-                );
-              })}
-            </div>
-          </>
-        )}
-      </div>
-    </div>
-  );
-}

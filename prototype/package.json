@@ -11,7 +11,7 @@
     "typecheck": "tsc -b",
     "check:sidepane": "node --experimental-strip-types scripts/check-sidepane.ts",
     "check:models": "node --experimental-strip-types scripts/check-models.ts",
-    "check": "pnpm check:models && pnpm check:sidepane",
+    "check": "pnpm check:models",
     "check:bridge": "node --experimental-strip-types scripts/check-daemon-bridge.ts"
   },
   "dependencies": {

@@ -143,6 +143,26 @@ export async function readProjectMemory(rootPath: string): Promise<MemoryFileInf
   return call<MemoryFileInfo>("memory.project.read", { rootPath }, READ_TIMEOUT_MS);
 }
 
+/** 写一个项目的长期记忆 */
+export async function writeProjectMemory(rootPath: string, content: string): Promise<unknown> {
+  return call("memory.project.write", { rootPath, content }, READ_TIMEOUT_MS);
+}
+
+/** 列出一个项目的每日总结列表 */
+export async function listDailyMemory(rootPath: string): Promise<readonly string[]> {
+  return call<readonly string[]>("memory.project.daily", { rootPath }, READ_TIMEOUT_MS);
+}
+
+/** 跨项目搜索记忆 */
+export async function stewardSearchMemory(params: {
+  botId?: string;
+  query: string;
+  limit?: number;
+  withContext?: boolean;
+}): Promise<StewardSearchResponse> {
+  return call<StewardSearchResponse>("steward.search", params, SEARCH_TIMEOUT_MS);
+}
+
 /**
  * 每日总结的试跑（dryRun = 只报不写）。
  * 设置页的「立即运行」按钮用；放在这层是因为这里是记忆 RPC 的集中地。
