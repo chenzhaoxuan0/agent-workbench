@@ -216,10 +216,25 @@ export function ProviderModelPanel({ runtimeId, displayName }: { runtimeId: stri
             />
           ) : (
             <>
-              <span className="flex items-baseline gap-1.5">
-                <span className={cn("truncate text-body-sm", group === "hidden" ? "text-graphite" : "text-ink")}>
+              <span className="flex items-center gap-1.5 flex-wrap">
+                <span className={cn("truncate text-body-sm font-medium", group === "hidden" ? "text-graphite line-through opacity-75" : "text-ink")}>
                   {m.displayName}
                 </span>
+                {m.contextWindow > 0 && (
+                  <span className="shrink-0 rounded-chip border border-line bg-canvas px-1.5 py-px font-mono text-[10px] text-teal font-medium">
+                    {formatContext(m.contextWindow)}
+                  </span>
+                )}
+                {m.reasoningLevels && m.reasoningLevels.length > 0 && (
+                  <span className="shrink-0 rounded-chip bg-teal-tint px-1.5 py-px text-[10px] text-teal font-medium">
+                    推理
+                  </span>
+                )}
+                {m.multimodal && (
+                  <span className="shrink-0 rounded-chip bg-line-soft px-1.5 py-px text-[10px] text-graphite font-medium">
+                    视觉
+                  </span>
+                )}
                 {isCustom && <span className="shrink-0 text-caption text-teal">自定义</span>}
                 {m.source === "custom" && !isCustom && (
                   <span className="shrink-0 text-caption text-ash">未核实</span>
@@ -228,8 +243,7 @@ export function ProviderModelPanel({ runtimeId, displayName }: { runtimeId: stri
               <span className="tnum mt-0.5 block truncate font-mono text-caption text-ash">
                 {m.inputPerMTok > 0
                   ? `${formatPrice(m.inputPerMTok)}/${formatPrice(m.outputPerMTok)}`
-                  : "价格未知"}
-                {m.contextWindow > 0 ? ` · ${formatContext(m.contextWindow)}` : " · 窗口未知"} · {m.vendorLabel}
+                  : "订阅内含 / CLI 托管"} · {m.vendorLabel}
               </span>
             </>
           )}
@@ -275,9 +289,14 @@ export function ProviderModelPanel({ runtimeId, displayName }: { runtimeId: stri
                 onClick={() => apply(runtimeId, [(p) => toggleHidden(p, m.id)])}
                 title={hiddenSet.has(m.id) ? "重新在选择器中显示" : "从选择器中隐藏"}
                 aria-label={hiddenSet.has(m.id) ? `显示 ${m.displayName}` : `隐藏 ${m.displayName}`}
-                className="rounded p-1 text-caption text-ash hover:bg-line hover:text-ink"
+                className={cn(
+                  "rounded px-2 py-0.5 text-caption font-medium transition",
+                  hiddenSet.has(m.id)
+                    ? "bg-teal-tint text-teal hover:bg-teal/20"
+                    : "text-ash hover:bg-line hover:text-ink",
+                )}
               >
-                {hiddenSet.has(m.id) ? "显示" : "隐藏"}
+                {hiddenSet.has(m.id) ? "恢复显示" : "隐藏"}
               </button>
             )}
           </span>

@@ -1,23 +1,75 @@
 import { useMemo, useState } from "react";
-import { ChevronDown, ChevronRight, Minus, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
+import {
+  Check,
+  CheckCircle2,
+  ChevronRight,
+  Info,
+  KeyRound,
+  Pencil,
+  RefreshCw,
+  SlidersHorizontal,
+  Terminal,
+} from "lucide-react";
 import { prefsOf, resolveVisibleModels } from "../core/modelPrefs.ts";
-import { useProviderProfiles } from "../store/useProviderProfiles.ts";
 import { useWorkbench } from "../store/useWorkbench.ts";
 import { ProviderModelPanel } from "./ModelSettings.tsx";
 import { cn } from "./cn.ts";
 
 /**
- * 执行器实例面板 —— 逻辑对齐 T3 的 Providers 设置页
- * （ProviderSettingsPanel + ProviderInstanceCard）：
+ * 执行器实例与模型生态面板：
  *
- * - 左列：执行器实例列表（图标 + 名称 + 版本 + 状态行 + **启用 Switch**）；
- * - 右列编辑器：Display name / Runtime（端点·协议·启动参数）/
- *   Environment（变量表）/ Models（该 CLI 的模型清单管理）/ Advanced；
- * - 顶栏：「已检查 刚刚」+ 全量重探测刷新。
- *
- * 与 T3 的映射：T3 的 provider instance = 本项目的执行器（六家 CLI）；
- * Models 编辑器复用 per-CLI 模型清单（含收藏/排序/显隐/自定义模型）。
+ * 1. 左列：执行器列表（图标 + 名称 + 版本 + 就绪状态 + 启用 Switch）；
+ * 2. 右列：
+ *    - 顶卡：执行器真实状态卡片（Display Name 内联重命名、默认执行器标识/设为默认、传输通道）；
+ *    - 主卡：平铺展开的可用模型生态管理（搜索、星标置顶、上下文窗口、推理/视觉能力、主对话底栏显隐开关）；
+ *    - 底卡：终端凭据与配置指南（指导用户在 CLI 终端中如何通过官方命令完成认证与配置，剔除假输入框）。
  */
+
+interface CliGuide {
+  desc: string;
+  authCmd?: string;
+  configPath?: string;
+  tips: string;
+}
+
+const CLI_GUIDES: Record<string, CliGuide> = {
+  codex: {
+    desc: "OpenAI 官方终端 Agent 交互式执行器，深度适配代码感知与多步复杂自动化任务。",
+    authCmd: "codex login",
+    configPath: "~/.codex/config.json",
+    tips: "支持绑定 ChatGPT Plus/Pro 订阅或 OpenAI API Key。工作台通过本地子进程 stdio 交互式会话自动继承终端认证状态。",
+  },
+  claude: {
+    desc: "Anthropic 官方终端 Agent 交互式执行器，针对大型工程重构与代码推理具备深度优化。",
+    authCmd: "claude login",
+    configPath: "环境变量 ANTHROPIC_API_KEY",
+    tips: "可使用 Claude 官方账号登录或配置系统环境变量。工作台直接复用终端运行凭据。",
+  },
+  opencode: {
+    desc: "开源灵活的多模型终端 Agent 执行器，支持同时接入数十种主流大模型与自建 API。",
+    authCmd: "opencode auth login",
+    configPath: "~/.config/opencode/",
+    tips: "可在系统终端中配置各厂商的 Provider 密钥，工作台会自动动态探测已就绪的真实模型生态。",
+  },
+  pi: {
+    desc: "轻量级全栈 Agent 终端工具，具备极简的交互架构与多供应商模型路由。",
+    authCmd: "pi login",
+    configPath: "~/.pi/agent/models.json",
+    tips: "支持通过本地终端配置多模型路由与凭据，工作台保持实时状态同步。",
+  },
+  zcode: {
+    desc: "本地极速 Agent 引擎，专为高并发与低延迟自动化交互设计。",
+    tips: "无需额外认证，工作台通过专属管道直连本地 Agent 守护进程，开箱即用。",
+  },
+  mcode: {
+    desc: "MCode 研发套件与私有化模型调度执行器。",
+    tips: "自动适配本地工作空间与内网环境，保持稳定开箱即用状态。",
+  },
+  mockperm: {
+    desc: "工作台权限闸（Permission Gate）端到端自动化验收测试夹具。",
+    tips: "每轮对话均会触发真实的模拟权限审批挂起，专门用于测试与验收工作台的人机交互闸门。",
+  },
+};
 
 export function ProviderInstancesPanel() {
   const runtimes = useWorkbench((s) => s.runtimes);
@@ -48,84 +100,100 @@ export function ProviderInstancesPanel() {
   const enabled = pref.enabled !== false;
 
   return (
-    <div className="space-y-2">
-      {/* 顶栏：检查状态 + 全量重探测（T3 的 Checked just now + Refresh） */}
-      <div className="flex items-center justify-end gap-2">
-        {checking ? (
-          <span className="text-caption text-ash">检查中…</span>
-        ) : (
-          <span className="text-caption text-ash">已检查 {checkedLabel}</span>
-        )}
-        <button
-          onClick={() => {
-            setChecking(true);
-            void refresh();
-          }}
-          title="重新探测全部执行器"
-          aria-label="重新探测全部执行器"
-          className="flex items-center gap-1 rounded-btn px-2 py-1 text-caption text-graphite hover:bg-line-soft hover:text-ink"
-        >
-          <RefreshCw size={11} className={cn(checking && "animate-spin")} />
-          刷新
-        </button>
+    <div className="space-y-3">
+      {/* 顶栏：检查状态 + 全量重新探测 */}
+      <div className="flex items-center justify-between border-b border-line pb-2.5">
+        <div>
+          <h2 className="text-body-sm font-medium text-ink">执行器与可用模型</h2>
+          <p className="text-caption text-ash">
+            工作台直接调度本地安装的 Agent CLI；模型列表由 CLI 动态探测对齐，可在此自定义主对话底栏的显示项。
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          {checking ? (
+            <span className="text-caption text-ash">正在探测本地 CLI…</span>
+          ) : (
+            <span className="text-caption text-ash">已探测 {checkedLabel}</span>
+          )}
+          <button
+            onClick={() => {
+              setChecking(true);
+              void refresh();
+            }}
+            title="重新探测全部本地执行器与模型"
+            aria-label="重新探测全部本地执行器与模型"
+            className="flex items-center gap-1.5 rounded-btn border border-line bg-canvas px-2.5 py-1 text-caption font-medium text-graphite hover:bg-line-soft hover:text-ink transition"
+          >
+            <RefreshCw size={12} className={cn(checking && "animate-spin text-teal")} />
+            重新探测
+          </button>
+        </div>
       </div>
 
-      <div className="grid grid-cols-[240px_minmax(0,1fr)] gap-3">
+      <div className="grid grid-cols-[250px_minmax(0,1fr)] gap-4 items-start">
         {/* 左列：实例列表 */}
-        <ul className="space-y-1.5">
+        <ul className="space-y-2">
           {runtimes.map((r) => {
             const p = prefs[r.id] ?? { enabled: true };
             const isEnabled = p.enabled !== false;
-            const isActive = r.id === selected.id;
+            const isSelected = r.id === selected.id;
+            const isDefault = activeId === r.id;
             return (
               <li key={r.id}>
                 <button
                   onClick={() => setSelectedId(r.id)}
-                  aria-current={isActive}
+                  aria-current={isSelected}
                   className={cn(
-                    "flex w-full items-start gap-2.5 rounded-card border px-3 py-2.5 text-left",
-                    isActive ? "border-teal-edge bg-teal-tint/60" : "border-line hover:bg-line-soft",
+                    "flex w-full items-start gap-2.5 rounded-card border px-3 py-2.5 text-left transition",
+                    isSelected
+                      ? "border-teal bg-teal-tint/60 shadow-sm"
+                      : "border-line bg-card hover:bg-line-soft",
                     !isEnabled && "opacity-60",
                   )}
                 >
                   <span
-                    className="flex h-6 w-6 shrink-0 items-center justify-center rounded-btn text-[10px] font-medium text-white"
+                    className="flex h-7 w-7 shrink-0 items-center justify-center rounded-btn text-[11px] font-semibold text-white shadow-xs"
                     style={{ background: r.presentation.accent }}
                     aria-hidden
                   >
                     {r.presentation.glyph}
                   </span>
                   <span className="min-w-0 flex-1">
-                    <span className="flex items-center gap-1.5">
+                    <span className="flex items-center gap-1.5 flex-wrap">
                       <span className="truncate text-body-sm font-medium text-ink">
                         {p.displayName ?? r.presentation.displayName}
                       </span>
-                      {/* 测试夹具必须标出来。mockperm 不是厂商工具，是「每轮都真挂起
-                          等审批」的假执行器 —— 权限闸唯一的端到端验收手段。不标的话
-                          用户会以为那是个没听说过的 CLI。 */}
                       {r.testOnly && (
                         <span
-                          title="测试夹具：每轮都真的挂起等审批，用来端到端验收权限闸。真实执行器启动时就把权限定死了，中途不会问你。"
+                          title="测试夹具：模拟触发真实权限审批"
                           className="shrink-0 rounded-chip border border-line bg-line-soft px-1.5 py-px text-[10px] leading-4 text-graphite"
                         >
-                          测试
+                          测试夹具
                         </span>
                       )}
-                      {activeId === r.id && (
-                        <span className="shrink-0 rounded-chip bg-ink px-1.5 py-px text-[10px] leading-4 text-canvas">
+                      {isDefault && (
+                        <span className="shrink-0 rounded-chip bg-ink px-1.5 py-px text-[10px] font-medium leading-4 text-canvas">
                           默认
                         </span>
                       )}
-                      {r.state.status === "ready" && r.state.version && (
-                        <span className="tnum shrink-0 text-caption text-ash">v{r.state.version}</span>
-                      )}
                     </span>
-                    <span className="mt-0.5 block truncate text-caption text-ash">
-                      {r.testOnly
-                        ? "假执行器 · 每轮发一次权限请求并挂起"
-                        : isEnabled
-                          ? `${statusLabel(r.state.status)} · ${r.transportKind}`
-                          : "已停用"}
+                    <span className="mt-1 flex items-center gap-1.5 text-caption text-ash">
+                      <span
+                        className={cn(
+                          "h-1.5 w-1.5 rounded-full",
+                          r.state.status === "ready"
+                            ? "bg-teal"
+                            : r.state.status === "starting"
+                              ? "bg-amber-500"
+                              : "bg-ash",
+                        )}
+                      />
+                      <span>
+                        {isEnabled ? statusLabel(r.state.status) : "已停用"}
+                      </span>
+                      {r.state.status === "ready" && r.state.version && (
+                        <span className="font-mono text-[10px] text-ash">v{r.state.version}</span>
+                      )}
                     </span>
                   </span>
                   <InstanceSwitch
@@ -139,92 +207,16 @@ export function ProviderInstancesPanel() {
           })}
         </ul>
 
-        {/* 右列：选中实例的编辑器 */}
+        {/* 右列：当前选中执行器的核心管理 */}
         <div className="min-w-0 space-y-4">
           <InstanceEditor
             runtimeId={selected.id}
             isDefault={activeId === selected.id}
             onSetDefault={() => selectRuntime(selected.id)}
           />
-
-          <Details title="API 供应商（兼容协议 · pi 目录）">
-            <p className="text-caption leading-relaxed text-ash">
-              中转站 / 自部署 / 兼容协议的接入在下方「API 供应商」卡片中管理
-              （目录选型 + 密钥 + 模型清单），与本页的执行器实例互不影响。
-            </p>
-          </Details>
-
-          <AdvancedSection onChange={() => setPref(selected.id, { lastCheckedAt: Date.now() })} />
         </div>
       </div>
-
-      {/* 探测策略（全局）—— 原执行器分区的两个策略开关并入此处 */}
-      <ProbeStrategyCard />
     </div>
-  );
-}
-
-function ProbeStrategyCard() {
-  const [probe, setProbe] = useState(true);
-  const [showUninstalled, setShowUninstalled] = useState(true);
-  return (
-    <section className="rounded-card border border-line bg-canvas px-3.5 py-3">
-      <p className="text-caption font-medium text-graphite">探测策略</p>
-      <div className="mt-2 space-y-2">
-        <ToggleRow
-          label="能力探测"
-          desc="启动时检查每家工具是否可连。探测失败的工具会在执行器条上标灰，而不是隐藏"
-          checked={probe}
-          onChange={setProbe}
-        />
-        <ToggleRow
-          label="未安装工具"
-          desc="在执行器条上显示并提供安装入口，还是直接隐藏"
-          checked={showUninstalled}
-          onChange={setShowUninstalled}
-        />
-      </div>
-    </section>
-  );
-}
-
-function ToggleRow({
-  label,
-  desc,
-  checked,
-  onChange,
-}: {
-  label: string;
-  desc: string;
-  checked: boolean;
-  onChange: (v: boolean) => void;
-}) {
-  return (
-    <button
-      onClick={() => onChange(!checked)}
-      role="switch"
-      aria-checked={checked}
-      className="flex w-full items-center gap-3 rounded-btn px-1 py-1 text-left hover:bg-line-soft"
-    >
-      <span className="min-w-0 flex-1">
-        <span className="block text-caption font-medium text-ink">{label}</span>
-        <span className="block text-caption text-ash">{desc}</span>
-      </span>
-      <span
-        className={cn(
-          "relative h-5 w-9 shrink-0 rounded-full transition-colors",
-          checked ? "bg-teal" : "bg-line",
-        )}
-        aria-hidden
-      >
-        <span
-          className={cn(
-            "absolute top-0.5 h-4 w-4 rounded-full bg-canvas transition-[left]",
-            checked ? "left-[18px]" : "left-0.5",
-          )}
-        />
-      </span>
-    </button>
   );
 }
 
@@ -237,9 +229,9 @@ function statusLabel(status: string): string {
     case "not_installed":
       return "未安装";
     case "error":
-      return "出错";
+      return "异常";
     default:
-      return "已停止";
+      return "已离线";
   }
 }
 
@@ -261,6 +253,7 @@ function InstanceSwitch({
       role="switch"
       aria-checked={checked}
       aria-label={label}
+      title={checked ? "已启用（点击停用）" : "已停用（点击启用）"}
       className={cn(
         "relative h-5 w-9 shrink-0 self-center rounded-full transition-colors",
         checked ? "bg-teal" : "bg-line",
@@ -268,7 +261,7 @@ function InstanceSwitch({
     >
       <span
         className={cn(
-          "absolute top-0.5 h-4 w-4 rounded-full bg-canvas transition-[left]",
+          "absolute top-0.5 h-4 w-4 rounded-full bg-canvas shadow-xs transition-[left]",
           checked ? "left-[18px]" : "left-0.5",
         )}
       />
@@ -276,7 +269,7 @@ function InstanceSwitch({
   );
 }
 
-/* ------------------------------------------------------------- 编辑器 */
+/* ------------------------------------------------------------- 详情编辑器 */
 
 function InstanceEditor({
   runtimeId,
@@ -291,243 +284,138 @@ function InstanceEditor({
   const pref = useWorkbench((s) => s.runtimePrefs[runtimeId]) ?? { enabled: true };
   const setPref = useWorkbench((s) => s.setRuntimePref);
   const [editingName, setEditingName] = useState(false);
-  const [modelsOpen, setModelsOpen] = useState(false);
-  const modelPrefsMap = useWorkbench((s) => s.modelPrefs);
-  const counts = useMemo(() => {
-    if (!runtime) return { visible: 0, fav: 0, hidden: 0 };
-    const p = prefsOf(modelPrefsMap, runtimeId);
-    const visible = resolveVisibleModels(runtime.models, p);
-    return {
-      visible: visible.length,
-      fav: visible.filter((m) => p.favoriteModels.includes(m.id)).length,
-      hidden: runtime.models.filter((m) => p.hiddenModels.includes(m.id)).length,
-    };
-  }, [runtime, modelPrefsMap, runtimeId]);
 
   if (!runtime) return null;
   const name = pref.displayName ?? runtime.presentation.displayName;
+  const guide = CLI_GUIDES[runtimeId] ?? {
+    desc: `${name} 终端执行器。`,
+    tips: "工作台直接调度本地安装的命令行进程。",
+  };
 
   return (
-    <section className="rounded-card border border-line bg-canvas">
-      {/* Display name（T3：Display name + 编辑铅笔） */}
-      <div className="flex items-center gap-3 border-b border-line px-3.5 py-3">
-        <span className="w-28 shrink-0 text-caption font-medium text-graphite">Display name</span>
-        {editingName ? (
-          <input
-            value={name}
-            onChange={(e) => setPref(runtimeId, { displayName: e.target.value })}
-            onBlur={() => setEditingName(false)}
-            onKeyDown={(e) => e.key === "Enter" && setEditingName(false)}
-            autoFocus
-            className="min-w-0 flex-1 rounded-input border border-transparent bg-rail px-2.5 py-1.5 text-body-sm text-ink outline-none focus:border-teal"
-          />
-        ) : (
-          <>
-            <span className="min-w-0 flex-1 truncate text-body-sm text-ink">{name}</span>
-            <button
-              onClick={() => setEditingName(true)}
-              aria-label="编辑显示名"
-              className="shrink-0 rounded-btn p-1 text-ash hover:bg-line-soft hover:text-ink"
+    <div className="space-y-4">
+      {/* 顶部卡片：执行器概览与状态 */}
+      <section className="rounded-card border border-line bg-card p-4">
+        <div className="flex items-start justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <span
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-card text-body-md font-bold text-white shadow-xs"
+              style={{ background: runtime.presentation.accent }}
             >
-              <Pencil size={11} />
-            </button>
-          </>
+              {runtime.presentation.glyph}
+            </span>
+            <div>
+              <div className="flex items-center gap-2">
+                {editingName ? (
+                  <input
+                    value={name}
+                    onChange={(e) => setPref(runtimeId, { displayName: e.target.value })}
+                    onBlur={() => setEditingName(false)}
+                    onKeyDown={(e) => e.key === "Enter" && setEditingName(false)}
+                    autoFocus
+                    className="rounded-input border border-teal bg-canvas px-2 py-0.5 text-body-sm font-medium text-ink outline-none"
+                  />
+                ) : (
+                  <>
+                    <h3 className="text-body-md font-semibold text-ink">{name}</h3>
+                    <button
+                      onClick={() => setEditingName(true)}
+                      title="修改显示名称"
+                      className="rounded p-1 text-ash hover:bg-line-soft hover:text-ink transition"
+                    >
+                      <Pencil size={12} />
+                    </button>
+                  </>
+                )}
+                {runtime.state.status === "ready" && (
+                  <span className="flex items-center gap-1 rounded-chip bg-teal-tint px-2 py-0.5 text-caption font-medium text-teal">
+                    <span className="h-1.5 w-1.5 rounded-full bg-teal" />
+                    已就绪
+                  </span>
+                )}
+                {runtime.state.status === "ready" && runtime.state.version && (
+                  <span className="rounded-chip border border-line bg-canvas px-1.5 py-0.5 font-mono text-[10px] text-graphite">
+                    v{runtime.state.version}
+                  </span>
+                )}
+              </div>
+              <p className="mt-1 text-caption text-ash leading-relaxed">{guide.desc}</p>
+            </div>
+          </div>
+
+          {/* 设为默认按钮 */}
+          <div className="shrink-0 flex items-center gap-2">
+            {isDefault ? (
+              <span className="flex items-center gap-1.5 rounded-btn bg-ink px-3 py-1.5 text-caption font-medium text-canvas">
+                <CheckCircle2 size={12} className="text-teal" />
+                当前默认执行器
+              </span>
+            ) : (
+              <button
+                onClick={onSetDefault}
+                className="rounded-btn border border-line bg-canvas px-3 py-1.5 text-caption font-medium text-graphite hover:border-teal hover:text-ink hover:bg-line-soft transition"
+              >
+                设为新对话默认
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* 传输协议与模式透视 */}
+        <div className="mt-3 flex items-center gap-4 border-t border-line/60 pt-2.5 text-caption text-ash">
+          <span className="flex items-center gap-1.5">
+            <Terminal size={12} className="text-graphite" />
+            <span>通信通道：</span>
+            <span className="font-mono text-graphite">
+              {runtime.transportKind === "stdio" ? "本地进程管道 (stdio)" : runtime.transportKind}
+            </span>
+          </span>
+          <span>·</span>
+          <span>
+            可用模型：<span className="font-medium text-ink">{runtime.models.length}</span> 款
+          </span>
+        </div>
+      </section>
+
+      {/* 核心主区：平铺展开的模型生态管理（不折叠） */}
+      <section className="space-y-2">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-body-sm font-medium text-ink">模型生态与选择器过滤</h3>
+            <p className="text-caption text-ash">
+              点击星星可置顶收藏；隐藏的模型不会出现在对话底栏的下拉菜单中，保持界面清爽。
+            </p>
+          </div>
+        </div>
+        <ProviderModelPanel runtimeId={runtimeId} displayName={name} />
+      </section>
+
+      {/* 底部卡片：终端凭据与配置指南（真实指导） */}
+      <section className="rounded-card border border-line bg-card p-4 space-y-2.5">
+        <div className="flex items-center gap-2 text-body-sm font-medium text-ink">
+          <KeyRound size={14} className="text-teal" />
+          <span>终端凭据与配置指南</span>
+        </div>
+        <p className="text-caption text-graphite leading-relaxed">
+          {guide.tips}
+        </p>
+        {(guide.authCmd || guide.configPath) && (
+          <div className="rounded-card border border-line/80 bg-canvas p-3 text-caption font-mono space-y-1.5">
+            {guide.authCmd && (
+              <div className="flex items-center gap-2">
+                <span className="text-ash font-sans select-none">终端登录命令：</span>
+                <code className="text-teal font-semibold">{guide.authCmd}</code>
+              </div>
+            )}
+            {guide.configPath && (
+              <div className="flex items-center gap-2">
+                <span className="text-ash font-sans select-none">本地配置文件：</span>
+                <code className="text-graphite">{guide.configPath}</code>
+              </div>
+            )}
+          </div>
         )}
-      </div>
-
-      {/* 默认执行器 —— T3 无此概念（本项目的 activeRuntimeId 是 composer 新任务默认） */}
-      <div className="flex items-center gap-3 border-b border-line px-3.5 py-3">
-        <span className="min-w-0 flex-1">
-          <span className="block text-caption font-medium text-graphite">默认执行器</span>
-          <span className="block text-caption text-ash">composer 的新任务默认由它执行。</span>
-        </span>
-        {isDefault ? (
-          <span className="shrink-0 rounded-chip bg-teal-tint px-1.5 py-0.5 text-caption text-teal">当前默认</span>
-        ) : (
-          <button
-            onClick={onSetDefault}
-            className="shrink-0 rounded-btn border border-line px-2 py-1 text-caption text-graphite hover:bg-line-soft hover:text-ink"
-          >
-            设为默认
-          </button>
-        )}
-      </div>
-
-      {/* Runtime 区（T3：Binary path / HOME / Launch arguments → 本项目映射为端点与启动参数） */}
-      <div className="border-b border-line px-3.5 py-3">
-        <p className="mb-2 text-caption font-medium text-graphite">Runtime</p>
-        <div className="space-y-2">
-          <RowInput
-            label="端点 / 命令"
-            desc="该执行器的接入端点或 CLI 命令"
-            value={pref.endpoint ?? runtime.transportKind}
-            onChange={(v) => setPref(runtimeId, { endpoint: v })}
-          />
-          <RowText label="传输协议" value={runtime.transportKind} />
-          <RowInput
-            label="启动参数"
-            desc="会话启动时附加的 CLI 参数"
-            value={pref.launchArgs ?? ""}
-            onChange={(v) => setPref(runtimeId, { launchArgs: v })}
-          />
-        </div>
-      </div>
-
-      {/* Environment 区（T3：Variables 表） */}
-      <div className="border-b border-line px-3.5 py-3">
-        <p className="text-caption font-medium text-graphite">Environment</p>
-        <p className="mt-0.5 text-caption text-ash">API 密钥、端点等实例级 CLI 环境变量。</p>
-        <EnvVars runtimeId={runtimeId} />
-      </div>
-
-      {/* Models 区：默认折叠（清单管理较长），summary 带计数 */}
-      <button
-        onClick={() => setModelsOpen((o) => !o)}
-        aria-expanded={modelsOpen}
-        className="flex w-full items-center gap-1.5 border-b border-line px-3.5 py-2.5 text-left text-caption font-medium text-graphite hover:text-ink"
-      >
-        <ChevronDown size={11} className={cn("-rotate-90 transition-transform", modelsOpen && "rotate-0")} />
-        Models
-        <span className="ml-auto font-normal text-ash">
-          {counts.visible} 模型 · {counts.fav} 收藏 · {counts.hidden} 隐藏
-        </span>
-      </button>
-      {modelsOpen && (
-        <div className="border-t border-line-soft px-3.5 pb-3 pt-2">
-          <ProviderModelPanel runtimeId={runtimeId} displayName={name} />
-        </div>
-      )}
-    </section>
-  );
-}
-
-/* ------------------------------------------------------------- 子原语 */
-
-function RowInput({
-  label,
-  desc,
-  value,
-  onChange,
-}: {
-  label: string;
-  desc?: string;
-  value: string;
-  onChange: (v: string) => void;
-}) {
-  return (
-    <div className="grid grid-cols-[minmax(0,1fr)_200px] items-center gap-3">
-      <span className="min-w-0">
-        <span className="block text-caption font-medium text-graphite">{label}</span>
-        {desc && <span className="block text-caption text-ash">{desc}</span>}
-      </span>
-      <input
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        spellCheck={false}
-        className="w-full rounded-input border border-transparent bg-rail px-2.5 py-1.5 font-mono text-caption text-ink outline-none placeholder:text-ash focus:border-teal"
-      />
-    </div>
-  );
-}
-
-function RowText({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="grid grid-cols-[minmax(0,1fr)_200px] items-center gap-3">
-      <span className="text-caption font-medium text-graphite">{label}</span>
-      <span className="font-mono text-caption text-ash">{value}</span>
-    </div>
-  );
-}
-
-function Details({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <section className="rounded-card border border-line bg-canvas">
-      <p className="px-3.5 py-2.5 text-caption font-medium text-graphite">{title}</p>
-      <div className="border-t border-line-soft p-3.5">{children}</div>
-    </section>
-  );
-}
-
-function AdvancedSection({ onChange }: { onChange: () => void }) {
-  const [value, setValue] = useState(300);
-  return (
-    <section className="rounded-card border border-line bg-canvas px-3.5 py-3">
-      <p className="text-caption font-medium text-graphite">Advanced · 健康检查间隔</p>
-      <p className="mt-0.5 text-caption text-ash">后台刷新执行器状态、版本与模型；设为 0 关闭。</p>
-      <div className="mt-2 flex items-center gap-2">
-        <button
-          onClick={() => setValue((v) => Math.max(0, v - 30))}
-          aria-label="减少"
-          className="rounded-btn border border-line p-1 text-graphite hover:bg-line-soft"
-        >
-          <Minus size={10} />
-        </button>
-        <span className="tnum w-14 text-center text-body-sm text-ink">{value}</span>
-        <button
-          onClick={() => setValue((v) => v + 30)}
-          aria-label="增加"
-          className="rounded-btn border border-line p-1 text-graphite hover:bg-line-soft"
-        >
-          <Plus size={10} />
-        </button>
-        <span className="text-caption text-ash">seconds</span>
-      </div>
-      <button onClick={onChange} className="mt-2 text-caption text-ash hover:text-graphite">
-        标记为已检查
-      </button>
-    </section>
-  );
-}
-
-/* ------------------------------------------------------------- 环境变量表 */
-
-interface EnvVar {
-  key: string;
-  value: string;
-}
-
-function EnvVars({ runtimeId }: { runtimeId: string }) {
-  const pref = useWorkbench((s) => s.runtimePrefs[runtimeId]);
-  const setPref = useWorkbench((s) => s.setRuntimePref);
-  const vars = pref?.envVars ?? [];
-  const setVars = (next: readonly EnvVar[]) => setPref(runtimeId, { envVars: next });
-
-  return (
-    <div className="mt-2 space-y-1.5">
-      {vars.length === 0 && <p className="text-caption text-ash">尚未配置变量。</p>}
-      {vars.map((v, i) => (
-        <div key={`${v.key}-${i}`} className="flex items-center gap-1.5">
-          <input
-            value={v.key}
-            onChange={(e) => setVars(vars.map((x, xi) => (xi === i ? { ...x, key: e.target.value } : x)))}
-            placeholder="KEY"
-            aria-label={`变量 ${i + 1} 名`}
-            spellCheck={false}
-            className="w-40 rounded-input border border-transparent bg-rail px-2 py-1 font-mono text-caption text-ink outline-none placeholder:text-ash focus:border-teal"
-          />
-          <input
-            value={v.value}
-            onChange={(e) => setVars(vars.map((x, xi) => (xi === i ? { ...x, value: e.target.value } : x)))}
-            placeholder="值"
-            aria-label={`变量 ${i + 1} 值`}
-            className="min-w-0 flex-1 rounded-input border border-transparent bg-rail px-2 py-1 font-mono text-caption text-ink outline-none placeholder:text-ash focus:border-teal"
-          />
-          <button
-            onClick={() => setVars(vars.filter((_, xi) => xi !== i))}
-            aria-label={`移除变量 ${v.key || i + 1}`}
-            className="shrink-0 rounded p-0.5 text-ash hover:bg-line hover:text-loss"
-          >
-            <Trash2 size={11} />
-          </button>
-        </div>
-      ))}
-      <button
-        onClick={() => setVars([...vars, { key: "", value: "" }])}
-        className="flex items-center gap-1 rounded-btn border border-line px-2 py-1 text-caption text-graphite hover:bg-line-soft hover:text-ink"
-      >
-        <Plus size={10} />
-        添加变量
-      </button>
+      </section>
     </div>
   );
 }

@@ -29,7 +29,6 @@ import type { WorkUnit } from "../core/units.ts";
 import { useMemorySettings } from "../store/useMemoryPrefs.ts";
 import { readProjectMemory, runDigestDryRun, type DigestResult } from "../store/useMemoryPanel.ts";
 import { ProviderInstancesPanel } from "./ProviderInstancesPanel.tsx";
-import { ProviderSettingsSection } from "./ProviderSettingsSection.tsx";
 import { ImageSettingsSection } from "./ImageSettingsSection.tsx";
 import { cn } from "./cn.ts";
 
@@ -217,11 +216,7 @@ function SectionBody({ section }: { section: SettingsSectionDef }) {
     case "models":
       return (
         <div className="space-y-6">
-          {/* 执行器实例面板（T3 Providers 逻辑：左列表+开关 / 右编辑器含 Models 管理；
-              默认执行器与探测策略均已并入面板内部） */}
           <ProviderInstancesPanel />
-          {/* API 供应商（pi 目录 + 兼容协议）—— dsh ModelsSection 形态 */}
-          <ProviderSettingsSection />
         </div>
       );
     case "shortcuts":
