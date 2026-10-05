@@ -239,6 +239,7 @@ function WorkspacePopover() {
   );
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [opened, setOpened] = useState(false);
 
   if (!unit) return null;
 
@@ -258,7 +259,7 @@ function WorkspacePopover() {
       <button
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
-        title={unit.rootPath}
+        title={`工作区路径：${unit.rootPath}\n点击查看详情与打开文件夹`}
         className={cn(iconBtn, open && "bg-line-soft text-ink")}
       >
         <Folder size={14} />
@@ -276,11 +277,22 @@ function WorkspacePopover() {
             </p>
             <div className="mt-2.5 flex items-center gap-1.5 border-t border-line-soft pt-2">
               <button
-                onClick={() => void openFolder({ path: unit.rootPath })}
-                className="flex items-center gap-1 rounded-btn bg-teal-tint px-2 py-1 text-caption font-medium text-teal hover:bg-teal/15 transition"
+                type="button"
+                onClick={async () => {
+                  setOpened(true);
+                  try {
+                    await openFolder({ path: unit.rootPath });
+                  } finally {
+                    setTimeout(() => setOpened(false), 2000);
+                  }
+                }}
+                className={cn(
+                  "flex items-center gap-1 rounded-btn px-2 py-1 text-caption font-medium transition active:scale-95",
+                  opened ? "bg-gain/15 text-gain" : "bg-teal-tint text-teal hover:bg-teal/15",
+                )}
               >
-                <FolderOpen size={12} />
-                <span>打开文件夹</span>
+                {opened ? <Check size={12} className="text-gain" /> : <FolderOpen size={12} />}
+                <span>{opened ? "已在资源管理器打开" : "打开文件夹"}</span>
               </button>
               <button
                 onClick={copyPath}

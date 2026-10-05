@@ -132,6 +132,7 @@ export function AddBotDialog({
   const [agentsMdMeta, setAgentsMdMeta] = useState<WorkUnit["agentsMdMeta"]>(undefined);
   /** 渠道配置。空 = 纯工作台内 bot。改了跟着保存一起写穿 bot.json。 */
   const [channels, setChannels] = useState<readonly BotChannel[]>(initial?.channels ?? []);
+  const [folderOpened, setFolderOpened] = useState(false);
 
   const isEdit = Boolean(initial);
 
@@ -351,13 +352,21 @@ export function AddBotDialog({
                     />
                     <button
                       type="button"
-                      onClick={() => rootPath.trim() && void openFolder({ path: rootPath.trim() })}
+                      onClick={async () => {
+                        if (!rootPath.trim()) return;
+                        setFolderOpened(true);
+                        try {
+                          await openFolder({ path: rootPath.trim() });
+                        } finally {
+                          setTimeout(() => setFolderOpened(false), 2000);
+                        }
+                      }}
                       disabled={!rootPath.trim()}
                       title="在文件资源管理器中打开"
-                      className="flex shrink-0 items-center gap-1 rounded-btn border border-line bg-canvas px-2.5 py-1.5 text-caption font-medium text-graphite hover:bg-line-soft hover:text-ink disabled:opacity-40"
+                      className="flex shrink-0 items-center gap-1 rounded-btn border border-line bg-canvas px-2.5 py-1.5 text-caption font-medium text-graphite hover:bg-line-soft hover:text-ink active:scale-95 transition disabled:opacity-40"
                     >
-                      <FolderOpen size={12} />
-                      <span>打开</span>
+                      {folderOpened ? <Check size={12} className="text-gain" /> : <FolderOpen size={12} />}
+                      <span>{folderOpened ? "已打开" : "打开"}</span>
                     </button>
                   </div>
                 </Field>

@@ -5,7 +5,7 @@
  * Phase 1 在这里注册 session.* 方法并把 RuntimeEvent 接进 broadcastEvent。
  */
 
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { timingSafeEqual } from "node:crypto";
@@ -372,9 +372,20 @@ const httpRoutes: HttpRoute[] = [
 
 function launchFileManager(targetPath: string): { ok: boolean; path: string } {
   const cleanPath = path.resolve(targetPath);
+  try {
+    if (!existsSync(cleanPath)) {
+      mkdirSync(cleanPath, { recursive: true });
+    }
+  } catch (err) {
+    log.warn("mkdir before launch file manager failed", { err, path: cleanPath });
+  }
+
   const platform = process.platform;
   if (platform === "win32") {
-    exec(`explorer.exe "${cleanPath.replace(/\//g, "\\")}"`);
+    // Windows 平台标准启动 explorer.exe，兼容正斜杠与反斜杠
+    exec(`explorer.exe "${cleanPath.replace(/\//g, "\\")}"`, (err) => {
+      if (err) log.warn("explorer launch warning", { err: err.message, path: cleanPath });
+    });
   } else if (platform === "darwin") {
     exec(`open "${cleanPath}"`);
   } else {
@@ -383,7 +394,7 @@ function launchFileManager(targetPath: string): { ok: boolean; path: string } {
   return { ok: true, path: cleanPath };
 }
 
-/** 鉴权判定（docs/08 WP-7）：token 开启时全查，唯一豁免 = 回环取 /bootstrap */
+/** 鉴权判定（docs/08 WP-7）：token 开启时全查，唯一豁免 = 回环取 /bootstrap 与 本机打开文件夹 */
 const authorize = (req: IncomingMessage, url: URL): boolean => {
   if (config.token === null) return true;
   if (url.pathname === "/bootstrap") {
@@ -391,6 +402,12 @@ const authorize = (req: IncomingMessage, url: URL): boolean => {
     const origin = req.headers.origin;
     if (origin !== undefined && !isLocalOrigin(origin)) return false;
     return isLoopbackAddr(req.socket.remoteAddress);
+  }
+  // 本地桌面打开工作区文件夹：仅限回环本地源
+  if (url.pathname === "/api/workspaces/open-folder") {
+    const origin = req.headers.origin;
+    if (origin !== undefined && !isLocalOrigin(origin)) return false;
+    if (isLoopbackAddr(req.socket.remoteAddress)) return true;
   }
   if (url.pathname === "/webhook/bot") return true; // per-bot secret 在路由内自验
   const provided = req.headers["x-awb-token"] ?? url.searchParams.get("token");

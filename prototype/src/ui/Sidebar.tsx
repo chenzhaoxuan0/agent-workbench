@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlarmClock,
   Bot,
+  Check,
   ChevronLeft,
   FolderGit2,
   FolderOpen,
@@ -247,7 +248,13 @@ export function Sidebar() {
             <div
               key={u.id}
               draggable
-              onDragStart={() => setDragUnit(u.id)}
+              onDragStart={(e) => {
+                if ((e.target as HTMLElement).closest("button, a, input, [data-no-drag]")) {
+                  e.preventDefault();
+                  return;
+                }
+                setDragUnit(u.id);
+              }}
               onDragOver={(e) => e.preventDefault()}
               onDrop={() => {
                 if (dragUnit && dragUnit !== unitId) {
@@ -259,7 +266,7 @@ export function Sidebar() {
                 }
                 setDragUnit(null);
               }}
-              className={cn("group/u mb-1 cursor-grab active:cursor-grabbing", dragUnit === unitId && "opacity-40")}
+              className={cn("group/u mb-1", dragUnit === unitId && "opacity-40")}
             >
               <UnitRow
                 unit={u}
@@ -477,6 +484,7 @@ function UnitRow({
   );
   const subtitle = latest?.title ?? unit.identity?.role ?? "";
   const avatar = botAvatarStyle(unit.name);
+  const [justOpened, setJustOpened] = useState(false);
 
   return (
     // 整行是 button，button 里再套 button 是非法 HTML —— 设置入口做成
@@ -570,26 +578,46 @@ function UnitRow({
       </button>
 
       {/* 悬浮快捷操作：在文件资源管理器中打开 + 设置 */}
-      <div className="absolute right-2 top-2 flex items-center gap-0.5 rounded-btn bg-canvas/90 p-0.5 shadow-xs opacity-0 backdrop-blur-xs transition hover:opacity-100 focus-within:opacity-100 group-hover/row:opacity-100">
+      <div
+        data-no-drag
+        draggable={false}
+        onMouseDown={(e) => e.stopPropagation()}
+        onDragStart={(e) => e.preventDefault()}
+        className="absolute right-2 top-2 z-10 flex items-center gap-0.5 rounded-btn bg-canvas/95 p-0.5 shadow-xs opacity-0 backdrop-blur-xs transition hover:opacity-100 focus-within:opacity-100 group-hover/row:opacity-100 cursor-default"
+      >
         <button
-          onClick={(e) => {
+          type="button"
+          draggable={false}
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={async (e) => {
             e.stopPropagation();
-            void openFolder({ path: unit.rootPath });
+            setJustOpened(true);
+            try {
+              await openFolder({ path: unit.rootPath });
+            } finally {
+              setTimeout(() => setJustOpened(false), 2000);
+            }
           }}
           aria-label={`在资源管理器中打开 ${unit.name} 文件夹`}
           title={`在文件资源管理器中打开：\n${unit.rootPath}`}
-          className="rounded-btn p-1 text-ash hover:bg-line-soft hover:text-ink"
+          className={cn(
+            "cursor-pointer rounded-btn p-1 transition active:scale-90",
+            justOpened ? "text-gain bg-gain/10" : "text-ash hover:bg-line-soft hover:text-ink",
+          )}
         >
-          <FolderOpen size={13} />
+          {justOpened ? <Check size={13} className="text-gain" /> : <FolderOpen size={13} />}
         </button>
         <button
+          type="button"
+          draggable={false}
+          onMouseDown={(e) => e.stopPropagation()}
           onClick={(e) => {
             e.stopPropagation();
             onOpenSettings();
           }}
           aria-label={`${unit.name} 设置`}
           title="设置 —— 改 AGENTS.md、人设、主执行器"
-          className="rounded-btn p-1 text-ash hover:bg-line-soft hover:text-ink"
+          className="cursor-pointer rounded-btn p-1 text-ash hover:bg-line-soft hover:text-ink active:scale-90 transition"
         >
           <Settings size={13} />
         </button>

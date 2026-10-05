@@ -40,7 +40,7 @@ function sendJson(res: ServerResponse, status: number, body: unknown, allowOrigi
     "content-type": "application/json; charset=utf-8",
     "content-length": Buffer.byteLength(payload),
     "access-control-allow-methods": "GET, POST, DELETE, OPTIONS",
-    "access-control-allow-headers": "content-type",
+    "access-control-allow-headers": "content-type, x-awb-token",
   };
   // CORS 白名单（评审 P0）：只对本地源回显 allow-origin——此前 "*/bootstrap 回环豁免"
   // 的组合让任意网页可凭 fetch 直读本机 daemon（含 token）。非白名单源一律不带 CORS 头。
