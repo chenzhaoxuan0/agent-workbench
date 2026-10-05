@@ -166,22 +166,37 @@ export class McodeAdapter implements ExecutorAdapter {
   readonly displayName = "MiniMax Code";
   readonly glyph = "M";
   readonly models: readonly ExecutorModelInfo[] = [
-    // 模型由 mcode 托管账号/BYOK 配置决定，ACP 侧用 configOption "model" 切
+    // 真实 MiniMax Code 官方模型生态（对齐 ~/.minimax/config.yaml）
     {
-      id: "minimax-m2" as ModelId,
-      displayName: "MiniMax M2（托管默认）",
-      contextWindow: 204800,
-      maxOutput: 131072,
+      id: "MiniMax-M3.1-Flash-Preview" as ModelId,
+      displayName: "M3.1 Flash Preview（默认）",
+      contextWindow: 512000,
+      maxOutput: 128000,
+      reasoningLevels: ["low", "medium", "high", "xhigh", "max"],
+      multimodal: true,
+    },
+    {
+      id: "MiniMax-M3" as ModelId,
+      displayName: "MiniMax M3",
+      contextWindow: 512000,
+      maxOutput: 128000,
       reasoningLevels: ["low", "medium", "high", "max"],
       multimodal: true,
     },
     {
-      id: "minimax-m3" as ModelId,
-      displayName: "MiniMax M3",
-      contextWindow: 1000000,
-      maxOutput: 512000,
-      reasoningLevels: ["low", "medium", "high", "max"],
-      multimodal: true,
+      id: "MiniMax-M2.7-highspeed" as ModelId,
+      displayName: "MiniMax M2.7 Highspeed",
+      contextWindow: 200000,
+      maxOutput: 128000,
+      reasoningLevels: ["low", "medium", "high"],
+      multimodal: false,
+    },
+    {
+      id: "MiniMax-M2.7" as ModelId,
+      displayName: "MiniMax M2.7",
+      contextWindow: 200000,
+      maxOutput: 128000,
+      multimodal: false,
     },
   ];
   readonly capabilities: RuntimeCapabilities = {

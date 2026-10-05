@@ -178,19 +178,22 @@ export class DshAdapter implements ExecutorAdapter {
     {
       id: "deepseek-official/deepseek-v4-flash" as ModelId,
       displayName: "DeepSeek V4 Flash（默认）",
-      contextWindow: 1000000,
+      contextWindow: 128000,
       reasoningLevels: ["low", "medium", "high"],
+      multimodal: false,
     },
     {
       id: "deepseek-official/deepseek-flash" as ModelId,
       displayName: "DeepSeek V41 Flash",
-      contextWindow: 1000000,
+      contextWindow: 128000,
+      multimodal: false,
     },
     {
       id: "deepseek-official/deepseek-v4-pro" as ModelId,
       displayName: "DeepSeek V4 Pro",
-      contextWindow: 1000000,
+      contextWindow: 128000,
       reasoningLevels: ["low", "medium", "high", "max"],
+      multimodal: false,
     },
   ];
   readonly capabilities: RuntimeCapabilities = {

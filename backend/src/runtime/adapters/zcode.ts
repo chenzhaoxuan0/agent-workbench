@@ -725,7 +725,7 @@ export class ZcodeAdapter implements ExecutorAdapter {
       contextWindow: 1000000,
       maxOutput: 131072,
       reasoningLevels: ["low", "high", "max"],
-      multimodal: true,
+      multimodal: false,
     },
     {
       id: "GLM-5-Turbo" as ModelId,
@@ -733,7 +733,7 @@ export class ZcodeAdapter implements ExecutorAdapter {
       contextWindow: 200000,
       maxOutput: 32768,
       reasoningLevels: ["low", "high", "max"],
-      multimodal: true,
+      multimodal: false,
     },
   ];
   // 能力声明跟传输状态走（docs/08 WP-4）：app-server = 真流式；print 回退 = 批量。

@@ -155,7 +155,8 @@ export class CodexAdapter implements ExecutorAdapter {
             return {
               id: m.slug as ModelId,
               displayName: m.display_name ?? m.slug,
-              contextWindow: m.max_context_window ?? m.context_window ?? 272000,
+              // 默认采用标准上下文窗口（通常为 272K；长窗口 872K+ 通常需要付双倍价格）
+              contextWindow: m.context_window ?? 272000,
               reasoningLevels,
               defaultReasoningLevel: m.default_reasoning_level,
               multimodal: Array.isArray(m.input_modalities) ? m.input_modalities.includes("image") : true,
