@@ -6,6 +6,7 @@ import {
   Copy,
   Ellipsis,
   Folder,
+  FolderOpen,
   GitBranch,
   Hash,
   History,
@@ -16,6 +17,7 @@ import {
 } from "lucide-react";
 import { useShell } from "../store/useShell.ts";
 import { useWorkbench, selectActiveUnit } from "../store/useWorkbench.ts";
+import { openFolder } from "../adapters/daemon/client.ts";
 import { botAvatarStyle } from "./Sidebar.tsx";
 import { cn } from "./cn.ts";
 
@@ -156,6 +158,13 @@ function MoreMenu() {
     onClick?: () => void;
   }[] = [
     {
+      key: "open-folder",
+      icon: FolderOpen,
+      label: "在资源管理器中打开",
+      disabled: !unit,
+      onClick: () => unit && void openFolder({ path: unit.rootPath }),
+    },
+    {
       key: "copy-path",
       icon: Copy,
       label: copied === "path" ? "已复制路径" : "复制路径",
@@ -265,13 +274,17 @@ function WorkspacePopover() {
               <GitBranch size={12} className="shrink-0 text-ash" />
               <span className="font-mono">{branch ?? "main"}</span>
             </p>
-            <div className="mt-2 flex items-center gap-2 border-t border-line-soft pt-2">
-              <span className="text-body-sm text-graphite">
-                {unit.name} · {unit.kind === "bot" ? "bot" : "项目"}
-              </span>
+            <div className="mt-2.5 flex items-center gap-1.5 border-t border-line-soft pt-2">
+              <button
+                onClick={() => void openFolder({ path: unit.rootPath })}
+                className="flex items-center gap-1 rounded-btn bg-teal-tint px-2 py-1 text-caption font-medium text-teal hover:bg-teal/15 transition"
+              >
+                <FolderOpen size={12} />
+                <span>打开文件夹</span>
+              </button>
               <button
                 onClick={copyPath}
-                className="ml-auto flex items-center gap-1 rounded-btn px-1.5 py-0.5 text-caption text-graphite hover:bg-line-soft hover:text-ink"
+                className="ml-auto flex items-center gap-1 rounded-btn px-1.5 py-1 text-caption text-graphite hover:bg-line-soft hover:text-ink transition"
               >
                 {copied ? <Check size={12} className="text-gain" /> : <Copy size={12} />}
                 {copied ? "已复制" : "复制路径"}

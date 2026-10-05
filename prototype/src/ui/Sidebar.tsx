@@ -6,7 +6,6 @@ import {
   FolderGit2,
   FolderOpen,
   FolderPlus,
-  GripVertical,
   ImagePlus,
   MessageCirclePlus,
   PanelLeftClose,
@@ -30,6 +29,7 @@ import {
 import { AddBotDialog, type AddBotDraft } from "./AddBotDialog.tsx";
 import { ImportBotDialog } from "./ImportBotDialog.tsx";
 import { ChannelMark, channelIdentityLabel } from "./ChannelMark.tsx";
+import { openFolder } from "../adapters/daemon/client.ts";
 import { cn } from "./cn.ts";
 
 /**
@@ -259,21 +259,16 @@ export function Sidebar() {
                 }
                 setDragUnit(null);
               }}
-              className={cn("group/u mb-1 flex items-start", dragUnit === unitId && "opacity-40")}
+              className={cn("group/u mb-1 cursor-grab active:cursor-grabbing", dragUnit === unitId && "opacity-40")}
             >
-              <span className="mt-3 shrink-0 cursor-grab text-ash opacity-0 transition group-hover/u:opacity-100" aria-hidden>
-                <GripVertical size={12} />
-              </span>
-              <div className="min-w-0 flex-1">
-                <UnitRow
-                  unit={u}
-                  active={active}
-                  onSelect={() => selectUnit(u.id as UnitId)}
-                  onOpenSettings={() => useShell.getState().openUnitSettings(u.id as UnitId)}
-                  schedule={u.schedule?.enabled ? u.schedule.description : undefined}
-                />
-                {active && <TaskList unitId={u.id as UnitId} sort={sort} />}
-              </div>
+              <UnitRow
+                unit={u}
+                active={active}
+                onSelect={() => selectUnit(u.id as UnitId)}
+                onOpenSettings={() => useShell.getState().openUnitSettings(u.id as UnitId)}
+                schedule={u.schedule?.enabled ? u.schedule.description : undefined}
+              />
+              {active && <TaskList unitId={u.id as UnitId} sort={sort} />}
             </div>
           );
         })}
@@ -574,15 +569,31 @@ function UnitRow({
         </span>
       </button>
 
-      {/* 设置入口 —— 重新打开同一个对话框改 AGENTS.md / 人设 / 主执行器 */}
-      <button
-        onClick={onOpenSettings}
-        aria-label={`${unit.name} 设置`}
-        title="设置 —— 改 AGENTS.md、人设、主执行器"
-        className="absolute right-2 top-2.5 rounded-btn p-1 text-ash opacity-0 transition hover:bg-line-soft hover:text-ink focus-visible:opacity-100 group-hover/row:opacity-100"
-      >
-        <Settings size={13} />
-      </button>
+      {/* 悬浮快捷操作：在文件资源管理器中打开 + 设置 */}
+      <div className="absolute right-2 top-2 flex items-center gap-0.5 rounded-btn bg-canvas/90 p-0.5 shadow-xs opacity-0 backdrop-blur-xs transition hover:opacity-100 focus-within:opacity-100 group-hover/row:opacity-100">
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            void openFolder({ path: unit.rootPath });
+          }}
+          aria-label={`在资源管理器中打开 ${unit.name} 文件夹`}
+          title={`在文件资源管理器中打开：\n${unit.rootPath}`}
+          className="rounded-btn p-1 text-ash hover:bg-line-soft hover:text-ink"
+        >
+          <FolderOpen size={13} />
+        </button>
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onOpenSettings();
+          }}
+          aria-label={`${unit.name} 设置`}
+          title="设置 —— 改 AGENTS.md、人设、主执行器"
+          className="rounded-btn p-1 text-ash hover:bg-line-soft hover:text-ink"
+        >
+          <Settings size={13} />
+        </button>
+      </div>
     </div>
   );
 }

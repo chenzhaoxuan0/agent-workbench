@@ -11,6 +11,7 @@ import { createHash } from "node:crypto";
 import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import path from "node:path";
+import { exec } from "node:child_process";
 import { loadConfig } from "./config.ts";
 import { healthPayload, isLocalOrigin, isLoopbackAddr, startHttp, type HttpRoute } from "./httpd.ts";
 import { log, setLogLevel } from "./log.ts";
@@ -351,7 +352,36 @@ const httpRoutes: HttpRoute[] = [
       return host.resolvePermission(asSessionId(p.sessionId), p.requestId, p.decision).then(() => ({ resolved: true }));
     },
   },
+  {
+    method: "POST",
+    path: "/api/workspaces/open-folder",
+    handle: async ({ body }) => {
+      const p = (body ?? {}) as { path?: string; botId?: string };
+      let targetPath = p.path;
+      if (!targetPath && p.botId) {
+        const b = await botRegistry.getBot(p.botId);
+        if (b) targetPath = b.rootPath;
+      }
+      if (!targetPath || typeof targetPath !== "string") {
+        throw Object.assign(new Error("path or botId is required"), { code: "bad_params" });
+      }
+      return launchFileManager(targetPath);
+    },
+  },
 ];
+
+function launchFileManager(targetPath: string): { ok: boolean; path: string } {
+  const cleanPath = path.resolve(targetPath);
+  const platform = process.platform;
+  if (platform === "win32") {
+    exec(`explorer.exe "${cleanPath.replace(/\//g, "\\")}"`);
+  } else if (platform === "darwin") {
+    exec(`open "${cleanPath}"`);
+  } else {
+    exec(`xdg-open "${cleanPath}"`);
+  }
+  return { ok: true, path: cleanPath };
+}
 
 /** 鉴权判定（docs/08 WP-7）：token 开启时全查，唯一豁免 = 回环取 /bootstrap */
 const authorize = (req: IncomingMessage, url: URL): boolean => {
@@ -845,6 +875,19 @@ registerMethod("permission.resolve", (params) => {
     throw Object.assign(new Error("sessionId, requestId, decision(allow|deny|always) are required"), { code: "bad_params" });
   }
   return host.resolvePermission(asSessionId(p.sessionId), p.requestId, p.decision);
+});
+
+registerMethod("workspace.openFolder", async (params) => {
+  const p = (params ?? {}) as { path?: string; botId?: string };
+  let targetPath = p.path;
+  if (!targetPath && p.botId) {
+    const b = await botRegistry.getBot(p.botId);
+    if (b) targetPath = b.rootPath;
+  }
+  if (!targetPath || typeof targetPath !== "string") {
+    throw Object.assign(new Error("path or botId is required"), { code: "bad_params" });
+  }
+  return launchFileManager(targetPath);
 });
 
 registerMethod("health", () => healthPayload(config, startedAt));

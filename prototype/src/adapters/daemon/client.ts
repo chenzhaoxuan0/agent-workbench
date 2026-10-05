@@ -538,3 +538,30 @@ export async function sendViaChannel(
   const client = DaemonClient.get(endpoint);
   return client.rpc<{ ok: boolean; detail: string }>("channel.send", params, 30000);
 }
+
+/**
+ * 用系统的文件资源管理器（Windows Explorer / macOS Finder）直接打开目标文件夹
+ */
+export async function openFolder(
+  pathOrBotId: { path?: string; botId?: string },
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<{ ok: boolean; path?: string }> {
+  const client = DaemonClient.get(endpoint);
+  try {
+    return await client.rpc<{ ok: boolean; path?: string }>("workspace.openFolder", pathOrBotId, 10000);
+  } catch (err: unknown) {
+    // 降级尝试 HTTP POST（如果 WS 短暂重连）
+    try {
+      const httpOrigin = endpoint.replace(/^ws/, "http").replace(/\/ws$/, "");
+      const res = await fetch(`${httpOrigin}/api/workspaces/open-folder`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(pathOrBotId),
+      });
+      return (await res.json()) as { ok: boolean; path?: string };
+    } catch {
+      throw err;
+    }
+  }
+}
+

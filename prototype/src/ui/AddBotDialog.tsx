@@ -3,6 +3,7 @@ import {
   Brain,
   Check,
   FileText,
+  FolderOpen,
   Plus,
   RefreshCw,
   Wand2,
@@ -12,6 +13,7 @@ import {
 } from "lucide-react";
 import { useWorkbench, selectVisibleModels, BOT_CONFLICT, type BotWriteGuards } from "../store/useWorkbench.ts";
 import type { WorkUnit, BotChannel } from "../core/units.ts";
+import { openFolder } from "../adapters/daemon/client.ts";
 import { ChannelSection } from "./ChannelSection.tsx";
 import { cn } from "./cn.ts";
 
@@ -340,12 +342,24 @@ export function AddBotDialog({
                   />
                 </Field>
                 <Field label="工作目录" hint="这个 bot 的根文件夹（AGENTS.md 与产出都放这里）">
-                  <input
-                    value={rootPath}
-                    onChange={(e) => setRootPath(e.target.value)}
-                    spellCheck={false}
-                    className="w-full rounded-input border border-transparent bg-rail px-2.5 py-1.5 font-mono text-caption text-ink outline-none placeholder:text-ash focus:border-teal"
-                  />
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      value={rootPath}
+                      onChange={(e) => setRootPath(e.target.value)}
+                      spellCheck={false}
+                      className="min-w-0 flex-1 rounded-input border border-transparent bg-rail px-2.5 py-1.5 font-mono text-caption text-ink outline-none placeholder:text-ash focus:border-teal"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => rootPath.trim() && void openFolder({ path: rootPath.trim() })}
+                      disabled={!rootPath.trim()}
+                      title="在文件资源管理器中打开"
+                      className="flex shrink-0 items-center gap-1 rounded-btn border border-line bg-canvas px-2.5 py-1.5 text-caption font-medium text-graphite hover:bg-line-soft hover:text-ink disabled:opacity-40"
+                    >
+                      <FolderOpen size={12} />
+                      <span>打开</span>
+                    </button>
+                  </div>
                 </Field>
                 <Field label="默认执行器 (CLI)" hint="这个 bot 主要由哪家 CLI 执行">
                   {runtimes.length === 0 ? (

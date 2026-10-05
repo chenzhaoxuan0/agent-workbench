@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ArrowUp, AtSign, Square, SquareTerminal } from "lucide-react";
 import { useWorkbench, selectActiveUnit } from "../store/useWorkbench.ts";
 import { useShell } from "../store/useShell.ts";
@@ -23,6 +23,21 @@ export function Composer() {
   const busy = useWorkbench((s) => s.busy);
   const unit = useWorkbench(selectActiveUnit);
   const taRef = useRef<HTMLTextAreaElement>(null);
+  const [inputHeight, setInputHeight] = useState(46);
+
+  // 当文字被填入时自适应加高：平时显示 2 行（约 46px），内容输入增加后向上撑高，最多容纳 5 行（约 116px）
+  useEffect(() => {
+    const ta = taRef.current;
+    if (!ta) return;
+    if (!draft) {
+      setInputHeight(46);
+      return;
+    }
+    ta.style.height = "auto";
+    const scrollH = ta.scrollHeight;
+    const targetH = Math.min(Math.max(scrollH, 46), 116);
+    setInputHeight(targetH);
+  }, [draft]);
 
   // 草稿被外部（建议卡片）填入时，把焦点交给输入框
   useEffect(() => {
@@ -51,8 +66,8 @@ export function Composer() {
         <div
           className={cn(
             "rounded-input border bg-canvas px-4 py-3",
-            "border-line focus-within:border-teal",
-            // DESIGN.md：搜索框周围那一圈青色光晕，全系统唯一的装饰性效果
+            "border-line",
+            // 聚焦时保留轻量柔和的青色微光，取消深绿色刺眼细内边框
             "focus-within:shadow-[0_0_0_3px_rgb(1_106_113/0.12)]",
           )}
         >
@@ -67,9 +82,9 @@ export function Composer() {
               }
             }}
             placeholder={placeholder}
-            rows={2}
             aria-label="任务输入"
-            className="w-full resize-none bg-transparent text-body leading-relaxed text-ink outline-none placeholder:text-graphite"
+            className="w-full min-h-[46px] max-h-[116px] resize-none overflow-y-auto bg-transparent text-body leading-relaxed text-ink !outline-none focus:!outline-none focus-visible:!outline-none focus-visible:!ring-0 placeholder:text-graphite transition-[height] duration-150"
+            style={{ height: `${inputHeight}px`, outline: "none", boxShadow: "none" }}
           />
 
           {/* 左：这条消息「带什么」；右：这条消息「怎么跑」。
