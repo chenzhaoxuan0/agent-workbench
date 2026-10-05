@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlarmClock,
-  Archive,
   Bot,
   ChevronLeft,
   FolderGit2,
@@ -10,6 +9,7 @@ import {
   GripVertical,
   ImagePlus,
   MessageCirclePlus,
+  PanelLeftClose,
   Plus,
   Search,
   Settings,
@@ -98,7 +98,6 @@ export function Sidebar() {
   const activeUnitId = useWorkbench((s) => s.activeUnitId);
   const setView = useWorkbench((s) => s.setView);
   const selectUnit = useWorkbench((s) => s.selectUnit);
-  const archived = useWorkbench((s) => s.archivedSessions);
   const addUnit = useWorkbench((s) => s.addUnit);
   const mainView = useShell((s) => s.mainView);
   const openSettings = useShell((s) => s.openSettings);
@@ -139,51 +138,65 @@ export function Sidebar() {
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-rail">
-      {/* 顶部 48px 占位。ZCode 的侧栏顶部是空的拖拽条 —— 品牌 logo 与侧栏开关
-          由左上浮层（DesktopTopOverlay）承载，这里不再重复 */}
-      <div className="h-12 shrink-0 border-b border-line/60" />
-
-      {/* 统一的返回工作台按钮：在出图或自动化页面时显示在侧边栏顶部 */}
-      {mainView !== "chat" && (
-        <div className="px-3 pb-2 pt-2">
+      {/* 顶部 48px 区域：在出图/自动化时顶掉 A 标渲染返回工作台；在正常对话时渲染 A 图标与全局独立动作 */}
+      {mainView !== "chat" ? (
+        <div className="flex h-12 shrink-0 items-center border-b border-line/60 px-3">
           <button
             onClick={() => useShell.getState().setMainView("chat")}
-            className="flex w-full items-center gap-1.5 rounded-btn bg-teal-tint px-2.5 py-1.5 text-body-sm font-medium text-teal transition hover:bg-teal/15"
+            className="flex h-8 w-full items-center gap-1.5 rounded-btn bg-teal-tint px-2.5 text-body-sm font-medium text-teal transition hover:bg-teal/15"
           >
             <ChevronLeft size={14} />
             <span>返回工作台</span>
           </button>
         </div>
-      )}
+      ) : (
+        <div className="flex h-12 shrink-0 items-center justify-between border-b border-line/60 px-3">
+          {/* 侧栏开关：A 品牌标 ↔ 收起图标 hover 变形 */}
+          <button
+            onClick={() => useShell.getState().toggleSidebar()}
+            aria-label="收起侧栏"
+            title="收起侧栏 · ⌘B"
+            className="group relative flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-btn text-body-sm text-graphite hover:bg-line-soft hover:text-ink"
+          >
+            <span
+              aria-hidden
+              className="flex h-5 w-5 items-center justify-center rounded-sm bg-ink text-caption font-medium text-canvas transition-opacity duration-150 group-hover:opacity-0"
+            >
+              A
+            </span>
+            <PanelLeftClose
+              size={14}
+              className="absolute inset-0 m-auto opacity-0 transition-opacity duration-150 group-hover:opacity-100"
+            />
+          </button>
 
-      {/* 顶部动作区：新建任务 / 搜索 / 自动化 / 归档 */}
-      <div className="px-4 pb-2">
-        <div className="flex items-center gap-1">
-          <IconNavBtn
-            icon={MessageCirclePlus}
-            label="新建会话"
-            hint="⌘N"
-            onClick={() => useShell.getState().newTask()}
-          />
-          <IconNavBtn
-            icon={Search}
-            label="搜索"
-            hint="⌘K"
-            onClick={() => useShell.getState().setCommandOpen(true)}
-          />
-          <IconNavBtn
-            icon={AlarmClock}
-            label="自动化"
-            active={mainView === "automations"}
-            onClick={() => useShell.getState().setMainView(mainView === "automations" ? "chat" : "automations")}
-          />
-          <ArchivedMenu
-            sessions={archived}
-            onSelectSession={selectSession}
-            activeSessionId={activeSessionId}
-          />
+          {/* 全局动作区：新建会话 / 搜索 / 自动化 / 出图 */}
+          <div className="flex items-center gap-1">
+            <IconNavBtn
+              icon={MessageCirclePlus}
+              label="新建会话"
+              hint="⌘N"
+              onClick={() => useShell.getState().newTask()}
+            />
+            <IconNavBtn
+              icon={Search}
+              label="搜索"
+              hint="⌘K"
+              onClick={() => useShell.getState().setCommandOpen(true)}
+            />
+            <IconNavBtn
+              icon={AlarmClock}
+              label="自动化"
+              onClick={() => useShell.getState().setMainView("automations")}
+            />
+            <IconNavBtn
+              icon={ImagePlus}
+              label="出图"
+              onClick={() => useShell.getState().setMainView("image")}
+            />
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Agent 智能体列表标题行 */}
       <div className="flex items-center justify-between px-4 pb-2 pt-1">
@@ -267,36 +280,22 @@ export function Sidebar() {
 
       </div>
 
-      {/* 底部工具条：出图工作台 + 设置 */}
-      <div className="flex shrink-0 items-center justify-between border-t border-line px-3 py-2">
-        <button
-          onClick={() => useShell.getState().setMainView(mainView === "image" ? "chat" : "image")}
-          aria-label="出图工作台"
-          title="出图工作台"
-          className={cn(
-            "flex items-center gap-1.5 rounded-btn px-2.5 py-1 text-caption transition",
-            mainView === "image"
-              ? "bg-teal-tint font-medium text-teal"
-              : "text-graphite hover:bg-line-soft hover:text-ink",
-          )}
-        >
-          <ImagePlus size={14} />
-          <span>出图</span>
-        </button>
-
+      {/* 底部工具条：设置 */}
+      <div className="shrink-0 border-t border-line/60 p-2">
         <button
           onClick={() => openSettings()}
           aria-label="设置"
           title="设置 · ⌘,"
           className={cn(
-            "flex items-center gap-1.5 rounded-btn px-2.5 py-1 text-caption transition",
+            "flex w-full items-center gap-2 rounded-btn px-2.5 py-1.5 text-caption font-medium transition",
             settingsActive
-              ? "bg-teal-tint font-medium text-teal"
+              ? "bg-teal-tint text-teal"
               : "text-graphite hover:bg-line-soft hover:text-ink",
           )}
         >
           <Settings size={14} />
           <span>设置</span>
+          <span className="ml-auto font-mono text-[10px] text-ash">⌘,</span>
         </button>
       </div>
 
@@ -658,103 +657,6 @@ function SessionRow({
 
 /* ------------------------------------------------------------- 小组件 */
 
-/**
- * 已归档 —— 顶栏第五枚图标钮，点开看归档列表。
- *
- * 为什么它值得一枚常驻按钮而不是折叠行：它是**回溯入口**，而顶栏那一行
- * 本来就是「全局动作」的位置，新建/搜索/自动化/出图都在那。
- *
- * **计数不藏**：非空时右上角挂数字角标。否则用户根本不知道有东西被归档了，
- * 「收进浮层」就变成了「静默藏起来」。
- */
-function ArchivedMenu({
-  sessions,
-  activeSessionId,
-  onSelectSession,
-}: {
-  sessions: readonly Session[];
-  activeSessionId: SessionId | null;
-  onSelectSession: (id: SessionId | null) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
-  return (
-    <div ref={ref} className="relative">
-      <button
-        onClick={() => setOpen((o) => !o)}
-        aria-expanded={open}
-        aria-haspopup="listbox"
-        aria-label="已归档"
-        title={`已归档 · ${sessions.length} 条`}
-        className={cn(
-          "relative flex h-7 w-7 items-center justify-center rounded-btn",
-          open ? "bg-line-soft text-ink" : "text-graphite hover:bg-line-soft hover:text-ink",
-        )}
-      >
-        <Archive size={14} className="shrink-0" />
-        {sessions.length > 0 && (
-          <span
-            className="absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-ink px-1 text-[9px] leading-none font-medium text-canvas"
-            aria-hidden
-          >
-            {sessions.length}
-          </span>
-        )}
-      </button>
-
-      {open && (
-        <div
-          role="listbox"
-          aria-label="已归档"
-          className="absolute left-0 top-full z-20 mt-1 max-h-[320px] w-56 overflow-y-auto rounded-card border border-line bg-canvas py-1 shadow-subtle"
-        >
-          {sessions.length === 0 ? (
-            <p className="px-3 py-2 text-body-sm text-ash">归档区为空</p>
-          ) : (
-            sessions.map((s) => (
-              <button
-                key={s.id}
-                role="option"
-                aria-selected={s.id === activeSessionId}
-                onClick={() => {
-                  onSelectSession(s.id);
-                  setOpen(false);
-                }}
-                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-body-sm text-graphite hover:bg-line-soft hover:text-ink"
-              >
-                <span
-                  className={cn("h-1.5 w-1.5 shrink-0 rounded-full", STATUS_DOT[s.status] ?? "bg-ash")}
-                  aria-hidden
-                />
-                <span className="min-w-0 flex-1 truncate">{s.title}</span>
-                <span className="tnum shrink-0 text-caption text-ash">
-                  {new Date(s.startedAt).toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" })}
-                </span>
-              </button>
-            ))
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
 
 /**
  * 侧栏动作图标钮 —— 搜索 / 自动化 / 出图 共用。

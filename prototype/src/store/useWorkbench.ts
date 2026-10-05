@@ -64,7 +64,6 @@ interface TimelineItem {
 
 interface WorkbenchState {
   units: readonly WorkUnit[];
-  archivedSessions: readonly Session[];
   activeUnitId: UnitId;
   view: ViewMode;
   runtimes: readonly RuntimeEntry[];
@@ -264,7 +263,6 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
   // 评审后清 mock（用户指示）：初始全空，一切数据来自真实 daemon——
   // 空态是设计的一部分（ZCode 原则：功能不因空而消失），不再用样例数据撑门面
   units: [],
-  archivedSessions: [],
   activeUnitId: asUnitId(""),
   view: "bot",
   runtimes: [],

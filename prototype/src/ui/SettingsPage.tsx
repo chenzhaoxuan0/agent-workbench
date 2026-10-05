@@ -75,43 +75,46 @@ export function SettingsPage() {
 
   return (
     <div className="flex h-full min-h-0">
-      {/* 左导航。ZCode lg 以上是 268px，窄屏收 68px icon rail。
-          返回按钮在导航列顶部（ZCode 的 TID_SETTINGS_BACK_BUTTON 挂位） */}
-      <nav className="w-[268px] shrink-0 overflow-y-auto border-r border-line bg-rail px-3 pb-4 pt-3">
-        <button
-          onClick={() => useShell.getState().closeSettings()}
-          className="mb-3 flex w-full items-center gap-1.5 rounded-btn bg-teal-tint px-2.5 py-1.5 text-body-sm font-medium text-teal hover:bg-teal/15 transition"
-        >
-          <ChevronLeft size={14} />
-          <span>返回工作台</span>
-        </button>
-        {SETTINGS_GROUPS.map((g) => {
-          const items = SETTINGS_SECTIONS.filter((s) => s.groupId === g.id);
-          if (items.length === 0) return null;
-          return (
-            <div key={g.id} className="mb-4">
-              <p className="px-2 pb-1.5 text-caption text-ash">{g.title}</p>
-              {items.map((it) => {
-                const Icon = ICONS[it.icon] ?? Settings2;
-                const active = it.id === current.id;
-                return (
-                  <button
-                    key={it.id}
-                    onClick={() => openSettings(it.id)}
-                    aria-current={active}
-                    className={cn(
-                      "flex w-full items-center gap-2 rounded-btn px-2.5 py-2 text-body-sm",
-                      active ? "bg-teal-tint font-medium text-ink" : "text-graphite hover:bg-line-soft hover:text-ink",
-                    )}
-                  >
-                    <Icon size={12} className="shrink-0" />
-                    <span className="truncate">{it.title}</span>
-                  </button>
-                );
-              })}
-            </div>
-          );
-        })}
+      {/* 左导航：宽度 264px 与侧边栏一致，顶栏高 48px 与工作台顶栏完全对齐 */}
+      <nav className="flex h-full w-[264px] shrink-0 min-h-0 flex-col border-r border-line bg-rail">
+        <div className="flex h-12 shrink-0 items-center border-b border-line/60 px-3">
+          <button
+            onClick={() => useShell.getState().closeSettings()}
+            className="flex h-8 w-full items-center gap-1.5 rounded-btn bg-teal-tint px-2.5 text-body-sm font-medium text-teal transition hover:bg-teal/15"
+          >
+            <ChevronLeft size={14} />
+            <span>返回工作台</span>
+          </button>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
+          {SETTINGS_GROUPS.map((g) => {
+            const items = SETTINGS_SECTIONS.filter((s) => s.groupId === g.id);
+            if (items.length === 0) return null;
+            return (
+              <div key={g.id} className="mb-4">
+                <p className="px-2 pb-1.5 text-caption text-ash">{g.title}</p>
+                {items.map((it) => {
+                  const Icon = ICONS[it.icon] ?? Settings2;
+                  const active = it.id === current.id;
+                  return (
+                    <button
+                      key={it.id}
+                      onClick={() => openSettings(it.id)}
+                      aria-current={active}
+                      className={cn(
+                        "flex w-full items-center gap-2 rounded-btn px-2.5 py-2 text-body-sm",
+                        active ? "bg-teal-tint font-medium text-ink" : "text-graphite hover:bg-line-soft hover:text-ink",
+                      )}
+                    >
+                      <Icon size={12} className="shrink-0" />
+                      <span className="truncate">{it.title}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            );
+          })}
+        </div>
       </nav>
 
       {/* 内容列 */}
