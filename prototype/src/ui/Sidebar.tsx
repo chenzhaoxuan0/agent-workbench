@@ -3,6 +3,7 @@ import {
   AlarmClock,
   Archive,
   Bot,
+  ChevronLeft,
   FolderGit2,
   FolderOpen,
   FolderPlus,
@@ -142,7 +143,20 @@ export function Sidebar() {
           由左上浮层（DesktopTopOverlay）承载，这里不再重复 */}
       <div className="h-12 shrink-0 border-b border-line/60" />
 
-      {/* 顶部动作区：新建任务 / 搜索 / 归档 */}
+      {/* 统一的返回工作台按钮：在出图或自动化页面时显示在侧边栏顶部 */}
+      {mainView !== "chat" && (
+        <div className="px-3 pb-2 pt-2">
+          <button
+            onClick={() => useShell.getState().setMainView("chat")}
+            className="flex w-full items-center gap-1.5 rounded-btn bg-teal-tint px-2.5 py-1.5 text-body-sm font-medium text-teal transition hover:bg-teal/15"
+          >
+            <ChevronLeft size={14} />
+            <span>返回工作台</span>
+          </button>
+        </div>
+      )}
+
+      {/* 顶部动作区：新建任务 / 搜索 / 自动化 / 归档 */}
       <div className="px-4 pb-2">
         <div className="flex items-center gap-1">
           <IconNavBtn
@@ -156,6 +170,12 @@ export function Sidebar() {
             label="搜索"
             hint="⌘K"
             onClick={() => useShell.getState().setCommandOpen(true)}
+          />
+          <IconNavBtn
+            icon={AlarmClock}
+            label="自动化"
+            active={mainView === "automations"}
+            onClick={() => useShell.getState().setMainView(mainView === "automations" ? "chat" : "automations")}
           />
           <ArchivedMenu
             sessions={archived}

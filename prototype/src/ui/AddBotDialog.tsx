@@ -347,86 +347,48 @@ export function AddBotDialog({
                     className="w-full rounded-input border border-transparent bg-rail px-2.5 py-1.5 font-mono text-caption text-ink outline-none placeholder:text-ash focus:border-teal"
                   />
                 </Field>
-                <Field label="主执行器" hint="这个 bot 主要由哪家 CLI 执行">
-                  {/* 空态必须说人话。
-                      评审后清掉了 mock 兜底，daemon 不可达时 runtimes 就是空数组 ——
-                      这里原本直接 map 出零个按钮，界面上是一个**完全空白**的字段，
-                      用户既不知道发生了什么，也不知道怎么修。 */}
+                <Field label="默认执行器 (CLI)" hint="这个 bot 主要由哪家 CLI 执行">
                   {runtimes.length === 0 ? (
                     <div className="rounded-input bg-rail px-3 py-2.5">
                       <p className="text-body-sm text-graphite">暂无可用执行器</p>
                       <p className="mt-1 text-caption leading-relaxed text-ash">
                         本地 daemon 没有连上，所以执行器清单是空的。
-                        在 <span className="font-mono">backend/</span> 目录下跑{" "}
-                        <span className="font-mono">pnpm dev</span> 后刷新本页即可。
-                      </p>
-                      <p className="mt-1.5 text-caption text-ash">
-                        现在也可以先保存 —— 这个 bot 会以「无执行器」建好，
-                        之后打开它的设置页补上主执行器即可。
                       </p>
                     </div>
                   ) : (
-                    <div className="flex flex-wrap gap-1">
-                      {runtimes.map((r) => {
-                        const notInstalled = r.state.status === "not_installed";
-                        return (
-                          <button
-                            key={r.id}
-                            onClick={() => {
-                              setRuntimeId(r.id);
-                              setModelHint(null);
-                            }}
-                            disabled={notInstalled}
-                            title={notInstalled ? "未安装，不可选" : r.presentation.displayName}
-                            aria-pressed={runtimeId === r.id}
-                            className={cn(
-                              "rounded-btn border px-2 py-1 text-caption",
-                              runtimeId === r.id
-                                ? "border-teal-edge bg-teal-tint font-medium text-ink"
-                                : "border-line text-graphite hover:bg-line-soft hover:text-ink",
-                              notInstalled && "cursor-not-allowed opacity-50",
-                            )}
-                          >
-                            {r.presentation.displayName}
-                          </button>
-                        );
-                      })}
-                    </div>
+                    <select
+                      value={runtimeId}
+                      onChange={(e) => {
+                        setRuntimeId(e.target.value);
+                        setModelHint(null);
+                      }}
+                      className="w-full rounded-input border border-line bg-canvas px-3 py-2 text-body-sm text-ink outline-none focus:border-teal"
+                    >
+                      <option value="">未指定（由会话按需选择）</option>
+                      {runtimes.map((r) => (
+                        <option key={r.id} value={r.id}>
+                          {r.presentation.displayName} {r.testOnly ? "· 测试夹具" : ""}
+                        </option>
+                      ))}
+                    </select>
                   )}
                 </Field>
-                <Field label="默认模型（可选）" hint="不选就用执行器的默认；同样只是 hint">
+                <Field label="默认模型（可选）" hint="不指定则跟随该执行器的默认模型">
                   {runtimeId === "" ? (
-                    <p className="text-caption text-ash">先选一个主执行器，这里才会列出它能用的模型。</p>
+                    <p className="text-caption text-ash">先选一个主执行器，这里才会列出它支持的模型清单。</p>
                   ) : (
-                    <div className="flex flex-wrap gap-1">
-                      <button
-                        onClick={() => setModelHint(null)}
-                        aria-pressed={modelHint === null}
-                        className={cn(
-                          "rounded-btn border px-2 py-1 text-caption",
-                          modelHint === null
-                            ? "border-teal-edge bg-teal-tint font-medium text-ink"
-                            : "border-line text-graphite hover:bg-line-soft hover:text-ink",
-                        )}
-                      >
-                        自动
-                      </button>
+                    <select
+                      value={modelHint ?? ""}
+                      onChange={(e) => setModelHint(e.target.value === "" ? null : e.target.value)}
+                      className="w-full rounded-input border border-line bg-canvas px-3 py-2 text-body-sm text-ink outline-none focus:border-teal"
+                    >
+                      <option value="">自动（跟随执行器原生默认）</option>
                       {runtimeModelSpecs.map((m) => (
-                        <button
-                          key={m.id}
-                          onClick={() => setModelHint(m.id)}
-                          aria-pressed={modelHint === m.id}
-                          className={cn(
-                            "rounded-btn border px-2 py-1 text-caption",
-                            modelHint === m.id
-                              ? "border-teal-edge bg-teal-tint font-medium text-ink"
-                              : "border-line text-graphite hover:bg-line-soft hover:text-ink",
-                          )}
-                        >
+                        <option key={m.id} value={m.id}>
                           {m.displayName}
-                        </button>
+                        </option>
                       ))}
-                    </div>
+                    </select>
                   )}
                 </Field>
               </div>

@@ -59,6 +59,7 @@ export function createDaemonFactory(info: DaemonExecutorInfo, endpoint: string):
     },
     capabilities: info.capabilities,
     models: info.models.map((m) => asModelId(m.id)),
+    rawModels: info.models.map((m) => ({ id: asModelId(m.id), displayName: m.displayName })),
     testOnly: info.testOnly,
     create: async () => new DaemonRuntimeAdapter(runtimeId, info, client),
   };

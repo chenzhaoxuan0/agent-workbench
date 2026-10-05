@@ -80,10 +80,10 @@ export function SettingsPage() {
       <nav className="w-[268px] shrink-0 overflow-y-auto border-r border-line bg-rail px-3 pb-4 pt-3">
         <button
           onClick={() => useShell.getState().closeSettings()}
-          className="mb-2 flex w-full items-center gap-2 rounded-btn px-2.5 py-2 text-body-sm text-graphite hover:bg-line-soft hover:text-ink"
+          className="mb-3 flex w-full items-center gap-1.5 rounded-btn bg-teal-tint px-2.5 py-1.5 text-body-sm font-medium text-teal hover:bg-teal/15 transition"
         >
-          <ChevronLeft size={12} />
-          返回工作台
+          <ChevronLeft size={14} />
+          <span>返回工作台</span>
         </button>
         {SETTINGS_GROUPS.map((g) => {
           const items = SETTINGS_SECTIONS.filter((s) => s.groupId === g.id);

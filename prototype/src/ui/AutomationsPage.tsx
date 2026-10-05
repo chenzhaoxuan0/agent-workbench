@@ -1,6 +1,5 @@
 import { useMemo, useState } from "react";
 import {
-  ChevronLeft,
   CircleAlert,
   CircleCheck,
   CircleDot,
@@ -20,7 +19,6 @@ import {
   type StatusFilter,
 } from "../core/automation.ts";
 import { useWorkbench } from "../store/useWorkbench.ts";
-import { useShell } from "../store/useShell.ts";
 import { cn } from "./cn.ts";
 
 /**
@@ -41,7 +39,6 @@ import { cn } from "./cn.ts";
 export function AutomationsPage() {
   const automations = useWorkbench((s) => s.automations);
   const units = useWorkbench((s) => s.units);
-  const setMainView = useShell((s) => s.setMainView);
 
   const [filter, setFilter] = useState<StatusFilter>("all");
 
@@ -52,18 +49,11 @@ export function AutomationsPage() {
 
   return (
     <div className="h-full min-h-0 overflow-y-auto">
-      {/* 面包屑顶带 —— h-12 与工作区头部 / 侧栏品牌行同处一条 48px 顶带，吸顶不随滚动散带 */}
+      {/* 面包屑顶带 —— 统一在侧边栏返回工作台 */}
       <div className="sticky top-0 z-10 border-b border-line bg-canvas">
         <div className="mx-auto flex h-12 max-w-4xl items-center gap-2 px-8">
-          <button
-            onClick={() => setMainView("chat")}
-            className="flex items-center gap-1 rounded-btn px-2 py-1.5 text-body-sm text-graphite hover:bg-line-soft hover:text-ink"
-          >
-            <ChevronLeft size={12} />
-            返回工作台
-          </button>
-          <span className="text-line">/</span>
           <span className="text-body-sm font-medium text-ink">自动化</span>
+          <span className="rounded-chip bg-teal-tint px-1.5 py-0.5 text-[10px] text-teal">定时巡航与自动化触发</span>
         </div>
       </div>
       <div className="mx-auto max-w-4xl px-8 pb-12">

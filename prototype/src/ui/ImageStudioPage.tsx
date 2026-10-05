@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ChevronDown,
-  ChevronLeft,
   Download,
   FolderOpen,
   ImagePlus,
@@ -33,7 +32,6 @@ import { cn } from "./cn.ts";
  */
 
 export function ImageStudioPage() {
-  const setMainView = useShell((s) => s.setMainView);
   const restoreSaveDir = useImageStudio((s) => s.restoreSaveDir);
   // 恢复保存文件夹的权限态（句柄在 IndexedDB；granted / prompt）
   useEffect(() => {
@@ -41,17 +39,10 @@ export function ImageStudioPage() {
   }, [restoreSaveDir]);
   return (
     <div className="h-full min-h-0 overflow-y-auto">
-      {/* 面包屑顶带 —— 与自动化页同构（h-12 顶带吸顶） */}
+      {/* 面包屑顶带 —— 统一在侧边栏返回工作台 */}
       <div className="sticky top-0 z-10 border-b border-line bg-canvas">
         <div className="mx-auto flex h-12 max-w-4xl items-center gap-2 px-8">
-          <button
-            onClick={() => setMainView("chat")}
-            className="flex items-center gap-1 rounded-btn px-2 py-1.5 text-body-sm text-graphite hover:bg-line-soft hover:text-ink"
-          >
-            <ChevronLeft size={12} />
-            返回工作台
-          </button>
-          <span className="text-body-sm font-medium text-ink">出图</span>
+          <span className="text-body-sm font-medium text-ink">出图工作台</span>
           <span className="rounded-chip bg-teal-tint px-1.5 py-0.5 text-[10px] text-teal">OpenAI 兼容 images / responses</span>
         </div>
       </div>

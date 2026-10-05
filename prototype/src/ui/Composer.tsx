@@ -2,7 +2,9 @@ import { useEffect, useRef } from "react";
 import { ArrowUp, AtSign, Square, SquareTerminal } from "lucide-react";
 import { useWorkbench, selectActiveUnit } from "../store/useWorkbench.ts";
 import { useShell } from "../store/useShell.ts";
-import { RunConfigMenu } from "./RunConfigMenu.tsx";
+import { RuntimePicker } from "./RuntimePicker.tsx";
+import { ReasoningEffortPicker } from "./LoopParamsPicker.tsx";
+import { PermissionModePicker } from "./PermissionModePicker.tsx";
 import { cn } from "./cn.ts";
 
 /**
@@ -99,11 +101,11 @@ export function Composer() {
               <SquareTerminal size={14} />
             </button>
 
-            <div className="ml-auto flex items-center gap-1.5">
-              {/* 「怎么跑」的三项收进一颗 ⋯（渐进披露）。
-                  原来权限 / loop / 执行器三个带文字的触发器常驻右缘，
-                  但它们一个会话内基本不动。收起来后输入区只留图标。 */}
-              <RunConfigMenu />
+            <div className="ml-auto flex flex-wrap items-center gap-1.5">
+              {/* 展开的直观控制条：执行器与模型、推理力度、权限模式 */}
+              <RuntimePicker />
+              <ReasoningEffortPicker />
+              <PermissionModePicker />
 
               {/* 主按钮 —— ZCode：发送是 brand 底图标钮（ArrowUp），运行中变停止（实心方块）。
                   mock 没有取消通道，停止只翻 busy 位 */}

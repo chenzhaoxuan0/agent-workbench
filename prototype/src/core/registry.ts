@@ -9,7 +9,7 @@
  */
 
 import type { AdapterFactory, ConnectionState, RuntimeAdapter } from "./adapter.ts";
-import { defaultModelFor, sortModels, type ModelId, type ModelSpec } from "./models.ts";
+import { defaultModelFor, modelById, scaffoldModel, sortModels, type ModelId, type ModelSpec } from "./models.ts";
 import { asRuntimeId, type RuntimeId } from "./units.ts";
 
 export interface RuntimeEntry {
@@ -59,8 +59,19 @@ export class RuntimeRegistry {
   #entry(id: RuntimeId): RuntimeEntry | null {
     const f = this.#factories.get(id);
     if (!f) return null;
-    const models = sortModels(f.models);
-    const first = defaultModelFor(models);
+    let models: ModelSpec[];
+    if (f.rawModels && f.rawModels.length > 0) {
+      models = f.rawModels.map((m) => {
+        const known = modelById(m.id);
+        if (known) {
+          return m.displayName ? { ...known, displayName: m.displayName } : known;
+        }
+        return scaffoldModel(m.id, m.displayName);
+      });
+    } else {
+      models = [...sortModels(f.models)];
+    }
+    const first = models[0]?.id ?? defaultModelFor(models);
     if (!first) return null;
     return {
       id,

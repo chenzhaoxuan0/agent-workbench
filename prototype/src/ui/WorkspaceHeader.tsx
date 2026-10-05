@@ -15,7 +15,6 @@ import {
   SquareTerminal,
 } from "lucide-react";
 import { useShell } from "../store/useShell.ts";
-import { useSidePane } from "../store/useSidePane.ts";
 import { useWorkbench, selectActiveUnit } from "../store/useWorkbench.ts";
 import { botAvatarStyle } from "./Sidebar.tsx";
 import { cn } from "./cn.ts";
@@ -30,9 +29,6 @@ export function WorkspaceHeader() {
   const sidebarCollapsed = useShell((s) => s.sidebarCollapsed);
   const terminalOpen = useShell((s) => s.terminalOpen);
   const toggleTerminal = useShell((s) => s.toggleTerminal);
-
-  const paneOpen = useSidePane((s) => s.open);
-  const setPaneOpen = useSidePane((s) => s.setOpen);
 
   const unit = useWorkbench(selectActiveUnit);
   const session = useWorkbench((s) => s.sessions.find((x) => x.id === s.activeSessionId));
@@ -52,10 +48,10 @@ export function WorkspaceHeader() {
       {/* ---- 左区：Agent 身份卡片 + 会话标题 ---- */}
       {unit ? (
         <div className="flex min-w-0 items-center gap-2">
-          {/* 可点击的 Agent 头衔（点击打开 Agent 档案） */}
+          {/* 可点击的 Agent 头衔（点击打开 Agent 设置） */}
           <button
-            onClick={() => setPaneOpen(true)}
-            title="查看与编辑 Agent 档案（设定 / 记忆 / 渠道）"
+            onClick={() => useShell.getState().openUnitSettings(unit.id)}
+            title="查看与编辑 Agent 设置（身份 / 执行器 / 模型 / AGENTS.md / 渠道）"
             className="group flex min-w-0 items-center gap-2 rounded-btn px-2 py-1 transition hover:bg-line-soft"
           >
             {/* 头像 Blob */}
@@ -118,23 +114,6 @@ export function WorkspaceHeader() {
         >
           <SquareTerminal size={14} />
           <span className="hidden sm:inline">终端</span>
-        </button>
-
-        {/* Agent 档案 (设定/记忆/渠道/产出) 开关 */}
-        <button
-          onClick={() => setPaneOpen(!paneOpen)}
-          aria-label={paneOpen ? "关闭 Agent 档案" : "展开 Agent 档案"}
-          aria-pressed={paneOpen}
-          title="Agent 档案 (设定 / 记忆 / 渠道)"
-          className={cn(
-            "flex items-center gap-1.5 rounded-btn px-2.5 py-1 text-body-sm transition",
-            paneOpen
-              ? "bg-teal-tint font-medium text-teal"
-              : "text-graphite hover:bg-line-soft hover:text-ink",
-          )}
-        >
-          <Brain size={14} className={paneOpen ? "text-teal" : "text-graphite"} />
-          <span className="hidden sm:inline">档案</span>
         </button>
       </div>
     </header>

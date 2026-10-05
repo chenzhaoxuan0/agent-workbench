@@ -2,15 +2,12 @@ import { useEffect, useRef } from "react";
 import { ArrowLeft } from "lucide-react";
 import { Group, Panel, Separator, type PanelImperativeHandle } from "react-resizable-panels";
 import { Composer } from "./ui/Composer.tsx";
-import { MemoryPanel } from "./ui/MemoryPanel.tsx";
 import { AutomationsPage } from "./ui/AutomationsPage.tsx";
 import { ImageStudioPage } from "./ui/ImageStudioPage.tsx";
 import { CommandCenter } from "./ui/CommandCenter.tsx";
 import { DesktopTopOverlay } from "./ui/DesktopTopOverlay.tsx";
 import { PermissionDialog } from "./ui/PermissionDialog.tsx";
 import { SettingsPage } from "./ui/SettingsPage.tsx";
-import { AgentInspector } from "./ui/AgentInspector.tsx";
-import { useSidePane } from "./store/useSidePane.ts";
 import { useWorkbench } from "./store/useWorkbench.ts";
 import { Sidebar } from "./ui/Sidebar.tsx";
 import { TerminalPanel } from "./ui/TerminalPanel.tsx";
@@ -38,7 +35,6 @@ import { useShell, bindShellShortcuts } from "./store/useShell.ts";
  * （Group / Separator / PanelSize{inPixels,asPercentage}）。
  */
 export function WorkspaceShell() {
-  const paneOpen = useSidePane((s) => s.open);
   const settingsOpen = useShell((s) => s.settingsOpen);
   // 导航记账先于快捷键绑定：首帧快照作为历史起点
   useEffect(() => bindNavRecorder(), []);
@@ -46,27 +42,14 @@ export function WorkspaceShell() {
 
   return (
     <div className="relative flex h-screen flex-col bg-canvas">
-      {/* 左上浮层 —— 侧栏开关 / 前进后退 / 新建任务（ZCode 的 DesktopTopOverlay）。
+      {/* 左上浮层 —— 侧栏开关 / 新建任务（ZCode 的 DesktopTopOverlay）。
           悬浮在侧栏区域上方，侧栏收起后原地保留，主视图切换不消失 */}
       <DesktopTopOverlay />
-      {/* 执行器不在顶部常驻 —— 它和「换模型」同类，挪进了 composer 控制行 */}
-      {/* 侧栏 / 对话区 / 右侧面板 —— 布局按 panel id 索引，末位尺寸在 onLayoutChanged 里记忆，
-          对齐 ZCode useAnimatedResizablePanel 的 rememberExpandedSize */}
-      <Group
-        orientation="horizontal"
-        id="workbench-shell"
-        onLayoutChanged={(layout) => {
-          const v = layout[SIDE_PANE_PANEL_ID];
-          if (typeof v === "number" && v > 0) {
-            useSidePane.getState().setExpandedSize(`${Math.round(v)}%`);
-          }
-        }}
-      >
+      {/* 侧栏 + 主对话流 —— 极简双栏布局 */}
+      <Group orientation="horizontal" id="workbench-shell">
         <SidebarSlot />
         <ResizeHandle />
         <ConversationSlot />
-        {paneOpen && <ResizeHandle />}
-        <SidePaneSlot />
       </Group>
 
       {/* 设置覆盖层 —— 对齐 ZCode 的 WorkspaceSettingsLayer：absolute inset-0 压在
@@ -81,10 +64,6 @@ export function WorkspaceShell() {
     </div>
   );
 }
-
-/** 右侧面板的 panel id，用于从 layout 里取回它的尺寸 */
-const SIDE_PANE_PANEL_ID = "side-pane";
-
 function ResizeHandle() {
   return (
     <Separator className="group relative w-px bg-line">
@@ -194,8 +173,6 @@ function ConversationSlot() {
               )}
               {/* 权限卡片 */}
               {(conversationView === "chat" || conversationView === "trajectory") && <PermissionDialog />}
-              {/* 记忆三柱：技能 / 记忆 / 会话搜索，压在 composer 正上方 */}
-              {(conversationView === "chat" || conversationView === "trajectory") && <MemoryPanel />}
               {(conversationView === "chat" || conversationView === "trajectory") && <Composer />}
             </main>
           </Panel>
@@ -216,27 +193,5 @@ function ConversationSlot() {
   );
 }
 
-/* ------------------------------------------------------------- 右侧面板 */
 
-function SidePaneSlot() {
-  const open = useSidePane((s) => s.open);
-  const expandedSize = useSidePane((s) => s.expandedSize);
-  const sessionId = useWorkbench((s) => s.activeSessionId);
-
-  // 关闭即彻底让位（渲染 null）：重开入口在工作区头部的右栏开关
-  if (!open) return null;
-
-  // 展开尺寸由外层 Group 的 onLayoutChanged 统一记忆（v4 的 Panel 上没有该回调）
-  return (
-    <Panel
-      id={SIDE_PANE_PANEL_ID}
-      defaultSize={expandedSize}
-      minSize="15%"
-      maxSize="45%"
-      className="overflow-hidden"
-    >
-      <AgentInspector />
-    </Panel>
-  );
-}
 

@@ -1,24 +1,16 @@
-import { ArrowLeft, ArrowRight, MessageCirclePlus, PanelLeftClose, PanelLeftOpen } from "lucide-react";
-import { useNav, canNavBack, canNavForward } from "../store/useNav.ts";
+import { MessageCirclePlus, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { useShell } from "../store/useShell.ts";
 import { cn } from "./cn.ts";
 
 /**
  * 左上浮层 —— 对齐 ZCode 的 DesktopTopOverlay。
  *
- * ZCode 的侧栏开关 / 任务前进后退 / 新建任务不在 WorkspaceHeader 里，
- * 而是悬浮在**侧栏区域上方**：宽度对齐侧栏变量；侧栏收起后浮层原地保留
- * （收成 w-fit），开关图标换成 PanelLeftOpen —— 这就是「收进去之后
- * 通过同一颗按钮打开」的载体。主视图切换（自动化等）时浮层不消失。
- *
- * Win/Linux 分支的 logo 复合按钮：品牌标 hover 时淡出、淡入开关图标
- * （双图层 opacity 过渡，duration 150ms）。
+ * 侧栏开关与新建任务悬浮在侧栏区域上方：宽度对齐侧栏变量；
+ * 侧栏收起后浮层原地保留，开关图标换成 PanelLeftOpen。
  */
 export function DesktopTopOverlay() {
   const visible = !useShell((s) => s.sidebarCollapsed);
   const width = useShell((s) => s.sidebarWidth);
-  const canBack = useNav(canNavBack);
-  const canForward = useNav(canNavForward);
 
   const ToggleIcon = visible ? PanelLeftClose : PanelLeftOpen;
 
@@ -31,8 +23,7 @@ export function DesktopTopOverlay() {
       )}
     >
       <div className="pointer-events-auto flex items-center gap-1 pl-3 text-body-sm">
-        {/* 侧栏开关：品牌标 ↔ 开关图标的 hover 变形（ZCode 的 logo 复合按钮）。
-            动作行统一规格：text-body-sm + 14px 图标 + 28px 命中区（与侧栏行、头部按钮同组） */}
+        {/* 侧栏开关：品牌标 ↔ 开关图标的 hover 变形（ZCode 的 logo 复合按钮） */}
         <button
           onClick={() => useShell.getState().toggleSidebar()}
           aria-label={visible ? "收起侧栏" : "展开侧栏"}
@@ -49,25 +40,6 @@ export function DesktopTopOverlay() {
             size={14}
             className="absolute inset-0 m-auto opacity-0 transition-opacity duration-150 group-hover:opacity-100"
           />
-        </button>
-
-        <button
-          onClick={() => useNav.getState().back()}
-          disabled={!canBack}
-          aria-label="后退"
-          title="后退 · ⌘["
-          className="rounded-btn p-1.5 text-body-sm text-graphite hover:bg-line-soft hover:text-ink disabled:opacity-35 disabled:hover:bg-transparent"
-        >
-          <ArrowLeft size={14} />
-        </button>
-        <button
-          onClick={() => useNav.getState().forward()}
-          disabled={!canForward}
-          aria-label="前进"
-          title="前进 · ⌘]"
-          className="rounded-btn p-1.5 text-body-sm text-graphite hover:bg-line-soft hover:text-ink disabled:opacity-35 disabled:hover:bg-transparent"
-        >
-          <ArrowRight size={14} />
         </button>
 
         {/* 新建任务：侧栏可见时宽度动画收起（ZCode：showNewTaskButton = !isSidebarVisible） */}
