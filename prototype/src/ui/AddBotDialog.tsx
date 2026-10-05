@@ -354,11 +354,12 @@ export function AddBotDialog({
                       type="button"
                       onClick={async () => {
                         if (!rootPath.trim()) return;
-                        setFolderOpened(true);
                         try {
                           await openFolder({ path: rootPath.trim() });
-                        } finally {
+                          setFolderOpened(true);
                           setTimeout(() => setFolderOpened(false), 2000);
+                        } catch (err) {
+                          console.error("[AddBotDialog] 打开文件夹失败:", err);
                         }
                       }}
                       disabled={!rootPath.trim()}

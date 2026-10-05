@@ -279,11 +279,12 @@ function WorkspacePopover() {
               <button
                 type="button"
                 onClick={async () => {
-                  setOpened(true);
                   try {
                     await openFolder({ path: unit.rootPath });
-                  } finally {
+                    setOpened(true);
                     setTimeout(() => setOpened(false), 2000);
+                  } catch (err) {
+                    console.error("[WorkspaceHeader] 打开文件夹失败:", err);
                   }
                 }}
                 className={cn(

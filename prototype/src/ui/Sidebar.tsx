@@ -591,11 +591,12 @@ function UnitRow({
           onMouseDown={(e) => e.stopPropagation()}
           onClick={async (e) => {
             e.stopPropagation();
-            setJustOpened(true);
             try {
               await openFolder({ path: unit.rootPath });
-            } finally {
+              setJustOpened(true);
               setTimeout(() => setJustOpened(false), 2000);
+            } catch (err) {
+              console.error("[Sidebar] 打开文件夹失败:", err);
             }
           }}
           aria-label={`在资源管理器中打开 ${unit.name} 文件夹`}

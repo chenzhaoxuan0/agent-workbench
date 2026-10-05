@@ -11,7 +11,7 @@ import { createHash } from "node:crypto";
 import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import path from "node:path";
-import { exec } from "node:child_process";
+import { exec, spawn } from "node:child_process";
 import { loadConfig } from "./config.ts";
 import { healthPayload, isLocalOrigin, isLoopbackAddr, startHttp, type HttpRoute } from "./httpd.ts";
 import { log, setLogLevel } from "./log.ts";
@@ -381,15 +381,43 @@ function launchFileManager(targetPath: string): { ok: boolean; path: string } {
   }
 
   const platform = process.platform;
+  const winPath = cleanPath.replace(/\//g, "\\");
+
   if (platform === "win32") {
-    // Windows 平台标准启动 explorer.exe，兼容正斜杠与反斜杠
-    exec(`explorer.exe "${cleanPath.replace(/\//g, "\\")}"`, (err) => {
-      if (err) log.warn("explorer launch warning", { err: err.message, path: cleanPath });
-    });
+    // 关键修复：Windows 下不能用 exec('explorer.exe ...')！
+    // exec 会捕获并重定向 stdio，explorer.exe 检测到 stdio 被管道捕获时会被 Windows 拒绝创建 GUI 窗口并退出码为 1。
+    // 必须用 spawn + detached: true + stdio: "ignore" 并 unref()，脱离父进程管道，
+    // 才能让 Windows 桌面 Shell 正确创建并弹出资源管理器窗口。
+    try {
+      const p = spawn("explorer.exe", [winPath], {
+        detached: true,
+        stdio: "ignore",
+      });
+      p.unref();
+      p.on("error", (err) => {
+        log.warn("explorer.exe direct spawn failed, trying cmd start fallback", { err: err.message, path: winPath });
+        const fallback = spawn("cmd.exe", ["/c", "start", "", winPath], {
+          detached: true,
+          stdio: "ignore",
+          windowsHide: true,
+        });
+        fallback.unref();
+      });
+    } catch (err) {
+      log.warn("spawn explorer failed, fallback to cmd start", { err, path: winPath });
+      const fallback = spawn("cmd.exe", ["/c", "start", "", winPath], {
+        detached: true,
+        stdio: "ignore",
+        windowsHide: true,
+      });
+      fallback.unref();
+    }
   } else if (platform === "darwin") {
-    exec(`open "${cleanPath}"`);
+    const p = spawn("open", [cleanPath], { detached: true, stdio: "ignore" });
+    p.unref();
   } else {
-    exec(`xdg-open "${cleanPath}"`);
+    const p = spawn("xdg-open", [cleanPath], { detached: true, stdio: "ignore" });
+    p.unref();
   }
   return { ok: true, path: cleanPath };
 }
