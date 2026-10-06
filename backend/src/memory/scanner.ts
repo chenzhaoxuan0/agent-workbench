@@ -27,7 +27,7 @@ import readline from "node:readline";
 import { log } from "../log.ts";
 import { redact } from "./redact.ts";
 
-export type CliKind = "claude" | "codex" | "pi" | "mcode";
+export type CliKind = "claude" | "codex" | "pi" | "mcode" | "zcode" | "dsh" | "opencode";
 
 /** 块的语义类别 —— 日报提炼时可据此筛掉 thinking/tool 噪声。 */
 export type BlockKind = "text" | "thinking" | "tool";
@@ -54,8 +54,8 @@ export interface ScanSource {
 }
 
 /**
- * 四家的根目录。**可被配置覆盖**（家目录不标准、portable 模式等）。
- * 实测依据：2026-10-04 在本机核过目录形态。
+ * 各 CLI 执行器的根目录。**可被配置覆盖**（家目录不标准、portable 模式等）。
+ * 覆盖当前工作台支持的全部执行器（claude, codex, pi, mcode, zcode, dsh, opencode）。
  */
 export function defaultSources(homeDir = os.homedir()): ScanSource[] {
   return [
@@ -63,6 +63,9 @@ export function defaultSources(homeDir = os.homedir()): ScanSource[] {
     { cli: "codex", root: path.join(homeDir, ".codex", "sessions"), maxFieldChars: 2000 },
     { cli: "pi", root: path.join(homeDir, ".pi", "agent", "sessions"), maxFieldChars: 2000 },
     { cli: "mcode", root: path.join(homeDir, ".minimax", "v2", "sessions"), maxFieldChars: 2000 },
+    { cli: "zcode", root: path.join(homeDir, ".zcode", "v2", "sessions"), maxFieldChars: 2000 },
+    { cli: "dsh", root: path.join(homeDir, ".dsh", "sessions"), maxFieldChars: 2000 },
+    { cli: "opencode", root: path.join(homeDir, ".local", "share", "opencode"), maxFieldChars: 2000 },
   ];
 }
 
@@ -195,11 +198,22 @@ function metaOf(cli: CliKind, o: unknown, fallbackTs: number): Meta {
     return undefined;
   };
 
-  const ts = pickNum(["timestamp", "createdAtMs", "ts", "time", "created_at"], [o, payload, msg]) ?? fallbackTs;
-  const cwd = pick(["cwd"], [o, payload, msg]);
-  const sessionId = pick(["sessionId", "session_id", "id"], [o, payload]);
+  const ts = pickNum(["timestamp", "createdAtMs", "createdAt", "ts", "time", "created_at", "time_created"], [o, payload, msg]) ?? fallbackTs;
+  const cwd = pick(["cwd", "workspacePath", "directory"], [o, payload, msg]);
+  const sessionId = pick(["sessionId", "session_id", "taskId", "id"], [o, payload, msg]);
   void cli;
   return { ts, ...(cwd === undefined ? {} : { cwd }), ...(sessionId === undefined ? {} : { sessionId }) };
+}
+
+/** 尝试从含路径特征的目录名中反解出原始目录（例如 pi / dsh 的 --C-Users-...--） */
+function decodeDirCwd(filePath: string): string | undefined {
+  const m = filePath.match(/--([A-Za-z])-([A-Za-z0-9_-]+)--/);
+  if (m && m[1] && m[2]) {
+    const drive = m[1].toUpperCase();
+    const rest = m[2].replace(/-/g, path.sep);
+    return `${drive}:${path.sep}${rest}`;
+  }
+  return undefined;
 }
 
 // ---- 切块 ----------------------------------------------------------------
@@ -281,13 +295,91 @@ async function* listMcodeSessions(dir: string, maxFiles: number, cur: Cursor, de
   }
 }
 
+/** 通用按正则过滤文件并递归枚举（供 zcode .json / dsh .zstd 等使用） */
+async function* listPatternFiles(dir: string, pattern: RegExp, maxFiles: number, cur: Cursor, depth = 0): AsyncGenerator<string> {
+  if (depth > 8 || !at(cur, maxFiles)) return;
+  let entries: Array<{ name: string; isDir: boolean }>;
+  try {
+    entries = (await readdir(dir, { withFileTypes: true })).map((e) => ({ name: e.name, isDir: e.isDirectory() }));
+  } catch {
+    return;
+  }
+  for (const e of entries) {
+    if (!at(cur, maxFiles)) return;
+    const p = path.join(dir, e.name);
+    if (e.isDir) {
+      yield* listPatternFiles(p, pattern, maxFiles, cur, depth + 1);
+    } else if (pattern.test(e.name)) {
+      cur.n++;
+      yield p;
+    }
+  }
+}
+
+/** 分发不同源的文件枚举逻辑 */
+async function* listFilesForSource(src: ScanSource, maxFiles: number, cur: Cursor): AsyncGenerator<string> {
+  if (src.cli === "mcode") {
+    yield* listMcodeSessions(src.root, maxFiles, cur);
+  } else if (src.cli === "zcode") {
+    yield* listPatternFiles(src.root, /\.json$/i, maxFiles, cur);
+  } else if (src.cli === "dsh") {
+    yield* listPatternFiles(src.root, /\.(jsonl|zstd|jsonl\.zstd)$/i, maxFiles, cur);
+  } else if (src.cli === "opencode") {
+    const db = path.join(src.root, "opencode.db");
+    try {
+      await stat(db);
+      cur.n++;
+      yield db;
+    } catch {
+      // 库不存在静默跳过
+    }
+  } else {
+    yield* listJsonl(src.root, maxFiles, cur);
+  }
+}
+
 // ---- 单文件流式读取 ------------------------------------------------------
 
 /**
- * 逐行读一个 JSONL 文件。**不做整文件读入** —— 单个 codex 会话能到几百 MB。
+ * 逐行读一个文件。支持普通 JSONL、zstd 压缩流、以及 zcode 的单文件 JSON 格式。
  * 正在被写的文件读到不完整的末行是常态，交给上层 fail-open 跳过。
  */
 async function* readLines(file: string): AsyncGenerator<{ line: string; lineNo: number }> {
+  if (file.endsWith(".zstd")) {
+    try {
+      const zlib = await import("node:zlib");
+      if (typeof zlib.zstdDecompressSync === "function") {
+        const buf = await readFile(file);
+        const text = zlib.zstdDecompressSync(buf).toString("utf8");
+        let lineNo = 0;
+        for (const line of text.split("\n")) {
+          lineNo++;
+          if (line.trim() !== "") yield { line, lineNo };
+        }
+        return;
+      }
+    } catch {
+      return;
+    }
+  }
+
+  if (file.endsWith(".json") && !file.endsWith(".jsonl")) {
+    try {
+      const raw = await readFile(file, "utf8");
+      const obj = JSON.parse(raw) as Record<string, unknown>;
+      if (Array.isArray(obj?.messages)) {
+        let lineNo = 0;
+        for (const m of obj.messages) {
+          lineNo++;
+          yield { line: JSON.stringify(m), lineNo };
+        }
+        return;
+      }
+    } catch {
+      return;
+    }
+  }
+
   let stream;
   try {
     stream = createReadStream(file, { encoding: "utf8" });
@@ -309,24 +401,104 @@ async function* readLines(file: string): AsyncGenerator<{ line: string; lineNo: 
   }
 }
 
+/** 专门针对 opencode.db SQLite 进行流式扫描读取 */
+async function* scanOpencodeDb(
+  src: ScanSource,
+  file: string,
+  mtimeMs: number,
+  opts: Required<Pick<ScanOptions, "chunkChars">> & { since?: number },
+): AsyncGenerator<ScannedBlock> {
+  try {
+    const { DatabaseSync } = await import("node:sqlite");
+    const db = new DatabaseSync(file, { readOnly: true });
+    let sql = `
+      SELECT p.id AS part_id, p.session_id, s.directory AS cwd, p.time_created, p.data
+      FROM part p
+      JOIN session s ON p.session_id = s.id
+    `;
+    if (opts.since !== undefined) {
+      sql += ` WHERE p.time_created >= ${opts.since}`;
+    }
+    sql += " ORDER BY p.time_created DESC LIMIT 2000";
+    const rows = db.prepare(sql).all() as Array<{
+      part_id: string;
+      session_id: string;
+      cwd: string;
+      time_created: number;
+      data: string;
+    }>;
+    db.close();
+
+    let lineNo = 0;
+    for (const r of rows) {
+      lineNo++;
+      let dataObj: unknown;
+      try {
+        dataObj = JSON.parse(r.data);
+      } catch {
+        continue;
+      }
+      const acc = newAcc();
+      extractText(dataObj, "text", 0, acc, src.maxFieldChars);
+      if (acc.texts.length === 0) continue;
+
+      for (let i = 0; i < acc.texts.length; i++) {
+        const raw = acc.texts[i] ?? "";
+        const kind = acc.kinds[i] ?? "text";
+        for (const piece of chunkText(raw, opts.chunkChars)) {
+          yield {
+            text: redact(piece),
+            ts: r.time_created || mtimeMs,
+            cwd: r.cwd,
+            sessionId: r.session_id,
+            lineNo,
+            srcPath: file,
+            cli: "opencode",
+            kind,
+            truncated: raw.length >= src.maxFieldChars,
+          };
+        }
+      }
+    }
+  } catch (err: unknown) {
+    log.warn("scan opencode.db failed", { file, error: err instanceof Error ? err.message : String(err) });
+  }
+}
+
 async function* scanOneFile(
   src: ScanSource,
   file: string,
   mtimeMs: number,
   opts: Required<Pick<ScanOptions, "chunkChars">> & { since?: number },
 ): AsyncGenerator<ScannedBlock> {
+  if (src.cli === "opencode" && file.endsWith(".db")) {
+    yield* scanOpencodeDb(src, file, mtimeMs, opts);
+    return;
+  }
+
   // mtime 由调用方 stat 好传进来：省一次 stat，也避免 TOCTOU
-  // mcode 的会话目录里还有 manifest.json，带着 sessionId 与创建时间
-  let manifest: Record<string, unknown> | undefined;
+  // mcode 的会话目录里还有 manifest.json，带着 sessionId 与创建时间；zcode .json 自带 meta
+  let extraMeta: Record<string, unknown> | undefined;
   if (src.cli === "mcode") {
     try {
       const raw = await readFile(path.join(path.dirname(file), "manifest.json"), "utf8");
-      manifest = JSON.parse(raw) as Record<string, unknown>;
+      extraMeta = JSON.parse(raw) as Record<string, unknown>;
     } catch {
-      manifest = undefined;
+      extraMeta = undefined;
+    }
+  } else if (src.cli === "zcode" && file.endsWith(".json")) {
+    try {
+      const raw = await readFile(file, "utf8");
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      if (parsed?.meta && typeof parsed.meta === "object") {
+        extraMeta = parsed.meta as Record<string, unknown>;
+      }
+    } catch {
+      extraMeta = undefined;
     }
   }
-  const manifestMeta = manifest === undefined ? undefined : metaOf("mcode", manifest, mtimeMs);
+  const manifestMeta = extraMeta === undefined ? undefined : metaOf(src.cli, extraMeta, mtimeMs);
+  const pathCwd = decodeDirCwd(file);
 
   let emitted = 0;
   for await (const { line, lineNo } of readLines(file)) {
@@ -346,6 +518,9 @@ async function* scanOneFile(
     extractText(obj, "text", 0, acc, src.maxFieldChars);
     if (acc.texts.length === 0) continue;
 
+    const cwd = meta.cwd ?? manifestMeta?.cwd ?? pathCwd;
+    const sessionId = meta.sessionId ?? manifestMeta?.sessionId;
+
     for (let i = 0; i < acc.texts.length; i++) {
       const raw = acc.texts[i] ?? "";
       const kind = acc.kinds[i] ?? "text";
@@ -353,8 +528,8 @@ async function* scanOneFile(
         yield {
           text: redact(piece),
           ts,
-          ...(meta.cwd ?? manifestMeta?.cwd ? { cwd: meta.cwd ?? manifestMeta?.cwd } : {}),
-          ...(meta.sessionId ?? manifestMeta?.sessionId ? { sessionId: meta.sessionId ?? manifestMeta?.sessionId } : {}),
+          ...(cwd === undefined ? {} : { cwd }),
+          ...(sessionId === undefined ? {} : { sessionId }),
           lineNo,
           srcPath: file,
           cli: src.cli,
@@ -387,21 +562,11 @@ export async function* scan(opts: ScanOptions = {}): AsyncGenerator<ScannedBlock
     let used = 0;
     const cap = opts.limitBytesPerCli ?? 0;
 
-    // **按 mtime 倒序枚举**，字节上限才有意义。
-    // 原来直接按 readdir 顺序截断：claude 的目录名是哈希（顺序任意），
-    // codex/mcode 是日期目录（顺序 = 从最老开始）—— 上限切在哪跟相关性毫无
-    // 关系，用户搜「上周那个」很可能正好落在被切掉的那一半里。
-    // 「追溯」天然是近的事件优先，所以上限应当是「最近 N MB」。
-    //
-    // **代价与收敛**：排序要求先把候选连同 mtime 收齐，冷缓存下这是全量
-    // stat（本机 ~1900 个，实测冷缓存要 40 秒）。所以收集**有界**：候选累计
-    // 体积一旦远超预算 newest 那些必然排在前面，再 stat 下去只是白花时间。
-    // 收集上限 = 预算 × 4（且不低于 32MB），够排序出「最近的若干个」。
     let candidates: Array<{ file: string; mtime: number; size: number }> = [];
     let collectedBytes = 0;
     const collectCeiling = cap > 0 ? Math.max(cap * 4, 32 * 1024 * 1024) : Number.POSITIVE_INFINITY;
     try {
-      for await (const file of src.cli === "mcode" ? listMcodeSessions(src.root, 0, { n: 0 }) : listJsonl(src.root, 0, { n: 0 })) {
+      for await (const file of listFilesForSource(src, 0, { n: 0 })) {
         if (opts.pathHint !== undefined && opts.pathHint !== "" && !file.includes(opts.pathHint)) continue;
         if (collectedBytes >= collectCeiling) break;
         try {

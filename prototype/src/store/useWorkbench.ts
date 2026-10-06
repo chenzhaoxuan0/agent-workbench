@@ -12,7 +12,7 @@ import {
   type ProviderModelPrefs,
 } from "../core/modelPrefs.ts";
 import type { PermissionMode } from "../core/permission.ts";
-import type { LoopParams, RuntimeAdapter, PermissionDecision } from "../core/adapter.ts";
+import type { LoopParams, RuntimeAdapter, PermissionDecision, MemoryInjectionOptions } from "../core/adapter.ts";
 import type { RuntimeEvent } from "../core/events.ts";
 import { runtimeRegistry } from "../core/registry.ts";
 import type { RuntimeEntry } from "../core/registry.ts";
@@ -145,7 +145,11 @@ interface WorkbenchState {
   setDraft: (v: string) => void;
   setPermissionMode: (m: PermissionMode) => void;
   toggleAutomation: (id: string) => void;
-  run: (prompt: string) => Promise<void>;
+  /** 本次/后续会话记忆注入范围（默认仅注入长期记忆 ["semantic"]） */
+  memoryScopes: readonly ("semantic" | "daily")[];
+  setMemoryScopes: (scopes: readonly ("semantic" | "daily")[]) => void;
+  toggleMemoryScope: (scope: "semantic" | "daily") => void;
+  run: (prompt: string, opts?: { memoryOptions?: MemoryInjectionOptions }) => Promise<void>;
   /** 停止当前运行。mock 适配器没有真正的取消通道，只翻 busy 位 */
   cancelRun: () => void;
   resolvePermission: (requestId: string, decision: PermissionDecision) => void;
@@ -290,6 +294,15 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
   setDraft: (draft) => set({ draft }),
 
   setPermissionMode: (permissionMode) => set({ permissionMode }),
+
+  memoryScopes: ["semantic"] as readonly ("semantic" | "daily")[],
+  setMemoryScopes: (memoryScopes) => set({ memoryScopes }),
+  toggleMemoryScope: (scope) =>
+    set((s) => {
+      const has = s.memoryScopes.includes(scope);
+      const next = has ? s.memoryScopes.filter((x) => x !== scope) : [...s.memoryScopes, scope];
+      return { memoryScopes: next };
+    }),
 
   setLoopParam: (runtimeId, patch) => {
     set((s) => {
@@ -466,7 +479,7 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
    * 上下文，工具记得前文），只有首条消息 / 上个会话已结束 / 换了执行器才
    * startSession 开新会话。时间线在开新会话时重置，续聊时追加。
    */
-  run: async (prompt) => {
+  run: async (prompt, opts) => {
     const { activeUnitId, activeRuntimeId, runtimeModels, activeSessionId } = get();
     const unit = get().units.find((u) => u.id === activeUnitId);
     if (!unit) return;
@@ -535,6 +548,7 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
       model,
       worktree: unit.kind === "project" ? { path: `${unit.rootPath}/.wt/session`, branch: "feat/session" } : undefined,
       loop,
+      memoryOptions: opts?.memoryOptions ?? { scopes: get().memoryScopes },
     });
 
     set((s) => ({ sessions: [...s.sessions, session], activeSessionId: session.id }));

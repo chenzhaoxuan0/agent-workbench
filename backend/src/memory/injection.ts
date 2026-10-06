@@ -14,7 +14,8 @@
  * 也符合 hermes 的做法）；切换执行器会开新会话 → 冷启动时自然会重新注入。
  */
 
-import { readLongTerm, resolvePaths } from "./projectMemory.ts";
+import { readLongTerm, readDaily, resolvePaths } from "./projectMemory.ts";
+import { localDate } from "./dailyDigest.ts";
 import { measure, extractEntries } from "./limits.ts";
 import { redact } from "./redact.ts";
 import {
@@ -24,7 +25,7 @@ import {
   INJECTION_SEPARATOR,
 } from "./ruleTemplate.ts";
 
-export type InjectionScope = "semantic" | "procedural";
+export type InjectionScope = "semantic" | "daily" | "procedural";
 
 export interface InjectedPart {
   readonly scope: InjectionScope;
@@ -43,51 +44,99 @@ export interface InjectedPrompt {
   readonly injectedChars: number;
 }
 
+export interface MemoryInjectorOptions {
+  /** 允许指定要注入的记忆范围，缺省为 ["semantic"] 保持向后兼容 */
+  readonly scopes?: readonly ("semantic" | "daily" | "procedural")[];
+  /** 指定 daily 的日期，缺省为当天 localDate() */
+  readonly dailyDate?: string;
+  /** 每日摘要字符上限截断保护（防止当天日报过长，例如默认 4000 字符） */
+  readonly dailyLimit?: number;
+}
+
 /** host.ts 只认这个接口，不依赖 memory 模块的具体实现（保持依赖方向单一）。 */
 export interface MemoryInjector {
-  build(rootPath: string, userText: string): Promise<InjectedPrompt | null>;
+  build(rootPath: string, userText: string, opts?: MemoryInjectorOptions): Promise<InjectedPrompt | null>;
 }
 
 /**
  * 默认注入器。
  *
  * 返回 null = 不注入。什么时候会 null：
- * - 项目文件夹里没有 MEMORY.md 也没有建过（不擅自往用户文件夹塞文件）
- * - MEMORY.md 是空模板（只有模板头，一条记忆都没有 —— 注入一堆规则不划算）
+ * - 项目文件夹里没有 MEMORY.md 也没有建过，且没有当日精炼摘要
+ * - MEMORY.md 是空模板（只有模板头，一条记忆都没有 —— 注入一堆规则不划算），且未请求/没有当日精炼
+ * - 请求的 scopes 为空或无任何匹配内容
  */
 export class FileMemoryInjector implements MemoryInjector {
-  async build(rootPath: string, userText: string): Promise<InjectedPrompt | null> {
+  async build(rootPath: string, userText: string, opts?: MemoryInjectorOptions): Promise<InjectedPrompt | null> {
     const paths = resolvePaths(rootPath);
-    const file = await readLongTerm(rootPath);
+    const scopes = opts?.scopes ?? ["semantic"];
+    if (scopes.length === 0) return null;
 
-    // 模板刚建出来、还没有任何真实记忆 → 不注入（避免每轮白烧规则 token）
-    if (!file.exists || !hasRealEntries(file.content)) return null;
+    const parts: InjectedPart[] = [];
+    const sections: string[] = [];
 
-    const over = file.chars > file.limit;
-    // **超限时截断注入**（review 抓到的阻断项）。
-    // agent 的真实写路径是「用自带文件工具直改 MEMORY.md」，那条路**绕过了
-    // limits.ts** —— 上限只守住了 memory.project.write 这条 RPC。曾经这里
-    // 不设防：10,497 字符的 MEMORY.md（4.8× 上限）会原样全文进 prompt，
-    // 之后每一轮都如此，上限形同虚设。
-    const entries = hasRealEntries(file.content) ? extractEntries(file.content) : [];
-    const body = over ? truncateToBudget(file.content, file.limit) : file.content.trim();
+    // 1. 语义记忆（长期事实：MEMORY.md，上限 2200 字符）
+    if (scopes.includes("semantic")) {
+      const file = await readLongTerm(rootPath);
+      // 模板刚建出来、还没有任何真实记忆 → 不注入（避免每轮白烧规则 token）
+      if (file.exists && hasRealEntries(file.content)) {
+        const over = file.chars > file.limit;
+        const entries = extractEntries(file.content);
+        const body = over ? truncateToBudget(file.content, file.limit) : file.content.trim();
 
-    const rule = renderRule({
-      memoryPath: paths.memoryMd,
-      used: file.chars,
-      nearLimit: file.chars / file.limit >= 0.8,
-      over,
-      keptEntries: entries.length,
-    });
+        const rule = renderRule({
+          memoryPath: paths.memoryMd,
+          used: file.chars,
+          nearLimit: file.chars / file.limit >= 0.8,
+          over,
+          keptEntries: entries.length,
+        });
+
+        const semanticSection = [
+          rule,
+          "",
+          over ? "以下是 MEMORY.md 的内容（**已截断**）：" : "以下是 MEMORY.md 的当前内容：",
+          "",
+          body,
+        ].join("\n");
+
+        sections.push(semanticSection);
+        parts.push({ scope: "semantic", sourcePath: paths.memoryMd, chars: file.chars });
+      }
+    }
+
+    // 2. 当日会话精炼提取（按天分片：memory/daily/YYYY-MM-DD.md，只读参考）
+    if (scopes.includes("daily")) {
+      const date = opts?.dailyDate ?? localDate();
+      try {
+        const dailyFile = await readDaily(rootPath, date);
+        if (dailyFile.exists && dailyFile.content.trim().length > 0) {
+          const limit = opts?.dailyLimit ?? 4000;
+          const over = dailyFile.chars > limit;
+          const body = over ? truncateToBudget(dailyFile.content, limit) : dailyFile.content.trim();
+
+          const dailySection = [
+            `### 当日会话精炼（${date}）`,
+            "",
+            "以下是该项目当天的会话精炼与关键结论（自动提取，只读参考）：",
+            "",
+            body,
+          ].join("\n");
+
+          sections.push(dailySection);
+          parts.push({ scope: "daily", sourcePath: dailyFile.path, chars: dailyFile.chars });
+        }
+      } catch {
+        // 日期不合法或读取失败时不阻断其他记忆注入
+      }
+    }
+
+    if (sections.length === 0 || parts.length === 0) return null;
 
     const block = [
       MEMORY_BLOCK_OPEN,
       "",
-      rule,
-      "",
-      over ? "以下是 MEMORY.md 的内容（**已截断**）：" : "以下是 MEMORY.md 的当前内容：",
-      "",
-      body,
+      sections.join("\n\n---\n\n"),
       "",
       MEMORY_BLOCK_CLOSE,
     ].join("\n");
@@ -97,7 +146,7 @@ export class FileMemoryInjector implements MemoryInjector {
       // 注入块会整块落进 dispatches 表、还会经 memory.dispatches 原样返回 ——
       // MEMORY.md 里若粘了密钥，不遮蔽就是明文进库、进 RPC 响应（review 抓到的阻断项）
       block: redact(block),
-      parts: [{ scope: "semantic", sourcePath: paths.memoryMd, chars: file.chars }],
+      parts,
       injectedChars: measure(block),
     };
   }

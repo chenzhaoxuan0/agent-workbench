@@ -97,6 +97,51 @@ async function main(): Promise<void> {
   check("只有模板头 → 不注入", (await inj.build(projEmpty, "问题")) === null);
   check("完全没有 MEMORY.md → 不注入", (await inj.build(projBare, "问题")) === null);
 
+  // ---------------------------------------------------------------- [集成] 独立解耦作用域 (semantic vs daily)
+  console.log("\n[集成] 解耦作用域 (semantic vs daily)");
+  const projDaily = path.join(tmp, "projDaily");
+  await mkdir(path.join(projDaily, "memory", "daily"), { recursive: true });
+  await writeFile(path.join(projDaily, "MEMORY.md"), REAL_MEMORY, "utf8");
+  await writeFile(
+    path.join(projDaily, "memory", "daily", "2026-10-06.md"),
+    "# 2026-10-06 会话摘要\n\n- 今日完成了全执行器 scanner 适配\n- 解耦了 semantic 与 daily 记忆\n",
+    "utf8",
+  );
+  await writeFile(
+    path.join(projDaily, "memory", "daily", "2026-10-05.md"),
+    "# 2026-10-05 会话摘要\n\n- 昨天的核心工作是 SQLite 方案验证\n",
+    "utf8",
+  );
+
+  // 1. 仅注入 daily
+  const injDailyOnly = await inj.build(projDaily, "问下今天干了啥", { scopes: ["daily"], dailyDate: "2026-10-06" });
+  check("scopes: ['daily'] 成功注入", injDailyOnly !== null);
+  check("仅 daily 时不含 MEMORY.md 长期事实", !injDailyOnly!.block.includes("这个仓库用 pnpm"));
+  check("仅 daily 时含今日摘要内容", injDailyOnly!.block.includes("今日完成了全执行器 scanner 适配"));
+  check("仅 daily 时 parts 仅包含 daily", injDailyOnly!.parts.length === 1 && injDailyOnly!.parts[0]!.scope === "daily");
+
+  // 2. 仅注入 semantic
+  const injSemOnly = await inj.build(projDaily, "问下约定", { scopes: ["semantic"] });
+  check("scopes: ['semantic'] 成功注入", injSemOnly !== null);
+  check("仅 semantic 时含 MEMORY.md 长期事实", injSemOnly!.block.includes("这个仓库用 pnpm"));
+  check("仅 semantic 时不含今日摘要", !injSemOnly!.block.includes("今日完成了全执行器 scanner 适配"));
+  check("仅 semantic 时 parts 仅包含 semantic", injSemOnly!.parts.length === 1 && injSemOnly!.parts[0]!.scope === "semantic");
+
+  // 3. 同时注入 semantic 和 daily
+  const injBoth = await inj.build(projDaily, "综合参考", { scopes: ["semantic", "daily"], dailyDate: "2026-10-06" });
+  check("scopes: ['semantic', 'daily'] 成功注入", injBoth !== null);
+  check("双注入含 MEMORY.md 事实", injBoth!.block.includes("这个仓库用 pnpm"));
+  check("双注入含今日摘要内容", injBoth!.block.includes("今日完成了全执行器 scanner 适配"));
+  check("双注入 parts 包含 2 个条目", injBoth!.parts.length === 2 && injBoth!.parts.map((p) => p.scope).sort().join(",") === "daily,semantic");
+
+  // 4. 自定义 dailyDate
+  const injPastDaily = await inj.build(projDaily, "问下昨天", { scopes: ["daily"], dailyDate: "2026-10-05" });
+  check("自定义 dailyDate 注入昨天日报", injPastDaily !== null && injPastDaily.block.includes("昨天的核心工作是 SQLite 方案验证"));
+
+  // 5. 空 scopes 不注入
+  const injEmptyScope = await inj.build(projDaily, "不注入任何记忆", { scopes: [] });
+  check("scopes: [] 返回 null", injEmptyScope === null);
+
   // ---------------------------------------------------------------- [端到端]
   console.log("\n[端到端] RuntimeHost 真实代码路径");
 
@@ -225,6 +270,25 @@ async function main(): Promise<void> {
   const bareAssistant = on.host.sessionMessages(s4.id as never).find((m) => m.role === "assistant");
   check("无记忆项目正常派发", (bareAssistant?.text ?? "").endsWith("空项目也要能干活"));
   check("无记忆项目不写分发日志", on.store.listDispatches(s4.id).length === 0);
+
+  // E：显式指定 memoryOptions（例如只注入 daily）
+  const sDaily = await on.host.startSession({
+    runtimeId: "mockperm",
+    unitId: asUnitId("uDaily"),
+    unitName: "UDaily",
+    rootPath: projDaily,
+    prompt: "帮我总结今天",
+    model: asModelId("mock-1"),
+    mode: "yolo",
+    memoryOptions: { scopes: ["daily"], dailyDate: "2026-10-06" },
+  });
+  await sleep(150);
+  const dailyAssistant = on.host.sessionMessages(sDaily.id as never).find((m) => m.role === "assistant");
+  check("E2E 仅注入 daily 时回复包含今日摘要", (dailyAssistant?.text ?? "").includes("今日完成了全执行器 scanner 适配"));
+  check("E2E 仅注入 daily 时回复不含长期事实", !(dailyAssistant?.text ?? "").includes("这个仓库用 pnpm"));
+  const dailyDispatches = on.store.listDispatches(sDaily.id);
+  check("E2E 仅注入 daily 记录 1 条分发日志", dailyDispatches.length === 1);
+  check("E2E 分发日志包含 daily 作用域", dailyDispatches[0]?.parts[0]?.scope === "daily");
 
   // ---- 前端命名空间：界面写的 `daemon:<id>` 后端也得认 ----
   // 界面把适配器注册成 `daemon:<id>`（prototype/src/adapters/daemon/adapter.ts:44），

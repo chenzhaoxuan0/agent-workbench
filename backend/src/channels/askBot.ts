@@ -6,7 +6,7 @@
  */
 
 import type { BotDefinition } from "../bots/registry.ts";
-import type { RuntimeHost } from "../runtime/host.ts";
+import type { RuntimeHost, MemoryInjectorOptions } from "../runtime/host.ts";
 import { asModelId, asSessionId, asUnitId, type SessionId, type SessionSource } from "../../../prototype/src/core/units.ts";
 import type { ModelId } from "../contract.ts";
 import { log } from "../log.ts";
@@ -37,6 +37,7 @@ export async function runBotTurn(
     mode?: "plan" | "build" | "edit" | "yolo";
     waitMs?: number;
     source?: SessionSource;
+    memoryOptions?: MemoryInjectorOptions;
     /**
      * 轮次一开始（sessionId 一拿到）就回调 —— **不等这一轮跑完**。
      *
@@ -78,6 +79,10 @@ export async function runBotTurn(
   }
   if (sessionId === null) {
     sinceSeq = 0; // 新会话 seq 从 1 重新起算，旧游标必须作废
+    const declaredScopes = Array.isArray(bot["memoryScopes"])
+      ? (bot["memoryScopes"] as readonly ("semantic" | "daily" | "procedural")[])
+      : undefined;
+    const memOpts = opts.memoryOptions ?? (declaredScopes ? { scopes: declaredScopes } : undefined);
     const s = await host.startSession({
       runtimeId,
       unitId: asUnitId(unitId),
@@ -88,6 +93,7 @@ export async function runBotTurn(
       mode: opts.mode ?? "yolo", // faceless 渠道无审批面
       // 来源标记：时间轴上据此显示「来自飞书 / 来自 webhook」徽标（docs/09 §六.2）
       source: opts.source ?? "workbench",
+      memoryOptions: memOpts,
       // 新会话路径：同样在 send 之前交出去（startSession 内部保证顺序）
       onSessionReady: opts.onTurnStart === undefined ? undefined : (sid) => opts.onTurnStart?.(sid),
     });
@@ -117,7 +123,12 @@ export async function askBot(
   host: RuntimeHost,
   botId: string,
   text: string,
-  opts?: { mode?: "plan" | "build" | "edit" | "yolo"; waitMs?: number; source?: SessionSource },
+  opts?: {
+    mode?: "plan" | "build" | "edit" | "yolo";
+    waitMs?: number;
+    source?: SessionSource;
+    memoryOptions?: MemoryInjectorOptions;
+  },
 ): Promise<BotTurnResult> {
   const bot = await registry.getBot(botId);
   if (bot === undefined) throw Object.assign(new Error(`no such bot: ${botId}`), { code: "unknown_bot" });

@@ -151,6 +151,12 @@ export interface LoopParams {
   readonly reasoningLevel?: string;
 }
 
+export interface MemoryInjectionOptions {
+  readonly scopes?: readonly ("semantic" | "daily" | "procedural")[];
+  readonly dailyDate?: string;
+  readonly dailyLimit?: number;
+}
+
 export interface StartSessionRequest {
   readonly unit: WorkUnit;
   /** bot模式：读 AGENTS.md 当岗位说明书。项目模式：当作普通开发上下文 */
@@ -168,6 +174,8 @@ export interface StartSessionRequest {
   readonly worktree?: { readonly path: string; readonly branch: string };
   /** agent loop 参数（省略 = 各执行器默认；mode 缺省视为 build） */
   readonly loop?: LoopParams;
+  /** 记忆注入配置（可选指定 semantic / daily / procedural 作用域） */
+  readonly memoryOptions?: MemoryInjectionOptions;
 }
 
 export interface SendMessageRequest {

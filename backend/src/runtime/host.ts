@@ -104,6 +104,8 @@ export interface StartSessionInput {
   readonly reasoningLevel?: string;
   /** 这个会话从哪来（docs/09 §六.2 的来源徽标）。缺省 = 工作台 */
   readonly source?: SessionSource;
+  /** 记忆注入配置（可选指定 semantic / daily / procedural 作用域） */
+  readonly memoryOptions?: MemoryInjectorOptions;
   /**
    * 会话登记就绪、**首轮 prompt 还没发出去**的那一刻回调。
    *
@@ -153,8 +155,14 @@ export interface InjectedPrompt {
   readonly injectedChars: number;
 }
 
+export interface MemoryInjectorOptions {
+  readonly scopes?: readonly ("semantic" | "daily" | "procedural")[];
+  readonly dailyDate?: string;
+  readonly dailyLimit?: number;
+}
+
 export interface MemoryInjector {
-  build(rootPath: string, userText: string): Promise<InjectedPrompt | null>;
+  build(rootPath: string, userText: string, opts?: MemoryInjectorOptions): Promise<InjectedPrompt | null>;
 }
 
 export class RuntimeHost {
@@ -391,7 +399,7 @@ export class RuntimeHost {
     let injected: InjectedPrompt | null = null;
     if (this.memory !== undefined) {
       try {
-        injected = await this.memory.build(input.rootPath, input.prompt);
+        injected = await this.memory.build(input.rootPath, input.prompt, input.memoryOptions);
       } catch (err: unknown) {
         log.warn("memory injection skipped", {
           root: input.rootPath,

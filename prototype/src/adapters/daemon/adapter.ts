@@ -244,6 +244,7 @@ class DaemonRuntimeAdapter implements RuntimeAdapter {
           model: req.model,
           mode: req.loop?.mode ?? "build",
           reasoningLevel: req.loop?.reasoningLevel,
+          memoryOptions: req.memoryOptions,
         },
         60000,
       );

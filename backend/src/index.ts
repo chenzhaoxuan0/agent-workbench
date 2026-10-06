@@ -804,13 +804,22 @@ registerMethod("bot.roots.add", (params) => {
 });
 // 把一条文本交给 bot 并等轮落定拿回全文（WP-9：MCP ask_bot / webhook 的内核入口）
 registerMethod("bot.ask", (params) => {
-  const p = (params ?? {}) as { botId?: string; text?: string; waitMs?: number };
+  const p = (params ?? {}) as {
+    botId?: string;
+    text?: string;
+    waitMs?: number;
+    memoryOptions?: {
+      scopes?: readonly ("semantic" | "daily" | "procedural")[];
+      dailyDate?: string;
+      dailyLimit?: number;
+    };
+  };
   if (typeof p.botId !== "string" || typeof p.text !== "string") {
     throw Object.assign(new Error("botId and text are required"), { code: "bad_params" });
   }
   // 评审 P3：waitMs 设上限，防误设大值无限占住 WS RPC
   const waitMs = typeof p.waitMs === "number" ? Math.min(Math.max(p.waitMs, 1_000), 600_000) : undefined;
-  return askBot(botRegistry, host, p.botId, p.text, { waitMs, source: "webhook" });
+  return askBot(botRegistry, host, p.botId, p.text, { waitMs, source: "webhook", memoryOptions: p.memoryOptions });
 });
 
 registerMethod("memory.routing.get", () => memory.getRouting());
@@ -844,6 +853,11 @@ registerMethod("session.start", (params) => {
     runtimeId?: string; unitId?: string; unitName?: string; rootPath?: string;
     prompt?: string; model?: string; mode?: "plan" | "build" | "edit" | "yolo";
     reasoningLevel?: string;
+    memoryOptions?: {
+      scopes?: readonly ("semantic" | "daily" | "procedural")[];
+      dailyDate?: string;
+      dailyLimit?: number;
+    };
   };
   if (typeof p.runtimeId !== "string" || typeof p.unitId !== "string" ||
       typeof p.rootPath !== "string" || typeof p.prompt !== "string") {
@@ -858,6 +872,7 @@ registerMethod("session.start", (params) => {
     model: typeof p.model === "string" ? asModelId(p.model) : null,
     mode: p.mode,
     reasoningLevel: p.reasoningLevel,
+    memoryOptions: p.memoryOptions,
   });
 });
 registerMethod("session.send", (params) => {
