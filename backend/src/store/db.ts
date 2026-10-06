@@ -193,12 +193,21 @@ export class Store {
   /** 删除一个会话行及其消息（WP-10 孤儿回收的 forget 面）；轨迹文件不动 */
   deleteSession(id: string): void {
     this.db.prepare(`DELETE FROM messages WHERE session_id = ?`).run(id);
+    // 分发日志同属这条会话：不删就永远留在库里，而 memory.dispatches 还能
+    // 把「已经 forget 掉」的会话日志原样查回来
+    this.db.prepare(`DELETE FROM dispatches WHERE session_id = ?`).run(id);
     this.db.prepare(`DELETE FROM sessions WHERE id = ?`).run(id);
   }
 
   listSessions(): SessionRow[] {
     const rows = this.db.prepare(`SELECT * FROM sessions ORDER BY started_at DESC`).all() as Array<Record<string, unknown>>;
     return rows.map((r) => this.toRow(r));
+  }
+
+  /** 最后一条消息的时间戳（0 = 一条都没有）。curator 的 idle 闸要用真实的对话活动 */
+  latestMessageAt(): number {
+    const row = this.db.prepare(`SELECT max(at) AS at FROM messages`).get() as { at?: number | null } | undefined;
+    return Number(row?.at ?? 0);
   }
 
   insertMessage(sessionId: string, at: number, role: "user" | "assistant" | "system", text: string): void {
@@ -385,9 +394,12 @@ export class Store {
 
   searchMemory(pillar: string, query: string, limit = 10): Array<{ id: number; content: string; source: string | null; createdAt: number }> {
     // sqlite 端的检索就是 LIKE 兜底（语义检索是 WeKnora 的事；sqlite 后端保"永远可用"）
+    // ⚠ 用户查询里的 `%` / `_` 必须转义：不转义时搜 "_" 或 "%" 会命中**所有**行
+    // （LIKE 里它们是通配符），看起来像「检索坏了」。
+    const escaped = query.replace(/[\\%_]/g, (c) => `\\${c}`);
     const rows = this.db
-      .prepare(`SELECT * FROM memory WHERE pillar = ? AND content LIKE ? ORDER BY id DESC LIMIT ?`)
-      .all(pillar, `%${query}%`, limit) as Array<Record<string, unknown>>;
+      .prepare(`SELECT * FROM memory WHERE pillar = ? AND content LIKE ? ESCAPE '\\' ORDER BY id DESC LIMIT ?`)
+      .all(pillar, `%${escaped}%`, limit) as Array<Record<string, unknown>>;
     return rows.map((r) => ({
       id: Number(r["id"]),
       content: String(r["content"]),
@@ -470,10 +482,25 @@ export class Store {
     // 而 Windows 用户目录带下划线极常见（my_project / agent_workbench）——
     // 会把**别的项目**的遥测也捞进来，curator 的项目隔离就破了。
     // `substr(path,1,?)=?` 是纯字符串前缀比较，没有通配符语义。
+    //
+    // ⚠ 但纯前缀仍然会串到「同名前缀的兄弟目录」：prefix=`C:/work/my_project` 时
+    // `C:/work/my_project2/MEMORY.md` 也算命中。前缀必须带路径分隔符
+    // （两种斜杠都试，库里的路径写法不保证统一），目录自身用精确相等兜一条。
+    const base = prefix === undefined ? undefined : prefix.replace(/[\\/]+$/, "");
     const rows = (
       prefix === undefined
         ? this.db.prepare(`SELECT * FROM memory_meta ORDER BY path`).all()
-        : this.db.prepare(`SELECT * FROM memory_meta WHERE substr(path, 1, ?) = ? ORDER BY path`).all(prefix.length, prefix)
+        : this.db
+            .prepare(
+              `SELECT * FROM memory_meta
+               WHERE path = ? OR substr(path, 1, ?) = ? OR substr(path, 1, ?) = ?
+               ORDER BY path`,
+            )
+            .all(
+              prefix,
+              base!.length + 1, `${base!}/`,
+              base!.length + 1, `${base!}\\`,
+            )
     ) as Array<Record<string, unknown>>;
     return rows.map((r) => ({
       path: String(r["path"]),
@@ -515,12 +542,16 @@ export class Store {
   markMemoryUsed(path: string, at: number, charUsed: number): void {
     this.db
       .prepare(
+        // ⚠ bytes 以前也绑 charUsed —— 字符数被当成字节数写进库，memory.telemetry
+        // 从此永久显示一个错的体积（ON CONFLICT 分支不刷新 bytes，只有 curator
+        // 钉选时才会被 upsertMemoryMeta 纠正）。这里没有真实字节数就写 0：
+        // 「不知道」比「记一个错的」好。
         `INSERT INTO memory_meta (path, bytes, char_used, use_count, last_used_at, state, pinned, created_at)
-         VALUES (?, ?, ?, 1, ?, 'active', 0, ?)
+         VALUES (?, 0, ?, 1, ?, 'active', 0, ?)
          ON CONFLICT(path) DO UPDATE SET
            use_count = use_count + 1, last_used_at = excluded.last_used_at, char_used = excluded.char_used`,
       )
-      .run(path, charUsed, charUsed, at, at);
+      .run(path, charUsed, at, at);
   }
 
   private toRow(r: Record<string, unknown>): SessionRow {

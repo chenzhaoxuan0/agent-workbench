@@ -2,13 +2,14 @@
  * MCP stdio 入口（docs/08 WP-9）——把 daemon 上的 bot 暴露为 MCP 工具，
  * 任何 MCP 客户端（ZCode / Claude / Cherry…）都能把"问某个 bot 一句"当工具调。
  *
- * 用法：npx tsx src/mcp.ts [--url http://127.0.0.1:5181] [--token <t>]
+ * 用法：npx tsx src/mcp.ts [--url http://127.0.0.1:5281] [--token <t>]
  * 链路：MCP stdio（换行 JSON-RPC）→ 本进程 → WS → daemon `bot.ask`。
  * 工具：list_bots / ask_bot({botId, text})。
  */
 
 import { createInterface } from "node:readline";
 import WebSocket from "ws";
+import { DEFAULT_DAEMON_PORT } from "./config.ts";
 
 // ---- 参数 ----
 
@@ -16,7 +17,12 @@ function argOf(name: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
   return i >= 0 ? process.argv[i + 1] : undefined;
 }
-const httpUrl = argOf("url") ?? process.env["AGENT_WORKBENCH_ENDPOINT"] ?? "http://127.0.0.1:5181";
+// 端口优先级：--url > AGENT_WORKBENCH_ENDPOINT > AGENT_WORKBENCH_PORT > 默认端口。
+// 以前这里写死 5181，而 daemon 默认早已改到 DEFAULT_DAEMON_PORT ——
+// 默认配置下 MCP 桥必然连不上（ECONNREFUSED），且报错只指向一个没人用过的端口。
+const daemonPort = process.env["AGENT_WORKBENCH_PORT"]?.trim() || String(DEFAULT_DAEMON_PORT);
+const httpUrl =
+  argOf("url") ?? process.env["AGENT_WORKBENCH_ENDPOINT"] ?? `http://127.0.0.1:${daemonPort}`;
 const token = argOf("token") ?? process.env["AGENT_WORKBENCH_TOKEN"] ?? null;
 const wsUrl = `${httpUrl.replace(/^http/, "ws").replace(/\/+$/, "")}/ws${token !== null ? `?token=${encodeURIComponent(token)}` : ""}`;
 

@@ -28,7 +28,7 @@ import { asSessionId, type SessionSource } from "../../../prototype/src/core/uni
 import type { TraceSink } from "./trace.ts";
 import type { Store } from "../store/db.ts";
 import type { PermissionGate } from "../permissions/gate.ts";
-import { appendJournal } from "../store/journals.ts";
+import { appendJournal, MAX_USAGE } from "../store/journals.ts";
 import { redact as redactText } from "../memory/redact.ts";
 
 /**
@@ -531,9 +531,7 @@ export class RuntimeHost {
       log.error("first turn failed", { sessionId: h.id, error: err instanceof Error ? err.message : String(err) });
       const errorEvent: RuntimeEvent = { type: "error", sessionId: h.id, message: err instanceof Error ? err.message : String(err), recoverable: false };
       this.emitStamped(h, errorEvent);
-      this.emitStamped(h, { type: "session.ended", sessionId: h.id, reason: "error" });
-      h.turnBusy = false;
-      this.flushPendingSends(h);
+      this.endSession(h, "error");
     });
     log.info("session started", { sessionId: h.id, runtimeId: adapter.id, unitId: h.unitId });
     return this.toSession(h);
@@ -554,6 +552,9 @@ export class RuntimeHost {
         }
         case "usage": {
           this.syncCliRef(h);
+          // MAX_USAGE 滚动：账本只增不减会一直长（docs/06 §七 定的 4000 行，
+          // 之前常量没落地、也没传给 appendJournal）。
+          // 失败要留痕：以前是空 catch，写不进去谁也不知道。
           void appendJournal(this.homeDir, "usage.jsonl", {
             at: Date.now(),
             sessionId: h.id,
@@ -567,7 +568,9 @@ export class RuntimeHost {
             costUsd: event.costUsd,
             decodeMs: event.decodeMs ?? null,
             requestId: event.requestId ?? null,
-          }).catch(() => {});
+          }, MAX_USAGE).catch((err: unknown) => {
+            log.warn("usage journal append failed", { error: err instanceof Error ? err.message : String(err) });
+          });
           break;
         }
         case "session.ended": {
@@ -678,9 +681,7 @@ export class RuntimeHost {
       log.error("turn failed", { sessionId: h.id, error: err instanceof Error ? err.message : String(err) });
       const errorEvent: RuntimeEvent = { type: "error", sessionId: h.id, message: err instanceof Error ? err.message : String(err), recoverable: false };
       this.emitStamped(h, errorEvent);
-      this.emitStamped(h, { type: "session.ended", sessionId: h.id, reason: "error" });
-      h.turnBusy = false;
-      this.flushPendingSends(h);
+      this.endSession(h, "error");
     });
   }
 
@@ -800,6 +801,29 @@ export class RuntimeHost {
     // WP-10：注入点事件化——前端据此把 pre/post-steer 的助手消息分行
     this.emitStamped(h, { type: "steer.boundary", sessionId: h.id, text: next.text });
     this.dispatchSend(h, next.text, next.loop);
+  }
+
+  /**
+   * host 自产的终态（轮次失败等）—— 必须与 makeSink 的 `session.ended` 分支走同一条路。
+   *
+   * 只 emitStamped 是不够的：`track()` 才写 h.endedAt/status，`persistOnEvent()` 才落盘，
+   * endWaiters 才被唤醒。漏掉 track 的直接后果是 flushPendingSends 的「会话已死」守卫
+   * （`h.endedAt !== undefined`，见上）永远不成立 —— 于是排队插话会被继续打进这条
+   * 刚失败的会话，正是那条守卫的注释要防的 error 风暴；等 session 结束的调用方
+   * （bot.ask / webhook 的 waitMs）也只能干等到超时。
+   */
+  private endSession(h: HostSession, reason: string): void {
+    const ended: RuntimeEvent = { type: "session.ended", sessionId: h.id, reason };
+    this.emitStamped(h, ended);
+    this.track(h, ended);
+    this.persistOnEvent(h, ended);
+    h.turnBusy = false;
+    this.flushPendingSends(h);
+    const ends = this.endWaiters.get(h.id);
+    if (ends !== undefined) {
+      this.endWaiters.delete(h.id);
+      for (const w of ends) w.resolve();
+    }
   }
 
   /** 权限闸（Phase 4）：规则命中就自动决策，不命中保持挂起等人 */

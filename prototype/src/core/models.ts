@@ -64,6 +64,30 @@ export interface ModelSpec {
 const T = "2026-09-27";
 
 /**
+ * `source` 的合法形态 —— 价格与窗口是快照，来源必须可追溯。
+ *
+ * 两类来源都合法：
+ * 1. **公开文档 URL**（`https://…`）：按量计费的模型都有官方价目页。
+ * 2. **本机快照声明**：订阅内含的模型（claude 网关别名、GLM 三档、MiniMax 托管）
+ *    与 CLI 自带目录里的模型，没有公开价目页可引 —— 它们的权威来源就是本机那份
+ *    配置 / registry。声明写成「来源物 + 括号说明」，前缀必须在下面的白名单里。
+ *
+ * 白名单是**穷举**的：新增一条模型却编了一个没见过的来源，`pnpm check:models`
+ * 会当场挂 —— 这正是这个函数存在的意义（手改数字必须顺手更新来源）。
+ */
+const LOCAL_SOURCE_PREFIXES: readonly string[] = [
+  "zcode registry",
+  "~/.minimax/config.yaml",
+  "DeepSeek Harness",
+  "daemon adapter.list",
+];
+
+export function isDeclaredModelSource(source: string): boolean {
+  if (/^https:\/\//.test(source)) return true;
+  return LOCAL_SOURCE_PREFIXES.some((prefix) => source.startsWith(prefix));
+}
+
+/**
  * 目录只收**当前在售**的模型。
  * 已退役的不收 —— 收进来就是让用户能选到一个必然失败的选项。
  * 已知退役：`deepseek-chat` / `deepseek-reasoner`（2026-07-24）、

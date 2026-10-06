@@ -581,6 +581,11 @@ export function Composer() {
               setSlashMenuDismissed(false);
             }}
             onKeyDown={(e) => {
+              // ⚠ 输入法组字中的 Enter 是「选词」，不是「发送」。
+              // 中文/日文输入法下按 Enter 上屏候选词时，keydown 的 key 同样是
+              // "Enter"、isComposing 为 true —— 不挡就会把半截拼音（或未上屏的
+              // 内容）当消息发出去。
+              if (e.nativeEvent.isComposing) return;
               if (e.key === "Enter" && !e.shiftKey) {
                 if (!isSlashActive) {
                   e.preventDefault();

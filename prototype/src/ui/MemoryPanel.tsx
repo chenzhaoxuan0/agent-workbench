@@ -248,6 +248,8 @@ function SearchArea({ botId, on, setOn }: { botId: string | null; on: boolean; s
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => {
+            // 输入法组字中的 Enter 是选词，不是搜索
+            if (e.nativeEvent.isComposing) return;
             if (e.key === "Enter" && botId !== null) void runSearch({ botId, query });
           }}
           placeholder="搜你自己以前说过的话（支持 2 字中文）"

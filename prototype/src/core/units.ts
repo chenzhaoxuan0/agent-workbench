@@ -91,6 +91,13 @@ export interface ChannelAccount {
   readonly allowFrom?: readonly string[];
   /** 群聊里只在被 @ 时响应。默认 true；单聊不受影响 */
   readonly mentionOnly?: boolean;
+  /**
+   * Telegram：**Bot Token 的环境变量名**（只存变量名，token 本身不落盘）。
+   * daemon 侧同时认这个字段与旧的明文 `botToken`。
+   */
+  readonly botTokenEnv?: string;
+  /** Telegram：只应答这个会话 id */
+  readonly chatId?: string;
   /** 渠道自身的能力位（对齐 openclaw ChannelPlugin 的可选槽，只实现用得上的） */
   readonly options?: Readonly<Record<string, string>>;
 }

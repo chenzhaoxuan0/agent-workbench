@@ -2,7 +2,7 @@
   "name": "agent-workbench",
   "private": true,
   "type": "module",
-  "description": "本地个人统一工作台 —— 一条命令起全栈（前端 5180 + daemon 5181）",
+  "description": "本地个人统一工作台 —— 一条命令起全栈（前端 5280 + daemon 5281）",
   "scripts": {
     "dev": "concurrently -n web,daemon -c cyan,magenta \"pnpm run dev:web\" \"pnpm run dev:daemon\"",
     "dev:web": "pnpm -C prototype dev",

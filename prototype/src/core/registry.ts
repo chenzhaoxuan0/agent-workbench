@@ -81,6 +81,13 @@ export class RuntimeRegistry {
     } else {
       models = [...sortModels(f.models)];
     }
+    // ⚠ 已知问题（本次审查记录，未改）：`models[0]?.id ?? defaultModelFor(models)` 里
+    // defaultModelFor 永远轮不到（models 非空时第一项就有值），于是 models.ts 里
+    // 「默认取均衡档」的规则成了死代码，默认模型 = daemon 列在第一个的那个
+    // （codex 实测是旗舰档 gpt-6-astra，$10/$50 per MTok）。
+    // 不能简单换成 `defaultModelFor(models) ?? models[0]?.id`：动态同步进来的
+    // 未收录模型会被 scaffoldModel 标成 balanced，反而抢在目录里已知的均衡档前面。
+    // 要修得先决定「未收录模型能不能当默认」，属于产品决策。
     const first = models[0]?.id ?? defaultModelFor(models);
     if (!first) return null;
     return {

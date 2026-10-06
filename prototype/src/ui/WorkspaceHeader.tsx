@@ -162,7 +162,14 @@ function MoreMenu() {
       icon: FolderOpen,
       label: "在资源管理器中打开",
       disabled: !unit,
-      onClick: () => unit && void openFolder({ path: unit.rootPath }),
+      onClick: () => {
+        // 与下面的 WorkspacePopover 同一处理：daemon 不可达是常态（README 明说），
+        // 不 catch 就是一个未处理的 Promise 拒绝 + 点了没反应
+        if (!unit) return;
+        void openFolder({ path: unit.rootPath }).catch((err: unknown) => {
+          console.error("[workbench] openFolder failed", err);
+        });
+      },
     },
     {
       key: "copy-path",

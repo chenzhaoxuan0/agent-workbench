@@ -214,8 +214,16 @@ export async function stewardRecent(homeDir: string, limit = 7): Promise<Array<{
   const out: Array<{ date: string; chars: number; content: string }> = [];
   for (const n of names) {
     const date = n.replace(/\.md$/, "");
-    const f = await readDaily(root, date);
-    out.push({ date, chars: f.chars, content: f.content });
+    // 目录是给人手改的（README.md、2026-10-04-notes.md 都可能出现），
+    // 而 readDaily 对非 YYYY-MM-DD 会抛 bad_params —— 一个杂物文件就能让
+    // 整个 steward.recent 报错。跳过它，别把整条链路带崩。
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+    try {
+      const f = await readDaily(root, date);
+      out.push({ date, chars: f.chars, content: f.content });
+    } catch {
+      // 单日报读不出来（半写、权限）不阻塞其余
+    }
   }
   return out;
 }

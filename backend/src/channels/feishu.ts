@@ -175,6 +175,24 @@ ull 是「首条还没发出去」的哨兵，**不是**「拿不到 id」的哨
     await this.#send(body === "" ? "(空回复)" : body.slice(0, STREAM_MAX_CHARS), true);
   }
 
+  /**
+   * 只释放、**不发任何消息** —— 失败路径用。
+   *
+   * 为什么不能直接 finish("")：`finish` 一定会 #send，占位消息都没发出去时
+   * 就会凭空在群里多一条「(空回复)」。而完全不释放的后果更糟：
+   * 订阅与 1.5s 定时器泄漏，且 #done 永远 false —— 下一轮的增量会被这个
+   * 陈旧的 streamer 编辑到**上一条**占位消息上。
+   */
+  release(): void {
+    this.#done = true;
+    if (this.#timer !== null) {
+      clearTimeout(this.#timer);
+      this.#timer = null;
+    }
+    this.#unsubscribe?.();
+    this.#unsubscribe = null;
+  }
+
   /** inal = 这是收尾那一条。拿不到 id 时只有它值得新发一条，中间刷新丢掉即可。 */
   async #send(text: string, final = false): Promise<void> {
     try {
@@ -786,7 +804,10 @@ class LarkCliConnection {
   }
 
   matches(other: LarkAccountSpec): boolean {
-    return this.#spec.profile === other.profile && this.#spec.mentionOnly === other.mentionOnly;
+    // 比**整份 spec**，不是只比 profile + mentionOnly：后者的后果是
+    // 「在设置里改了 allowFrom / 表情 / streaming」永远不生效 —— reconciler
+    // 认为连接没变，旧 spec 一直用到重启，正好和它的存在意义相反。
+    return JSON.stringify(this.#spec) === JSON.stringify(other);
   }
 
   async start(): Promise<void> {
@@ -935,6 +956,9 @@ class LarkCliConnection {
    * **全程 best-effort**：失败不影响正常回复。
    */
   async #ack(messageId: string, emoji: AckEmoji): Promise<void> {
+    // 空串 = 用户明确选了「不加这个表情」（spec 里的约定）：
+    // 直接返回，别为了一条空 emoji 去 spawn 一次 lark-cli（必失败 + 每条约 350ms + 每条约一条告警）
+    if (emoji === "") return;
     try {
       const r = await runCli([
         "--profile", this.#spec.profile,
@@ -961,15 +985,19 @@ class LarkCliConnection {
           log.warn("feishu: 事件对应的 bot 已不在注册表", { bot: this.#spec.botId });
           return;
         }
+        // stream 要在 try 外面声明：轮次失败时也必须收尾（见 finally）
+        let stream: FeishuStreamer | null = null;
         try {
           if (this.#spec.streaming) {
             // 流式：先占位 + 订阅增量，轮次跑完再落最终结果
-            const stream = new FeishuStreamer(this.#spec, this.#host, msg.messageId);
+            stream = new FeishuStreamer(this.#spec, this.#host, msg.messageId);
+            const active = stream;
             const { reply } = await runBotTurn(this.#host, bot, msg.text, {
               source: "feishu",
-              onTurnStart: (sid) => { stream.attach(sid); },
+              onTurnStart: (sid) => { active.attach(sid); },
             });
-            await stream.finish(reply);
+            await active.finish(reply);
+            stream = null; // 正常收尾过了，别在 finally 里再来一次
           } else {
             const { reply } = await runBotTurn(this.#host, bot, msg.text, { source: "feishu" });
             await this.#reply(msg.messageId, reply);
@@ -977,8 +1005,20 @@ class LarkCliConnection {
         } catch (err: unknown) {
           const m = err instanceof Error ? err.message : String(err);
           log.warn("feishu: 轮次失败", { bot: this.#spec.botId, error: m });
-          await this.#reply(msg.messageId, `出错了：${m}`).catch(() => {});
+          if (stream !== null) {
+            // 占位消息已经在群里了：用收尾那条承载错误文本（编辑既有消息），
+            // 而不是再新发一条 —— 群里只会留下一条消息
+            await stream.finish(`出错了：${m}`).catch(() => {});
+            stream = null;
+          } else {
+            await this.#reply(msg.messageId, `出错了：${m}`).catch(() => {});
+          }
         } finally {
+          // ⚠ 失败路径也必须释放 streamer（含「还没 attach 就失败」这条）：
+          // 它持有一条 host 订阅 + 一个 1.5s 节流定时器，而且 #done 永远为 false
+          // —— 于是它会把**下一轮**的增量继续编辑到这条旧占位消息上，
+          // 每失败一次泄漏一份订阅。release() 不发消息，只拆资源。
+          stream?.release();
           // 答完了加第二个表情（best-effort，不影响任何东西）
           void this.#ack(msg.messageId, this.#spec.doneEmoji).catch(() => {});
         }
@@ -994,7 +1034,7 @@ class LarkCliConnection {
     const chunks: string[] = [];
     for (let i = 0; i < text.length; i += 2_000) chunks.push(text.slice(i, i + 2_000));
     if (chunks.length === 0) chunks.push("(空回复)");
-    for (const chunk of chunks) {
+    for (const [i, chunk] of chunks.entries()) {
       const r = await runCli(
         [
           "--profile",
@@ -1006,7 +1046,9 @@ class LarkCliConnection {
           "--markdown",
           chunk,
           "--idempotency-key",
-          `${messageId}-${chunks.indexOf(chunk)}`,
+          // 用循环下标，不用 indexOf：两段内容完全相同的分片会拿到同一个
+          // 幂等键，第二段会被飞书判成重复投递直接吞掉（回答少一截）。
+          `${messageId}-${i}`,
         ],
         30_000,
       );

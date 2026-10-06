@@ -299,7 +299,7 @@ function InstanceEditor({
         <div className="flex items-start justify-between gap-4">
           <div className="flex items-center gap-3">
             <span
-              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-card text-body-md font-bold text-white shadow-xs"
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-card text-body font-medium text-white shadow-xs"
               style={{ background: runtime.presentation.accent }}
             >
               {runtime.presentation.glyph}
@@ -317,7 +317,7 @@ function InstanceEditor({
                   />
                 ) : (
                   <>
-                    <h3 className="text-body-md font-semibold text-ink">{name}</h3>
+                    <h3 className="text-body font-medium text-ink">{name}</h3>
                     <button
                       onClick={() => setEditingName(true)}
                       title="修改显示名称"

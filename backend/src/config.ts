@@ -21,6 +21,15 @@ export const backendRoot = path.resolve(
   "..",
 );
 
+/**
+ * daemon 默认端口。**只在这里写一次** —— 前端（`prototype/src/adapters/daemon/client.ts`
+ * 的 DAEMON_PORT）、MCP 桥（`src/mcp.ts`）与文档都跟着它走。
+ *
+ * 为什么不是 5181：Windows 的 Hyper-V / WSL 保留了 5141–5240 一整段动态端口，
+ * 5181 正在其中，`listen` 会直接 EACCES。踩过两次，别再搬回去。
+ */
+export const DEFAULT_DAEMON_PORT = 5281;
+
 function readVersion(): string {
   try {
     const pkg = JSON.parse(
@@ -127,7 +136,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): DaemonConfig {
 
   return {
     host: env["AGENT_WORKBENCH_HOST"] ?? "127.0.0.1",
-    port: Number.parseInt(env["AGENT_WORKBENCH_PORT"] ?? "5281", 10) || 5281,
+    port:
+      Number.parseInt(env["AGENT_WORKBENCH_PORT"] ?? String(DEFAULT_DAEMON_PORT), 10) ||
+      DEFAULT_DAEMON_PORT,
     homeDir,
     logLevel,
     version: readVersion(),

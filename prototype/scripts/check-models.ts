@@ -11,6 +11,7 @@ import {
   formatContext,
   formatPrice,
   isKnownModel,
+  isDeclaredModelSource,
   modelById,
   MODELS,
   selectableOn,
@@ -80,11 +81,10 @@ console.log("\n【1】目录自身：字段完整、无重复、id 可查");
 console.log("\n【2】价格与窗口是**快照**，不是契约 —— 每条都必须带来源");
 {
   // 这条断言的作用是：将来有人手改数字却忘了更新来源，让它当场挂掉。
-  // registry 快照声明（zcode registry 开头）是 daemon 侧目录的合法来源：
-  // 订阅模型的 id/档位以本机 zcode registry 为准，没有公开 URL 可引。
-  const noSource = MODELS.filter(
-    (m) => !/^https:\/\//.test(m.source) && !m.source.startsWith("zcode registry"),
-  );
+  // 合法来源有两类，判定集中在 models.ts 的 isDeclaredModelSource：
+  // 公开价目页 URL，或本机快照声明（zcode registry / ~/.minimax/config.yaml /
+  // DeepSeek Harness / daemon adapter.list）——订阅内含与 CLI 自带目录没有公开 URL 可引。
+  const noSource = MODELS.filter((m) => !isDeclaredModelSource(m.source));
   eq("来源是真实 URL 或 registry 快照声明", noSource.map((m) => m.id).join(","), "");
   const noDate = MODELS.filter((m) => !/^\d{4}-\d{2}-\d{2}$/.test(m.asOf));
   eq("快照日期格式统一", noDate.map((m) => m.id).join(","), "");

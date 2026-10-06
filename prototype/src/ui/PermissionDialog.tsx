@@ -90,6 +90,19 @@ export function PermissionDialog() {
   useEffect(() => {
     if (!active) return;
     const onKey = (e: KeyboardEvent) => {
+      // ⚠ 这张卡**不抢焦点**（挂在 composer 上方，人还在输入框里打字）。
+      // 所以 document 级快捷键必须先确认「这一下按键不是在输入」——
+      // 否则用户打「修复 2 个问题」里的那个 2，就等于点了
+      // 「本工作单元始终允许」，而字符被 preventDefault 吃掉、输入框里什么都没有。
+      // 输入法组字中的 Enter 同理：那是在选词，不是在确认授权。
+      if (e.isComposing || e.metaKey || e.ctrlKey || e.altKey) return;
+      const target = e.target as HTMLElement | null;
+      if (
+        target !== null &&
+        (target.isContentEditable || target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT")
+      ) {
+        return;
+      }
       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         e.preventDefault();
         const next = e.key === "ArrowDown" ? selected + 1 : selected - 1;
@@ -105,6 +118,8 @@ export function PermissionDialog() {
         return;
       }
       if (e.key === "Enter") {
+        // 焦点在按钮上时让原生 click 走 —— 否则会和 click 一起裁决两次
+        if (target !== null && target.tagName === "BUTTON") return;
         e.preventDefault();
         const opt = options[selected];
         if (opt) resolve(active.requestId, opt.decision);

@@ -146,6 +146,10 @@ export function ProviderSettingsSection() {
       {/* 编辑卡 */}
       {editingProfile && (
         <AddProviderCard
+          // ⚠ key 必须有：卡片内部用 useState 初始化表单，换一个 provider 编辑时
+          // 复用同一个实例就不会重置 —— 头部显示新选的、字段还是上一个的，
+          // 保存时报出莫名其妙的「route 已存在」。
+          key={editingProfile.route}
           mode={editingProfile.origin === "custom" ? "custom" : "catalog"}
           existing={editingProfile}
           onClose={() => setEditing(null)}

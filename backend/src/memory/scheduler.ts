@@ -111,18 +111,33 @@ export class MemoryScheduler {
     }
   }
 
-  /** 跑一轮。**同一分钟绝不跑第二次**；上一轮还没结束就跳过这轮。 */
+  /**
+   * 上一轮还没跑完时撞上的、本该跑日报的那一分钟。
+   * 忙 ≠ 不用跑：curator 单轮最长 600s，正好盖住 3:17 / 14:43 时，
+   * 以前这里直接 return，那一天的日报就整份消失且没有任何日志。
+   */
+  private pendingMinute: string | null = null;
+
+  /** 跑一轮。**同一分钟绝不跑第二次**；上一轮还没结束就记账、结束后补跑。 */
   async tick(now = new Date()): Promise<void> {
-    if (this.busy) return;
+    const minuteKey = `${now.getFullYear()}-${now.getMonth()}-${now.getDate()} ${now.getHours()}:${now.getMinutes()}`;
+    if (this.busy) {
+      if (cronMatches(this.fields, now)) {
+        this.pendingMinute = minuteKey;
+        log.warn("memory digest minute arrived while busy; will run after the current tick", { minute: minuteKey });
+      }
+      return;
+    }
     this.busy = true;
     try {
       const state = await this.loadState();
       state.lastActivityAt = this.opts.lastActivityAt?.() ?? state.lastActivityAt;
 
-      const minuteKey = `${now.getFullYear()}-${now.getMonth()}-${now.getDate()} ${now.getHours()}:${now.getMinutes()}`;
-      const due = cronMatches(this.fields, now) && state.lastDigestMinute !== minuteKey;
-      if (due) {
-        state.lastDigestMinute = minuteKey;
+      const onTime = cronMatches(this.fields, now) && state.lastDigestMinute !== minuteKey;
+      const catchUp = this.pendingMinute !== null && state.lastDigestMinute !== this.pendingMinute;
+      if (onTime || catchUp) {
+        state.lastDigestMinute = onTime ? minuteKey : (this.pendingMinute ?? minuteKey);
+        this.pendingMinute = null;
         await this.saveState(state); // 先落盘再干活：崩了也不会同一分钟重跑
         if (this.opts.digestEnabled?.() !== false) await this.runDigest();
       }

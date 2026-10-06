@@ -256,6 +256,9 @@ export function Sidebar() {
                 setDragUnit(u.id);
               }}
               onDragOver={(e) => e.preventDefault()}
+              // 拖到列表空白处 / 按 Esc 取消时不会触发 drop：
+              // 没有 onDragEnd 的话 dragUnit 一直留着，那一行会永久停在 opacity-40
+              onDragEnd={() => setDragUnit(null)}
               onDrop={() => {
                 if (dragUnit && dragUnit !== unitId) {
                   const order = visibleUnits.map((x) => x.id as string);

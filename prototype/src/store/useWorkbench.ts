@@ -376,13 +376,26 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
   // 与 addUnit 的区别：**await 并把冲突抛回调用方**。bot 设置页必须知道"盘上已被改过"，
   // 否则用户在 VS Code 改完 AGENTS.md、在设置页看到旧的、点保存就静默覆盖——那是数据丢失。
   updateUnit: async (u, guards) => {
+    // 先记下原值：写盘失败（版本冲突 / daemon 不可达）必须**回滚**。
+    // 以前是「先写 store 再写盘、失败不回滚」—— 侧栏已经显示新名字、
+    // 头部已经显示新 AGENTS.md，而对话框说「这次没有写入」：
+    // 界面和 bot.json 分叉到下次刷新，而且下一次基于 `units` 的保存会把
+    // 这份没落盘的值一起推上去。
+    const prev = get().units.find((x) => x.id === u.id);
     set((s) => ({ units: s.units.map((x) => (x.id === u.id ? u : x)) }));
-    const { putBotDefinition, defaultDaemonEndpoint } = await import("../adapters/daemon/client.ts");
-    const r = await putBotDefinition(u, defaultDaemonEndpoint(), guards ?? {});
-    applyPutResult(set, get, u.id, r);
-    // 渠道可能被改过（换了 profile / 刚启用 / 刚停用），侧栏头像要跟着变
-    const profiles = feishuProfilesOf(u);
-    if (profiles.length > 0) void get().refreshChannelIdentity(profiles);
+    try {
+      const { putBotDefinition, defaultDaemonEndpoint } = await import("../adapters/daemon/client.ts");
+      const r = await putBotDefinition(u, defaultDaemonEndpoint(), guards ?? {});
+      applyPutResult(set, get, u.id, r);
+      // 渠道可能被改过（换了 profile / 刚启用 / 刚停用），侧栏头像要跟着变
+      const profiles = feishuProfilesOf(u);
+      if (profiles.length > 0) void get().refreshChannelIdentity(profiles);
+    } catch (err: unknown) {
+      if (prev !== undefined) {
+        set((s) => ({ units: s.units.map((x) => (x.id === u.id ? prev : x)) }));
+      }
+      throw err;
+    }
   },
 
   // 认「哪个 profile 是哪个飞书机器人」。后端成功缓存 10 分钟，所以这里可以放心地在
@@ -485,8 +498,21 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
   },
 
   resolvePermission: (requestId, decision) => {
-    const sessions = get().sessions;
-    const session = sessions.at(-1);
+    const { sessions, timeline, activeSessionId } = get();
+
+    // 裁决必须回到**发起这条请求的那条会话**。
+    // 以前取 `sessions.at(-1)`：上一轮还没落定（权限卡挂着）又发了第二条消息时，
+    // sessions 末尾已经是新会话，裁决就发给别人了 —— daemon 按会话严格匹配
+    // requestId（host.resolvePermission），真实那次 tool call 永远等不到放行。
+    // 时间线里每条 permission.requested 自带 sessionId，这是唯一正确的归属来源。
+    let ownerId: SessionId | null = null;
+    for (const t of timeline) {
+      if (t.event.type === "permission.requested" && t.event.requestId === requestId) {
+        ownerId = t.event.sessionId;
+        break;
+      }
+    }
+    const session = sessions.find((s) => s.id === (ownerId ?? activeSessionId ?? sessions.at(-1)?.id));
     if (!session) return;
 
     // 先落本地裁决，UI 立刻放行，不等网络往返
@@ -494,9 +520,14 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
       permissionDecisions: { ...s.permissionDecisions, [requestId]: decision },
     }));
 
-    void runtimeRegistry.getOrCreate(session.runtimeId as never).then((a: RuntimeAdapter) =>
-      a.resolvePermission(session.id, requestId, decision),
-    );
+    void runtimeRegistry
+      .getOrCreate(session.runtimeId as never)
+      .then((a: RuntimeAdapter) => a.resolvePermission(session.id, requestId, decision))
+      // 拒绝必须可见：以前这条链没有 catch，适配器取不到时整个 Promise 静默 reject，
+      // 而 UI 已经把请求标成「已裁决」—— 人以为放行了，实际那一轮还挂着。
+      .catch((err: unknown) => {
+        get().pushNotice("授权没有送达执行器", err instanceof Error ? err.message : String(err), { level: "warn" });
+      });
   },
 
   /**
@@ -509,7 +540,22 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
     const unit = get().units.find((u) => u.id === activeUnitId);
     if (!unit) return;
 
-    const adapter = await runtimeRegistry.getOrCreate(activeRuntimeId as never);
+    // 起会话 / 发送失败时的统一收尾。**必须有**：以前这两处 await 都没有 catch，
+    // RPC 一 reject（daemon 没起、CLI 拉不起来）busy 就永远停在 true ——
+    // composer 一直显示「停止」，时间线一直显示「正在思考与执行…」，
+    // 而且错误被吞在未处理的 Promise 里，用户什么都看不到。
+    const fail = (err: unknown): void => {
+      set({ busy: false });
+      get().pushNotice("这一轮没能发出去", err instanceof Error ? err.message : String(err), { level: "warn" });
+    };
+
+    let adapter: RuntimeAdapter;
+    try {
+      adapter = await runtimeRegistry.getOrCreate(activeRuntimeId as never);
+    } catch (err: unknown) {
+      fail(err);
+      return;
+    }
     consumeEvents(adapter);
 
     // agent loop 参数：每执行器各记一份；mode 未单独设置时跟随权限档位（ask→build 等）
@@ -554,27 +600,37 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
     if (active !== undefined && active.runtimeId === activeRuntimeId && active.status !== "done" && active.status !== "failed") {
       set({ busy: true });
       pushUserBubble(active.id);
-      await adapter.sendMessage({
-        sessionId: active.id,
-        text: prompt,
-        loop: {
-          ...(loop.reasoningLevel ? { reasoningLevel: loop.reasoningLevel } : {}),
-        },
-      });
+      try {
+        await adapter.sendMessage({
+          sessionId: active.id,
+          text: prompt,
+          loop: {
+            ...(loop.reasoningLevel ? { reasoningLevel: loop.reasoningLevel } : {}),
+          },
+        });
+      } catch (err: unknown) {
+        fail(err);
+      }
       return;
     }
 
     // 新会话：时间线重置（新对话）
     set({ busy: true, timeline: [] });
 
-    const session = await adapter.startSession({
-      unit,
-      prompt,
-      model,
-      worktree: unit.kind === "project" ? { path: `${unit.rootPath}/.wt/session`, branch: "feat/session" } : undefined,
-      loop,
-      memoryOptions: opts?.memoryOptions ?? { scopes: get().memoryScopes },
-    });
+    let session: Awaited<ReturnType<RuntimeAdapter["startSession"]>>;
+    try {
+      session = await adapter.startSession({
+        unit,
+        prompt,
+        model,
+        worktree: unit.kind === "project" ? { path: `${unit.rootPath}/.wt/session`, branch: "feat/session" } : undefined,
+        loop,
+        memoryOptions: opts?.memoryOptions ?? { scopes: get().memoryScopes },
+      });
+    } catch (err: unknown) {
+      fail(err);
+      return;
+    }
 
     set((s) => ({ sessions: [...s.sessions, session], activeSessionId: session.id }));
 

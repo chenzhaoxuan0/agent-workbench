@@ -281,14 +281,20 @@ export function SlashCommandMenu({ filter, onSelect, onClose }: SlashCommandMenu
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // 这个 effect 挂在 `if (matched.length === 0) return null` 之前（hooks 顺序不能变），
+      // 所以「菜单没内容」这件事必须在处理函数里自己挡掉：否则输入框里的
+      // ↑↓ 会被 preventDefault 吞掉，光标动不了，用户以为键盘坏了。
+      if (matched.length === 0) return;
+      // 输入法组字中的 Enter 是「选词」，不是「执行这条指令」
+      if (e.isComposing) return;
       if (e.key === "ArrowDown") {
         e.preventDefault();
-        setActiveIndex((prev) => (matched.length > 0 ? (prev + 1) % matched.length : 0));
+        setActiveIndex((prev) => (prev + 1) % matched.length);
       } else if (e.key === "ArrowUp") {
         e.preventDefault();
-        setActiveIndex((prev) => (matched.length > 0 ? (prev - 1 + matched.length) % matched.length : 0));
+        setActiveIndex((prev) => (prev - 1 + matched.length) % matched.length);
       } else if (e.key === "Enter" || e.key === "Tab") {
-        if (matched.length > 0 && matched[activeIndex]) {
+        if (matched[activeIndex]) {
           e.preventDefault();
           onSelect(matched[activeIndex]!);
         }
@@ -340,7 +346,7 @@ export function SlashCommandMenu({ filter, onSelect, onClose }: SlashCommandMenu
                 "w-full flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition select-none",
                 isActive
                   ? "bg-teal-tint/50 text-ink shadow-sm"
-                  : "text-graphite hover:bg-canvas-soft hover:text-ink",
+                  : "text-graphite hover:bg-line-soft hover:text-ink",
               )}
             >
               <div

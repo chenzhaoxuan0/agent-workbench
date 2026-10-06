@@ -20,7 +20,9 @@ export interface CatalogProvider {
 export const PROVIDER_CATALOG: readonly CatalogProvider[] = [
   { id: "amazon-bedrock", name: "Amazon Bedrock", baseUrl: "", api: "openai-completions", keyEnv: "AMAZON_BEDROCK_API_KEY" },
   { id: "ant-ling", name: "Ant Ling", baseUrl: "https://api.ant-ling.com/v1", api: "openai-completions", keyEnv: "ANT_LING_API_KEY" },
-  { id: "anthropic", name: "Anthropic", baseUrl: "https://api.anthropic.com", api: "openai-completions", keyEnv: "ANTHROPIC_API_KEY" },
+  // Anthropic 官方端点走的是 anthropic-messages 协议，不是 openai-completions：
+  // 选它预填出来的 profile 会带着错的 api，将来一发请求就 404/400
+  { id: "anthropic", name: "Anthropic", baseUrl: "https://api.anthropic.com", api: "anthropic-messages", keyEnv: "ANTHROPIC_API_KEY" },
   { id: "azure-openai-responses", name: "Azure OpenAI", baseUrl: "", api: "openai-completions", keyEnv: "AZURE_OPENAI_RESPONSES_API_KEY" },
   { id: "baseten", name: "Baseten", baseUrl: "https://inference.baseten.co/v1", api: "openai-completions", keyEnv: "BASETEN_API_KEY" },
   { id: "cerebras", name: "Cerebras", baseUrl: "https://api.cerebras.ai/v1", api: "openai-completions", keyEnv: "CEREBRAS_API_KEY" },

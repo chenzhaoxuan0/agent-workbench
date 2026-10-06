@@ -37,7 +37,7 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react";
-import type { DiagnosisResult } from "../adapters/daemon/client.ts";
+import { defaultDaemonEndpoint, type DiagnosisResult } from "../adapters/daemon/client.ts";
 import type { BotChannel, ChannelAccount } from "../core/units.ts";
 import { FeishuSetup } from "./FeishuSetup.tsx";
 import { Toggle } from "./SettingsPage.tsx";
@@ -294,8 +294,15 @@ function ImBody({
     const next = accounts.map((a, j) => (j === i ? { ...a, ...patch } : a));
     onChange({ ...channel, accounts: next });
   };
-  const addAccount = () =>
-    onChange({ ...channel, accounts: [...accounts, { id: `a${accounts.length}`, mentionOnly: true }] });
+  const addAccount = () => {
+    // 账号 id 必须唯一且**不复用**：以前用 `a${accounts.length}`，删掉一个再加回来
+    // 就会撞上同名 id（[main,a1] → 删 main → [a1] → 加 → 又是 a1）。
+    // 撞了之后 React key 重复、诊断结果按 id 存 → 两个账号显示同一份结果。
+    const used = new Set(accounts.map((a) => a.id));
+    let id = `a${Date.now().toString(36)}`;
+    while (used.has(id)) id = `${id}x`;
+    onChange({ ...channel, accounts: [...accounts, { id, mentionOnly: true }] });
+  };
   const removeAccount = (i: number) => onChange({ ...channel, accounts: accounts.filter((_, j) => j !== i) });
 
   return (
@@ -322,8 +329,8 @@ function ImBody({
             <>
               <Field label="Bot Token（环境变量名）" hint="只填变量名，token 本身不落盘">
                 <input
-                  value={(acc as unknown as { botTokenEnv?: string }).botTokenEnv ?? ""}
-                  onChange={(e) => setAccount(i, { botTokenEnv: e.target.value } as Partial<ChannelAccount>)}
+                  value={acc.botTokenEnv ?? ""}
+                  onChange={(e) => setAccount(i, { botTokenEnv: e.target.value })}
                   spellCheck={false}
                   aria-label="Bot Token 环境变量名"
                   className="w-full rounded-input border border-transparent bg-rail px-2 py-1 font-mono text-caption text-ink outline-none focus:border-teal"
@@ -331,8 +338,8 @@ function ImBody({
               </Field>
               <Field label="Chat ID" hint="只应答这个会话">
                 <input
-                  value={(acc as unknown as { chatId?: string }).chatId ?? ""}
-                  onChange={(e) => setAccount(i, { chatId: e.target.value } as Partial<ChannelAccount>)}
+                  value={acc.chatId ?? ""}
+                  onChange={(e) => setAccount(i, { chatId: e.target.value })}
                   spellCheck={false}
                   aria-label="Chat ID"
                   className="w-full rounded-input border border-transparent bg-rail px-2 py-1 font-mono text-caption text-ink outline-none focus:border-teal"
@@ -486,7 +493,7 @@ function WebhookBody({
         />
       </Field>
       <p className="text-caption text-ash">
-        地址：<code className="font-mono">POST http://127.0.0.1:5181/webhook/bot</code>，body 带{" "}
+        地址：<code className="font-mono">POST {defaultDaemonEndpoint()}/webhook/bot</code>，body 带{" "}
         <code className="font-mono">botId / secret / text</code>
       </p>
     </div>

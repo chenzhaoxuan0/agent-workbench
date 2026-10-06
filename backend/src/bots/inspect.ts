@@ -293,13 +293,23 @@ async function countSiblingBots(parent: string, exclude: string): Promise<number
 function channelsCarrySecrets(def: BotDefinition): boolean {
   const channels = def.channels as unknown;
   if (!Array.isArray(channels)) return false;
+  /** 明文形态 = 会进版本库；SecretRef（env）只在环境变量里，不进文件 */
+  const isPlainSecret = (sec: unknown): boolean => {
+    if (typeof sec === "string" && sec !== "") return true;
+    return sec !== null && typeof sec === "object" && (sec as Record<string, unknown>)["source"] === "literal";
+  };
   for (const ch of channels as Array<Record<string, unknown>>) {
     const accounts = Array.isArray(ch["accounts"]) ? (ch["accounts"] as Array<Record<string, unknown>>) : [];
     for (const acc of accounts) {
-      const sec = acc["appSecret"] ?? acc["botToken"] ?? acc["secret"];
-      // 明文形态 = 会进版本库；SecretRef（env）只在环境变量里，不进文件
-      if (typeof sec === "string" && sec !== "") return true;
-      if (sec !== null && typeof sec === "object" && (sec as Record<string, unknown>)["source"] === "literal") return true;
+      if (isPlainSecret(acc["appSecret"] ?? acc["botToken"] ?? acc["secret"])) return true;
+    }
+    // ⚠ 旧形态（单账号、凭据写在 config 里）telegram 解析器仍然认，
+    // 而这里以前只看 accounts —— 于是「配置里明文放着 bot token」的 bot
+    // 被报告成「没有渠道密钥」，导入对话框放行，token 跟着 bot.json 进了 git。
+    const cfg = ch["config"];
+    if (cfg !== null && typeof cfg === "object") {
+      const c = cfg as Record<string, unknown>;
+      if (isPlainSecret(c["appSecret"] ?? c["botToken"] ?? c["secret"])) return true;
     }
   }
   return false;
@@ -315,8 +325,12 @@ export function isIgnored(gitignore: string, rel: string): boolean {
   const base = path.basename(rel);
   return lines.some((l) => {
     if (l === "" || l.startsWith("#")) return false;
-    const neg = l.startsWith("!");
-    const pat = (neg ? l.slice(1) : l).replace(/\/$/, "").replace(/^\//, "");
+    // 取反行（`!.agent-workbench`）表达的是「**不**忽略」——它是一条反向规则，
+    // 以前只把 `!` 剥掉就当普通规则匹配，于是「用户明确写了不忽略」反而被读成
+    // 「已经忽略了」：导入报告说安全、appendGitignore 也不再补规则，
+    // 最后把带 token 的目录提交进了 git。
+    if (l.startsWith("!")) return false;
+    const pat = l.replace(/\/$/, "").replace(/^\//, "");
     if (pat === "") return false;
     if (pat.includes("/")) return false; // 带路径的规则交给 git 自己判，这里不猜
     return pat === base || pat === "*" || (pat.endsWith("/") && pat.slice(0, -1) === base);

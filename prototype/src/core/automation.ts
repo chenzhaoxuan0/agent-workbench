@@ -180,10 +180,14 @@ export function nextRunAt(a: Automation, from = Date.now()): number | null {
   })();
 
   // 最多推进 400 天仍不匹配就放弃，避免 weekly 配错导致死循环
+  // 没选具体星期时按周一算（与上面 step 里的 days 兜底同一口径）。
+  // 以前这句 days 算了不用，循环直接读 rule.weekdays —— 空数组永远不匹配，
+  // 于是「每周」但不选星期的规则 nextRunAt 恒为 null：不显示下次运行，也永不触发。
+  const weeklyDays = rule.weekdays.length > 0 ? rule.weekdays : [1];
   for (let i = 0; i < 400; i++) {
     if (d.getTime() > from) {
       if (rule.frequency !== "weekly") return d.getTime();
-      if (rule.weekdays.includes(d.getDay() as Weekday)) return d.getTime();
+      if (weeklyDays.includes(d.getDay() as Weekday)) return d.getTime();
     }
     step();
   }

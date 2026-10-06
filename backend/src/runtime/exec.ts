@@ -28,15 +28,19 @@ export interface ResolvedCommand {
 
 const cache = new Map<string, ResolvedCommand>();
 
-let pwshChecked = false;
-let pwshOk = false;
+/**
+ * 本机有没有 pwsh（PowerShell 7）。查一次就缓存。
+ *
+ * ⚠ 缓存的是 **Promise** 而不是「查过了」的布尔位：以前先置 pwshChecked=true
+ * 再 await，并发的第二个调用者会看到 true 但 pwshOk 还是 false，于是走了
+ * cmd.exe 兜底 —— 而 resolveCommand 会把这个结果永久缓存，之后每次 spawn
+ * 都从 cmd.exe 走（那条路会截断多行 argv，就是「飞书回复只剩第一行」那个事故）。
+ */
+let pwshProbe: Promise<boolean> | null = null;
 
-/** 本机有没有 pwsh（PowerShell 7）。查一次就缓存。 */
-async function hasPwsh(): Promise<boolean> {
-  if (pwshChecked) return pwshOk;
-  pwshChecked = true;
-  pwshOk = (await locateOnPath("pwsh")).length > 0;
-  return pwshOk;
+function hasPwsh(): Promise<boolean> {
+  pwshProbe ??= locateOnPath("pwsh").then((p) => p.length > 0);
+  return pwshProbe;
 }
 
 async function locateOnPath(name: string): Promise<string[]> {
@@ -168,11 +172,26 @@ export function spawnLines(cmd: ResolvedCommand, args: readonly string[], opts: 
     ...(opts.env === undefined ? {} : { env: { ...process.env, ...opts.env } }),
   });
   if (opts.closeStdin !== false) child.stdin?.end();
-  createInterface({ input: child.stdout! }).on("line", opts.onLine);
-  if (opts.onStderrLine) {
-    createInterface({ input: child.stderr! }).on("line", opts.onStderrLine);
+  if (child.stdout) createInterface({ input: child.stdout }).on("line", opts.onLine);
+  if (opts.onStderrLine && child.stderr) {
+    createInterface({ input: child.stderr }).on("line", opts.onStderrLine);
   }
-  child.on("exit", (code) => opts.onExit?.(code));
+  let settled = false;
+  child.on("exit", (code) => {
+    settled = true;
+    opts.onExit?.(code);
+  });
+  // ⚠ spawn 失败（ENOENT / EPERM / EACCES —— 例如 CLI 在 resolveCommand 缓存之后被
+  // 卸载或锁住）时 Node **只发 'error'，不发 'close'**，而所有适配器都在
+  // `await new Promise(r => child.once("close", r))`：没有这个补发，那一轮永远不结算
+  // ——turnBusy 一直是 true、会话永远 running、后续消息静默排队、CLI 有没有装都没人知道。
+  child.on("error", (err) => {
+    log.warn("spawn failed", { file: cmd.file, error: err.message });
+    if (settled) return;
+    settled = true;
+    opts.onExit?.(null);
+    child.emit("close", null, null);
+  });
   return child;
 }
 

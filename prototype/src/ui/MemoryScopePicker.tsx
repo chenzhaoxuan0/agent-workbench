@@ -86,7 +86,7 @@ export function MemoryScopePicker() {
                 "group flex cursor-pointer items-start gap-2.5 rounded-lg border p-2 transition",
                 hasSemantic
                   ? "border-teal/40 bg-teal-tint/40 text-ink"
-                  : "border-line-soft hover:border-line hover:bg-canvas-soft text-graphite",
+                  : "border-line-soft hover:border-line hover:bg-line-soft text-graphite",
               )}
             >
               <div className="mt-0.5 shrink-0 text-teal">
@@ -114,7 +114,7 @@ export function MemoryScopePicker() {
                 "group flex cursor-pointer items-start gap-2.5 rounded-lg border p-2 transition",
                 hasDaily
                   ? "border-teal/40 bg-teal-tint/40 text-ink"
-                  : "border-line-soft hover:border-line hover:bg-canvas-soft text-graphite",
+                  : "border-line-soft hover:border-line hover:bg-line-soft text-graphite",
               )}
             >
               <div className="mt-0.5 shrink-0 text-teal">

@@ -46,10 +46,10 @@ export interface DaemonExecutorInfo {
 }
 
 /**
- * daemon 端口。默认 5181，**可被 `VITE_AGENT_WORKBENCH_PORT` 覆盖**。
+ * daemon 端口。默认 5281，**可被 `VITE_AGENT_WORKBENCH_PORT` 覆盖**。
  *
  * 为什么需要这个：Windows 的 Hyper-V / WSL 会保留一整段动态端口
- * （本机实测 5141–5240 就被占了，5181 正在其中），撞上时 `listen` 直接
+ * （本机实测 5141–5240 就被占了，旧默认 5181 正在其中），撞上时 `listen` 直接
  * EACCES，daemon 起不来。而端口同时被前端硬编码了 3 处 —— 服务端单方面换端口
  * 会让界面连不上，所以两端必须能一起改。
  *
@@ -333,9 +333,20 @@ export async function putBotDefinition(
   unit: unknown,
   endpoint: string = defaultDaemonEndpoint(),
   guards: { ifRevision?: number; ifAgentsMdHash?: string } = {},
-): Promise<void> {
+): Promise<RawBotPutResult> {
   const client = DaemonClient.get(endpoint);
-  await client.rpc("bot.put", { unit, ...guards }, 15000);
+  // ⚠ 必须把 daemon 的返回值透出去：调用方要用新 revision/agentsMd 回写 store，
+  // 否则第二次保存带着过期 revision 走 ifRevision 守卫，被判成
+  // 「文件被外部改过」—— 明明是自己刚存的，却每次都要人手确认一遍。
+  return client.rpc<RawBotPutResult>("bot.put", { unit, ...guards }, 15000);
+}
+
+/** daemon `bot.put` 的回执：新 revision 与 AGENTS.md 指纹（写回 store 用） */
+export interface RawBotPutResult {
+  readonly path?: string;
+  readonly revision?: number;
+  readonly updatedAt?: number;
+  readonly agentsMd?: WorkUnit["agentsMdMeta"] | null;
 }
 
 /** daemon 挂在每个定义上的 $meta（后端内部字段名，前端不该看见） */

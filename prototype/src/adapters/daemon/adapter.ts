@@ -94,9 +94,15 @@ class DaemonRuntimeAdapter implements RuntimeAdapter {
   /**
    * startSession 在途缓冲：session.started 在 create RPC 返回**之前**广播，
    * 此刻会话 id 还没进 #sessions —— 不过缓冲就会把首个事件丢掉（探针实证）。
-   * 只缓冲「未进 #sessions」的事件（评审 P2）：已知会话照常投递，并发 startSession 不互踩。
+   * 只缓冲「未进 #sessions」的事件（评审 P2）：已知会话照常投递。
+   *
+   * ⚠ 缓冲是**共享**的、按 sessionId 各自认领，不能用「单槽 + 谁结束谁清空」：
+   * 两个 startSession 并发时，后发起的那次会把前一次的缓冲清掉，而先结束的那次
+   * 又把缓冲置空 —— 另一次会话的 started/首批 delta 就永久丢了（时间线从半途开始）。
    */
-  #inflight: RuntimeEvent[] | null = null;
+  #inflight: RuntimeEvent[] = [];
+  /** 在途 startSession 计数：>0 时才需要缓冲未知会话的事件 */
+  #pendingStarts = 0;
 
   constructor(id: RuntimeId, info: DaemonExecutorInfo, client: DaemonClient) {
     this.id = id;
@@ -135,7 +141,7 @@ class DaemonRuntimeAdapter implements RuntimeAdapter {
       }
       // 评审 P2：在途缓冲只收「还没进 #sessions」的会话（startSession 竞态窗口），
       // 已知会话照常走判重+投递——此前不分青红皂白全缓冲，并发 startSession 互相踩
-      if (this.#inflight !== null && !this.#sessions.has(event.sessionId)) {
+      if (this.#pendingStarts > 0 && !this.#sessions.has(event.sessionId)) {
         this.#inflight.push(event);
         return;
       }
@@ -160,8 +166,12 @@ class DaemonRuntimeAdapter implements RuntimeAdapter {
   /** 对跟踪中的会话逐个 since 补拉；reset=true 用于 daemon 换代（游标已清，全量重拉） */
   async #resync(reset: boolean): Promise<void> {
     for (const sessionId of this.#sessions) {
-      const after = reset ? 0 : (this.#lastSeq.get(sessionId) ?? 0);
-      if (after <= 0) continue;
+      // 换代（reset=true）时游标已清空，after=0 就是「从头发」——这里**不能**
+      // 把 0 当「还没游标，跳过」。以前 `after <= 0 → continue` 让换代全量重拉
+      // 变成空转：断线期间产生的事件永久缺失，in-flight 那轮看起来被截断。
+      const cursor = reset ? 0 : this.#lastSeq.get(sessionId);
+      if (cursor === undefined || cursor < 0) continue;
+      const after = cursor;
       this.#resyncing.add(sessionId);
       this.#stash.set(sessionId, []);
       try {
@@ -231,7 +241,8 @@ class DaemonRuntimeAdapter implements RuntimeAdapter {
   }
 
   async startSession(req: StartSessionRequest): Promise<Session> {
-    this.#inflight = []; // create 期间广播的 started/delta 进缓冲，拿到 id 后回收
+    // create 期间广播的 started/delta 先进共享缓冲，拿到 id 后按 sessionId 认领自己的那几条
+    this.#pendingStarts++;
     try {
       const session = await this.#client.rpc<Session>(
         "session.start",
@@ -249,20 +260,28 @@ class DaemonRuntimeAdapter implements RuntimeAdapter {
         60000,
       );
       this.#sessions.add(session.id);
-      const buffered = this.#inflight ?? [];
-      for (const e of buffered) {
-        if (e.sessionId === session.id) this.#admit(e);
-      }
-      return session;
+      // 认领自己的事件，并把它们从缓冲里摘掉（并发的另一次 startSession 不受影响）
+      const mine = this.#inflight.filter((e) => e.sessionId === session.id);
+      this.#inflight = this.#inflight.filter((e) => e.sessionId !== session.id);
+      for (const e of mine) this.#admit(e);
+      // ⚠ daemon 返回的会话带的是**裸执行器 id**（host 侧 `runtimeId: adapter.id`，
+      // 实测 "codex"），而前端注册表里的键是带命名空间的 `daemon:codex`。
+      // 这里必须翻译一次：调用方（store 的续聊判定与 resolvePermission）拿
+      // session.runtimeId 去比 / 去 getOrCreate，裸 id 会永远不相等 + 抛
+      // 「未注册的运行时」。翻译放在适配器边界，因为只有这里同时知道两个 id。
+      return { ...session, runtimeId: this.id };
     } finally {
-      this.#inflight = null;
+      // 最后一次在途结束：没人能再认领了，清空避免无界增长
+      this.#pendingStarts--;
+      if (this.#pendingStarts === 0) this.#inflight = [];
     }
   }
 
   async resumeSession(sessionId: SessionId): Promise<Session> {
     const session = await this.#client.rpc<Session>("session.resume", { sessionId }, 30000);
     this.#sessions.add(session.id);
-    return session;
+    // 同 startSession：裸 id → 注册表 id
+    return { ...session, runtimeId: this.id };
   }
 
   async sendMessage(req: SendMessageRequest): Promise<void> {

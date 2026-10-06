@@ -6,9 +6,10 @@ import tailwindcss from "@tailwindcss/vite";
 const src = fileURLToPath(new URL("./src", import.meta.url));
 
 export default defineConfig(({ mode }) => {
-  // 端口可配。默认 5180 在**本机**不可绑定 —— Windows 的 Hyper-V / WSL 保留了
-  // 5141–5240 一整段动态端口，5180 与 5181（daemon 默认）都落在里面，
-  // 且 strictPort: true 时 vite 会直接报错退出。
+  // 端口可配，默认 5280。**旧的 5180 在本机不可绑定** —— Windows 的 Hyper-V / WSL
+  // 保留了 5141–5240 一整段动态端口，旧默认 5180 与 daemon 旧默认 5181 都落在里面，
+  // 且 strictPort: true 时 vite 会直接报错退出。daemon 侧的默认端口见
+  // backend/src/config.ts 的 DEFAULT_DAEMON_PORT（5281），两边必须能一起改。
   const env = loadEnv(mode, process.cwd(), "");
   const uiPort = Number(env["VITE_UI_PORT"] ?? "5280");
 

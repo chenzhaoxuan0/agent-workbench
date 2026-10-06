@@ -564,6 +564,21 @@ export async function* scan(opts: ScanOptions = {}): AsyncGenerator<ScannedBlock
 
     let candidates: Array<{ file: string; mtime: number; size: number }> = [];
     let collectedBytes = 0;
+    /**
+     * 枚举上限 —— **别随手动它，它是提前收手的那一刀**。
+     *
+     * 已知取舍（2026-10 实测，别再重复这一轮）：
+     * 它按**枚举顺序**累计字节，而 candidates 要到循环结束才按 mtime 排序，
+     * 所以「字节预算」实际是「枚举顺序前 N MB 之内才参与排序」。目录名带日期的源
+     * （codex 的 sessions/YYYY/MM/DD/）在语料极大时，理论上可能把最新几个文件截在外面。
+     *
+     * 试过两种"修法"，都有实测代价，故维持现状：
+     *   1. 收全量候选（去掉本上限）→ 本机真实语料一次 8MB 扫描从 **1.2s 涨到 10 分钟以上**；
+     *   2. 只把目录枚举改成按名字倒序（零额外 I/O，看似免费）→ 同样掉到 5 分钟以上 ——
+     *      枚举顺序一变，递归先钻进的目录完全不同，代价不是线性的。
+     * 真要修，得先给枚举本身加预算（readdir 次数 / 目录深度都计入），那是一次独立改动。
+     * 当前兜底：`since` 过滤会把预算内那些过老的内容整段跳过，不会污染记忆。
+     */
     const collectCeiling = cap > 0 ? Math.max(cap * 4, 32 * 1024 * 1024) : Number.POSITIVE_INFINITY;
     try {
       for await (const file of listFilesForSource(src, 0, { n: 0 })) {

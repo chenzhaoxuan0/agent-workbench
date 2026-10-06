@@ -345,7 +345,7 @@ function SystemNoticeRow({
           ? "border-teal/30 bg-teal-tint/20 text-ink"
           : isWarn
             ? "border-amber-500/30 bg-amber-500/10 text-ink"
-            : "border-line bg-canvas-soft/80 text-ink",
+            : "border-line bg-line-soft/80 text-ink",
       )}
     >
       <div className="flex items-center gap-2">
@@ -664,14 +664,14 @@ function EmptyState() {
     <div className="flex flex-col items-center">
       {unit && (
         <div
-          className={cn("mb-3 flex h-14 w-14 items-center justify-center text-title font-medium text-canvas shadow-subtle", avatar?.shape)}
+          className={cn("mb-3 flex h-14 w-14 items-center justify-center text-body-lg font-medium text-canvas shadow-subtle", avatar?.shape)}
           style={{ backgroundColor: avatar?.color }}
         >
           {unit.id === "steward" ? "👑" : unit.name.slice(0, 1)}
         </div>
       )}
       <p className="text-caption text-ash">{greeting}</p>
-      <p className="mt-1 text-title font-medium text-ink">
+      <p className="mt-1 text-body-lg font-medium text-ink">
         {!unit ? "选一个 Agent 开始" : `向「${unit.name}」交代任务`}
       </p>
       <p className="mt-1 text-body-sm text-graphite">

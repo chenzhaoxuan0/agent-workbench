@@ -13,7 +13,6 @@ import {
 import { useShallow } from "zustand/react/shallow";
 import { useWorkbench, selectUnitSessions } from "../store/useWorkbench.ts";
 import { SETTINGS_GROUPS, SETTINGS_SECTIONS, useShell } from "../store/useShell.ts";
-import { useSidePane } from "../store/useSidePane.ts";
 import { cn } from "./cn.ts";
 
 /**
@@ -365,13 +364,6 @@ function useCommands(): readonly Command[] {
         hint: "Ctrl+`",
         group: "布局",
         run: () => shell().toggleTerminal(),
-      },
-      {
-        id: "toggle-inspector",
-        label: useSidePane.getState().open ? "收起 Agent 档案" : "展开 Agent 档案",
-        hint: "设定 · 记忆 · 渠道 · 产出",
-        group: "布局",
-        run: () => useSidePane.getState().setOpen(!useSidePane.getState().open),
       },
       {
         id: "new-agent",

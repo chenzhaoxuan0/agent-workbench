@@ -49,7 +49,7 @@ function sendJson(res: ServerResponse, status: number, body: unknown, allowOrigi
   res.end(payload);
 }
 
-/** 本地源判定（含 dev server 5180 等任意本机端口） */
+/** 本地源判定（含 dev server 5280 等任意本机端口） */
 export function isLocalOrigin(origin: string): boolean {
   try {
     const u = new URL(origin);

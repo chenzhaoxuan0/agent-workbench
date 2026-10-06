@@ -7,6 +7,12 @@
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+/**
+ * usage.jsonl 的滚动上限（docs/06 §七 MAX_USAGE=4000）。
+ * 以前只在注释里写着、常量根本不存在，调用方也没传 cap —— 账本只增不减。
+ */
+export const MAX_USAGE = 4_000;
+
 export async function appendJournal(homeDir: string, name: string, entry: unknown, cap?: number): Promise<void> {
   const file = path.join(homeDir, name);
   await mkdir(path.dirname(file), { recursive: true });

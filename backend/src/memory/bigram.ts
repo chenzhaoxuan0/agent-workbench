@@ -32,14 +32,17 @@ function* runs(text: string): Generator<string> {
   }
 }
 
-/** bigram 列表。CJK 串长度 1 时原样保留；非 CJK 词整体保留。 */
+/** bigram 列表。CJK 串长度 1 时原样保留；非 CJK 词整体保留（**统一小写**）。 */
 export function bigrams(text: string): string[] {
   const out: string[] = [];
   for (const run of runs(text)) {
+    // ⚠ 拉丁/数字词一律折成小写：不然 "SQLite" 查不到正文里的 "sqlite"，
+    // 覆盖率掉到阈值以下就被整条丢掉 —— 检索看起来「有时候不灵」。
+    // CJK 没有大小写，toLowerCase 对它是恒等变换。
     if (CJK.test(run[0] ?? "") && run.length > 1) {
       for (let i = 0; i < run.length - 1; i++) out.push(run.slice(i, i + 2));
     } else {
-      out.push(run);
+      out.push(run.toLowerCase());
     }
   }
   return out;
@@ -80,7 +83,8 @@ export function matchScore(q: PreparedQuery, text: string, grams?: Set<string>):
   if (hit === 0) return 0;
 
   const coverage = hit / q.grams.size;
-  // 整串出现 → 满分（这是精确匹配，不该被部分覆盖拉低）
-  if (text.includes(q.raw)) return 1;
+  // 整串出现 → 满分（这是精确匹配，不该被部分覆盖拉低）。
+  // 大小写不敏感，与 bigrams() 的折叠口径一致。
+  if (text.toLowerCase().includes(q.raw.toLowerCase())) return 1;
   return coverage >= q.minCoverage ? coverage : coverage * 0.5;
 }

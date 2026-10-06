@@ -113,7 +113,7 @@ export class FileMemoryInjector implements MemoryInjector {
         if (dailyFile.exists && dailyFile.content.trim().length > 0) {
           const limit = opts?.dailyLimit ?? 4000;
           const over = dailyFile.chars > limit;
-          const body = over ? truncateToBudget(dailyFile.content, limit) : dailyFile.content.trim();
+          const body = over ? truncateToBudget(dailyFile.content, limit, "当日精炼") : dailyFile.content.trim();
 
           const dailySection = [
             `### 当日会话精炼（${date}）`,
@@ -153,20 +153,25 @@ export class FileMemoryInjector implements MemoryInjector {
 }
 
 /**
- * 超限时保留到预算内。优先留尾部（新写的通常在后面），并加一句显式截断标记，
+ * 超限时保留到预算内。**优先留尾部**（新写的通常在后面），并加一句显式截断标记，
  * 让模型知道「还有内容没给它」，而不是以为自己看到了全部。
+ *
+ * `label` 是给模型看的「谁超限了」：长期记忆与当日精炼共用一个函数，
+ * 写死 MEMORY.md 会让「当日精炼被截断」被读成「MEMORY.md 超限了」，
+ * 模型于是跑去整合一个其实没超限的文件。
  */
-export function truncateToBudget(content: string, limit: number): string {
+export function truncateToBudget(content: string, limit: number, label = "MEMORY.md"): string {
   // 放得下就原样返回：不该凭空插一句「省略 0 字符」（第一版有这个瑕疵）
   if (content.length <= limit) return content;
-  const head = limit * 0.6;
+  // 4/6 分：尾部（新内容）多留一点 —— 与上面那句「优先留尾部」对齐
+  const head = Math.floor(limit * 0.4);
   const tail = limit - head;
   const keepTail = content.slice(Math.max(0, content.length - tail));
   const keepHead = content.slice(0, Math.max(0, head));
   const omitted = Math.max(0, content.length - keepHead.length - keepTail.length);
   return [
     keepHead.trimEnd(),
-    `\n…（中间省略 ${omitted} 字符：MEMORY.md 已超上限 ${limit}，需要整合）…\n`,
+    `\n…（中间省略 ${omitted} 字符：${label} 已超上限 ${limit}，需要整合）…\n`,
     keepTail.trimStart(),
   ].join("\n");
 }

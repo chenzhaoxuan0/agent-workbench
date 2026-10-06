@@ -15,7 +15,7 @@
 | 事件流 | WebSocket `ws://<host>:<port>/ws` | daemon → 前端推 `RuntimeEvent`；前端 → daemon 调方法 |
 | 管理面 | HTTP REST | `/healthz` 及后续配置类端点（无会话数据，重连由 WS 通道负责） |
 
-默认 `127.0.0.1:5181`（前端 dev server 是 5180），环境变量见 `backend/README.md`。
+默认 `127.0.0.1:5281`（前端 dev server 是 5280），环境变量见 `backend/README.md`。
 **daemon 只绑回环**——它能 spawn 任意进程，不对外网开门。
 
 ## 二、信封（envelope）

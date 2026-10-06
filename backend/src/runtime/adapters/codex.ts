@@ -78,6 +78,11 @@ interface SessionState {
   turnTexts: string[];
   /** 本轮 loop 参数（reasoning），send 时可覆盖 */
   loop: { reasoningLevel?: string };
+  /**
+   * 权限档（plan / build / edit / yolo）→ 决定每轮 `-s` 沙箱档。
+   * 必须记在会话上：它是会话级承诺（plan = 只读），不是单轮参数。
+   */
+  mode: StartRequest["mode"];
   /** usage 幂等键计数（WP-10） */
   usageCount: number;
 }
@@ -222,6 +227,7 @@ export class CodexAdapter implements ExecutorAdapter {
       child: null,
       turnTexts: [],
       loop: { reasoningLevel: req.reasoningLevel },
+      mode: req.mode,
       usageCount: 0,
     };
     this.sessions.set(state.sessionId, state);
@@ -255,6 +261,9 @@ export class CodexAdapter implements ExecutorAdapter {
       child: null,
       turnTexts: [],
       loop: {},
+      // 续接时 daemon 不重发 mode（SPI 的 reattach 没有这个参数）→ 取 build：
+      // 与旧行为（写死 workspace-write）一致，不会因为这次修复突然收紧已续接的会话。
+      mode: "build",
       usageCount: 0,
     };
     this.sessions.set(sessionId, state);
@@ -290,7 +299,9 @@ export class CodexAdapter implements ExecutorAdapter {
     // 评审 P1：cancelled 只描述"cancel 杀掉的那一轮"；不复位会把后续轮的失败误判为 idle
     state.cancelled = false;
     const cmd = await resolveCommand("codex");
-    const args = ["exec", "--json", "--skip-git-repo-check", "-s", this.sandboxFor("yolo"), "--cd", state.rootPath];
+    // ⚠ 这里必须传 state.mode，不能写死 "yolo"：写死等于用户选了「只读规划」
+    // 也照样拿到 workspace-write —— plan 档承诺的是「写入与命令一律不执行」。
+    const args = ["exec", "--json", "--skip-git-repo-check", "-s", this.sandboxFor(state.mode), "--cd", state.rootPath];
     const loop = state.loop;
     if (loop.reasoningLevel !== undefined) {
       // zcode 的 max 档映射到 codex 的 high；未知值原样透传（codex 会警告并忽略）

@@ -17,12 +17,16 @@ export function MarkdownContent({ content, className }: { content: string; class
         }
         if (block.type === "heading") {
           const Tag = block.level === 1 ? "h2" : block.level === 2 ? "h3" : "h4";
+          // 标题阶梯必须严格递减，且只用 @theme 里的四档字号
+          // （L1 text-body-lg 16 / L2 text-body 14 / L3 text-body-sm 12）。
+          // 原先一级用的是 `text-title` —— 这个 token 根本不存在，
+          // 于是 h1 回落到继承的 14px，比二级标题（16px）还小，层级是反的。
           const sizeCls =
             block.level === 1
-              ? "text-title font-medium mt-4 mb-2"
+              ? "text-body-lg font-medium mt-4 mb-2"
               : block.level === 2
-                ? "text-body-lg font-medium mt-3 mb-1.5"
-                : "text-body font-medium mt-2 mb-1";
+                ? "text-body font-medium mt-3 mb-1.5"
+                : "text-body-sm font-medium mt-2 mb-1";
           return (
             <Tag key={i} className={cn(sizeCls, "text-ink")}>
               {renderInline(block.text)}

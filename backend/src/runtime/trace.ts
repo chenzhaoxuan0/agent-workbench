@@ -29,7 +29,22 @@ export class TraceSink {
     return this.cachedFile;
   }
 
-  async append(record: TraceRecord): Promise<void> {
+  /**
+   * 追加一条轨迹。**串行化**：appendFile 的完成顺序无保证，并发写会让同一会话的
+   * seq 在文件里乱序，且日期翻转时两个并发首写都看到「文件不存在」→ 双 header。
+   * 调用方是 fire-and-forget（`void trace.append(...)`），所以链本身吞掉失败，
+   * 失败只由本次调用的返回值报给调用方，不冒成 unhandled rejection。
+   */
+  append(record: TraceRecord): Promise<void> {
+    const next = this.chain.then(
+      () => this.appendNow(record),
+      () => this.appendNow(record), // 上一次写失败不阻塞后续
+    );
+    this.chain = next.catch(() => undefined);
+    return next;
+  }
+
+  private async appendNow(record: TraceRecord): Promise<void> {
     const dateKey = new Date(record.at).toISOString().slice(0, 10);
     const file = this.fileFor(dateKey);
     await mkdir(path.dirname(file), { recursive: true });

@@ -112,6 +112,11 @@ export function ProviderModelPanel({ runtimeId, displayName }: { runtimeId: stri
   const favShown = shown.filter((m) => isFavoriteGroup(m.id));
   const plainShown = shown.filter((m) => !isFavoriteGroup(m.id));
   const hiddenShown = hiddenDeclared.filter(matchesFilter);
+  /**
+   * 「用户当前看到的顺序」—— 上移/下移必须按它补全 `modelOrder` 再交换。
+   * 不传的话，没排过的行 append 进 modelOrder 后 rank=0，点「下移」会跳到最前面。
+   */
+  const shownOrder = [...favShown, ...plainShown, ...hiddenShown].map((m) => m.id);
 
   // 配置预览 —— 展示成 pi models.json 的 providers 形态（dsh 同源），
   // 强化「加模型 = 往配置里写一条」的直觉；仅作预览，实际写入走 store。
@@ -256,14 +261,14 @@ export function ProviderModelPanel({ runtimeId, displayName }: { runtimeId: stri
                 <IconBtn
                   label={`上移 ${m.displayName}`}
                   disabled={!canUp}
-                  onClick={() => apply(runtimeId, [(p) => moveModel(p, m.id, -1, (id) => favSet.has(id))])}
+                  onClick={() => apply(runtimeId, [(p) => moveModel(p, m.id, -1, (id) => favSet.has(id), shownOrder)])}
                 >
                   <ArrowUp size={12} />
                 </IconBtn>
                 <IconBtn
                   label={`下移 ${m.displayName}`}
                   disabled={!canDown}
-                  onClick={() => apply(runtimeId, [(p) => moveModel(p, m.id, 1, (id) => favSet.has(id))])}
+                  onClick={() => apply(runtimeId, [(p) => moveModel(p, m.id, 1, (id) => favSet.has(id), shownOrder)])}
                 >
                   <ArrowDown size={12} />
                 </IconBtn>
@@ -328,7 +333,11 @@ export function ProviderModelPanel({ runtimeId, displayName }: { runtimeId: stri
           onClick={() => apply(runtimeId, [(p) => nextHiddenForBulkToggle(declared, p)])}
           className="rounded-btn px-2 py-1 text-caption text-graphite hover:bg-line-soft hover:text-ink"
         >
-          {hiddenDeclared.length === declared.length ? "全部显示" : "全部隐藏"}
+          {/* 文案必须与动作同一个判据：动作在「可见 ≤ 1」时就整体放行，
+              而按钮以前只在「一个不剩」时才写「全部显示」—— 那个状态被
+              normalizePrefs 挡掉了（至少留一个），于是按钮永远显示「全部隐藏」，
+              点下去却是全部显示。 */}
+          {declared.length - hiddenDeclared.length <= 1 ? "全部显示" : "全部隐藏"}
         </button>
       </div>
 

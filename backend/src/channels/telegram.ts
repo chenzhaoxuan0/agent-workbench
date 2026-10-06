@@ -44,11 +44,19 @@ function telegramAccounts(bot: BotDefinition): TgAccountSpec[] {
             {
               id: "default",
               botToken: (ch["config"] as Record<string, unknown> | undefined)?.["botToken"],
+              botTokenEnv: (ch["config"] as Record<string, unknown> | undefined)?.["botTokenEnv"],
               chatId: (ch["config"] as Record<string, unknown> | undefined)?.["chatId"],
             },
           ];
     for (const acc of raw) {
-      const token = resolveSecretValue(acc["botToken"]);
+      // ⚠ 两种落盘形态都要认：设置页写的是 `botTokenEnv`（只存**环境变量名**，
+      // token 本身不落盘），旧 bot.json / 手写配置用的是 `botToken`。
+      // 以前只读 botToken，于是「UI 里配好的 telegram」被判成
+      // incomplete credentials 直接跳过 —— 整条渠道静默不工作。
+      const envName = acc["botTokenEnv"];
+      const token = resolveSecretValue(
+        acc["botToken"] ?? (typeof envName === "string" && envName !== "" ? { source: "env", id: envName } : undefined),
+      );
       const chatId = typeof acc["chatId"] === "string" ? acc["chatId"] : "";
       const id = typeof acc["id"] === "string" && acc["id"] !== "" ? acc["id"] : "default";
       // 评审 P2：单份畸形 bot.json 不许拖死排在后面的所有 bot

@@ -77,6 +77,10 @@ function ResizeHandle() {
 function SidebarSlot() {
   const collapsed = useShell((s) => s.sidebarCollapsed);
   const setWidth = useShell((s) => s.setSidebarWidth);
+  // ⚠ 必须读回持久化宽度：onResize 一直在把拖出来的宽度写进 localStorage，
+  // 但这里写死 defaultSize="264px"，于是**每次刷新都被打回 264**——
+  // 用户会以为宽度根本没记住。数字会被当成百分比，所以要带 px。
+  const sidebarWidth = useShell((s) => s.sidebarWidth);
   const ref = useRef<PanelImperativeHandle>(null);
 
   // WP-7 窄屏（手机局域网）：<900px 自动收侧栏，主列全宽——收起即归零语义复用；
@@ -108,8 +112,8 @@ function SidebarSlot() {
   return (
     <Panel
       panelRef={ref}
-      // 注意：数字会被当成百分比，所以 264px 必须写成带单位的字符串
-      defaultSize="264px"
+      // 注意：数字会被当成百分比，所以宽度必须写成带单位的字符串
+      defaultSize={`${sidebarWidth}px`}
       minSize="264px"
       maxSize="50%"
       // ZCode：收起即归零（web 侧为 0，桌面端 4px 是它的窗口内缩需求），不留常驻窄条

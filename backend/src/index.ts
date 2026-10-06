@@ -113,10 +113,17 @@ memoryScheduler = new MemoryScheduler({
   homeDir: config.homeDir,
   store,
   knownProjects: () => botRegistry.roots(),
-  // 「用户最近一次有对话活动」从 sessions 表推：最后一条 message 的时间
+  // 「用户最近一次有对话活动」：取会话行的 started_at / ended_at 与最后一条消息
+  // 时间里的最大值。**不能只看 startedAt** —— 会话的开始时间在整个会话期间不变，
+  // 早上开的会话到晚上仍报「早间空闲」，curator 的 idle 闸就会在用户正聊着的时候
+  // 放行 600s 的后台记忆整理。
   lastActivityAt: () => {
     const rows = store.listSessions();
-    return rows.reduce((max, r) => Math.max(max, r.startedAt), 0);
+    let max = 0;
+    for (const r of rows) {
+      max = Math.max(max, r.startedAt, r.endedAt ?? 0);
+    }
+    return Math.max(max, store.latestMessageAt());
   },
 });
 host.register(new ZcodeAdapter());
@@ -385,6 +392,26 @@ function launchFileManager(targetPath: string): { ok: boolean; path: string } {
   const platform = process.platform;
   const winPath = cleanPath.replace(/\//g, "\\");
 
+  /**
+   * 起一个脱离父进程的 GUI 启动器。
+   * ⚠ 'error' 必须有人接：ChildProcess 上没有 error 监听时，EventEmitter 会把
+   * spawn 失败（ENOENT / 权限）抛成**未捕获异常**，直接把 daemon 带下去 ——
+   * 用户点一下「在资源管理器中打开」就可能弄死整个后台。
+   */
+  const launchDetached = (file: string, args: string[], label: string): void => {
+    try {
+      const p = spawn(file, args, {
+        detached: true,
+        stdio: "ignore",
+        ...(platform === "win32" ? { windowsHide: true } : {}),
+      });
+      p.on("error", (err) => log.warn(`${label} spawn failed`, { err: err.message, path: cleanPath }));
+      p.unref();
+    } catch (err) {
+      log.warn(`${label} spawn threw`, { err, path: cleanPath });
+    }
+  };
+
   if (platform === "win32") {
     // 关键修复：Windows 下不能用 exec('explorer.exe ...')！
     // exec 会捕获并重定向 stdio，explorer.exe 检测到 stdio 被管道捕获时会被 Windows 拒绝创建 GUI 窗口并退出码为 1。
@@ -398,28 +425,16 @@ function launchFileManager(targetPath: string): { ok: boolean; path: string } {
       p.unref();
       p.on("error", (err) => {
         log.warn("explorer.exe direct spawn failed, trying cmd start fallback", { err: err.message, path: winPath });
-        const fallback = spawn("cmd.exe", ["/c", "start", "", winPath], {
-          detached: true,
-          stdio: "ignore",
-          windowsHide: true,
-        });
-        fallback.unref();
+        launchDetached("cmd.exe", ["/c", "start", "", winPath], "cmd.exe start");
       });
     } catch (err) {
       log.warn("spawn explorer failed, fallback to cmd start", { err, path: winPath });
-      const fallback = spawn("cmd.exe", ["/c", "start", "", winPath], {
-        detached: true,
-        stdio: "ignore",
-        windowsHide: true,
-      });
-      fallback.unref();
+      launchDetached("cmd.exe", ["/c", "start", "", winPath], "cmd.exe start");
     }
   } else if (platform === "darwin") {
-    const p = spawn("open", [cleanPath], { detached: true, stdio: "ignore" });
-    p.unref();
+    launchDetached("open", [cleanPath], "open");
   } else {
-    const p = spawn("xdg-open", [cleanPath], { detached: true, stdio: "ignore" });
-    p.unref();
+    launchDetached("xdg-open", [cleanPath], "xdg-open");
   }
   return { ok: true, path: cleanPath };
 }
@@ -849,7 +864,9 @@ registerMethod("adapter.probe", (params) => {
   return host.probe(runtimeId);
 });
 registerMethod("session.start", (params) => {
-  const p = params as {
+  // params 在协议里是可选的（wsd 的信封声明 params?: unknown）——
+  // 缺了要当 bad_params 报，不能 `params as {...}` 后直接读属性（TypeError → internal）
+  const p = (params ?? {}) as {
     runtimeId?: string; unitId?: string; unitName?: string; rootPath?: string;
     prompt?: string; model?: string; mode?: "plan" | "build" | "edit" | "yolo";
     reasoningLevel?: string;
@@ -876,7 +893,7 @@ registerMethod("session.start", (params) => {
   });
 });
 registerMethod("session.send", (params) => {
-  const p = params as { sessionId?: string; text?: string; reasoningLevel?: string };
+  const p = (params ?? {}) as { sessionId?: string; text?: string; reasoningLevel?: string };
   if (typeof p.sessionId !== "string" || typeof p.text !== "string") {
     throw Object.assign(new Error("sessionId and text are required"), { code: "bad_params" });
   }
@@ -934,7 +951,7 @@ registerMethod("session.forget", (params) => {
   return { forgotten: sessionId };
 });
 registerMethod("permission.resolve", (params) => {
-  const p = params as { sessionId?: string; requestId?: string; decision?: "allow" | "deny" | "always" };
+  const p = (params ?? {}) as { sessionId?: string; requestId?: string; decision?: "allow" | "deny" | "always" };
   if (typeof p.sessionId !== "string" || typeof p.requestId !== "string" ||
       (p.decision !== "allow" && p.decision !== "deny" && p.decision !== "always")) {
     throw Object.assign(new Error("sessionId, requestId, decision(allow|deny|always) are required"), { code: "bad_params" });
@@ -985,6 +1002,9 @@ async function shutdown(signal: string): Promise<void> {
   scheduler.stop();
   memoryScheduler?.stop(); // 之前漏了：60s interval 会活到 process.exit，正在跑的日报/curator 被从中间砍断
   telegramGateway.stop();
+  // 飞书也停：它有一个 15s reconcile interval 和每账号的长连接/子进程，
+  // 漏掉它就会在 host.shutdown() 关掉 store 之后还能起新活（评审 P1 同类）
+  feishuGateway.stop();
   terminals.shutdown();
   const force = setTimeout(() => process.exit(0), 2000).unref(); // 挂起写兜底：2s 强制退
   try {

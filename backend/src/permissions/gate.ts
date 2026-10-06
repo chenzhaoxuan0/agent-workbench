@@ -37,13 +37,22 @@ export class PermissionGate {
     for (const rule of this.store.listPermissionRules()) {
       if (rule.runtimeId !== null && rule.runtimeId !== runtimeId) continue;
       if (rule.kind !== null && rule.kind !== kind) continue;
-      if (haystack.includes(normalize(rule.pattern))) return rule.decision === "deny" ? "deny" : "allow";
+      // ⚠ 归一化后为空串的 pattern（"*" / "**" / "--" 这类只有非字母数字的写法）
+      // 会让 `includes("")` 恒为 true —— 一条看起来「只匹配某类」的规则会变成
+      // 该 runtime 下**所有**请求的全局自动放行/拒绝。空归一化一律视为无规则。
+      const needle = normalize(rule.pattern);
+      if (needle === "") continue;
+      if (haystack.includes(needle)) return rule.decision === "deny" ? "deny" : "allow";
     }
     return null;
   }
 
   addRule(input: { runtimeId?: string | null; kind?: string | null; pattern: string; decision: PermissionDecision }): number {
     if (input.pattern.trim() === "") throw Object.assign(new Error("pattern is required"), { code: "bad_params" });
+    // 与 evaluate 同一口径：归一化后没剩下任何字母数字的 pattern 匹配一切，不许入库
+    if (normalize(input.pattern) === "") {
+      throw Object.assign(new Error("pattern must contain at least one letter or digit"), { code: "bad_params" });
+    }
     return this.store.addPermissionRule({
       runtimeId: input.runtimeId ?? null,
       kind: input.kind ?? null,

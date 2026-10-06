@@ -301,16 +301,21 @@ export function nextHiddenForBulkToggle(
 /**
  * 上移 / 下移。**只在同一组内交换**（对齐 T3code：
  * 「moves only swap rows within the same group」），否则收藏项会混进普通段。
+ *
+ * `displayOrder` 是「用户当前看到的顺序」（调用方把渲染出来的行按序传进来）。
+ * 没排过的 id 必须先按它补进 modelOrder，否则 rank 是 Infinity、append 之后
+ * 变 0 —— 点「下移」会把这一行送到该组**最前面**，按钮语义整个反过来。
  */
 export function moveModel(
   prefs: ProviderModelPrefs,
   id: ModelId,
   dir: -1 | 1,
   groupOf: (id: ModelId) => boolean,
+  displayOrder: readonly ModelId[] = [],
 ): ProviderModelPrefs {
   const order = prefs.modelOrder;
-  // 没排过的先按当前显示序补全，否则「上移」对没排过的项无效
-  const filled = order.length > 0 ? order : [];
+  // 补全：已有 rank 保留，显示序里还没排过的一律追加到末尾（顺序 = 当前所见）
+  const filled = displayOrder.reduce<ModelId[]>((acc, x) => (acc.includes(x) ? acc : [...acc, x]), [...order]);
   const idx = filled.indexOf(id);
   if (idx < 0) return { ...prefs, modelOrder: [...order, id] };
 

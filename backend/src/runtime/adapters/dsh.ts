@@ -63,6 +63,8 @@ import { log } from "../../log.ts";
 interface AcpContent {
   type?: string;
   text?: string;
+  /** ACP 的内容块是**可嵌套**的：工具结果形如 `{type:"content", content:{type:"text",…}}` */
+  content?: AcpContent | AcpContent[];
 }
 
 interface AcpUpdate {
@@ -658,8 +660,17 @@ function asBlockArray(content: AcpContent | AcpContent[] | undefined): AcpConten
 }
 
 function chunkText(content: AcpContent | AcpContent[] | undefined): string {
-  return asBlockArray(content)
-    .filter((b) => b.type === "text" || b.type === undefined)
-    .map((b) => b.text ?? "")
-    .join("");
+  let out = "";
+  for (const b of asBlockArray(content)) {
+    if (b.type === "text" || b.type === undefined) {
+      out += b.text ?? "";
+      continue;
+    }
+    // ⚠ 嵌套形态必须解开：ACP 的 tool_call_update 内容是
+    // `content:[{type:"content", content:{type:"text", text:"…"}}]`，
+    // 只认 type==="text" 会让**每个** tool.completed 的 output 都是空串
+    // （时间线里工具输出整段消失）。mcode 是同一份协议，那边早就这么处理了。
+    if (b.type === "content") out += chunkText(b.content);
+  }
+  return out;
 }
