@@ -212,6 +212,16 @@ export type RuntimeEvent =
       readonly sessionId: SessionId;
       readonly message: string;
       readonly recoverable: boolean;
+    }
+
+  // ---- 系统与指令通知 ----
+  | {
+      readonly type: "system.notice";
+      readonly sessionId: SessionId;
+      readonly title: string;
+      readonly text: string;
+      readonly level?: "info" | "success" | "warn";
+      readonly meta?: Readonly<Record<string, string>>;
     };
 
 export type RuntimeEventType = RuntimeEvent["type"];

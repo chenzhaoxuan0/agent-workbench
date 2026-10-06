@@ -16,6 +16,14 @@ export function MemoryScopePicker() {
   const hasSemantic = memoryScopes.includes("semantic");
   const hasDaily = memoryScopes.includes("daily");
 
+  const draft = useWorkbench((s) => s.draft);
+
+  useEffect(() => {
+    if (draft.startsWith("/")) {
+      setOpen(false);
+    }
+  }, [draft]);
+
   useEffect(() => {
     const handleOutsideClick = (e: MouseEvent) => {
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {

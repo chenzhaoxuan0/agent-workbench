@@ -86,7 +86,8 @@ interface GroupedItem {
     | "file.diff"
     | "deliverable"
     | "usage"
-    | "error";
+    | "error"
+    | "system.notice";
   at: number;
   data: any;
 }
@@ -194,6 +195,10 @@ function groupTimelineEvents(events: readonly { id: number | string; event: Runt
 
       case "error":
         result.push({ id, kind: "error", at, data: event });
+        break;
+
+      case "system.notice":
+        result.push({ id, kind: "system.notice", at, data: event });
         break;
 
       default:
@@ -307,9 +312,76 @@ function TimelineItemRow({ item, unitName, busy }: { item: GroupedItem; unitName
         </div>
       );
 
+    case "system.notice":
+      return <SystemNoticeRow event={item.data} at={item.at} />;
+
     default:
       return null;
   }
+}
+
+/* ------------------------------------------------------------- 系统通知卡片 */
+
+function SystemNoticeRow({
+  event,
+  at,
+}: {
+  event: {
+    title: string;
+    text: string;
+    level?: "info" | "success" | "warn";
+    meta?: Readonly<Record<string, string>>;
+  };
+  at: number;
+}) {
+  const isSuccess = event.level === "success";
+  const isWarn = event.level === "warn";
+
+  return (
+    <div
+      className={cn(
+        "rounded-card border p-3.5 shadow-xs transition animate-in fade-in slide-in-from-bottom-1 duration-150",
+        isSuccess
+          ? "border-teal/30 bg-teal-tint/20 text-ink"
+          : isWarn
+            ? "border-amber-500/30 bg-amber-500/10 text-ink"
+            : "border-line bg-canvas-soft/80 text-ink",
+      )}
+    >
+      <div className="flex items-center gap-2">
+        <div
+          className={cn(
+            "flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-xs font-bold",
+            isSuccess ? "bg-teal text-white" : isWarn ? "bg-amber-600 text-white" : "bg-ink text-white",
+          )}
+        >
+          ⚡
+        </div>
+        <span className="font-semibold text-body-sm text-ink">{event.title}</span>
+        <span className="ml-auto font-mono text-[10px] text-ash">
+          {new Date(at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+        </span>
+      </div>
+
+      <div className="mt-2 text-body-sm text-graphite whitespace-pre-wrap leading-relaxed font-normal">
+        {event.text}
+      </div>
+
+      {event.meta && Object.keys(event.meta).length > 0 && (
+        <div className="mt-2.5 flex flex-wrap items-center gap-1.5 pt-2 border-t border-line-soft">
+          {Object.entries(event.meta).map(([k, v]) => (
+            <span
+              key={k}
+              className="inline-flex items-center gap-1 rounded bg-canvas px-2 py-0.5 text-[11px] font-mono text-graphite border border-line-soft"
+            >
+              <span className="text-ash">{k}:</span>
+              <span className="font-medium text-ink">{v}</span>
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 /* ------------------------------------------------------------- 思考过程折叠块 */

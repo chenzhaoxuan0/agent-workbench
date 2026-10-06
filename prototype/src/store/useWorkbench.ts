@@ -149,6 +149,11 @@ interface WorkbenchState {
   memoryScopes: readonly ("semantic" | "daily")[];
   setMemoryScopes: (scopes: readonly ("semantic" | "daily")[]) => void;
   toggleMemoryScope: (scope: "semantic" | "daily") => void;
+  pushNotice: (
+    title: string,
+    text: string,
+    options?: { level?: "info" | "success" | "warn"; meta?: Readonly<Record<string, string>> },
+  ) => void;
   run: (prompt: string, opts?: { memoryOptions?: MemoryInjectionOptions }) => Promise<void>;
   /** 停止当前运行。mock 适配器没有真正的取消通道，只翻 busy 位 */
   cancelRun: () => void;
@@ -303,6 +308,26 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
       const next = has ? s.memoryScopes.filter((x) => x !== scope) : [...s.memoryScopes, scope];
       return { memoryScopes: next };
     }),
+
+  pushNotice: (title, text, options) => {
+    set((s) => ({
+      timeline: [
+        ...s.timeline,
+        {
+          id: ++seq,
+          event: {
+            type: "system.notice",
+            sessionId: s.activeSessionId ?? ("sys" as SessionId),
+            title,
+            text,
+            level: options?.level ?? "info",
+            meta: options?.meta,
+          },
+          at: Date.now(),
+        },
+      ],
+    }));
+  },
 
   setLoopParam: (runtimeId, patch) => {
     set((s) => {

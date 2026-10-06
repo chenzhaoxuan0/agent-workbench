@@ -34,6 +34,7 @@
     "smoke:memory7": "tsx scripts/smoke-memory7.ts",
     "smoke:opencode": "tsx scripts/smoke-opencode.ts",
     "smoke:ui": "tsx scripts/verify-ui.ts",
+    "smoke:ui:live": "tsx scripts/live-gui-test.ts",
     "start": "tsx src/index.ts",
     "typecheck": "tsc --noEmit"
   },
