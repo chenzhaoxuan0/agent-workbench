@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ArrowLeft } from "lucide-react";
 import { Group, Panel, Separator, type PanelImperativeHandle } from "react-resizable-panels";
 import { Composer } from "./ui/Composer.tsx";
@@ -66,8 +66,15 @@ export function WorkspaceShell() {
 }
 function ResizeHandle() {
   return (
-    <Separator className="group relative w-px bg-line">
-      <span className="absolute inset-y-0 -left-1 -right-1 transition group-hover:bg-teal/20" />
+    <Separator
+      className="group relative w-px bg-line cursor-col-resize transition-colors data-[separator=active]:bg-teal hover:bg-teal/50"
+      style={{ cursor: "col-resize" }}
+    >
+      {/* 16px 宽的命中区域，带明确的 col-resize 光标与 hover/active 激活高亮条 */}
+      <span
+        className="absolute inset-y-0 -left-2 -right-2 z-20 cursor-col-resize transition-colors group-hover:bg-teal/20 group-data-[separator=active]:bg-teal/30"
+        aria-hidden
+      />
     </Separator>
   );
 }
@@ -77,10 +84,11 @@ function ResizeHandle() {
 function SidebarSlot() {
   const collapsed = useShell((s) => s.sidebarCollapsed);
   const setWidth = useShell((s) => s.setSidebarWidth);
-  // ⚠ 必须读回持久化宽度：onResize 一直在把拖出来的宽度写进 localStorage，
-  // 但这里写死 defaultSize="264px"，于是**每次刷新都被打回 264**——
-  // 用户会以为宽度根本没记住。数字会被当成百分比，所以要带 px。
-  const sidebarWidth = useShell((s) => s.sidebarWidth);
+  // ⚠ initialWidth 只在挂载时读取一次持久化宽度作为 defaultSize。
+  // 决不能在组件内响应式订阅 sidebarWidth 并反复传给 defaultSize，
+  // 否则每次拖动 1px 触发 onResize -> setWidth -> store 变更 -> SidebarSlot 重渲染 -> defaultSize 改变 -> Panel 重挂载，
+  // 会直接打断 react-resizable-panels 的活跃拖动手势！
+  const [initialWidth] = useState(() => useShell.getState().sidebarWidth);
   const ref = useRef<PanelImperativeHandle>(null);
 
   // WP-7 窄屏（手机局域网）：<900px 自动收侧栏，主列全宽——收起即归零语义复用；
@@ -113,7 +121,7 @@ function SidebarSlot() {
     <Panel
       panelRef={ref}
       // 注意：数字会被当成百分比，所以宽度必须写成带单位的字符串
-      defaultSize={`${sidebarWidth}px`}
+      defaultSize={`${initialWidth}px`}
       minSize="264px"
       maxSize="50%"
       // ZCode：收起即归零（web 侧为 0，桌面端 4px 是它的窗口内缩需求），不留常驻窄条
