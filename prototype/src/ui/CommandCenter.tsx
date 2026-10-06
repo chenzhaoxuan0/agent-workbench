@@ -168,7 +168,7 @@ export function CommandCenter() {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center bg-ink/20 pt-24"
+      className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 backdrop-blur-xs pt-24"
       onClick={() => setOpen(false)}
     >
       <div
@@ -187,7 +187,7 @@ export function CommandCenter() {
             runItem(filtered[cursor]);
           }
         }}
-        className="w-[640px] max-w-[92vw] overflow-hidden rounded-card border border-line bg-canvas shadow-subtle"
+        className="w-[640px] max-w-[92vw] overflow-hidden rounded-card border border-line bg-card shadow-2xl"
       >
         {/* 头部：ZCode 的圆角输入框 */}
         <div className="border-b border-line px-2 pb-2 pt-2">

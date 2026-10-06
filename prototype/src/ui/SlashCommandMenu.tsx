@@ -311,7 +311,7 @@ export function SlashCommandMenu({ filter, onSelect, onClose }: SlashCommandMenu
   if (matched.length === 0) return null;
 
   return (
-    <div className="absolute bottom-full left-0 mb-3 w-[460px] max-w-[calc(100vw-3rem)] rounded-xl border border-line bg-canvas/95 p-1.5 shadow-2xl backdrop-blur-md z-50 animate-in fade-in zoom-in-95 duration-100 overflow-hidden">
+    <div className="absolute bottom-full left-0 mb-3 w-[460px] max-w-[calc(100vw-3rem)] rounded-xl border border-line bg-card/95 p-1.5 shadow-2xl backdrop-blur-md z-50 animate-in fade-in zoom-in-95 duration-100 overflow-hidden">
       <div className="px-3 py-1.5 border-b border-line-soft flex items-center justify-between text-[11px] text-graphite">
         <span className="font-medium text-ink flex items-center gap-1.5">
           <span className="font-mono text-teal font-bold">/</span>

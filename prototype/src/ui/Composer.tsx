@@ -561,7 +561,7 @@ export function Composer() {
           className={cn(
             "relative rounded-input border bg-canvas px-4 py-3",
             "border-line",
-            "focus-within:shadow-[0_0_0_3px_rgb(1_106_113/0.12)]",
+            "focus-within:border-teal/50 focus-within:ring-2 focus-within:ring-teal/20",
           )}
         >
           {/* 斜杠指令弹出菜单 */}
@@ -661,7 +661,7 @@ export function Composer() {
                   onClick={() => useWorkbench.getState().cancelRun()}
                   aria-label="停止"
                   title="停止"
-                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-btn bg-ink text-canvas hover:bg-black"
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-btn bg-ink text-canvas hover:opacity-90 active:scale-95 transition"
                 >
                   <Square size={12} fill="currentColor" />
                 </button>
@@ -672,7 +672,7 @@ export function Composer() {
                   disabled={!draft.trim()}
                   aria-label="发送"
                   title="发送 · Enter"
-                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-btn bg-ink text-canvas hover:bg-black disabled:opacity-30"
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-btn bg-ink text-canvas hover:opacity-90 active:scale-95 disabled:opacity-30 transition"
                 >
                   <ArrowUp size={16} />
                 </button>

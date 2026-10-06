@@ -281,13 +281,13 @@ export function AddBotDialog({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/30 p-6" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-6" onClick={onClose}>
       <div
         role="dialog"
         aria-modal="true"
         aria-label={isEdit ? "bot 设置" : "新建 bot"}
         onClick={(e) => e.stopPropagation()}
-        className="flex h-[620px] max-h-[92vh] w-[920px] max-w-[94vw] flex-col overflow-hidden rounded-card border border-line bg-canvas shadow-subtle"
+        className="flex h-[620px] max-h-[92vh] w-[920px] max-w-[94vw] flex-col overflow-hidden rounded-card border border-line bg-card shadow-2xl"
       >
         {/* 头部 */}
         <div className="flex h-12 shrink-0 items-center gap-2 border-b border-line px-4">
@@ -585,7 +585,7 @@ export function AddBotDialog({
                 </button>
                 <button
                   onClick={() => setConflict(null)}
-                  className="rounded-btn bg-ink px-3 py-1.5 text-body-sm text-canvas hover:bg-black"
+                  className="rounded-btn bg-ink px-3 py-1.5 text-body-sm text-canvas hover:opacity-90 active:scale-95 transition"
                 >
                   取消
                 </button>
@@ -615,7 +615,7 @@ export function AddBotDialog({
                 <button
                   onClick={() => void submit(false)}
                   disabled={saving}
-                  className="flex items-center gap-1 rounded-btn bg-ink px-3 py-1.5 text-body-sm text-canvas hover:bg-black disabled:opacity-50"
+                  className="flex items-center gap-1 rounded-btn bg-ink px-3 py-1.5 text-body-sm text-canvas hover:opacity-90 active:scale-95 disabled:opacity-50 transition"
                 >
                   {isEdit ? <Check size={11} /> : <Plus size={11} />}
                   {saving ? "写入中…" : isEdit ? "保存" : "创建 bot"}

@@ -17,30 +17,27 @@
    ========================================================================== */
 
 @theme {
-  /* ---- Surfaces：中性灰阶。画布最浅，卡片纯白，rail 夹在中间 ---- */
-  --color-canvas: #fafafa; /* 页面画布，全局底色 */
-  --color-rail: #f4f4f4; /* 左右侧栏 / composer 底：比画布深一档 */
-  --color-card: #ffffff; /* 卡片面：比画布亮一档，靠这个差值浮起 */
-  --color-line: #e4e4e4; /* 发丝边框 */
-  --color-line-soft: #f0f0f0; /* 更浅一档，用于卡内部分隔 */
-  --color-surface-hover: #f4f4f4; /* 通用悬停面。**新增**：替换组件里写死的羊皮纸色 hover */
+  /* ---- Surfaces：深色系/黑色系（Obsidian / Dark Charcoal） ---- */
+  --color-canvas: #0f1115; /* 页面画布，终端同款纯黑深底 */
+  --color-rail: #151820; /* 左右侧栏 / 顶栏 / 工具条底色：微升半档深灰 */
+  --color-card: #1a1e27; /* 卡片面 / 弹窗浮层：深炭灰，微亮一档 */
+  --color-line: #262b38; /* 发丝边框：低对比度细黑灰 */
+  --color-line-soft: #1d222e; /* 更浅一档，用于卡内部分隔与弱交互底色 */
+  --color-surface-hover: #222735; /* 通用悬停面 */
 
-  /* ---- Text：真中性灰 ---- */
-  --color-ink: #0a0a0a; /* 正文、图标填充、按钮底色 */
-  --color-graphite: #525252; /* 次要文字、导航图标、失效标签 */
-  --color-ash: #8a8a8a; /* 辅助说明、极次要 */
+  /* ---- Text：高对比度白与冷灰 ---- */
+  --color-ink: #f3f4f6; /* 正文、高亮标题、图标主体 */
+  --color-graphite: #9ca3af; /* 次要文字、导航图标、说明 */
+  --color-ash: #64748b; /* 辅助说明、极次要、时间戳 */
 
-  /* ---- Accent：全场唯一彩色 ---- */
-  /* ⚠ 换皮**保留**了青色，没跟 Grok 一起去掉，理由见 README「视觉」章节：
-     黑白灰观感来自画布与文字（占 95% 像素），青色只出现在选中态、
-     焦点环、勾选、运行中状态点上。把它去掉不是换皮，是重写 156 处组件用法。 */
-  --color-teal: #016a71; /* 选中态、激活态、品牌强调 */
-  --color-teal-tint: #e6f0f0; /* 选中态的浅填充 */
-  --color-teal-edge: #a9c6c8; /* 选中态边框 */
+  /* ---- Accent：赛博青色（Cyber Teal / Mint），与终端光标同源 ---- */
+  --color-teal: #2dd4bf; /* 选中态、激活态、品牌强调（明亮青） */
+  --color-teal-tint: rgba(45, 212, 191, 0.12); /* 选中态的浅荧光填充 */
+  --color-teal-edge: rgba(45, 212, 191, 0.35); /* 选中态发光边框 */
 
-  /* ---- 语义色：仅用于 +/-, 成功/失败等真实语义，不做装饰 ---- */
-  --color-gain: #2f6b4f; /* diff 新增 */
-  --color-loss: #9a4a3c; /* diff 删除 / 错误 / 完全放行警示 */
+  /* ---- 语义色：针对深色底优化的高明度语义色 ---- */
+  --color-gain: #4ade80; /* diff 新增 / 成功状态 */
+  --color-loss: #f87171; /* diff 删除 / 错误 / 风险警示 */
 
   /* ---- Typography：字重锁死在 400 / 500 ---- */
   --font-sans: Inter, "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system,
@@ -64,8 +61,9 @@
   --radius-card: 16px;
   --radius-chip: 9999px;
 
-  /* ---- Shadow：全场只有这一道 ---- */
-  --shadow-subtle: 0 1px 2px 0 rgb(0 0 0 / 0.06);
+  /* ---- Shadow：深色模式细致投影 ---- */
+  --shadow-subtle: 0 2px 8px 0 rgb(0 0 0 / 0.35);
+  --shadow-xs: 0 1px 2px 0 rgb(0 0 0 / 0.25);
 }
 
 /* ==========================================================================
@@ -73,7 +71,7 @@
    ========================================================================== */
 
 :root {
-  color-scheme: light;
+  color-scheme: dark;
 }
 
 html,
@@ -112,22 +110,25 @@ textarea {
 }
 
 ::selection {
-  background: var(--color-teal-tint);
+  background: rgba(45, 212, 191, 0.25);
   color: var(--color-ink);
 }
 
-/* 发丝滚动条，融入中性底 */
+/* 发丝滚动条，融入中性深色底 */
 * {
   scrollbar-width: thin;
-  scrollbar-color: #d4d4d4 transparent;
+  scrollbar-color: #262b38 transparent;
 }
 *::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 *::-webkit-scrollbar-thumb {
-  background: #d4d4d4;
+  background: #262b38;
   border-radius: 4px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: #363d4e;
 }
 *::-webkit-scrollbar-track {
   background: transparent;

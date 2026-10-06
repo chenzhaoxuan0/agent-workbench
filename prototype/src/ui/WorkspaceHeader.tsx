@@ -45,7 +45,7 @@ export function WorkspaceHeader() {
   return (
     <header
       className={cn(
-        "flex h-12 shrink-0 items-center gap-2 border-b border-line/60 bg-canvas transition-[padding] duration-300",
+        "flex h-12 shrink-0 items-center gap-2 border-b border-line/60 bg-rail transition-[padding] duration-300",
         sidebarCollapsed ? "pl-[152px]" : "px-4",
       )}
       aria-label="工作区"
@@ -106,14 +106,14 @@ export function WorkspaceHeader() {
       )}
 
       {/* ---- 中区：主视图切换（终端 TUI | 会话历史 | 轨迹） ---- */}
-      <div className="mx-auto hidden md:flex items-center rounded-btn bg-line-soft/60 p-0.5">
+      <div className="mx-auto hidden md:flex items-center rounded-btn bg-line-soft/80 p-0.5 border border-line/40">
         <button
           onClick={() => setConversationView("terminal")}
           title="交互终端模式：直接在工作空间运行 Agent CLI（Claude Code / Codex / ZCode 等），享有原生 TUI 与斜杠命令"
           className={cn(
             "flex items-center gap-1.5 rounded-btn px-2.5 py-1 text-[12px] font-medium transition",
             conversationView === "terminal"
-              ? "bg-canvas text-teal shadow-xs font-semibold"
+              ? "bg-card text-teal shadow-xs font-semibold border border-teal/25"
               : "text-graphite hover:text-ink",
           )}
         >
@@ -127,7 +127,7 @@ export function WorkspaceHeader() {
           className={cn(
             "flex items-center gap-1.5 rounded-btn px-2.5 py-1 text-[12px] font-medium transition",
             conversationView === "chat"
-              ? "bg-canvas text-teal shadow-xs font-semibold"
+              ? "bg-card text-teal shadow-xs font-semibold border border-teal/25"
               : "text-graphite hover:text-ink",
           )}
         >
@@ -141,7 +141,7 @@ export function WorkspaceHeader() {
           className={cn(
             "flex items-center gap-1.5 rounded-btn px-2.5 py-1 text-[12px] font-medium transition",
             conversationView === "trajectory"
-              ? "bg-canvas text-teal shadow-xs font-semibold"
+              ? "bg-card text-teal shadow-xs font-semibold border border-teal/25"
               : "text-graphite hover:text-ink",
           )}
         >
@@ -217,7 +217,7 @@ function ExecutorSelector() {
       {open && (
         <>
           <span className="fixed inset-0 z-30" onClick={() => setOpen(false)} aria-hidden />
-          <div className="absolute left-0 top-full z-40 mt-1 w-52 rounded-card border border-line bg-canvas py-1 shadow-subtle">
+          <div className="absolute left-0 top-full z-40 mt-1 w-52 rounded-card border border-line bg-card py-1 shadow-xl">
             <div className="px-3 py-1 text-[10px] text-ash font-medium border-b border-line-soft">
               选择交互执行器 (CLI)
             </div>
@@ -387,7 +387,7 @@ function MoreMenu() {
       {open && (
         <>
           <span className="fixed inset-0 z-30" onClick={() => setOpen(false)} aria-hidden />
-          <div className="absolute left-0 top-full z-40 mt-1 w-48 rounded-card border border-line bg-canvas py-1 shadow-subtle">
+          <div className="absolute left-0 top-full z-40 mt-1 w-48 rounded-card border border-line bg-card py-1 shadow-xl">
             {rows.map(({ key, icon: Icon, label, disabled, onClick }) => (
               <button
                 key={key}
@@ -451,7 +451,7 @@ function WorkspacePopover() {
       {open && (
         <>
           <span className="fixed inset-0 z-30" onClick={() => setOpen(false)} aria-hidden />
-          <div className="absolute left-0 top-full z-40 mt-1 w-72 rounded-card border border-line bg-canvas p-3 shadow-subtle">
+          <div className="absolute left-0 top-full z-40 mt-1 w-72 rounded-card border border-line bg-card p-3 shadow-xl">
             <p className="break-all font-mono text-body-sm text-ink">{unit.rootPath}</p>
             {/* 分支行（ZCode 弹层的 GitBranch 行）：项目会话显示 worktree 分支 */}
             <p className="mt-2 flex items-center gap-1.5 text-caption text-graphite">

@@ -239,13 +239,13 @@ export function ImportBotDialog({
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/30 p-6" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-6" onClick={onClose}>
       <div
         role="dialog"
         aria-modal="true"
         aria-label="添加已有文件夹"
         onClick={(e) => e.stopPropagation()}
-        className="flex max-h-[88vh] w-[720px] max-w-[94vw] flex-col overflow-hidden rounded-card border border-line bg-canvas shadow-subtle"
+        className="flex max-h-[88vh] w-[720px] max-w-[94vw] flex-col overflow-hidden rounded-card border border-line bg-card shadow-2xl"
       >
         {/* 头部 */}
         <div className="flex h-12 shrink-0 items-center gap-2 border-b border-line px-4">
@@ -461,7 +461,7 @@ export function ImportBotDialog({
                 <button
                   onClick={() => void probe()}
                   disabled={probing}
-                  className="flex items-center gap-1 rounded-btn bg-ink px-3 py-1.5 text-body-sm text-canvas hover:bg-black disabled:opacity-50"
+                  className="flex items-center gap-1 rounded-btn bg-ink px-3 py-1.5 text-body-sm text-canvas hover:opacity-90 active:scale-95 disabled:opacity-50 transition"
                 >
                   {probing ? <Loader2 size={11} className="animate-spin" /> : <FolderOpen size={11} />}
                   {probing ? "探测中…" : "探测"}
@@ -480,7 +480,7 @@ export function ImportBotDialog({
                 </button>
                 <button
                   onClick={onClose}
-                  className="rounded-btn bg-ink px-3 py-1.5 text-body-sm text-canvas hover:bg-black"
+                  className="rounded-btn bg-ink px-3 py-1.5 text-body-sm text-canvas hover:opacity-90 active:scale-95 transition"
                 >
                   知道了
                 </button>
@@ -503,7 +503,7 @@ export function ImportBotDialog({
                       ? "先把 .agent-workbench/ 加进 .gitignore"
                       : undefined
                   }
-                  className="flex items-center gap-1 rounded-btn bg-ink px-3 py-1.5 text-body-sm text-canvas hover:bg-black disabled:opacity-50"
+                  className="flex items-center gap-1 rounded-btn bg-ink px-3 py-1.5 text-body-sm text-canvas hover:opacity-90 active:scale-95 disabled:opacity-50 transition"
                 >
                   {busy ? <Loader2 size={11} className="animate-spin" /> : <Check size={11} />}
                   {busy ? "注册中…" : branch === "reconnect" ? "接回管理面" : "认领这个文件夹"}

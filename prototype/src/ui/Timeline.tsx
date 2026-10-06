@@ -352,7 +352,7 @@ function SystemNoticeRow({
         <div
           className={cn(
             "flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-xs font-bold",
-            isSuccess ? "bg-teal text-white" : isWarn ? "bg-amber-600 text-white" : "bg-ink text-white",
+            isSuccess ? "bg-teal text-canvas" : isWarn ? "bg-amber-600 text-white" : "bg-ink text-canvas",
           )}
         >
           ⚡

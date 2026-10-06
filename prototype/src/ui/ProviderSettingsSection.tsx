@@ -47,7 +47,7 @@ export function ProviderSettingsSection() {
         {mode === null && !editing && (
           <button
             onClick={() => setMode("catalog")}
-            className="flex shrink-0 items-center gap-1 rounded-btn bg-ink px-2.5 py-1.5 text-body-sm text-canvas hover:bg-black"
+            className="flex shrink-0 items-center gap-1 rounded-btn bg-ink px-2.5 py-1.5 text-body-sm text-canvas hover:opacity-90 active:scale-95 transition"
           >
             <Plus size={11} />
             添加模型供应商
@@ -458,7 +458,7 @@ function AddProviderCard({
           <button onClick={onClose} className="rounded-btn px-3 py-1.5 text-body-sm text-graphite hover:bg-line-soft hover:text-ink">
             取消
           </button>
-          <button onClick={submit} className="rounded-btn bg-ink px-3 py-1.5 text-body-sm text-canvas hover:bg-black">
+          <button onClick={submit} className="rounded-btn bg-ink px-3 py-1.5 text-body-sm text-canvas hover:opacity-90 active:scale-95 transition">
             {mode === "custom" && !existing ? "创建提供商" : "保存"}
           </button>
         </div>

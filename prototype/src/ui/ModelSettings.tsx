@@ -460,7 +460,7 @@ export function ProviderModelPanel({ runtimeId, displayName }: { runtimeId: stri
           <button
             onClick={submitDrafts}
             disabled={drafts.every((r) => r.id.trim().length === 0)}
-            className="flex items-center gap-1 rounded-btn bg-ink px-2.5 py-1.5 text-body-sm text-canvas hover:bg-black disabled:opacity-30"
+            className="flex items-center gap-1 rounded-btn bg-ink px-2.5 py-1.5 text-body-sm text-canvas hover:opacity-90 active:scale-95 disabled:opacity-30 transition"
           >
             <Plus size={12} />
             全部添加（{drafts.filter((r) => r.id.trim().length > 0).length}）

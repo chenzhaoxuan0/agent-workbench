@@ -220,7 +220,7 @@ export function Sidebar() {
             onClick={() => useShell.getState().openAddBot()}
             aria-label="新建 Agent"
             title="新建 Agent"
-            className="flex items-center gap-1 rounded-btn bg-ink px-2 py-0.5 text-caption font-medium text-canvas hover:bg-black"
+            className="flex items-center gap-1 rounded-btn bg-ink px-2 py-0.5 text-caption font-medium text-canvas hover:opacity-90 active:scale-95 transition"
           >
             <Plus size={12} />
             <span>新建</span>

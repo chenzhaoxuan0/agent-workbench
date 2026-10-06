@@ -65,7 +65,7 @@ export function AutomationsPage() {
               按日程自动派活给工作单元，跑完归档产出
             </p>
           </div>
-          <button className="flex shrink-0 items-center gap-1.5 rounded-btn bg-ink px-3 py-2 text-body-sm text-canvas hover:bg-black">
+          <button className="flex shrink-0 items-center gap-1.5 rounded-btn bg-ink px-3 py-2 text-body-sm text-canvas hover:opacity-90 active:scale-95 transition">
             <Plus size={12} />
             新建
           </button>
