@@ -161,33 +161,47 @@ function ConversationSlot() {
               {conversationView === "trajectory" ? (
                 <>
                   <div className="flex shrink-0 items-center justify-between border-b border-line bg-canvas px-6 py-2">
-                    <button
-                      onClick={() => setConversationView("chat")}
-                      className="flex items-center gap-1.5 rounded-btn px-2.5 py-1 text-body-sm text-graphite hover:bg-line-soft hover:text-ink transition"
-                    >
-                      <ArrowLeft size={13} />
-                      <span>返回对话</span>
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => setConversationView("terminal")}
+                        className="flex items-center gap-1.5 rounded-btn px-2.5 py-1 text-body-sm text-graphite hover:bg-line-soft hover:text-ink transition"
+                      >
+                        <ArrowLeft size={13} />
+                        <span>返回终端</span>
+                      </button>
+                      <button
+                        onClick={() => setConversationView("chat")}
+                        className="flex items-center gap-1.5 rounded-btn px-2.5 py-1 text-body-sm text-graphite hover:bg-line-soft hover:text-ink transition"
+                      >
+                        <span>查看会话历史</span>
+                      </button>
+                    </div>
                     <span className="text-caption text-ash font-mono">调用轨迹视图</span>
                   </div>
                   <TrajectoryView />
                 </>
-              ) : (
-                <Timeline />
-              )}
-              {/* 权限卡片 */}
-              {(conversationView === "chat" || conversationView === "trajectory") && <PermissionDialog />}
-              {(conversationView === "chat" || conversationView === "trajectory") && <Composer />}
+              ) : conversationView === "chat" ? (
+                <>
+                  <Timeline />
+                  <PermissionDialog />
+                  <Composer />
+                </>
+              ) : null}
+
+              {/* 终端画布持久挂载：切换视图时不杀进程、不丢缓冲，切回瞬间即达 */}
+              <div className={cn("min-h-0 flex-1 flex-col", conversationView === "terminal" ? "flex" : "hidden")}>
+                <TerminalPanel variant="canvas" />
+              </div>
             </main>
           </Panel>
 
-          {terminalOpen && (
+          {terminalOpen && conversationView !== "terminal" && (
             <>
               <Separator className="group relative h-px bg-line">
                 <span className="absolute inset-x-0 -top-1 -bottom-1 transition group-hover:bg-teal/20" />
               </Separator>
               <Panel defaultSize="30%" minSize="10%" maxSize="70%">
-                <TerminalPanel />
+                <TerminalPanel variant="dock" />
               </Panel>
             </>
           )}

@@ -462,8 +462,28 @@ const authorize = (req: IncomingMessage, url: URL): boolean => {
 const { server, port } = await startHttp(config, startedAt, httpRoutes, authorize);
 const wss = attachWs(server, { config, startedAt, authorize });
 registerMethod("terminal.create", (params) => {
-  const p = (params ?? {}) as { cwd?: string; shell?: string; cols?: number; rows?: number };
-  return terminals.create({ cwd: p.cwd, shell: p.shell, cols: p.cols, rows: p.rows });
+  const p = (params ?? {}) as {
+    terminalId?: string;
+    cwd?: string;
+    shell?: string;
+    command?: string;
+    args?: readonly string[];
+    executorId?: string;
+    cols?: number;
+    rows?: number;
+    env?: Record<string, string>;
+  };
+  return terminals.create({
+    terminalId: p.terminalId,
+    cwd: p.cwd,
+    shell: p.shell,
+    command: p.command,
+    args: p.args,
+    executorId: p.executorId,
+    cols: p.cols,
+    rows: p.rows,
+    env: p.env,
+  });
 });
 registerMethod("terminal.input", (params) => {
   const p = (params ?? {}) as { terminalId?: string; data?: string };

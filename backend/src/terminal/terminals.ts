@@ -21,8 +21,12 @@ export interface TerminalFrameInput {
 }
 
 export interface CreateOptions {
+  readonly terminalId?: string;
   readonly cwd?: string;
   readonly shell?: string;
+  readonly command?: string;
+  readonly args?: readonly string[];
+  readonly executorId?: string;
   readonly cols?: number;
   readonly rows?: number;
   readonly env?: Readonly<Record<string, string>>;
@@ -112,14 +116,52 @@ export class TerminalManager {
 
   constructor(private readonly emit: (frame: TerminalFrameInput) => void) {}
 
-  create(opts: CreateOptions = {}): { terminalId: string; shell: string } {
-    const terminalId = `term_${randomUUID()}`;
+  create(opts: CreateOptions = {}): { terminalId: string; shell: string; executor?: string } {
+    const terminalId = opts.terminalId ?? `term_${randomUUID()}`;
     const shell = opts.shell ?? defaultShell();
     const cols = opts.cols ?? DEFAULT_COLS;
     const rows = opts.rows ?? DEFAULT_ROWS;
     const cwd = opts.cwd ?? process.cwd();
 
-    const shellProcess = pty.spawn(shell, [], {
+    // 解析前台执行器命令（Claude Code, Codex, ZCode, OpenCode, Pi, MCode, DSH 等）
+    const rawTarget =
+      opts.command ??
+      (opts.executorId && opts.executorId !== "shell" && opts.executorId !== "pwsh"
+        ? opts.executorId
+        : undefined);
+
+    const stripped = rawTarget ? rawTarget.replace(/^daemon:/, "").trim() : undefined;
+    const targetCmd = stripped && stripped !== "mockperm" ? stripped : undefined;
+
+    let shellArgs: string[] = [];
+    const isPwsh =
+      shell.toLowerCase().includes("pwsh") || shell.toLowerCase().includes("powershell");
+    const isCmd = shell.toLowerCase().includes("cmd.exe");
+
+    if (targetCmd !== undefined && targetCmd.trim() !== "") {
+      const extraArgs = (opts.args ?? []).join(" ");
+      if (isPwsh) {
+        // PowerShell 7 / 5.1：-NoLogo -NoExit，启动即交互运行对应 CLI。
+        // 若 CLI 退出或 Ctrl+C，保留在当前工作目录的 shell，不直接销毁终端。
+        const callExpr = extraArgs ? `& '${targetCmd}' ${extraArgs}` : `& '${targetCmd}'`;
+        shellArgs = ["-NoLogo", "-NoExit", "-Command", callExpr];
+      } else if (isCmd) {
+        const full = extraArgs ? `${targetCmd} ${extraArgs}` : targetCmd;
+        shellArgs = ["/k", full];
+      } else {
+        const full = extraArgs ? `${targetCmd} ${extraArgs}` : targetCmd;
+        shellArgs = ["-c", `${full} || exec ${shell}`];
+      }
+    } else {
+      // 纯 Shell 交互
+      if (isPwsh) {
+        shellArgs = ["-NoLogo"];
+      } else if (opts.args) {
+        shellArgs = [...opts.args];
+      }
+    }
+
+    const shellProcess = pty.spawn(shell, shellArgs, {
       name: "xterm-256color",
       cols,
       rows,
@@ -137,8 +179,14 @@ export class TerminalManager {
     });
 
     this.sessions.set(terminalId, { terminalId, pty: shellProcess });
-    log.info("terminal created", { terminalId, shell, cwd: path.basename(cwd), pid: shellProcess.pid });
-    return { terminalId, shell };
+    log.info("terminal created", {
+      terminalId,
+      shell,
+      executor: targetCmd ?? "shell",
+      cwd: path.basename(cwd),
+      pid: shellProcess.pid,
+    });
+    return { terminalId, shell, executor: targetCmd ?? "shell" };
   }
 
   write(terminalId: string, data: string): void {

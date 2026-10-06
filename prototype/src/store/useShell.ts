@@ -26,9 +26,9 @@ import type { UnitId } from "../core/units.ts";
 export type MainView = "chat" | "automations" | "image";
 
 /**
- * 会话内视图：chat 为主对话，trajectory 为审计轨迹。
+ * 会话内视图：terminal 为交互终端（TUI 原生体验），chat 为会话历史与对话，trajectory 为审计轨迹。
  */
-export type ConversationView = "chat" | "trajectory";
+export type ConversationView = "terminal" | "chat" | "trajectory";
 
 /**
  * 设置分区 id。
@@ -173,7 +173,7 @@ export const useShell = create<ShellState>((set, get) => ({
   mainView: "chat",
   settingsOpen: false,
   settingsSection: "models",
-  conversationView: "chat",
+  conversationView: "terminal",
   addBotOpen: false,
   editUnitId: null,
   importBotOpen: false,

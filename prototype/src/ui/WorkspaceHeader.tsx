@@ -2,6 +2,7 @@ import { useState } from "react";
 import {
   Brain,
   Check,
+  ChevronDown,
   ChevronRight,
   Copy,
   Ellipsis,
@@ -10,10 +11,12 @@ import {
   GitBranch,
   Hash,
   History,
+  MessageSquare,
   PanelRightClose,
   PanelRightOpen,
   Pin,
   SquareTerminal,
+  Zap,
 } from "lucide-react";
 import { useShell } from "../store/useShell.ts";
 import { useWorkbench, selectActiveUnit } from "../store/useWorkbench.ts";
@@ -24,13 +27,13 @@ import { cn } from "./cn.ts";
 /** 图标按钮的统一规格：28px 命中区（ZCode 的 icon-md），14px 图标 */
 const iconBtn =
   "rounded-btn p-1.5 text-graphite hover:bg-line-soft hover:text-ink disabled:opacity-35 disabled:hover:bg-transparent";
-/** 按下态（aria-pressed=true 的开关类按钮） */
-const pressedBtn = "bg-teal-tint text-teal hover:bg-teal-tint hover:text-teal";
 
 export function WorkspaceHeader() {
   const sidebarCollapsed = useShell((s) => s.sidebarCollapsed);
   const terminalOpen = useShell((s) => s.terminalOpen);
   const toggleTerminal = useShell((s) => s.toggleTerminal);
+  const conversationView = useShell((s) => s.conversationView);
+  const setConversationView = useShell((s) => s.setConversationView);
 
   const unit = useWorkbench(selectActiveUnit);
   const session = useWorkbench((s) => s.sessions.find((x) => x.id === s.activeSessionId));
@@ -47,7 +50,7 @@ export function WorkspaceHeader() {
       )}
       aria-label="工作区"
     >
-      {/* ---- 左区：Agent 身份卡片 + 会话标题 ---- */}
+      {/* ---- 左区：Agent 身份卡片 + 执行器切换 ---- */}
       {unit ? (
         <div className="flex min-w-0 items-center gap-2">
           {/* 可点击的 Agent 头衔（点击打开 Agent 设置） */}
@@ -82,11 +85,14 @@ export function WorkspaceHeader() {
             )}
           </button>
 
-          {/* 会话名称 */}
+          {/* 快速执行器选择器 */}
+          <ExecutorSelector />
+
+          {/* 会话名称（若有活跃会话） */}
           {session && (
-            <span className="flex min-w-0 items-center gap-1.5 text-body-sm text-graphite">
+            <span className="hidden xl:flex min-w-0 items-center gap-1.5 text-body-sm text-graphite">
               <span className="text-ash">/</span>
-              <span className="truncate max-w-[200px]" title={session.title}>{session.title}</span>
+              <span className="truncate max-w-[140px]" title={session.title}>{session.title}</span>
             </span>
           )}
 
@@ -99,26 +105,196 @@ export function WorkspaceHeader() {
         <span className="text-body-sm text-ash">未选择 Agent</span>
       )}
 
-      {/* ---- 右区：动作按钮 ---- */}
-      <div className="ml-auto flex shrink-0 items-center gap-1.5">
-        {/* 终端抽屉开关 */}
+      {/* ---- 中区：主视图切换（终端 TUI | 会话历史 | 轨迹） ---- */}
+      <div className="mx-auto hidden md:flex items-center rounded-btn bg-line-soft/60 p-0.5">
         <button
-          onClick={toggleTerminal}
-          aria-label="终端"
-          aria-pressed={terminalOpen}
-          title="终端抽屉 · Ctrl+`"
+          onClick={() => setConversationView("terminal")}
+          title="交互终端模式：直接在工作空间运行 Agent CLI（Claude Code / Codex / ZCode 等），享有原生 TUI 与斜杠命令"
           className={cn(
-            "flex items-center gap-1.5 rounded-btn px-2.5 py-1 text-body-sm transition",
-            terminalOpen
-              ? "bg-teal-tint font-medium text-teal"
-              : "text-graphite hover:bg-line-soft hover:text-ink",
+            "flex items-center gap-1.5 rounded-btn px-2.5 py-1 text-[12px] font-medium transition",
+            conversationView === "terminal"
+              ? "bg-canvas text-teal shadow-xs font-semibold"
+              : "text-graphite hover:text-ink",
           )}
         >
-          <SquareTerminal size={14} />
-          <span className="hidden sm:inline">终端</span>
+          <SquareTerminal size={13} />
+          <span>终端 TUI</span>
+        </button>
+
+        <button
+          onClick={() => setConversationView("chat")}
+          title="会话历史：查看过去对话、后台机器人转写记录与时间线"
+          className={cn(
+            "flex items-center gap-1.5 rounded-btn px-2.5 py-1 text-[12px] font-medium transition",
+            conversationView === "chat"
+              ? "bg-canvas text-teal shadow-xs font-semibold"
+              : "text-graphite hover:text-ink",
+          )}
+        >
+          <MessageSquare size={13} />
+          <span>会话历史</span>
+        </button>
+
+        <button
+          onClick={() => setConversationView("trajectory")}
+          title="调用轨迹：底层事件流与调用明细"
+          className={cn(
+            "flex items-center gap-1.5 rounded-btn px-2.5 py-1 text-[12px] font-medium transition",
+            conversationView === "trajectory"
+              ? "bg-canvas text-teal shadow-xs font-semibold"
+              : "text-graphite hover:text-ink",
+          )}
+        >
+          <History size={13} />
+          <span>轨迹透视</span>
         </button>
       </div>
+
+      {/* ---- 右区：后台守护指示器与动作 ---- */}
+      <div className="ml-auto flex shrink-0 items-center gap-2">
+        {/* 后台守护状态指示 */}
+        <BackgroundGuardianBadge />
+
+        {/* 仅在非全屏终端模式下提供底部抽屉开关 */}
+        {conversationView !== "terminal" && (
+          <button
+            onClick={toggleTerminal}
+            aria-label="终端抽屉"
+            aria-pressed={terminalOpen}
+            title="底部终端抽屉 · Ctrl+`"
+            className={cn(
+              "flex items-center gap-1.5 rounded-btn px-2.5 py-1 text-body-sm transition",
+              terminalOpen
+                ? "bg-teal-tint font-medium text-teal"
+                : "text-graphite hover:bg-line-soft hover:text-ink",
+            )}
+          >
+            <SquareTerminal size={14} />
+            <span className="hidden sm:inline">抽屉</span>
+          </button>
+        )}
+      </div>
     </header>
+  );
+}
+
+/** 快速执行器下拉选择器 */
+function ExecutorSelector() {
+  const runtimes = useWorkbench((s) => s.runtimes);
+  const activeRuntimeId = useWorkbench((s) => s.activeRuntimeId);
+  const selectRuntime = useWorkbench((s) => s.selectRuntime);
+  const activeRuntime = runtimes.find((r) => r.id === activeRuntimeId);
+  const [open, setOpen] = useState(false);
+
+  const shellOption = { id: "shell", name: "PowerShell 终端", glyph: ">_" };
+  const allOptions = [
+    ...runtimes.filter((r) => !r.testOnly).map((r) => ({
+      id: r.id as string,
+      name: r.presentation.displayName,
+      glyph: r.presentation.glyph,
+    })),
+    shellOption,
+  ];
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        title="快速切换当前执行器（在工作目录直接运行对应 Agent CLI）"
+        className={cn(
+          "flex items-center gap-1 rounded-btn border border-line/60 bg-line-soft/30 px-2 py-1 text-caption font-medium transition hover:border-teal/50 hover:bg-line-soft",
+          open && "border-teal text-teal",
+        )}
+      >
+        <Zap size={11} className="text-teal" />
+        <span className="font-mono text-[11px] text-ink">
+          {activeRuntime?.presentation.displayName ?? (activeRuntimeId === "shell" ? "PowerShell" : activeRuntimeId)}
+        </span>
+        <ChevronDown size={10} className={cn("text-ash transition-transform", open && "rotate-180")} />
+      </button>
+
+      {open && (
+        <>
+          <span className="fixed inset-0 z-30" onClick={() => setOpen(false)} aria-hidden />
+          <div className="absolute left-0 top-full z-40 mt-1 w-52 rounded-card border border-line bg-canvas py-1 shadow-subtle">
+            <div className="px-3 py-1 text-[10px] text-ash font-medium border-b border-line-soft">
+              选择交互执行器 (CLI)
+            </div>
+            {allOptions.map((opt) => {
+              const isSelected = activeRuntimeId === opt.id;
+              return (
+                <button
+                  key={opt.id}
+                  onClick={() => {
+                    selectRuntime(opt.id);
+                    setOpen(false);
+                  }}
+                  className={cn(
+                    "flex w-full items-center justify-between px-3 py-1.5 text-left text-body-sm transition hover:bg-line-soft",
+                    isSelected ? "text-teal font-medium" : "text-graphite hover:text-ink",
+                  )}
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-caption text-ash w-4">{opt.glyph}</span>
+                    <span>{opt.name}</span>
+                  </div>
+                  {isSelected && <Check size={12} className="text-teal" />}
+                </button>
+              );
+            })}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/** 后台守护状态胶囊（飞书 / Telegram / Cron） */
+function BackgroundGuardianBadge() {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        title="后台静默服务运行状态（点击查看详情）"
+        className="flex items-center gap-1.5 rounded-chip bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/20 transition cursor-pointer"
+      >
+        <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+        <span className="hidden sm:inline">后台守护</span>
+        <span className="text-[10px] opacity-75">(飞书/Cron)</span>
+      </button>
+
+      {open && (
+        <>
+          <span className="fixed inset-0 z-30" onClick={() => setOpen(false)} aria-hidden />
+          <div className="absolute right-0 top-full z-40 mt-1.5 w-76 rounded-card border border-line bg-canvas p-3 shadow-subtle text-caption leading-relaxed">
+            <div className="flex items-center gap-1.5 text-body-sm font-medium text-ink pb-1.5 border-b border-line-soft">
+              <span className="h-2 w-2 rounded-full bg-emerald-500" />
+              <span>后台静默守护中（与前台终端完全隔离）</span>
+            </div>
+            <div className="mt-2 space-y-1.5 text-graphite">
+              <p className="flex items-start gap-1.5">
+                <span className="text-teal font-bold">✓</span>
+                <span><b>飞书 / Telegram</b>：收到移动端指令时在后台无头执行，自动回传消息。</span>
+              </p>
+              <p className="flex items-start gap-1.5">
+                <span className="text-teal font-bold">✓</span>
+                <span><b>定时任务 (Cron)</b>：定点执行，产物与总结落盘。</span>
+              </p>
+              <p className="flex items-start gap-1.5">
+                <span className="text-teal font-bold">✓</span>
+                <span><b>每日会话精炼</b>：每日提取对话并更新工作区记忆。</span>
+              </p>
+              <p className="mt-2 pt-1.5 border-t border-line-soft text-ash text-[10px]">
+                前台终端（TUI）为专享直控界面，后台任务在独立进程中运行，永不抢夺前台标准输入输出。
+              </p>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
   );
 }
 
