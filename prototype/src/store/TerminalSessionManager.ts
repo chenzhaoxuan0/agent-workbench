@@ -29,15 +29,15 @@ export const XTERM_LIGHT_THEME = {
   blue: "#2563eb",
   magenta: "#a855f7",
   cyan: "#0d9488",
-  white: "#f7f7f4",
-  brightBlack: "#7a7974",
+  white: "#7a7974",
+  brightBlack: "#84847e",
   brightRed: "#e11d48",
   brightGreen: "#16a34a",
   brightYellow: "#d97706",
   brightBlue: "#3b82f6",
   brightMagenta: "#c084fc",
   brightCyan: "#14b8a6",
-  brightWhite: "#ffffff",
+  brightWhite: "#454440",
 };
 
 export const XTERM_DARK_THEME = {
@@ -53,7 +53,7 @@ export const XTERM_DARK_THEME = {
   magenta: "#cbb0f7",
   cyan: "#cbb0f7",
   white: "#faf9f6",
-  brightBlack: "#333333",
+  brightBlack: "#777777",
   brightRed: "#ef4444",
   brightGreen: "#22c55e",
   brightYellow: "#eab308",
@@ -120,6 +120,7 @@ export class TerminalSession {
       cursorStyle: "bar",
       convertEol: false,
       customGlyphs: true,
+      minimumContrastRatio: 4.5,
       smoothScrollDuration: 0,
       fastScrollSensitivity: 3,
       scrollSensitivity: 1,
@@ -286,6 +287,7 @@ export class TerminalSession {
     // ⚠ 注意：必须使用 options.theme = { ...theme }，切勿将整个包含 cols/rows 的 options 覆盖，避免 constructor 校验抛错
     try {
       this.term.options.theme = { ...theme };
+      this.term.options.minimumContrastRatio = 4.5;
     } catch (err) {
       console.warn("[terminal] failed to update term.options.theme:", err);
     }
@@ -328,16 +330,28 @@ export class TerminalSession {
       });
     });
 
-    // 6. 发送 resize RPC 通知后台 PTY / ConPTY 触发屏幕重绘
+    // 6. 发送尺寸微调 (jitter resize) 通知后台 PTY / ConPTY 触发全屏 TUI 重绘 (SIGWINCH)
+    // 必须打破 node-pty / ConPTY 的同尺寸短路检查，让前台运行的 ZCode / Codex 等 TUI 程序
+    // 收到真正的窗口尺寸变化通知，从而原位重新绘制界面（不会打断正在进行的输入或会话！）
     try {
       const client = DaemonClient.get(defaultDaemonEndpoint());
-      void client
-        .rpc(
-          "terminal.resize",
-          { terminalId: this.terminalId, cols: this.lastCols, rows: this.lastRows },
-          8000,
-        )
-        .catch(() => {});
+      const cols = this.lastCols;
+      const rows = this.lastRows;
+      if (cols >= 10 && rows >= 4) {
+        const jitterCols = cols > 20 ? cols - 1 : cols + 1;
+        this.term.resize(jitterCols, rows);
+        void client
+          .rpc("terminal.resize", { terminalId: this.terminalId, cols: jitterCols, rows }, 8000)
+          .catch(() => {});
+        setTimeout(() => {
+          if (this.disposed) return;
+          this.term.resize(cols, rows);
+          void client
+            .rpc("terminal.resize", { terminalId: this.terminalId, cols, rows }, 8000)
+            .catch(() => {});
+          this.term.refresh(0, Math.max(1, this.term.rows - 1));
+        }, 40);
+      }
     } catch {}
   }
 

@@ -62,6 +62,7 @@ export const TerminalInstanceView = memo(
         if (termRef.current) {
           termRef.current.options.theme =
             resolvedTheme === "dark" ? XTERM_DARK_THEME : XTERM_LIGHT_THEME;
+          termRef.current.options.minimumContrastRatio = 4.5;
         }
       }, [resolvedTheme]);
 
@@ -101,6 +102,7 @@ export const TerminalInstanceView = memo(
           cursorStyle: "bar",
           convertEol: false,
           customGlyphs: true,
+          minimumContrastRatio: 4.5,
           smoothScrollDuration: 0,
           fastScrollSensitivity: 3,
           scrollSensitivity: 1,
