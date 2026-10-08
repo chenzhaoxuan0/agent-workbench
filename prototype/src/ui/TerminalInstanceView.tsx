@@ -62,9 +62,13 @@ export const TerminalInstanceView = memo(
         if (termRef.current) {
           termRef.current.options.theme =
             resolvedTheme === "dark" ? XTERM_DARK_THEME : XTERM_LIGHT_THEME;
-          termRef.current.options.minimumContrastRatio = 4.5;
+          const client = DaemonClient.get(defaultDaemonEndpoint());
+          const themeSeq = resolvedTheme === "dark"
+            ? "\x1b[?997;1n\x1b]10;rgb:fafa/f9f9/f6f6\x1b\\\x1b]11;rgb:0000/0000/0000\x1b\\\x1b]10;#faf9f6\x07\x1b]11;#000000\x07"
+            : "\x1b[?997;2n\x1b]10;rgb:2626/2525/1e1e\x1b\\\x1b]11;rgb:f2f2/f1f1/eded\x1b\\\x1b]10;#26251e\x07\x1b]11;#f2f1ed\x07";
+          void client.rpc("terminal.input", { terminalId, data: themeSeq }, 3000).catch(() => {});
         }
-      }, [resolvedTheme]);
+      }, [resolvedTheme, terminalId]);
 
       useImperativeHandle(
         ref,
@@ -135,7 +139,15 @@ export const TerminalInstanceView = memo(
         // 订阅后台 PTY 帧
         const onFrame = (f: DaemonTerminalFrame): void => {
           if (f.terminalId !== terminalId) return;
-          if (f.kind === "data" && f.data !== undefined) term.write(f.data);
+          if (f.kind === "data" && f.data !== undefined) {
+            if (f.data.includes("]10;?") || f.data.includes("]11;?")) {
+              const oscReply = resolvedTheme === "dark"
+                ? "\x1b]10;rgb:fafa/f9f9/f6f6\x1b\\\x1b]11;rgb:0000/0000/0000\x1b\\\x1b]10;#faf9f6\x07\x1b]11;#000000\x07"
+                : "\x1b]10;rgb:2626/2525/1e1e\x1b\\\x1b]11;rgb:f2f2/f1f1/eded\x1b\\\x1b]10;#26251e\x07\x1b]11;#f2f1ed\x07";
+              void client.rpc("terminal.input", { terminalId, data: oscReply }, 3000).catch(() => {});
+            }
+            term.write(f.data);
+          }
           if (f.kind === "exit") {
             const code = f.exitCode ?? 0;
             setExited(code);
@@ -183,6 +195,9 @@ export const TerminalInstanceView = memo(
               cols,
               rows,
               executorId,
+              env: {
+                COLORFGBG: resolvedTheme === "dark" ? "15;0" : "0;15",
+              },
             },
             15000,
           );

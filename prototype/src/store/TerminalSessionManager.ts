@@ -29,7 +29,7 @@ export const XTERM_LIGHT_THEME = {
   blue: "#2563eb",
   magenta: "#a855f7",
   cyan: "#0d9488",
-  white: "#7a7974",
+  white: "#e6e5e0",
   brightBlack: "#84847e",
   brightRed: "#e11d48",
   brightGreen: "#16a34a",
@@ -37,7 +37,7 @@ export const XTERM_LIGHT_THEME = {
   brightBlue: "#3b82f6",
   brightMagenta: "#c084fc",
   brightCyan: "#14b8a6",
-  brightWhite: "#454440",
+  brightWhite: "#ffffff",
 };
 
 export const XTERM_DARK_THEME = {
@@ -154,6 +154,16 @@ export class TerminalSession {
     const onFrame = (f: DaemonTerminalFrame): void => {
       if (f.terminalId !== this.terminalId) return;
       if (f.kind === "data" && f.data !== undefined) {
+        // 自动应答 CLI 发起的 OSC 10 / OSC 11 终端前景色与背景色查询（如 Codex, bat, fzf, vim 等）
+        if (f.data.includes("]10;?") || f.data.includes("]11;?")) {
+          const isDarkNow = getIsDarkMode();
+          const oscReply = isDarkNow
+            ? "\x1b]10;rgb:fafa/f9f9/f6f6\x1b\\\x1b]11;rgb:0000/0000/0000\x1b\\\x1b]10;#faf9f6\x07\x1b]11;#000000\x07"
+            : "\x1b]10;rgb:2626/2525/1e1e\x1b\\\x1b]11;rgb:f2f2/f1f1/eded\x1b\\\x1b]10;#26251e\x07\x1b]11;#f2f1ed\x07";
+          void client
+            .rpc("terminal.input", { terminalId: this.terminalId, data: oscReply }, 3000)
+            .catch(() => {});
+        }
         this.term.write(f.data);
       }
       if (f.kind === "exit") {
@@ -247,6 +257,7 @@ export class TerminalSession {
     this.lastCols = cols;
     this.lastRows = rows;
 
+    const isDark = getIsDarkMode();
     await client.rpc(
       "terminal.create",
       {
@@ -256,6 +267,9 @@ export class TerminalSession {
         cols,
         rows,
         executorId: this.executorId,
+        env: {
+          COLORFGBG: isDark ? "15;0" : "0;15",
+        },
       },
       15000,
     );
@@ -330,11 +344,19 @@ export class TerminalSession {
       });
     });
 
-    // 6. 发送尺寸微调 (jitter resize) 通知后台 PTY / ConPTY 触发全屏 TUI 重绘 (SIGWINCH)
-    // 必须打破 node-pty / ConPTY 的同尺寸短路检查，让前台运行的 ZCode / Codex 等 TUI 程序
-    // 收到真正的窗口尺寸变化通知，从而原位重新绘制界面（不会打断正在进行的输入或会话！）
+    // 6. 向后台 PTY 注入终端主题模式通知（DEC Mode 2031 + OSC 10/11 颜色通报）
+    // 让正在前台运行的 TUI 应用（如 ZCode、Codex 等）立即同步收到主题变更信号，触发内置的主题重绘！
     try {
       const client = DaemonClient.get(defaultDaemonEndpoint());
+      const themeSeq = isDark
+        ? "\x1b[?997;1n\x1b]10;rgb:fafa/f9f9/f6f6\x1b\\\x1b]11;rgb:0000/0000/0000\x1b\\\x1b]10;#faf9f6\x07\x1b]11;#000000\x07"
+        : "\x1b[?997;2n\x1b]10;rgb:2626/2525/1e1e\x1b\\\x1b]11;rgb:f2f2/f1f1/eded\x1b\\\x1b]10;#26251e\x07\x1b]11;#f2f1ed\x07";
+      void client
+        .rpc("terminal.input", { terminalId: this.terminalId, data: themeSeq }, 3000)
+        .catch(() => {});
+
+      // 7. 发送尺寸微调 (jitter resize) 通知后台 PTY / ConPTY 触发全屏 TUI 重绘 (SIGWINCH)
+      // OpenTUI 与 crossterm 内部防抖通常为 100ms，微颤维持 120ms，确保子进程防抖定时器捕获并原位全屏刷新
       const cols = this.lastCols;
       const rows = this.lastRows;
       if (cols >= 10 && rows >= 4) {
@@ -350,7 +372,7 @@ export class TerminalSession {
             .rpc("terminal.resize", { terminalId: this.terminalId, cols, rows }, 8000)
             .catch(() => {});
           this.term.refresh(0, Math.max(1, this.term.rows - 1));
-        }, 40);
+        }, 120);
       }
     } catch {}
   }
