@@ -141,7 +141,7 @@ export function Sidebar() {
     <div className="flex h-full min-h-0 flex-col bg-rail">
       {/* 顶部 48px 区域：在出图/自动化时顶掉 A 标渲染返回工作台；在正常对话时渲染 A 图标与全局独立动作 */}
       {mainView !== "chat" ? (
-        <div className="flex h-12 shrink-0 items-center border-b border-line/60 px-3">
+        <div className="flex h-12 shrink-0 items-center border-b border-line/60 px-2.5">
           <button
             onClick={() => useShell.getState().setMainView("chat")}
             className="flex h-8 w-full items-center gap-1.5 rounded-btn bg-teal-tint px-2.5 text-body-sm font-medium text-teal transition hover:bg-teal/15"
@@ -151,20 +151,19 @@ export function Sidebar() {
           </button>
         </div>
       ) : (
-        <div className="flex h-12 shrink-0 items-center justify-between border-b border-line/60 px-3">
-          {/* 侧栏开关：A 品牌标 ↔ 收起图标 hover 变形 */}
+        <div className="flex h-12 shrink-0 items-center justify-between border-b border-line/60 px-2.5">
+          {/* 侧栏开关：新品牌 icon ↔ 收起图标 hover 变形 */}
           <button
             onClick={() => useShell.getState().toggleSidebar()}
             aria-label="收起侧栏"
             title="收起侧栏 · ⌘B"
             className="group relative flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-btn text-body-sm text-graphite hover:bg-line-soft hover:text-ink"
           >
-            <span
-              aria-hidden
-              className="flex h-5 w-5 items-center justify-center rounded-sm bg-ink text-caption font-medium text-canvas transition-opacity duration-150 group-hover:opacity-0"
-            >
-              A
-            </span>
+            <img
+              src="/icon.png"
+              alt="A"
+              className="h-5 w-5 rounded-sm object-cover transition-opacity duration-150 group-hover:opacity-0"
+            />
             <PanelLeftClose
               size={14}
               className="absolute inset-0 m-auto opacity-0 transition-opacity duration-150 group-hover:opacity-100"
@@ -172,7 +171,7 @@ export function Sidebar() {
           </button>
 
           {/* 全局动作区：新建会话 / 搜索 / 自动化 / 出图 */}
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-0.5">
             <IconNavBtn
               icon={MessageCirclePlus}
               label="新建会话"
@@ -200,29 +199,29 @@ export function Sidebar() {
       )}
 
       {/* Agent 智能体列表标题行 */}
-      <div className="flex items-center justify-between px-4 pb-2 pt-1">
-        <div className="flex items-center gap-1.5">
-          <Bot size={14} className="text-teal" />
-          <span className="text-caption font-medium text-ink">Agent 智能体</span>
-          <span className="tnum text-[11px] text-ash">({visibleUnits.length})</span>
+      <div className="flex items-center justify-between px-2.5 pb-2 pt-1.5">
+        <div className="flex items-center gap-1 min-w-0">
+          <Bot size={13} className="text-teal shrink-0" />
+          <span className="text-caption font-medium text-ink truncate">Agent</span>
+          <span className="tnum text-[11px] text-ash shrink-0">({visibleUnits.length})</span>
         </div>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1 shrink-0">
           <button
             onClick={() => useShell.getState().openImportBot()}
             aria-label="认领已有目录"
             title="认领已有目录为 Agent（文件夹留在原地，自动探测 AGENTS.md）"
-            className="flex items-center gap-1 rounded-btn px-1.5 py-0.5 text-caption text-graphite hover:bg-line-soft hover:text-ink"
+            className="flex items-center gap-0.5 rounded-btn px-1.5 py-0.5 text-caption text-graphite hover:bg-line-soft hover:text-ink"
           >
-            <FolderOpen size={12} />
+            <FolderOpen size={11} />
             <span>认领</span>
           </button>
           <button
             onClick={() => useShell.getState().openAddBot()}
             aria-label="新建 Agent"
             title="新建 Agent"
-            className="flex items-center gap-1 rounded-btn bg-ink px-2 py-0.5 text-caption font-medium text-canvas hover:opacity-90 active:scale-95 transition"
+            className="flex items-center gap-0.5 rounded-btn bg-ink px-1.5 py-0.5 text-caption font-medium text-canvas hover:opacity-90 active:scale-95 transition"
           >
-            <Plus size={12} />
+            <Plus size={11} />
             <span>新建</span>
           </button>
         </div>
@@ -286,19 +285,19 @@ export function Sidebar() {
       </div>
 
       {/* 底部工具条：设置 */}
-      <div className="shrink-0 border-t border-line/60 p-2">
+      <div className="shrink-0 border-t border-line/60 p-1.5">
         <button
           onClick={() => openSettings()}
           aria-label="设置"
           title="设置 · ⌘,"
           className={cn(
-            "flex w-full items-center gap-2 rounded-btn px-2.5 py-1.5 text-caption font-medium transition",
+            "flex w-full items-center gap-2 rounded-btn px-2 py-1 text-caption font-medium transition",
             settingsActive
               ? "bg-teal-tint text-teal"
               : "text-graphite hover:bg-line-soft hover:text-ink",
           )}
         >
-          <Settings size={14} />
+          <Settings size={13} />
           <span>设置</span>
           <span className="ml-auto font-mono text-[10px] text-ash">⌘,</span>
         </button>
@@ -497,7 +496,7 @@ function UnitRow({
         onClick={onSelect}
         aria-current={active}
         className={cn(
-          "flex w-full items-start gap-3 rounded-input px-3 py-2.5 text-left",
+          "flex w-full items-start gap-2 rounded-input px-2 py-1.5 text-left",
           active ? "bg-teal-tint" : "hover:bg-line-soft",
           unavailable && "opacity-60",
         )}
@@ -506,16 +505,16 @@ function UnitRow({
           /* 彩色 blob 头像 + 双眼（GrokBot 式吉祥物形态），右下角日程角标 */
           <span
             aria-hidden
-            className={cn("relative flex h-11 w-11 shrink-0 items-center justify-center", avatar.shape)}
+            className={cn("relative flex h-8 w-8 shrink-0 items-center justify-center", avatar.shape)}
             style={{ background: avatar.color }}
           >
-            <span className="mt-0.5 flex gap-1">
-              <span className="h-2 w-1 rounded-full bg-white/90" />
-              <span className="h-2 w-1 rounded-full bg-white/90" />
+            <span className="mt-0.5 flex gap-0.5">
+              <span className="h-1.5 w-0.5 rounded-full bg-white/90" />
+              <span className="h-1.5 w-0.5 rounded-full bg-white/90" />
             </span>
             {schedule && (
               <span
-                className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-rail bg-teal"
+                className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-rail bg-teal"
                 title={schedule}
               />
             )}
@@ -524,19 +523,16 @@ function UnitRow({
           /* 项目保持方形字母文件夹标 */
           <span
             aria-hidden
-            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-btn bg-line-soft text-body font-medium text-graphite"
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-btn bg-line-soft text-body-sm font-medium text-graphite"
           >
             {unit.name.slice(0, 1)}
           </span>
         )}
 
         <span className="flex min-w-0 flex-1 flex-col gap-0.5 pt-0.5">
-          <span className="flex items-baseline gap-2">
-            <span className="truncate text-body font-medium text-ink">{unit.name}</span>
-            {/* 渠道徽标：「这个 bot 找得到我，而且找得到它的是哪个机器人」。
-                飞书画真实头像（认脸），其他渠道画通用图标（极小、灰、不抢色——
-                它是事实提示不是状态灯）。放名字后面而不是角标，
-                因为角标已经给了设置入口。 */}
+          <span className="flex items-baseline gap-1.5">
+            <span className="truncate text-body-sm font-medium text-ink">{unit.name}</span>
+            {/* 渠道徽标 */}
             {enabledChannels.length > 0 && (
               <span
                 className="flex shrink-0 items-center gap-0.5 text-[10px] text-ash"
@@ -566,16 +562,16 @@ function UnitRow({
               </span>
             )}
             {latest && (
-              <span className="tnum ml-auto shrink-0 text-caption text-ash transition-opacity group-hover/row:opacity-0">
+              <span className="tnum ml-auto shrink-0 text-[10px] text-ash transition-opacity group-hover/row:opacity-0">
                 {lastActivityLabel(latest.startedAt)}
               </span>
             )}
           </span>
-          <span className="truncate text-body-sm text-graphite">
+          <span className="truncate text-[11px] text-graphite">
             {subtitle || <span className="text-ash">{unit.rootPath}</span>}
           </span>
           {unavailable && (
-            <span className="mt-0.5 w-fit rounded-chip bg-loss/10 px-1.5 py-0.5 text-caption text-loss">目录不可用</span>
+            <span className="mt-0.5 w-fit rounded-chip bg-loss/10 px-1 py-0.2 text-[10px] text-loss">目录不可用</span>
           )}
         </span>
       </button>
@@ -586,7 +582,7 @@ function UnitRow({
         draggable={false}
         onMouseDown={(e) => e.stopPropagation()}
         onDragStart={(e) => e.preventDefault()}
-        className="absolute right-2 top-2 z-10 flex items-center gap-0.5 rounded-btn bg-canvas/95 p-0.5 shadow-xs opacity-0 backdrop-blur-xs transition hover:opacity-100 focus-within:opacity-100 group-hover/row:opacity-100 cursor-default"
+        className="absolute right-1.5 top-1.5 z-10 flex items-center gap-0.5 rounded-btn bg-canvas/95 p-0.5 shadow-xs opacity-0 backdrop-blur-xs transition hover:opacity-100 focus-within:opacity-100 group-hover/row:opacity-100 cursor-default"
       >
         <button
           type="button"
@@ -609,7 +605,7 @@ function UnitRow({
             justOpened ? "text-gain bg-gain/10" : "text-ash hover:bg-line-soft hover:text-ink",
           )}
         >
-          {justOpened ? <Check size={13} className="text-gain" /> : <FolderOpen size={13} />}
+          {justOpened ? <Check size={12} className="text-gain" /> : <FolderOpen size={12} />}
         </button>
         <button
           type="button"
@@ -623,7 +619,7 @@ function UnitRow({
           title="设置 —— 改 AGENTS.md、人设、主执行器"
           className="cursor-pointer rounded-btn p-1 text-ash hover:bg-line-soft hover:text-ink active:scale-90 transition"
         >
-          <Settings size={13} />
+          <Settings size={12} />
         </button>
       </div>
     </div>
@@ -641,7 +637,7 @@ function TaskList({ unitId, sort }: { unitId: UnitId; sort: Sort }) {
   if (activeUnitId !== unitId) return null;
 
   if (sessions.length === 0) {
-    return <p className="px-3 py-2 text-caption text-ash">该工作单元下还没有任务</p>;
+    return <p className="px-2.5 py-1.5 text-caption text-ash">暂无任务</p>;
   }
 
   const ordered =
@@ -650,7 +646,7 @@ function TaskList({ unitId, sort }: { unitId: UnitId; sort: Sort }) {
       : sessions.slice().sort((a, b) => b.startedAt - a.startedAt);
 
   return (
-    <div className="mb-1 ml-3 border-l border-line pl-2">
+    <div className="mb-1 ml-2 border-l border-line pl-1.5">
       {ordered.map((s) => (
         <SessionRow
           key={s.id}
@@ -679,7 +675,7 @@ function SessionRow({
       onClick={onSelect}
       aria-current={active}
       className={cn(
-        "flex w-full items-center gap-2 rounded-btn px-2 py-1.5 text-left",
+        "flex w-full items-center gap-1.5 rounded-btn px-1.5 py-1 text-left",
         active ? "bg-canvas" : "hover:bg-line-soft",
         muted && "opacity-70",
       )}
@@ -688,10 +684,10 @@ function SessionRow({
         className={cn("h-1.5 w-1.5 shrink-0 rounded-full", STATUS_DOT[s.status] ?? "bg-ash", s.status === "running" && "animate-pulse")}
         aria-hidden
       />
-      <span className={cn("min-w-0 flex-1 truncate text-body-sm", active ? "text-ink" : "text-graphite")}>
+      <span className={cn("min-w-0 flex-1 truncate text-caption", active ? "text-ink font-medium" : "text-graphite")}>
         {s.title}
       </span>
-      <span className="tnum shrink-0 text-caption text-ash">
+      <span className="tnum shrink-0 text-[10px] text-ash">
         {new Date(s.startedAt).toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" })}
       </span>
     </button>

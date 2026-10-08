@@ -90,8 +90,8 @@ export const SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
 // ---------------------------------------------------------------------------
 
 const WIDTH_KEY = "agent-workbench:sidebar-width-px";
-const SIDEBAR_DEFAULT = 264;
-const SIDEBAR_MIN = 264;
+const SIDEBAR_DEFAULT = 200;
+const SIDEBAR_MIN = 200;
 const SIDEBAR_MAX_RATIO = 0.5;
 
 /** 对话区过窄时自动收起（对齐 ZCode 的 360 / 480 阈值思路） */
@@ -103,7 +103,11 @@ function readWidth(): number {
   try {
     const raw = window.localStorage.getItem(WIDTH_KEY);
     const n = raw === null ? NaN : Number(raw);
-    return Number.isFinite(n) && n > 0 ? Math.max(SIDEBAR_MIN, Math.round(n)) : SIDEBAR_DEFAULT;
+    // 若为旧版默认值 264、布局异常值 351 或无效数值，重置为新的极简最窄默认值 200
+    if (!Number.isFinite(n) || n <= 0 || n === 264 || n === 351) {
+      return SIDEBAR_DEFAULT;
+    }
+    return Math.max(SIDEBAR_MIN, Math.round(n));
   } catch {
     return SIDEBAR_DEFAULT;
   }

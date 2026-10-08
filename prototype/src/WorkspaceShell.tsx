@@ -85,17 +85,24 @@ function SidebarSlot() {
   const collapsed = useShell((s) => s.sidebarCollapsed);
   const setWidth = useShell((s) => s.setSidebarWidth);
   // ⚠ initialWidth 只在挂载时读取一次持久化宽度作为 defaultSize。
-  // 决不能在组件内响应式订阅 sidebarWidth 并反复传给 defaultSize，
-  // 否则每次拖动 1px 触发 onResize -> setWidth -> store 变更 -> SidebarSlot 重渲染 -> defaultSize 改变 -> Panel 重挂载，
-  // 会直接打断 react-resizable-panels 的活跃拖动手势！
   const [initialWidth] = useState(() => useShell.getState().sidebarWidth);
   const ref = useRef<PanelImperativeHandle>(null);
+  const isMountedRef = useRef(false);
+
+  // 首帧挂载后显式应用 initialWidth 像素值，并仅在稳定后接收真实用户手势更新
+  useEffect(() => {
+    if (!collapsed && ref.current) {
+      ref.current.resize(`${initialWidth}px`);
+    }
+    const timer = setTimeout(() => {
+      isMountedRef.current = true;
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [initialWidth, collapsed]);
 
   // WP-7 窄屏（手机局域网）：<900px 自动收侧栏，主列全宽——收起即归零语义复用；
   // 只在从宽变窄的瞬间收一次，不把用户的手动展开反复压回
   useEffect(() => {
-    // wasWide 恒以 true 起步（评审 P2）：首载即窄屏（手机 390px 直开）也要收——
-    // 旧初值让首调 onResize 恒为死代码，"从宽变窄"永远不成立
     let wasWide = true;
     const onResize = (): void => {
       const wide = window.innerWidth >= 900;
@@ -122,14 +129,16 @@ function SidebarSlot() {
       panelRef={ref}
       // 注意：数字会被当成百分比，所以宽度必须写成带单位的字符串
       defaultSize={`${initialWidth}px`}
-      minSize="264px"
+      minSize="200px"
       maxSize="50%"
       // ZCode：收起即归零（web 侧为 0，桌面端 4px 是它的窗口内缩需求），不留常驻窄条
       collapsedSize="0px"
       collapsible
       onResize={(size) => {
-        // 折叠过程中不要把 0 写回持久化宽度
-        if (!collapsed) setWidth(size.inPixels);
+        // 仅在真实交互/挂载就绪后，且未折叠时才持久化宽度
+        if (isMountedRef.current && !collapsed) {
+          setWidth(size.inPixels);
+        }
       }}
       className="overflow-hidden"
     >
@@ -148,7 +157,7 @@ function ConversationSlot() {
   const setConversationView = useShell((s) => s.setConversationView);
 
   return (
-    <Panel defaultSize="62%" minSize="30%" className="min-w-0">
+    <Panel minSize="30%" className="min-w-0">
       {/* 主视图只有 chat / automations / image */}
       {mainView === "automations" ? (
         <main className="h-full min-h-0" aria-label="自动化">

@@ -22,12 +22,11 @@ export function DesktopTopOverlay() {
           title="展开侧栏 · ⌘B"
           className="group relative flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-btn text-body-sm text-graphite hover:bg-line-soft hover:text-ink"
         >
-          <span
-            aria-hidden
-            className="flex h-5 w-5 items-center justify-center rounded-sm bg-ink text-caption font-medium text-canvas transition-opacity duration-150 group-hover:opacity-0"
-          >
-            A
-          </span>
+          <img
+            src="/icon.png"
+            alt="A"
+            className="h-5 w-5 rounded-sm object-cover transition-opacity duration-150 group-hover:opacity-0"
+          />
           <PanelLeftOpen
             size={14}
             className="absolute inset-0 m-auto opacity-0 transition-opacity duration-150 group-hover:opacity-100"
