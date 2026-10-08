@@ -1,40 +1,9 @@
-const { app, BrowserWindow, shell, ipcMain } = require("electron");
+const { app, BrowserWindow, shell } = require("electron");
 const path = require("path");
-const http = require("http");
 
 let mainWindow = null;
 
-function waitForServer(url, timeoutMs = 30000) {
-  const start = Date.now();
-  return new Promise((resolve, reject) => {
-    function ping() {
-      const req = http.get(url, (res) => {
-        if (res.statusCode && res.statusCode >= 200 && res.statusCode < 400) {
-          resolve(true);
-        } else {
-          retry();
-        }
-      });
-      req.on("error", () => retry());
-      req.setTimeout(1000, () => {
-        req.destroy();
-        retry();
-      });
-    }
-
-    function retry() {
-      if (Date.now() - start > timeoutMs) {
-        reject(new Error(`Timeout waiting for dev server: ${url}`));
-        return;
-      }
-      setTimeout(ping, 300);
-    }
-
-    ping();
-  });
-}
-
-async function createWindow() {
+function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1520,
     height: 940,
@@ -42,7 +11,7 @@ async function createWindow() {
     minHeight: 680,
     title: "Agent Workbench",
     backgroundColor: "#0f1115",
-    show: false, // 等待加载好后再显示，防止白屏闪烁
+    show: true, // 立即显示窗口，防止 ready-to-show 被阻塞
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
@@ -51,10 +20,6 @@ async function createWindow() {
       sandbox: false,
       spellcheck: false,
     },
-  });
-
-  mainWindow.once("ready-to-show", () => {
-    mainWindow.show();
   });
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -66,20 +31,21 @@ async function createWindow() {
   });
 
   const devUrl = process.env.VITE_DEV_SERVER_URL || "http://127.0.0.1:5280";
-  const isDev = !app.isPackaged && process.env.NODE_ENV !== "production";
 
-  if (isDev) {
-    try {
-      await waitForServer(devUrl, 20000);
-      await mainWindow.loadURL(devUrl);
-    } catch (err) {
-      console.warn("[electron] Dev server not ready, retrying loadURL directly...", err);
-      await mainWindow.loadURL(devUrl);
-    }
-  } else {
-    const indexPath = path.join(__dirname, "../prototype/dist/index.html");
-    await mainWindow.loadFile(indexPath);
-  }
+  // 监听加载失败事件（例如服务器尚未启动时），每 800ms 自动重试
+  mainWindow.webContents.on("did-fail-load", (event, errorCode, errorDescription) => {
+    console.log(`[electron] 加载未完成 (${errorCode}: ${errorDescription})，正在重试...`);
+    setTimeout(() => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.loadURL(devUrl).catch(() => {});
+      }
+    }, 800);
+  });
+
+  console.log(`[electron] 正在加载页面: ${devUrl}`);
+  mainWindow.loadURL(devUrl).catch((err) => {
+    console.warn("[electron] 首次加载触发重试机制:", err.message);
+  });
 }
 
 app.whenReady().then(() => {
