@@ -11,7 +11,7 @@ function createWindow() {
     minHeight: 680,
     title: "Agent Workbench",
     icon: path.join(__dirname, "icon.png"),
-    backgroundColor: "#000000",
+    backgroundColor: "#f7f7f4",
     show: true, // 立即显示窗口，防止 ready-to-show 被阻塞
     autoHideMenuBar: true,
     webPreferences: {

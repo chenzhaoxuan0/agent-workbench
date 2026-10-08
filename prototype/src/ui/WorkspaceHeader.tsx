@@ -259,9 +259,9 @@ function BackgroundGuardianBadge() {
       <button
         onClick={() => setOpen((o) => !o)}
         title="后台静默服务运行状态（点击查看详情）"
-        className="flex items-center gap-1.5 rounded-chip bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/20 transition cursor-pointer"
+        className="flex items-center gap-1.5 rounded-chip bg-gain/10 px-2 py-0.5 text-[11px] font-medium text-gain hover:bg-gain/20 transition cursor-pointer"
       >
-        <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+        <span className="h-1.5 w-1.5 rounded-full bg-gain animate-pulse" />
         <span className="hidden sm:inline">后台守护</span>
         <span className="text-[10px] opacity-75">(飞书/Cron)</span>
       </button>

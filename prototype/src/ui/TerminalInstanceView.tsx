@@ -96,25 +96,25 @@ export const TerminalInstanceView = memo(
             buildNumber: 22621,
           },
           theme: {
-            background: "#000000",
-            foreground: "#faf9f6",
-            cursor: "#cbb0f7",
-            selectionBackground: "rgba(203, 176, 247, 0.25)",
-            black: "#121212",
-            red: "#f87171",
-            green: "#4ade80",
-            yellow: "#facc15",
-            blue: "#60a5fa",
-            magenta: "#cbb0f7",
-            cyan: "#cbb0f7",
-            white: "#faf9f6",
-            brightBlack: "#333333",
-            brightRed: "#ef4444",
-            brightGreen: "#22c55e",
-            brightYellow: "#eab308",
+            background: "#f2f1ed",
+            foreground: "#26251e",
+            cursor: "#f54e00",
+            selectionBackground: "rgba(139, 196, 248, 0.4)",
+            black: "#26251e",
+            red: "#cf2d56",
+            green: "#1f8a65",
+            yellow: "#c08532",
+            blue: "#2563eb",
+            magenta: "#a855f7",
+            cyan: "#0d9488",
+            white: "#f7f7f4",
+            brightBlack: "#7a7974",
+            brightRed: "#e11d48",
+            brightGreen: "#16a34a",
+            brightYellow: "#d97706",
             brightBlue: "#3b82f6",
-            brightMagenta: "#dfc8ff",
-            brightCyan: "#dfc8ff",
+            brightMagenta: "#c084fc",
+            brightCyan: "#14b8a6",
             brightWhite: "#ffffff",
           },
         });
@@ -359,7 +359,7 @@ export const TerminalInstanceView = memo(
       return (
         <div
           ref={containerRef}
-          className="relative w-full h-full overflow-hidden bg-[#000000]"
+          className="relative w-full h-full overflow-hidden bg-card"
           style={{ display: isActive ? "block" : "none" }}
         />
       );

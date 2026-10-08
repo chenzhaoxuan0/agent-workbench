@@ -116,7 +116,7 @@ export function AutomationsPage() {
 
 const STATUS_META = {
   inProgress: { icon: CircleDot, cls: "bg-line-soft text-graphite", label: "进行中" },
-  completed: { icon: CircleCheck, cls: "bg-[#1d3a2c] text-[#5fc99a]", label: "已完成" },
+  completed: { icon: CircleCheck, cls: "bg-gain/10 text-gain", label: "已完成" },
   failed: { icon: CircleAlert, cls: "bg-loss/10 text-loss", label: "失败" },
 } as const;
 

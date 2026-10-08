@@ -17,28 +17,28 @@
    ========================================================================== */
 
 @theme {
-  /* ---- Surfaces：更暗、更偏终端的纯黑曜石色系 (DESIGN.md) ---- */
-  --color-canvas: #000000; /* 页面画布：纯黑终端虚空底色 (Obsidian) */
-  --color-rail: #121212; /* 侧栏 / 顶栏 / 工具条：次级深黑微升半档 (Graphite) */
-  --color-card: #181817; /* 卡片面 / 弹窗浮层：深炭黑平坦面板 (Onyx) */
-  --color-line: #222221; /* 发丝边框：低对比度深黑微发丝线 */
-  --color-line-soft: #1a1a19; /* 弱分隔线与卡内次级分隔 */
-  --color-surface-hover: #222221; /* 通用悬停面 */
+  /* ---- Surfaces：温润羊皮纸工作室风格 (DESIGNcursor.md) ---- */
+  --color-canvas: #f7f7f4; /* Parchment：页面主底色、画布，温润柔和的羊皮纸奶白 */
+  --color-rail: #e6e5e0; /* Linen：侧栏 / 顶栏 / 工具条：稍具灰调的容器面 */
+  --color-card: #f2f1ed; /* Bone：卡片面 / 弹窗浮层：羊皮纸上的自然纸阶分层 */
+  --color-line: #cdcdc9; /* Stone：1px 细微发丝边框与分隔线 */
+  --color-line-soft: #e0ded8; /* 弱分隔线与卡内次级分隔 */
+  --color-surface-hover: #e6e5e0; /* Linen：通用悬停底色 */
 
-  /* ---- Text：高对比度暖灰白与 Ash 灰阶 (DESIGN.md) ---- */
-  --color-ink: #faf9f6; /* 正文、高亮标题、图标主体：暖灰白 (Bone)，避免生硬刺眼 */
-  --color-graphite: #b4b4b2; /* 次要文字、说明、导航图标：浅灰 (Ash Mid) */
-  --color-ash: #868684; /* 辅助说明、极次要、时间戳：中灰 (Ash) */
+  /* ---- Text：温润墨色与 Ash 暖灰阶 (DESIGNcursor.md) ---- */
+  --color-ink: #26251e; /* Ink：正文、高亮标题、图标主体：暖调墨黑，绝非纯 #000 */
+  --color-graphite: #84847e; /* Driftwood：次要文字、说明、导航图标 */
+  --color-ash: #7a7974; /* Ash：辅助说明、极次要、时间戳、输入提示符 */
 
-  /* ---- Accent：荧光紫 (Phosphor Violet #cbb0f7)，唯一终端级单色强调 ---- */
-  --color-teal: #cbb0f7; /* 选中态、激活态、终端光标强调 (Phosphor Violet) */
-  --color-teal-hover: #b898ec; /* 强调色微深悬停态 */
-  --color-teal-tint: rgba(203, 176, 247, 0.12); /* 选中态浅荧光紫填充 */
-  --color-teal-edge: rgba(203, 176, 247, 0.35); /* 选中态发光边框 */
+  /* ---- Accent：Ember 炽橙 (#f54e00)，唯一单色强调 (DESIGNcursor.md) ---- */
+  --color-teal: #f54e00; /* Ember：选中态、激活态、光标强调、链接高亮 */
+  --color-teal-hover: #e04500; /* Ember 悬停深色态 */
+  --color-teal-tint: rgba(245, 78, 0, 0.08); /* 选中态淡炽橙微晕填充 */
+  --color-teal-edge: rgba(245, 78, 0, 0.28); /* 选中态发光边框 */
 
-  /* ---- 语义色：针对深色底优化的高明度语义色 ---- */
-  --color-gain: #4ade80; /* diff 新增 / 成功状态 */
-  --color-loss: #f87171; /* diff 删除 / 错误 / 风险警示 */
+  /* ---- 语义色：温润对比度语义色 (DESIGNcursor.md) ---- */
+  --color-gain: #1f8a65; /* Verdant / Forest：diff 新增 / 成功状态 */
+  --color-loss: #cf2d56; /* Crimson：diff 删除 / 错误 / 风险警示 */
 
   /* ---- Typography：保持原有排版完全不变 ---- */
   --font-sans: Inter, "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system,
@@ -62,9 +62,9 @@
   --radius-card: 16px;
   --radius-chip: 9999px;
 
-  /* ---- Shadow：保持细致投影 ---- */
-  --shadow-subtle: 0 2px 8px 0 rgb(0 0 0 / 0.45);
-  --shadow-xs: 0 1px 2px 0 rgb(0 0 0 / 0.35);
+  /* ---- Shadow：温润纸感轻投影 (DESIGNcursor.md) ---- */
+  --shadow-subtle: 0 1px 3px 0 rgb(38 37 30 / 0.06), 0 1px 2px -1px rgb(38 37 30 / 0.04);
+  --shadow-xs: 0 1px 2px 0 rgb(38 37 30 / 0.05);
 }
 
 /* ==========================================================================
@@ -72,7 +72,7 @@
    ========================================================================== */
 
 :root {
-  color-scheme: dark;
+  color-scheme: light;
 }
 
 html,
@@ -111,25 +111,25 @@ textarea {
 }
 
 ::selection {
-  background: rgba(203, 176, 247, 0.25);
+  background: #8bc4f8;
   color: var(--color-ink);
 }
 
-/* 发丝滚动条，融入中性深色底 */
+/* 发丝滚动条，融入温润纸感底 */
 * {
   scrollbar-width: thin;
-  scrollbar-color: #222221 transparent;
+  scrollbar-color: #cdcdc9 transparent;
 }
 *::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 *::-webkit-scrollbar-thumb {
-  background: #222221;
+  background: #cdcdc9;
   border-radius: 4px;
 }
 *::-webkit-scrollbar-thumb:hover {
-  background: #333333;
+  background: #b0afa9;
 }
 *::-webkit-scrollbar-track {
   background: transparent;
