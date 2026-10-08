@@ -17,29 +17,30 @@
    ========================================================================== */
 
 @theme {
-  /* ---- Surfaces：深色系/黑色系（Obsidian / Dark Charcoal） ---- */
-  --color-canvas: #0f1115; /* 页面画布，终端同款纯黑深底 */
-  --color-rail: #151820; /* 左右侧栏 / 顶栏 / 工具条底色：微升半档深灰 */
-  --color-card: #1a1e27; /* 卡片面 / 弹窗浮层：深炭灰，微亮一档 */
-  --color-line: #262b38; /* 发丝边框：低对比度细黑灰 */
-  --color-line-soft: #1d222e; /* 更浅一档，用于卡内部分隔与弱交互底色 */
-  --color-surface-hover: #222735; /* 通用悬停面 */
+  /* ---- Surfaces：更暗、更偏终端的纯黑曜石色系 (DESIGN.md) ---- */
+  --color-canvas: #000000; /* 页面画布：纯黑终端虚空底色 (Obsidian) */
+  --color-rail: #121212; /* 侧栏 / 顶栏 / 工具条：次级深黑微升半档 (Graphite) */
+  --color-card: #181817; /* 卡片面 / 弹窗浮层：深炭黑平坦面板 (Onyx) */
+  --color-line: #222221; /* 发丝边框：低对比度深黑微发丝线 */
+  --color-line-soft: #1a1a19; /* 弱分隔线与卡内次级分隔 */
+  --color-surface-hover: #222221; /* 通用悬停面 */
 
-  /* ---- Text：高对比度白与冷灰 ---- */
-  --color-ink: #f3f4f6; /* 正文、高亮标题、图标主体 */
-  --color-graphite: #9ca3af; /* 次要文字、导航图标、说明 */
-  --color-ash: #64748b; /* 辅助说明、极次要、时间戳 */
+  /* ---- Text：高对比度暖灰白与 Ash 灰阶 (DESIGN.md) ---- */
+  --color-ink: #faf9f6; /* 正文、高亮标题、图标主体：暖灰白 (Bone)，避免生硬刺眼 */
+  --color-graphite: #b4b4b2; /* 次要文字、说明、导航图标：浅灰 (Ash Mid) */
+  --color-ash: #868684; /* 辅助说明、极次要、时间戳：中灰 (Ash) */
 
-  /* ---- Accent：赛博青色（Cyber Teal / Mint），与终端光标同源 ---- */
-  --color-teal: #2dd4bf; /* 选中态、激活态、品牌强调（明亮青） */
-  --color-teal-tint: rgba(45, 212, 191, 0.12); /* 选中态的浅荧光填充 */
-  --color-teal-edge: rgba(45, 212, 191, 0.35); /* 选中态发光边框 */
+  /* ---- Accent：荧光紫 (Phosphor Violet #cbb0f7)，唯一终端级单色强调 ---- */
+  --color-teal: #cbb0f7; /* 选中态、激活态、终端光标强调 (Phosphor Violet) */
+  --color-teal-hover: #b898ec; /* 强调色微深悬停态 */
+  --color-teal-tint: rgba(203, 176, 247, 0.12); /* 选中态浅荧光紫填充 */
+  --color-teal-edge: rgba(203, 176, 247, 0.35); /* 选中态发光边框 */
 
   /* ---- 语义色：针对深色底优化的高明度语义色 ---- */
   --color-gain: #4ade80; /* diff 新增 / 成功状态 */
   --color-loss: #f87171; /* diff 删除 / 错误 / 风险警示 */
 
-  /* ---- Typography：字重锁死在 400 / 500 ---- */
+  /* ---- Typography：保持原有排版完全不变 ---- */
   --font-sans: Inter, "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system,
     "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
   --font-mono: "JetBrains Mono", "Cascadia Code", "SF Mono", Consolas, "Liberation Mono", monospace;
@@ -49,21 +50,21 @@
   --text-body: 14px;
   --text-body-lg: 16px;
 
-  /* ---- Spacing：4px 基准，compact 密度 ---- */
+  /* ---- Spacing：保持原有基准与间距完全不变 ---- */
   --spacing: 0.25rem;
   --spacing-gutter: 0.5rem; /* 元素间距 8px */
   --spacing-pad: 1rem; /* 卡片内边距 16px */
   --spacing-section: 2rem; /* 区块间距 32px */
 
-  /* ---- Radius：四档，不越界 ---- */
+  /* ---- Radius：保持原有四档规格完全不变 ---- */
   --radius-btn: 6px;
   --radius-input: 12px;
   --radius-card: 16px;
   --radius-chip: 9999px;
 
-  /* ---- Shadow：深色模式细致投影 ---- */
-  --shadow-subtle: 0 2px 8px 0 rgb(0 0 0 / 0.35);
-  --shadow-xs: 0 1px 2px 0 rgb(0 0 0 / 0.25);
+  /* ---- Shadow：保持细致投影 ---- */
+  --shadow-subtle: 0 2px 8px 0 rgb(0 0 0 / 0.45);
+  --shadow-xs: 0 1px 2px 0 rgb(0 0 0 / 0.35);
 }
 
 /* ==========================================================================
@@ -110,25 +111,25 @@ textarea {
 }
 
 ::selection {
-  background: rgba(45, 212, 191, 0.25);
+  background: rgba(203, 176, 247, 0.25);
   color: var(--color-ink);
 }
 
 /* 发丝滚动条，融入中性深色底 */
 * {
   scrollbar-width: thin;
-  scrollbar-color: #262b38 transparent;
+  scrollbar-color: #222221 transparent;
 }
 *::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 *::-webkit-scrollbar-thumb {
-  background: #262b38;
+  background: #222221;
   border-radius: 4px;
 }
 *::-webkit-scrollbar-thumb:hover {
-  background: #363d4e;
+  background: #333333;
 }
 *::-webkit-scrollbar-track {
   background: transparent;

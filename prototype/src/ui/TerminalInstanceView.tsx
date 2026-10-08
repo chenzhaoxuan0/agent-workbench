@@ -96,25 +96,25 @@ export const TerminalInstanceView = memo(
             buildNumber: 22621,
           },
           theme: {
-            background: "#0f1115",
-            foreground: "#e2e8f0",
-            cursor: "#2dd4bf",
-            selectionBackground: "rgba(45, 212, 191, 0.25)",
-            black: "#1e222b",
+            background: "#000000",
+            foreground: "#faf9f6",
+            cursor: "#cbb0f7",
+            selectionBackground: "rgba(203, 176, 247, 0.25)",
+            black: "#121212",
             red: "#f87171",
             green: "#4ade80",
             yellow: "#facc15",
             blue: "#60a5fa",
-            magenta: "#c084fc",
-            cyan: "#2dd4bf",
-            white: "#f1f5f9",
-            brightBlack: "#4b5563",
+            magenta: "#cbb0f7",
+            cyan: "#cbb0f7",
+            white: "#faf9f6",
+            brightBlack: "#333333",
             brightRed: "#ef4444",
             brightGreen: "#22c55e",
             brightYellow: "#eab308",
             brightBlue: "#3b82f6",
-            brightMagenta: "#a855f7",
-            brightCyan: "#14b8a6",
+            brightMagenta: "#dfc8ff",
+            brightCyan: "#dfc8ff",
             brightWhite: "#ffffff",
           },
         });
@@ -359,7 +359,7 @@ export const TerminalInstanceView = memo(
       return (
         <div
           ref={containerRef}
-          className="relative w-full h-full overflow-hidden bg-[#0f1115]"
+          className="relative w-full h-full overflow-hidden bg-[#000000]"
           style={{ display: isActive ? "block" : "none" }}
         />
       );

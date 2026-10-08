@@ -98,7 +98,7 @@ export const TerminalPaneSlot = memo(function TerminalPaneSlot({
     <div
       onClick={() => setActiveInstance(inst.id)}
       className={cn(
-        "group/pane flex h-full w-full flex-col overflow-hidden bg-[#0f1115] select-none",
+        "group/pane flex h-full w-full flex-col overflow-hidden bg-[#000000] select-none",
         isActive
           ? "ring-1 ring-teal/50 shadow-sm"
           : "ring-1 ring-line/20 hover:ring-line/60",
@@ -110,8 +110,8 @@ export const TerminalPaneSlot = memo(function TerminalPaneSlot({
           className={cn(
             "flex h-6 shrink-0 items-center justify-between border-b px-2 text-[11px] font-mono transition-colors",
             isActive
-              ? "border-teal/30 bg-[#161a23] text-ink font-medium"
-              : "border-line/30 bg-[#12151c] text-ash/70 hover:text-ash",
+              ? "border-teal/30 bg-[#181817] text-ink font-medium"
+              : "border-line/30 bg-[#121212] text-ash/70 hover:text-ash",
           )}
         >
           {/* 左侧：标题与图标 */}

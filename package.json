@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "concurrently -n web,daemon -c cyan,magenta \"pnpm run dev:web\" \"pnpm run dev:daemon\"",
     "dev:desktop": "concurrently -n web,daemon,desktop -c cyan,magenta,green \"pnpm run dev:web\" \"pnpm run dev:daemon\" \"node electron/wait-and-launch.cjs\"",
-    "dev:electron": "electron .",
+    "dev:electron": "pnpm run dev:desktop",
     "electron": "electron .",
     "dev:web": "pnpm -C prototype dev",
     "dev:daemon": "pnpm -C backend dev",

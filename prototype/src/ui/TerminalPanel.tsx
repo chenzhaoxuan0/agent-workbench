@@ -159,12 +159,12 @@ export function TerminalPanel({
   return (
     <div
       className={cn(
-        "flex h-full min-h-0 flex-1 flex-col bg-[#0f1115]",
+        "flex h-full min-h-0 flex-1 flex-col bg-[#000000]",
         !isCanvas && !isPage && "border-t border-line",
       )}
     >
       {/* VS Code 同款终端多标签栏与自由分屏工具条 */}
-      <div className="relative z-30 flex h-9 shrink-0 items-center border-b border-line/40 bg-[#14171f] px-2 select-none">
+      <div className="relative z-30 flex h-9 shrink-0 items-center border-b border-line/40 bg-[#121212] px-2 select-none">
         {/* 左侧：多终端 Tabs 标签页列表 */}
         <div className="flex h-full max-w-[calc(100%-280px)] items-center gap-1 overflow-x-auto no-scrollbar py-1">
           {groups.map((group) => {
@@ -186,8 +186,8 @@ export function TerminalPanel({
                 className={cn(
                   "group relative flex h-7 items-center gap-1.5 rounded px-2.5 text-caption font-mono cursor-pointer transition select-none max-w-[210px]",
                   isGroupActive
-                    ? "bg-[#0f1115] text-ink font-medium shadow-sm border border-line/60"
-                    : "text-ash/80 hover:bg-[#1b1f2b] hover:text-ink",
+                    ? "bg-[#000000] text-ink font-medium shadow-sm border border-line/60"
+                    : "text-ash/80 hover:bg-[#181817] hover:text-ink",
                   isSplitGroup && "ring-1 ring-teal/30",
                 )}
                 title={tabTitle}
@@ -252,7 +252,7 @@ export function TerminalPanel({
 
           {/* 下拉弹出菜单 */}
           {menuOpen && (
-            <div className="absolute left-0 top-full mt-1.5 z-50 min-w-[250px] rounded-panel border border-line bg-[#161a23] p-1.5 shadow-2xl backdrop-blur">
+            <div className="absolute left-0 top-full mt-1.5 z-50 min-w-[250px] rounded-panel border border-line bg-[#181817] p-1.5 shadow-2xl backdrop-blur">
               {/* 分组 1：Agent 交互式执行器（在 PowerShell 7 中运行其真 TUI） */}
               <div className="px-2 py-1 text-[11px] font-semibold text-teal/80 tracking-wide uppercase flex items-center gap-1">
                 <Zap size={11} />
@@ -445,7 +445,7 @@ export function TerminalPanel({
           <p className="text-body-sm text-ash">当前没有打开的终端实例。</p>
           <button
             onClick={handleNewDefault}
-            className="flex items-center gap-1.5 rounded-btn bg-teal px-3 py-1.5 text-caption font-medium text-[#0f1115] hover:bg-teal-hover transition shadow"
+            className="flex items-center gap-1.5 rounded-btn bg-teal px-3 py-1.5 text-caption font-medium text-[#000000] hover:bg-teal-hover transition shadow"
           >
             <Plus size={13} />
             <span>新建 PowerShell 7 终端</span>

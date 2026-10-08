@@ -2,7 +2,7 @@ const http = require("http");
 const { spawn } = require("child_process");
 const path = require("path");
 
-const DEV_URL = "http://127.0.0.1:5280";
+const DEV_URL = process.env.VITE_DEV_SERVER_URL || "http://127.0.0.1:5280";
 
 function pingServer() {
   return new Promise((resolve) => {
