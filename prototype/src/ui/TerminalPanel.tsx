@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useMemo } from "react";
 import {
   SquareTerminal,
   Terminal,
@@ -7,52 +7,26 @@ import {
   Trash2,
   FolderOpen,
   MessageSquare,
-  Sparkles,
   Zap,
   Plus,
   ChevronDown,
   Columns2,
-  Check,
+  Rows2,
+  Maximize2,
+  Minimize2,
 } from "lucide-react";
 import { useWorkbench } from "../store/useWorkbench.ts";
 import { useShell } from "../store/useShell.ts";
 import {
   useTerminalStore,
   SUPPORTED_TERMINAL_PROFILES,
-  type TerminalProfile,
+  collectLeafIds,
 } from "../store/useTerminalStore.ts";
-import {
-  TerminalInstanceView,
-  type TerminalInstanceHandle,
-} from "./TerminalInstanceView.tsx";
+import { terminalSessionRegistry } from "../store/TerminalSessionManager.ts";
+import { TerminalSplitTree } from "./TerminalSplitTree.tsx";
+import { TerminalPaneSlot, ShellOrAgentIcon } from "./TerminalPaneSlot.tsx";
 import { openFolder } from "../adapters/daemon/client.ts";
 import { cn } from "./cn.ts";
-
-/**
- * 终端类型图标与颜色辅助组件（对齐 VS Code 终端 Profile 风格）
- */
-function ShellIcon({
-  icon,
-  className,
-}: {
-  icon: TerminalProfile["icon"];
-  className?: string;
-}) {
-  switch (icon) {
-    case "pwsh":
-      return <Terminal className={cn("text-teal", className)} size={13} />;
-    case "powershell":
-      return <SquareTerminal className={cn("text-sky-400", className)} size={13} />;
-    case "cmd":
-      return <Terminal className={cn("text-zinc-400", className)} size={13} />;
-    case "wsl":
-      return <Terminal className={cn("text-amber-400", className)} size={13} />;
-    case "bash":
-      return <Terminal className={cn("text-emerald-400", className)} size={13} />;
-    default:
-      return <Terminal className={cn("text-ash", className)} size={13} />;
-  }
-}
 
 export function TerminalPanel({
   variant = "dock",
@@ -65,6 +39,7 @@ export function TerminalPanel({
 } = {}) {
   const unit = useWorkbench((s) => s.units.find((u) => u.id === s.activeUnitId));
   const activeRuntimeId = useWorkbench((s) => s.activeRuntimeId);
+  const runtimes = useWorkbench((s) => s.runtimes);
   const runtime = useWorkbench((s) => s.runtimes.find((r) => r.id === s.activeRuntimeId));
   const toggleTerminal = useShell((s) => s.toggleTerminal);
   const setConversationView = useShell((s) => s.setConversationView);
@@ -74,42 +49,44 @@ export function TerminalPanel({
   const closeTerminal =
     onClose ?? (isPage || isCanvas ? () => setConversationView("chat") : toggleTerminal);
 
-  // 多终端实例状态
+  // 多终端自由分屏树与标签组状态
   const {
     instances,
+    groups,
+    activeGroupId,
     activeInstanceId,
-    splitInstanceId,
+    maximizedInstanceId,
     defaultProfileId,
-    createInstance,
-    closeInstance,
+    createTab,
+    splitPane,
+    closeTab,
+    setActiveGroup,
     setActiveInstance,
-    splitWithNew,
-    setSplitInstance,
+    toggleMaximize,
   } = useTerminalStore();
 
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
-  const instanceRefs = useRef<Map<string, TerminalInstanceHandle>>(new Map());
 
-  // 初始化：若无终端实例，则自动新建一个默认终端
+  // 初始化：若无标签组，则自动新建一个默认终端
   useEffect(() => {
-    if (instances.length === 0) {
+    if (groups.length === 0) {
       if (isCanvas && activeRuntimeId) {
-        // 在画布模式下，默认在 PowerShell 7 中拉起当前 Agent CLI
-        createInstance({
+        // 画布模式默认在 PowerShell 7 中交互启动当前选中的 Agent CLI
+        createTab({
           profileId: "pwsh",
           cwd: unit?.rootPath,
           executorId: activeRuntimeId,
-          title: `${runtime?.presentation.displayName ?? activeRuntimeId} (pwsh)`,
+          title: `${runtime?.presentation.displayName ?? activeRuntimeId} (TUI)`,
         });
       } else {
-        createInstance({
+        createTab({
           profileId: defaultProfileId,
           cwd: unit?.rootPath,
         });
       }
     }
-  }, [instances.length, isCanvas, activeRuntimeId, unit?.rootPath, defaultProfileId, createInstance, runtime]);
+  }, [groups.length, isCanvas, activeRuntimeId, unit?.rootPath, defaultProfileId, createTab, runtime]);
 
   // 点击外部关闭下拉菜单
   useEffect(() => {
@@ -123,48 +100,61 @@ export function TerminalPanel({
     return () => window.removeEventListener("mousedown", handleClickOutside);
   }, [menuOpen]);
 
-  // 清屏：针对活跃终端调用 clear()
+  // 清屏当前活跃窗格
   const handleClear = () => {
     if (activeInstanceId) {
-      instanceRefs.current.get(activeInstanceId)?.clear();
+      terminalSessionRegistry.get(activeInstanceId)?.clear();
     }
   };
 
-  // 重启：针对活跃终端调用 restart()
+  // 重启当前活跃窗格
   const handleRestart = () => {
     if (activeInstanceId) {
-      instanceRefs.current.get(activeInstanceId)?.restart();
+      void terminalSessionRegistry.get(activeInstanceId)?.restart();
     }
   };
 
-  // 新建默认终端
+  // 新建默认终端标签页
   const handleNewDefault = () => {
-    createInstance({
+    createTab({
       profileId: defaultProfileId,
       cwd: unit?.rootPath,
     });
   };
 
-  // 选择 Profile 新建终端
+  // 选择 Profile 新建系统终端
   const handleCreateProfile = (profileId: string) => {
     setMenuOpen(false);
-    createInstance({
+    createTab({
       profileId,
       cwd: unit?.rootPath,
     });
   };
 
-  // 拆分终端
-  const handleToggleSplit = () => {
-    if (splitInstanceId !== null) {
-      setSplitInstance(null);
-    } else {
-      splitWithNew();
-    }
+  // 选择 Agent 执行器在 pwsh 中交互启动其 TUI
+  const handleLaunchExecutor = (execId: string, displayName: string) => {
+    setMenuOpen(false);
+    createTab({
+      profileId: "pwsh",
+      cwd: unit?.rootPath,
+      executorId: execId,
+      title: `${displayName} (TUI)`,
+    });
   };
 
-  const activeInstance = instances.find((i) => i.id === activeInstanceId);
-  const splitInstance = instances.find((i) => i.id === splitInstanceId);
+  // 获取可用的 Agent 执行器列表
+  const executorOptions = useMemo(() => {
+    return runtimes.filter((r) => !r.testOnly);
+  }, [runtimes]);
+
+  const activeGroup = groups.find((g) => g.id === activeGroupId) ?? groups[0];
+  const activeLeaves = useMemo(() => {
+    return activeGroup ? collectLeafIds(activeGroup.rootLayout) : [];
+  }, [activeGroup]);
+
+  const maximizedInst = useMemo(() => {
+    return instances.find((i) => i.id === maximizedInstanceId);
+  }, [instances, maximizedInstanceId]);
 
   return (
     <div
@@ -173,33 +163,47 @@ export function TerminalPanel({
         !isCanvas && !isPage && "border-t border-line",
       )}
     >
-      {/* VS Code 同款终端 Tab 标签栏与操作工具条 */}
-      <div className="relative z-30 flex h-9 shrink-0 items-center border-b border-line/40 bg-[#14171f] px-2">
-        {/* 左侧：多终端 Tabs 列表 */}
-        <div className="flex h-full max-w-[calc(100%-250px)] items-center gap-1 overflow-x-auto no-scrollbar py-1">
-          {instances.map((inst) => {
-            const isActive = inst.id === activeInstanceId;
-            const isSplit = inst.id === splitInstanceId;
+      {/* VS Code 同款终端多标签栏与自由分屏工具条 */}
+      <div className="relative z-30 flex h-9 shrink-0 items-center border-b border-line/40 bg-[#14171f] px-2 select-none">
+        {/* 左侧：多终端 Tabs 标签页列表 */}
+        <div className="flex h-full max-w-[calc(100%-280px)] items-center gap-1 overflow-x-auto no-scrollbar py-1">
+          {groups.map((group) => {
+            const isGroupActive = group.id === activeGroupId;
+            const leaves = collectLeafIds(group.rootLayout);
+            const firstInst = instances.find((i) => i.id === leaves[0]);
+            const isSplitGroup = leaves.length > 1;
+
+            const tabTitle =
+              group.title ||
+              (isSplitGroup
+                ? `分屏 (${leaves.length} 窗格)`
+                : firstInst?.title || "终端");
+
             return (
               <div
-                key={inst.id}
-                onClick={() => setActiveInstance(inst.id)}
+                key={group.id}
+                onClick={() => setActiveGroup(group.id)}
                 className={cn(
-                  "group relative flex h-7 items-center gap-1.5 rounded px-2.5 text-caption font-mono cursor-pointer transition select-none max-w-[200px]",
-                  isActive
+                  "group relative flex h-7 items-center gap-1.5 rounded px-2.5 text-caption font-mono cursor-pointer transition select-none max-w-[210px]",
+                  isGroupActive
                     ? "bg-[#0f1115] text-ink font-medium shadow-sm border border-line/60"
                     : "text-ash/80 hover:bg-[#1b1f2b] hover:text-ink",
-                  isSplit && "ring-1 ring-teal/40",
+                  isSplitGroup && "ring-1 ring-teal/30",
                 )}
-                title={`${inst.title} (${inst.shell})`}
+                title={tabTitle}
               >
-                <ShellIcon icon={inst.icon} />
-                <span className="truncate">{inst.title}</span>
+                {isSplitGroup ? (
+                  <Columns2 size={12} className="text-teal" />
+                ) : (
+                  <ShellOrAgentIcon icon={firstInst?.icon || "pwsh"} />
+                )}
 
-                {/* 拆分标记 */}
-                {isSplit && (
+                <span className="truncate">{tabTitle}</span>
+
+                {/* 分屏窗格数量小徽章 */}
+                {isSplitGroup && (
                   <span className="rounded bg-teal/10 px-1 py-0.2 text-[9px] text-teal font-sans">
-                    分屏
+                    {leaves.length}P
                   </span>
                 )}
 
@@ -208,12 +212,14 @@ export function TerminalPanel({
                   type="button"
                   onClick={(e) => {
                     e.stopPropagation();
-                    closeInstance(inst.id);
+                    closeTab(group.id);
                   }}
-                  title="关闭终端"
+                  title="关闭标签页"
                   className={cn(
                     "ml-1 rounded p-0.5 text-ash hover:bg-line-soft hover:text-rose-400 transition",
-                    isActive ? "opacity-80 hover:opacity-100" : "opacity-0 group-hover:opacity-80",
+                    isGroupActive
+                      ? "opacity-80 hover:opacity-100"
+                      : "opacity-0 group-hover:opacity-80",
                   )}
                 >
                   <X size={11} />
@@ -223,7 +229,7 @@ export function TerminalPanel({
           })}
         </div>
 
-        {/* 新建终端按钮与下拉菜单（独立在外，不受 overflow 裁剪限制） */}
+        {/* 新建终端按钮与下拉菜单（包含交互式 Agent TUI、系统终端、分屏操作） */}
         <div className="relative flex items-center ml-1.5 shrink-0" ref={menuRef}>
           <div className="flex items-center rounded-btn bg-line-soft/40 hover:bg-line-soft text-ash hover:text-ink transition">
             <button
@@ -237,7 +243,7 @@ export function TerminalPanel({
             <button
               type="button"
               onClick={() => setMenuOpen(!menuOpen)}
-              title="选择终端 Shell (PowerShell 7, WSL, CMD, Bash...)"
+              title="选择 Agent 执行器或系统 Shell (ZCode, Claude, Codex, WSL, CMD...)"
               className="flex items-center px-1 py-1 text-ash/80 hover:text-ink border-l border-line/30 transition"
             >
               <ChevronDown size={11} />
@@ -246,9 +252,38 @@ export function TerminalPanel({
 
           {/* 下拉弹出菜单 */}
           {menuOpen && (
-            <div className="absolute left-0 top-full mt-1.5 z-50 min-w-[220px] rounded-panel border border-line bg-[#161a23] p-1.5 shadow-2xl backdrop-blur">
+            <div className="absolute left-0 top-full mt-1.5 z-50 min-w-[250px] rounded-panel border border-line bg-[#161a23] p-1.5 shadow-2xl backdrop-blur">
+              {/* 分组 1：Agent 交互式执行器（在 PowerShell 7 中运行其真 TUI） */}
+              <div className="px-2 py-1 text-[11px] font-semibold text-teal/80 tracking-wide uppercase flex items-center gap-1">
+                <Zap size={11} />
+                <span>交互式 Agent CLI (TUI)</span>
+              </div>
+              {executorOptions.map((r) => (
+                <button
+                  key={r.id}
+                  onClick={() => handleLaunchExecutor(r.id, r.presentation.displayName)}
+                  className="flex w-full items-center gap-2.5 rounded px-2.5 py-1.5 text-left text-body-sm text-ink hover:bg-teal-tint hover:text-teal transition"
+                >
+                  <ShellOrAgentIcon icon={r.id} />
+                  <div className="flex flex-col flex-1 min-w-0">
+                    <span className="text-caption font-mono font-medium truncate">
+                      {r.presentation.displayName}
+                    </span>
+                    <span className="text-[10px] text-ash/60 font-sans truncate">
+                      PowerShell 7 · 交互式 TUI
+                    </span>
+                  </div>
+                  {activeRuntimeId === r.id && (
+                    <span className="text-[10px] text-teal/70 font-sans">当前</span>
+                  )}
+                </button>
+              ))}
+
+              <div className="my-1.5 h-px bg-line/50" />
+
+              {/* 分组 2：原生系统 Shell */}
               <div className="px-2 py-1 text-[11px] font-semibold text-ash/70 tracking-wide uppercase">
-                新建系统终端
+                原生系统终端
               </div>
               {SUPPORTED_TERMINAL_PROFILES.map((profile) => (
                 <button
@@ -256,7 +291,7 @@ export function TerminalPanel({
                   onClick={() => handleCreateProfile(profile.id)}
                   className="flex w-full items-center gap-2.5 rounded px-2.5 py-1.5 text-left text-body-sm text-ink hover:bg-teal-tint hover:text-teal transition"
                 >
-                  <ShellIcon icon={profile.icon} />
+                  <ShellOrAgentIcon icon={profile.icon} />
                   <span className="flex-1 text-caption font-mono">{profile.name}</span>
                   {profile.id === defaultProfileId && (
                     <span className="text-[10px] text-teal/70 font-sans">默认</span>
@@ -266,53 +301,88 @@ export function TerminalPanel({
 
               <div className="my-1.5 h-px bg-line/50" />
 
+              {/* 分组 3：自由分屏操作 */}
               <div className="px-2 py-1 text-[11px] font-semibold text-ash/70 tracking-wide uppercase">
-                分屏操作
+                自由分屏操作
               </div>
               <button
                 onClick={() => {
                   setMenuOpen(false);
-                  splitWithNew();
+                  splitPane({ direction: "horizontal" });
                 }}
                 className="flex w-full items-center gap-2.5 rounded px-2.5 py-1.5 text-left text-body-sm text-ink hover:bg-teal-tint hover:text-teal transition"
               >
                 <Columns2 size={13} className="text-teal" />
-                <span className="text-caption font-mono">向右拆分终端 (Split)</span>
+                <span className="text-caption font-mono">向右拆分当前窗格 (Split Right)</span>
+              </button>
+              <button
+                onClick={() => {
+                  setMenuOpen(false);
+                  splitPane({ direction: "vertical" });
+                }}
+                className="flex w-full items-center gap-2.5 rounded px-2.5 py-1.5 text-left text-body-sm text-ink hover:bg-teal-tint hover:text-teal transition"
+              >
+                <Rows2 size={13} className="text-teal" />
+                <span className="text-caption font-mono">向下拆分当前窗格 (Split Down)</span>
               </button>
             </div>
           )}
         </div>
 
         {/* 右侧：全局终端操作工具条 */}
-        <div className="ml-2 flex shrink-0 items-center gap-1">
-          {/* 拆分终端按钮 */}
+        <div className="ml-auto flex shrink-0 items-center gap-1">
+          {/* 向右拆分 */}
           <button
             type="button"
-            onClick={handleToggleSplit}
-            title={splitInstanceId ? "取消分屏" : "向右拆分终端 (Split Terminal)"}
+            onClick={() => splitPane({ direction: "horizontal" })}
+            title="向右拆分当前窗格 (Split Right)"
+            className="flex items-center gap-1 rounded-btn px-2 py-0.5 text-caption text-ash hover:bg-line-soft hover:text-ink transition"
+          >
+            <Columns2 size={12} />
+            <span className="hidden xl:inline">向右拆分</span>
+          </button>
+
+          {/* 向下拆分 */}
+          <button
+            type="button"
+            onClick={() => splitPane({ direction: "vertical" })}
+            title="向下拆分当前窗格 (Split Down)"
+            className="flex items-center gap-1 rounded-btn px-2 py-0.5 text-caption text-ash hover:bg-line-soft hover:text-ink transition"
+          >
+            <Rows2 size={12} />
+            <span className="hidden xl:inline">向下拆分</span>
+          </button>
+
+          {/* 最大化 / 还原 */}
+          <button
+            type="button"
+            onClick={() => toggleMaximize()}
+            title={maximizedInstanceId ? "还原分屏窗格" : "最大化当前聚焦窗格"}
             className={cn(
               "flex items-center gap-1 rounded-btn px-2 py-0.5 text-caption transition",
-              splitInstanceId
+              maximizedInstanceId
                 ? "bg-teal-tint text-teal"
                 : "text-ash hover:bg-line-soft hover:text-ink",
             )}
           >
-            <Columns2 size={12} />
-            <span className="hidden xl:inline">{splitInstanceId ? "合并分屏" : "拆分"}</span>
+            {maximizedInstanceId ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
+            <span className="hidden sm:inline">
+              {maximizedInstanceId ? "还原" : "最大化"}
+            </span>
           </button>
 
           {/* 清屏 */}
           <button
             type="button"
             onClick={handleClear}
-            title="清空终端屏幕 (Ctrl+L)"
+            title="清空当前窗格屏幕 (Ctrl+L 重绘)"
             className="flex items-center gap-1 rounded-btn px-2 py-0.5 text-caption text-ash hover:bg-line-soft hover:text-ink transition"
           >
             <Trash2 size={12} />
             <span className="hidden sm:inline">清屏</span>
           </button>
 
-          {/* 重启当前终端会话 */}
+          {/* 重启当前终端进程 */}
           <button
             type="button"
             onClick={handleRestart}
@@ -323,7 +393,7 @@ export function TerminalPanel({
             <span className="hidden sm:inline">重启</span>
           </button>
 
-          {/* 在系统文件资源管理器中打开工作目录 */}
+          {/* 打开工作空间目录 */}
           {unit && (
             <button
               type="button"
@@ -363,14 +433,14 @@ export function TerminalPanel({
         </div>
       </div>
 
-      {/* 终端内容区：支持单窗格与分屏双窗格 */}
+      {/* 终端内容区：完全无限制的自由递归分屏树 */}
       {unit === undefined ? (
         <div className="flex min-h-0 flex-1 items-center justify-center px-4 text-center">
           <p className="text-body-sm text-ash">
             终端需要一个工作目录才能启动。请在左侧侧边栏选择一个 Bot 或工作空间。
           </p>
         </div>
-      ) : instances.length === 0 ? (
+      ) : groups.length === 0 ? (
         <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 px-4 text-center">
           <p className="text-body-sm text-ash">当前没有打开的终端实例。</p>
           <button
@@ -381,83 +451,20 @@ export function TerminalPanel({
             <span>新建 PowerShell 7 终端</span>
           </button>
         </div>
-      ) : splitInstance ? (
-        /* 分屏双窗格布局 */
-        <div className="flex min-h-0 flex-1 flex-row overflow-hidden">
-          {/* 左侧主窗格 */}
-          <div className="relative min-w-0 flex-1 h-full overflow-hidden">
-            {instances
-              .filter((inst) => inst.id !== splitInstance.id)
-              .map((inst) => (
-                <TerminalInstanceView
-                  key={inst.id}
-                  ref={(r) => {
-                    if (r) instanceRefs.current.set(inst.id, r);
-                    else instanceRefs.current.delete(inst.id);
-                  }}
-                  terminalId={inst.id}
-                  shell={inst.shell}
-                  cwd={inst.cwd || unit.rootPath}
-                  executorId={inst.executorId}
-                  isActive={inst.id === activeInstanceId}
-                />
-              ))}
-          </div>
-
-          {/* 分屏垂直分割线 */}
-          <div className="w-[1px] bg-line/60 hover:bg-teal/50 transition cursor-col-resize shrink-0" />
-
-          {/* 右侧拆分窗格 */}
-          <div className="relative min-w-0 flex-1 h-full overflow-hidden flex flex-col">
-            <div className="flex h-6 shrink-0 items-center justify-between border-b border-line/30 bg-[#161a23] px-2 text-[11px] font-mono text-ash">
-              <div className="flex items-center gap-1.5">
-                <ShellIcon icon={splitInstance.icon} />
-                <span>{splitInstance.title}</span>
-              </div>
-              <button
-                type="button"
-                onClick={() => setSplitInstance(null)}
-                title="关闭拆分窗格"
-                className="rounded p-0.5 text-ash hover:bg-line-soft hover:text-ink transition"
-              >
-                <X size={11} />
-              </button>
-            </div>
-            <div className="min-h-0 flex-1 relative overflow-hidden">
-              <TerminalInstanceView
-                key={splitInstance.id}
-                ref={(r) => {
-                  if (r) instanceRefs.current.set(splitInstance.id, r);
-                  else instanceRefs.current.delete(splitInstance.id);
-                }}
-                terminalId={splitInstance.id}
-                shell={splitInstance.shell}
-                cwd={splitInstance.cwd || unit.rootPath}
-                executorId={splitInstance.executorId}
-                isActive={true}
-              />
-            </div>
-          </div>
-        </div>
-      ) : (
-        /* 单窗格布局：所有常驻实例渲染在同一容器内，隐藏实例设置 display: none，绝不杀掉后台 PTY */
+      ) : maximizedInst ? (
+        /* 当前窗格最大化展示 */
         <div className="min-h-0 flex-1 relative overflow-hidden">
-          {instances.map((inst) => (
-            <TerminalInstanceView
-              key={inst.id}
-              ref={(r) => {
-                if (r) instanceRefs.current.set(inst.id, r);
-                else instanceRefs.current.delete(inst.id);
-              }}
-              terminalId={inst.id}
-              shell={inst.shell}
-              cwd={inst.cwd || unit.rootPath}
-              executorId={inst.executorId}
-              isActive={inst.id === activeInstanceId}
-            />
-          ))}
+          <TerminalPaneSlot inst={maximizedInst} totalPanesInGroup={1} />
         </div>
-      )}
+      ) : activeGroup ? (
+        /* 自由递归分屏树展示 */
+        <div className="min-h-0 flex-1 relative overflow-hidden">
+          <TerminalSplitTree
+            node={activeGroup.rootLayout}
+            totalPanesInGroup={activeLeaves.length}
+          />
+        </div>
+      ) : null}
     </div>
   );
 }
