@@ -127,52 +127,52 @@ export class TerminalSession {
     };
     this.unsubFrame = client.onTerminalFrame(onFrame);
 
-    // 发送用户输入
-    this.term.onData((data) => {
+    // 高频输入批次缓冲（对齐 VS Code 流式调度）：
+    // 鼠标拖拽、连续移动、快速滚轮会产生高密度的 DEC/SGR 字符序列，
+    // 在 4ms 微批次内合并发送，避免数百次并发 RPC 造成 WebSocket 阻塞与丢帧。
+    let inputBatch = "";
+    let inputBatchTimer: ReturnType<typeof setTimeout> | null = null;
+    const flushInputBatch = () => {
+      if (!inputBatch) return;
+      const dataToSend = inputBatch;
+      inputBatch = "";
+      inputBatchTimer = null;
       void client
-        .rpc("terminal.input", { terminalId: this.terminalId, data }, 8000)
+        .rpc("terminal.input", { terminalId: this.terminalId, data: dataToSend }, 8000)
         .catch(() => {});
+    };
+
+    this.term.onData((data) => {
+      inputBatch += data;
+      if (!inputBatchTimer) {
+        inputBatchTimer = setTimeout(flushInputBatch, 4);
+      }
     });
 
-    // 滚轮事件分流（对齐 VS Code）：备用缓冲 TUI 下映射为光标导航键驱动，普通终端放行历史滚动
+    // 滚轮事件分流（对齐 VS Code 终端规范）：
+    // 1. 若应用已开启终端鼠标追踪（DECSET 1000/1002/1006，例如 ZCode、htop 等），放行原生滚轮，
+    //    让 xterm.js 自动生成标准的 SGR Mouse Wheel 序列 (\x1b[<64;...M / \x1b[<65;...M) 给应用程序；
+    // 2. 仅当应用未开启鼠标追踪、且处于备用屏幕缓冲（alternate buffer）时，才回退映射为方向键驱动滚动；
+    // 3. 普通主屏幕放行 xterm.js 历史回滚。
     this.term.attachCustomWheelEventHandler((e: WheelEvent) => {
       if (e.shiftKey) return true;
+      const mouseMode = this.term.modes.mouseTrackingMode;
+      if (mouseMode && mouseMode !== "none") {
+        // TUI 程序主动启用了鼠标追踪，必须放行以触发 xterm 原生 SGR 鼠标报告！
+        return true;
+      }
+
       if (this.term.buffer.active.type === "alternate") {
         const isUp = e.deltaY < 0;
         const steps = Math.min(3, Math.max(1, Math.round(Math.abs(e.deltaY) / 35)));
         const payload = (isUp ? "\x1b[A" : "\x1b[B").repeat(steps);
-        void client
-          .rpc("terminal.input", { terminalId: this.terminalId, data: payload }, 3000)
-          .catch(() => {});
+        inputBatch += payload;
+        if (!inputBatchTimer) {
+          inputBatchTimer = setTimeout(flushInputBatch, 4);
+        }
         return false;
       }
       return true;
-    });
-
-    // 容器滑动条点击分流
-    this.element.addEventListener("mousedown", (e: MouseEvent) => {
-      if (e.shiftKey || e.button !== 0) return;
-      if (this.term.buffer.active.type !== "alternate") return;
-      const rect = this.element.getBoundingClientRect();
-      const curCols = this.term.cols || 80;
-      const curRows = this.term.rows || 24;
-      const cellW = rect.width / curCols;
-      const cellH = rect.height / curRows;
-      if (cellW <= 0 || cellH <= 0) return;
-      const col = Math.min(curCols, Math.max(1, Math.floor((e.clientX - rect.left) / cellW) + 1));
-      const row = Math.min(curRows, Math.max(1, Math.floor((e.clientY - rect.top) / cellH) + 1));
-
-      const isScrollbarArea = col >= Math.floor(curCols * 0.45) && col <= Math.ceil(curCols * 0.55);
-      if (isScrollbarArea) {
-        const isTopHalf = row < Math.floor(curRows / 2);
-        void client
-          .rpc(
-            "terminal.input",
-            { terminalId: this.terminalId, data: isTopHalf ? "\x1b[5~" : "\x1b[6~" },
-            3000,
-          )
-          .catch(() => {});
-      }
     });
 
     // 监听包装容器的尺寸变化

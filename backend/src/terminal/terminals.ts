@@ -191,12 +191,16 @@ export class TerminalManager {
       ...opts.env,
     };
 
+    const isWindows = process.platform === "win32";
     const shellProcess = pty.spawn(shell, shellArgs, {
       name: "xterm-256color",
       cols,
       rows,
       cwd,
       env: { ...process.env, ...envOverrides } as Record<string, string>,
+      useConpty: isWindows,
+      useConptyDll: isWindows,
+      conptyInheritCursor: isWindows,
     });
 
     shellProcess.onData((data) => {
