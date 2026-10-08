@@ -17,6 +17,60 @@ export interface TerminalSessionCreateOptions {
   onExit?: (code: number) => void;
 }
 
+export const XTERM_LIGHT_THEME = {
+  background: "#f2f1ed",
+  foreground: "#26251e",
+  cursor: "#f54e00",
+  selectionBackground: "rgba(139, 196, 248, 0.4)",
+  black: "#26251e",
+  red: "#cf2d56",
+  green: "#1f8a65",
+  yellow: "#c08532",
+  blue: "#2563eb",
+  magenta: "#a855f7",
+  cyan: "#0d9488",
+  white: "#f7f7f4",
+  brightBlack: "#7a7974",
+  brightRed: "#e11d48",
+  brightGreen: "#16a34a",
+  brightYellow: "#d97706",
+  brightBlue: "#3b82f6",
+  brightMagenta: "#c084fc",
+  brightCyan: "#14b8a6",
+  brightWhite: "#ffffff",
+};
+
+export const XTERM_DARK_THEME = {
+  background: "#000000",
+  foreground: "#faf9f6",
+  cursor: "#cbb0f7",
+  selectionBackground: "rgba(203, 176, 247, 0.25)",
+  black: "#121212",
+  red: "#f87171",
+  green: "#4ade80",
+  yellow: "#facc15",
+  blue: "#60a5fa",
+  magenta: "#cbb0f7",
+  cyan: "#cbb0f7",
+  white: "#faf9f6",
+  brightBlack: "#333333",
+  brightRed: "#ef4444",
+  brightGreen: "#22c55e",
+  brightYellow: "#eab308",
+  brightBlue: "#3b82f6",
+  brightMagenta: "#dfc8ff",
+  brightCyan: "#dfc8ff",
+  brightWhite: "#ffffff",
+};
+
+export function getIsDarkMode(): boolean {
+  if (typeof document === "undefined") return false;
+  return (
+    document.documentElement.classList.contains("dark") ||
+    document.documentElement.getAttribute("data-theme") === "dark"
+  );
+}
+
 /**
  * 终端底层会话对象（对齐 VS Code terminalInstance.ts）
  *
@@ -30,6 +84,7 @@ export class TerminalSession {
   readonly term: Terminal;
   readonly fitAddon: FitAddon;
   readonly unicode11: Unicode11Addon;
+  canvasAddon: CanvasAddon | null = null;
   shell: string;
   cwd: string;
   executorId?: string;
@@ -55,6 +110,7 @@ export class TerminalSession {
     this.element.setAttribute("data-terminal-id", this.terminalId);
 
     // 对齐 VS Code xtermTerminal.ts 配置
+    const isDark = getIsDarkMode();
     this.term = new Terminal({
       allowProposedApi: true,
       fontSize: 13,
@@ -71,28 +127,7 @@ export class TerminalSession {
         backend: "conpty",
         buildNumber: 22621,
       },
-      theme: {
-        background: "#f2f1ed",
-        foreground: "#26251e",
-        cursor: "#f54e00",
-        selectionBackground: "rgba(139, 196, 248, 0.4)",
-        black: "#26251e",
-        red: "#cf2d56",
-        green: "#1f8a65",
-        yellow: "#c08532",
-        blue: "#2563eb",
-        magenta: "#a855f7",
-        cyan: "#0d9488",
-        white: "#f7f7f4",
-        brightBlack: "#7a7974",
-        brightRed: "#e11d48",
-        brightGreen: "#16a34a",
-        brightYellow: "#d97706",
-        brightBlue: "#3b82f6",
-        brightMagenta: "#c084fc",
-        brightCyan: "#14b8a6",
-        brightWhite: "#ffffff",
-      },
+      theme: isDark ? XTERM_DARK_THEME : XTERM_LIGHT_THEME,
     });
 
     this.fitAddon = new FitAddon();
@@ -103,14 +138,15 @@ export class TerminalSession {
     this.term.unicode.activeVersion = "11";
 
     try {
-      const canvasAddon = new CanvasAddon();
-      this.term.loadAddon(canvasAddon);
+      this.canvasAddon = new CanvasAddon();
+      this.term.loadAddon(this.canvasAddon);
     } catch (err) {
       console.warn("[terminal] Canvas addon fallback:", err);
     }
 
-    // 打开到包装元素
+    // 打开到包装元素并立即应用当前主题底色
     this.term.open(this.element);
+    this.applyTheme(isDark);
 
     // 订阅后台 PTY 帧
     const client = DaemonClient.get(defaultDaemonEndpoint());
@@ -236,13 +272,73 @@ export class TerminalSession {
     if (this.element.parentElement !== container) {
       container.appendChild(this.element);
     }
-    this.fit(true);
-    requestAnimationFrame(() => {
-      this.fit(true);
-      try {
-        this.term.refresh(0, this.term.rows - 1);
-      } catch {}
+    const isDark = getIsDarkMode();
+    this.applyTheme(isDark);
+  }
+
+  /**
+   * 动态切换终端配色主题（深色/浅色），立即穿透更新 DOM 与 xterm 内部渲染图层
+   */
+  applyTheme(isDark: boolean): void {
+    const theme = isDark ? XTERM_DARK_THEME : XTERM_LIGHT_THEME;
+
+    // 1. 同步更新 xterm options 配置
+    // ⚠ 注意：必须使用 options.theme = { ...theme }，切勿将整个包含 cols/rows 的 options 覆盖，避免 constructor 校验抛错
+    try {
+      this.term.options.theme = { ...theme };
+    } catch (err) {
+      console.warn("[terminal] failed to update term.options.theme:", err);
+    }
+
+    // 2. 深度穿透设置包装 DOM、xterm 根层与视口背景
+    this.element.style.backgroundColor = theme.background;
+    if (this.term.element) {
+      this.term.element.style.backgroundColor = theme.background;
+    }
+    const viewports = this.element.querySelectorAll<HTMLElement>(".xterm-viewport");
+    viewports.forEach((node) => {
+      node.style.backgroundColor = theme.background;
     });
+    // ⚠ 关键修复：绝对不能给 canvas 节点设置非透明背景色！
+    // xterm-cursor-layer、xterm-link-layer、xterm-selection-layer 叠加在 xterm-text-layer 之上，
+    // 若具有非透明背景色，将完全遮挡底层文本图层（导致仅可见光标而文字消失）。
+    const canvases = this.element.querySelectorAll<HTMLCanvasElement>("canvas");
+    canvases.forEach((canvas) => {
+      canvas.style.backgroundColor = "transparent";
+    });
+
+    // 3. 强制标记全屏行脏数据并重绘，清除选区残影
+    try {
+      this.term.clearSelection();
+      this.term.refresh(0, Math.max(1, this.term.rows - 1));
+    } catch {}
+
+    // 4. 重算尺寸与自适应布局
+    this.fit(true);
+
+    // 5. 双帧调度确保渲染管线在下个事件循环彻底重绘画布背景
+    requestAnimationFrame(() => {
+      try {
+        this.term.refresh(0, Math.max(1, this.term.rows - 1));
+      } catch {}
+      requestAnimationFrame(() => {
+        try {
+          this.term.refresh(0, Math.max(1, this.term.rows - 1));
+        } catch {}
+      });
+    });
+
+    // 6. 发送 resize RPC 通知后台 PTY / ConPTY 触发屏幕重绘
+    try {
+      const client = DaemonClient.get(defaultDaemonEndpoint());
+      void client
+        .rpc(
+          "terminal.resize",
+          { terminalId: this.terminalId, cols: this.lastCols, rows: this.lastRows },
+          8000,
+        )
+        .catch(() => {});
+    } catch {}
   }
 
   detach(): void {
@@ -326,6 +422,9 @@ export class TerminalSession {
     this.unsubFrame?.();
     this.detach();
     try {
+      this.canvasAddon?.dispose();
+    } catch {}
+    try {
       this.term.dispose();
     } catch {}
     const client = DaemonClient.get(defaultDaemonEndpoint());
@@ -364,6 +463,13 @@ class TerminalSessionRegistry {
     }
     this.sessions.clear();
   }
+
+  updateAllThemes(isDark: boolean): void {
+    for (const session of this.sessions.values()) {
+      session.applyTheme(isDark);
+    }
+  }
 }
 
 export const terminalSessionRegistry = new TerminalSessionRegistry();
+export const TerminalSessionManager = terminalSessionRegistry;

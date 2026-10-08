@@ -26,6 +26,7 @@ import { terminalSessionRegistry } from "../store/TerminalSessionManager.ts";
 import { TerminalSplitTree } from "./TerminalSplitTree.tsx";
 import { TerminalPaneSlot, ShellOrAgentIcon } from "./TerminalPaneSlot.tsx";
 import { openFolder } from "../adapters/daemon/client.ts";
+import { useTheme } from "../store/useTheme.ts";
 import { cn } from "./cn.ts";
 
 export function TerminalPanel({
@@ -156,10 +157,18 @@ export function TerminalPanel({
     return instances.find((i) => i.id === maximizedInstanceId);
   }, [instances, maximizedInstanceId]);
 
+  const resolvedTheme = useTheme((s) => s.resolvedTheme);
+
   return (
     <div
+      style={{
+        backgroundColor: isCanvas
+          ? resolvedTheme === "dark" ? "#000000" : "#f2f1ed"
+          : undefined,
+      }}
       className={cn(
-        "flex h-full min-h-0 flex-1 flex-col bg-card",
+        "flex h-full min-h-0 flex-1 flex-col",
+        !isCanvas && "bg-card",
         !isCanvas && !isPage && "border-t border-line",
       )}
     >

@@ -16,6 +16,8 @@ import {
   type TerminalInstanceItem,
 } from "../store/useTerminalStore.ts";
 import { terminalSessionRegistry } from "../store/TerminalSessionManager.ts";
+import { useTheme } from "../store/useTheme.ts";
+import { useShell } from "../store/useShell.ts";
 import { cn } from "./cn.ts";
 
 export function ShellOrAgentIcon({
@@ -61,6 +63,8 @@ export const TerminalPaneSlot = memo(function TerminalPaneSlot({
   const splitPane = useTerminalStore((s) => s.splitPane);
   const closePane = useTerminalStore((s) => s.closePane);
   const toggleMaximize = useTerminalStore((s) => s.toggleMaximize);
+  const resolvedTheme = useTheme((s) => s.resolvedTheme);
+  const settingsOpen = useShell((s) => s.settingsOpen);
 
   const isActive = inst.id === activeInstanceId;
   const isMaximized = inst.id === maximizedInstanceId;
@@ -94,11 +98,24 @@ export const TerminalPaneSlot = memo(function TerminalPaneSlot({
     }
   }, [isActive, inst.id]);
 
+  // 当外观主题切换、或从设置页面退出返回工作台时，立即同步激活窗格的主题与画布重绘
+  useEffect(() => {
+    const session = terminalSessionRegistry.get(inst.id);
+    if (!session) return;
+    session.applyTheme(resolvedTheme === "dark");
+    if (isActive && !settingsOpen) {
+      session.focus();
+    }
+  }, [resolvedTheme, settingsOpen, inst.id, isActive]);
+
   return (
     <div
       onClick={() => setActiveInstance(inst.id)}
+      style={{
+        backgroundColor: resolvedTheme === "dark" ? "#000000" : "#f2f1ed",
+      }}
       className={cn(
-        "group/pane flex h-full w-full flex-col overflow-hidden bg-card select-none",
+        "group/pane flex h-full w-full flex-col overflow-hidden select-none",
         isActive
           ? "ring-1 ring-teal/50 shadow-sm"
           : "ring-1 ring-line/20 hover:ring-line/60",
@@ -181,7 +198,13 @@ export const TerminalPaneSlot = memo(function TerminalPaneSlot({
       )}
 
       {/* xterm 实体挂载容器 */}
-      <div ref={mountRef} className="min-h-0 min-w-0 flex-1 overflow-hidden relative" />
+      <div
+        ref={mountRef}
+        style={{
+          backgroundColor: resolvedTheme === "dark" ? "#000000" : "#f2f1ed",
+        }}
+        className="min-h-0 min-w-0 flex-1 overflow-hidden relative"
+      />
     </div>
   );
 });

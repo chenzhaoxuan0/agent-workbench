@@ -16,6 +16,11 @@ import {
   defaultDaemonEndpoint,
   type DaemonTerminalFrame,
 } from "../adapters/daemon/client.ts";
+import { useTheme } from "../store/useTheme.ts";
+import {
+  XTERM_LIGHT_THEME,
+  XTERM_DARK_THEME,
+} from "../store/TerminalSessionManager.ts";
 
 export interface TerminalInstanceHandle {
   clear: () => void;
@@ -51,6 +56,14 @@ export const TerminalInstanceView = memo(
       const fitAddonRef = useRef<FitAddon | null>(null);
       const [restartNonce, setRestartNonce] = useState(0);
       const [exited, setExited] = useState<number | null>(null);
+      const resolvedTheme = useTheme((s) => s.resolvedTheme);
+
+      useEffect(() => {
+        if (termRef.current) {
+          termRef.current.options.theme =
+            resolvedTheme === "dark" ? XTERM_DARK_THEME : XTERM_LIGHT_THEME;
+        }
+      }, [resolvedTheme]);
 
       useImperativeHandle(
         ref,
@@ -95,28 +108,8 @@ export const TerminalInstanceView = memo(
             backend: "conpty",
             buildNumber: 22621,
           },
-          theme: {
-            background: "#f2f1ed",
-            foreground: "#26251e",
-            cursor: "#f54e00",
-            selectionBackground: "rgba(139, 196, 248, 0.4)",
-            black: "#26251e",
-            red: "#cf2d56",
-            green: "#1f8a65",
-            yellow: "#c08532",
-            blue: "#2563eb",
-            magenta: "#a855f7",
-            cyan: "#0d9488",
-            white: "#f7f7f4",
-            brightBlack: "#7a7974",
-            brightRed: "#e11d48",
-            brightGreen: "#16a34a",
-            brightYellow: "#d97706",
-            brightBlue: "#3b82f6",
-            brightMagenta: "#c084fc",
-            brightCyan: "#14b8a6",
-            brightWhite: "#ffffff",
-          },
+          theme:
+            resolvedTheme === "dark" ? XTERM_DARK_THEME : XTERM_LIGHT_THEME,
         });
         termRef.current = term;
 

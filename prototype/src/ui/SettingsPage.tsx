@@ -30,6 +30,7 @@ import { useMemorySettings } from "../store/useMemoryPrefs.ts";
 import { readProjectMemory, runDigestDryRun, setGuardianConfigRpc, type DigestResult } from "../store/useMemoryPanel.ts";
 import { ProviderInstancesPanel } from "./ProviderInstancesPanel.tsx";
 import { ImageSettingsSection } from "./ImageSettingsSection.tsx";
+import { AppearanceSettingsSection } from "./AppearanceSettingsSection.tsx";
 import { cn } from "./cn.ts";
 
 const ICONS: Record<string, typeof Settings2> = {
@@ -213,6 +214,8 @@ export function Toggle({ on, onChange }: { on: boolean; onChange?: (v: boolean) 
 
 function SectionBody({ section }: { section: SettingsSectionDef }) {
   switch (section.id) {
+    case "appearance":
+      return <AppearanceSettingsSection />;
     case "models":
       return (
         <div className="space-y-6">

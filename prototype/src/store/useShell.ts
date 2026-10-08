@@ -38,6 +38,7 @@ export type ConversationView = "terminal" | "chat" | "trajectory";
  * 已整体移除，等真要做的时候再加回来（git log 有原形）。
  */
 export type SettingsSectionId =
+  | "appearance"
   | "models"
   | "image"
   | "shortcuts"
@@ -69,6 +70,7 @@ export const SETTINGS_GROUPS: readonly { id: SettingsGroupId; title: string }[] 
  * **「自动化」不在此列表** —— 它是独立主视图（见 MainView 注释）
  */
 export const SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
+  { id: "appearance", title: "外观", desc: "界面主题与色彩风格（温润羊皮纸 / 深邃黑曜石）", groupId: "basics", icon: "palette" },
   { id: "models", title: "执行器与模型", desc: "执行器实例、供应商与每个 CLI 的模型清单", groupId: "basics", icon: "brain" },
   { id: "shortcuts", title: "快捷键", desc: "全局与工作区级键位", groupId: "basics", icon: "keyboard" },
 
