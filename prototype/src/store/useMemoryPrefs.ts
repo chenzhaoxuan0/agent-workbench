@@ -26,11 +26,20 @@ export interface MemoryPrefs {
   memoryCharLimit: number;
   /** 每日总结任务开关（写 memory/daily/，按天分片不注入） */
   digestEnabled: boolean;
+  /** 后台守护执行器 CLI */
+  guardianRunner: "zcode" | "claude" | "codex" | "pi" | "mcode" | "custom";
+  /** 后台守护轻量小模型名称 */
+  guardianModel: string;
+  /** 是否开启超额自动合并压缩 */
+  autoConsolidate: boolean;
 }
 
 const DEFAULTS: MemoryPrefs = {
   memoryCharLimit: 2200,
   digestEnabled: true,
+  guardianRunner: "zcode",
+  guardianModel: "deepseek-chat",
+  autoConsolidate: true,
 };
 
 /** 提醒阈值取 80%（hermes 的最佳实践，与后端 MEMORY_WARN_RATIO 同值） */
@@ -51,6 +60,9 @@ function load(): MemoryPrefs {
       // 上限必须为正：0 或负数会让「百分比」除出 Infinity / NaN，面板直接显示不出东西
       memoryCharLimit: n > 0 ? n : DEFAULTS.memoryCharLimit,
       digestEnabled: typeof p.digestEnabled === "boolean" ? p.digestEnabled : DEFAULTS.digestEnabled,
+      guardianRunner: p.guardianRunner ?? DEFAULTS.guardianRunner,
+      guardianModel: typeof p.guardianModel === "string" ? p.guardianModel : DEFAULTS.guardianModel,
+      autoConsolidate: typeof p.autoConsolidate === "boolean" ? p.autoConsolidate : DEFAULTS.autoConsolidate,
     };
   } catch {
     return DEFAULTS;

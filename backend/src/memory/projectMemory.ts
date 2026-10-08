@@ -31,6 +31,18 @@ export const MEMORY_TEMPLATE = [
   "",
 ].join("\n");
 
+/** 新建 STANDING.md 时的模板头。上限 1000 字符，只读禁令。 */
+export const STANDING_TEMPLATE = [
+  "# Standing Instructions",
+  "",
+  "<!-- workbench 记忆系统 · 常驻硬性禁令 · 上限 1000 字符 · Agent 禁改 -->",
+  "",
+  "- （把项目级不可违反的红线与安全约束写在这里。每行一条。）",
+  "",
+].join("\n");
+
+export const STANDING_CHAR_LIMIT = 1000;
+
 /** 备份保留份数。超出后按时间淘汰最旧的。 */
 export const BACKUP_KEEP = 20;
 
@@ -44,6 +56,7 @@ export function isValidDate(date: string): boolean {
 export interface ProjectMemoryPaths {
   readonly root: string;
   readonly memoryMd: string;
+  readonly standingMd: string;
   readonly memoryDir: string;
   readonly dailyDir: string;
 }
@@ -72,6 +85,7 @@ export function resolvePaths(rootPath: string): ProjectMemoryPaths {
   return {
     root: rootPath,
     memoryMd: path.join(rootPath, "MEMORY.md"),
+    standingMd: path.join(rootPath, "STANDING.md"),
     memoryDir,
     dailyDir: path.join(memoryDir, "daily"),
   };
@@ -83,6 +97,11 @@ export function scopeId(rootPath: string): string {
 }
 
 // ---- 读 ----
+
+export async function readStanding(rootPath: string): Promise<MemoryFile> {
+  const p = resolvePaths(rootPath);
+  return readFileAt(p.standingMd, STANDING_CHAR_LIMIT);
+}
 
 export async function readLongTerm(rootPath: string): Promise<MemoryFile> {
   const p = resolvePaths(rootPath);
@@ -186,6 +205,13 @@ export async function ensureLayout(rootPath: string): Promise<ProjectMemoryPaths
     await atomicWrite(p.memoryMd, MEMORY_TEMPLATE);
     log.info("project memory created", { root: path.basename(rootPath) });
   }
+
+  const existingStanding = await readFileAt(p.standingMd, STANDING_CHAR_LIMIT);
+  if (!existingStanding.exists || existingStanding.content.trim() === "") {
+    await atomicWrite(p.standingMd, STANDING_TEMPLATE);
+    log.info("standing instructions created", { root: path.basename(rootPath) });
+  }
+
   return p;
 }
 

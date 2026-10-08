@@ -38,6 +38,8 @@ import { DailyDigest } from "./memory/dailyDigest.ts";
 import { stewardSearch, stewardRecent, ensureSteward, stewardRoot, stewardDefinition, STEWARD_ID } from "./memory/steward.ts";
 import { runCurator, renderReport, DEFAULT_CURATOR, DbMetaStore, type CuratorConfig } from "./memory/curator.ts";
 import { MemoryScheduler } from "./memory/scheduler.ts";
+import { getGuardianConfig, setGuardianConfig, type MemoryGuardianConfig } from "./memory/guardianConfig.ts";
+import { maybeConsolidate } from "./memory/consolidator.ts";
 
 /** 记忆系统的后台调度（每日总结 + curator）。启动时挂上，停止时摘掉。 */
 let memoryScheduler: MemoryScheduler | undefined;
@@ -596,6 +598,25 @@ registerMethod("memory.project.daily", (params) => {
   if (typeof p.rootPath !== "string") throw Object.assign(new Error("rootPath is required"), { code: "bad_params" });
   if (typeof p.date === "string" && p.date !== "") return readDaily(p.rootPath, p.date);
   return listDaily(p.rootPath);
+});
+
+/** 后台守护引擎配置获取与更新 */
+registerMethod("memory.guardian.get", () => {
+  return getGuardianConfig(store);
+});
+registerMethod("memory.guardian.set", (params) => {
+  const patch = (params ?? {}) as Partial<MemoryGuardianConfig>;
+  return setGuardianConfig(store, patch);
+});
+
+/** 记忆超限自愈合并执行 */
+registerMethod("memory.consolidate", async (params) => {
+  const p = (params ?? {}) as { rootPath?: string; force?: boolean };
+  if (typeof p.rootPath !== "string" || p.rootPath === "") {
+    throw Object.assign(new Error("rootPath is required"), { code: "bad_params" });
+  }
+  const guardianCfg = getGuardianConfig(store);
+  return maybeConsolidate(p.rootPath, guardianCfg, { homeDir: config.homeDir, force: p.force === true });
 });
 
 /** 分发日志：这一轮注入了什么（docs/10 §5 UI 要的那一屏） */

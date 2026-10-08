@@ -171,6 +171,37 @@ export async function runDigestDryRun(): Promise<DigestResult> {
   return call<DigestResult>("memory.digest.run", { dryRun: true }, SEARCH_TIMEOUT_MS);
 }
 
+export interface GuardianConfigInfo {
+  readonly runner: "zcode" | "claude" | "codex" | "pi" | "mcode" | "custom";
+  readonly customCommand?: string;
+  readonly model: string;
+  readonly timeoutMs: number;
+  readonly autoConsolidate: boolean;
+  readonly consolidateThresholdRatio: number;
+  readonly contentScannerEnabled: boolean;
+}
+
+export interface ConsolidationResultInfo {
+  readonly ran: boolean;
+  readonly success: boolean;
+  readonly beforeChars: number;
+  readonly afterChars: number;
+  readonly backupPath?: string | null;
+  readonly reason?: string;
+}
+
+export async function getGuardianConfigRpc(): Promise<GuardianConfigInfo> {
+  return call<GuardianConfigInfo>("memory.guardian.get", {}, READ_TIMEOUT_MS);
+}
+
+export async function setGuardianConfigRpc(patch: Partial<GuardianConfigInfo>): Promise<GuardianConfigInfo> {
+  return call<GuardianConfigInfo>("memory.guardian.set", patch, READ_TIMEOUT_MS);
+}
+
+export async function runConsolidationRpc(rootPath: string, force = true): Promise<ConsolidationResultInfo> {
+  return call<ConsolidationResultInfo>("memory.consolidate", { rootPath, force }, 180_000);
+}
+
 /* ------------------------------------------------------------- 持久化 */
 
 const STORAGE_KEY = "agent-workbench:memory-panel";

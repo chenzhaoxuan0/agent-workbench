@@ -27,7 +27,7 @@ import {
 import { useWorkbench, selectActiveUnit } from "../store/useWorkbench.ts";
 import type { WorkUnit } from "../core/units.ts";
 import { useMemorySettings } from "../store/useMemoryPrefs.ts";
-import { readProjectMemory, runDigestDryRun, type DigestResult } from "../store/useMemoryPanel.ts";
+import { readProjectMemory, runDigestDryRun, setGuardianConfigRpc, type DigestResult } from "../store/useMemoryPanel.ts";
 import { ProviderInstancesPanel } from "./ProviderInstancesPanel.tsx";
 import { ImageSettingsSection } from "./ImageSettingsSection.tsx";
 import { cn } from "./cn.ts";
@@ -373,6 +373,70 @@ function MemorySettingsSection() {
             );
           })}
         </ul>
+      </GroupCard>
+
+      {/* 后台守护引擎配置 */}
+      <GroupCard>
+        <div className="px-4 pb-1 pt-3">
+          <p className="text-caption font-medium text-graphite">后台守护引擎 (Guardian Engine)</p>
+          <p className="mt-0.5 text-caption leading-relaxed text-ash">
+            配置用于后台合并压缩（Auto-Consolidator）、每日总结与健康审查的轻量执行器与小模型。
+          </p>
+        </div>
+        <SettingsRow
+          label="守护执行器 (Runner)"
+          description="调度哪家 CLI 执行后台轻量任务（推荐本机已有免鉴权环境的 CLI）"
+          control={
+            <select
+              value={prefs.guardianRunner}
+              onChange={(e) => {
+                const runner = e.target.value as "zcode" | "claude" | "codex" | "pi" | "mcode" | "custom";
+                setPrefs({ guardianRunner: runner });
+                void setGuardianConfigRpc({ runner });
+              }}
+              className="h-8 rounded-btn border border-line bg-canvas px-2 text-body-sm text-ink focus:border-teal focus:outline-none"
+            >
+              <option value="zcode">zcode</option>
+              <option value="claude">claude</option>
+              <option value="codex">codex</option>
+              <option value="pi">pi</option>
+              <option value="mcode">mcode</option>
+              <option value="custom">custom</option>
+            </select>
+          }
+        />
+        <SettingsRow
+          label="轻量模型名称 (Model)"
+          description="指定后台执行合并压缩使用的小模型名称（如 deepseek-chat, gpt-4o-mini, MiniMax-M3.1-Flash-Preview 等）"
+          control={
+            <input
+              type="text"
+              value={prefs.guardianModel}
+              onChange={(e) => {
+                const model = e.target.value;
+                setPrefs({ guardianModel: model });
+              }}
+              onBlur={() => {
+                void setGuardianConfigRpc({ model: prefs.guardianModel });
+              }}
+              placeholder="deepseek-chat"
+              className="h-8 w-48 rounded-btn border border-line bg-canvas px-2.5 font-mono text-body-sm text-ink focus:border-teal focus:outline-none"
+            />
+          }
+        />
+        <SettingsRow
+          label="超限自动自愈合并"
+          description="当 MEMORY.md 接近或超过 2200 字符时，由上述配置的小模型在后台自动合并同类项并剔除失效事实，避免硬拒绝写入"
+          control={
+            <Toggle
+              on={prefs.autoConsolidate}
+              onChange={(v) => {
+                setPrefs({ autoConsolidate: v });
+                void setGuardianConfigRpc({ autoConsolidate: v });
+              }}
+            />
+          }
+        />
       </GroupCard>
 
       {/* 每日总结 */}

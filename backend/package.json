@@ -32,6 +32,7 @@
     "smoke:memory5": "tsx scripts/smoke-memory5.ts",
     "smoke:memory6": "tsx scripts/smoke-memory6.ts",
     "smoke:memory7": "tsx scripts/smoke-memory7.ts",
+    "smoke:guardian": "tsx scripts/smoke-guardian-steward.ts",
     "smoke:opencode": "tsx scripts/smoke-opencode.ts",
     "smoke:ui": "tsx scripts/verify-ui.ts",
     "smoke:ui:live": "tsx scripts/live-gui-test.ts",

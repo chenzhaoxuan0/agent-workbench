@@ -90,5 +90,11 @@ export const MEMORY_BLOCK_OPEN = "<project-memory>";
 /** 注入块的结尾标记。 */
 export const MEMORY_BLOCK_CLOSE = "</project-memory>";
 
+/** 常驻指令块的开头标记。 */
+export const STANDING_BLOCK_OPEN = "<standing-instructions>";
+/** 常驻指令块的结尾标记。 */
+export const STANDING_BLOCK_CLOSE = "</standing-instructions>";
+
 /** 注入块与用户原话之间的分隔（紧跟在 close 标记之后）。 */
 export const INJECTION_SEPARATOR = "\n\n---\n\n";
+

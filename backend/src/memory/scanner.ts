@@ -633,3 +633,49 @@ export async function scanStats(opts: ScanOptions = {}): Promise<Record<string, 
   for (const src of opts.sources ?? defaultSources()) out[src.cli] ??= { files: 0, blocks: 0, errors: 0 };
   return out;
 }
+
+// ---- 安全与威胁拦截（移植自 pi-hermes-memory content-scanner） ----
+
+const THREAT_PATTERNS: Array<{ pattern: RegExp; id: string }> = [
+  { pattern: /ignore\s+(previous|all|above|prior)\s+instructions/i, id: "prompt_injection" },
+  { pattern: /you\s+are\s+now\s+/i, id: "role_hijack" },
+  { pattern: /do\s+not\s+tell\s+the\s+user/i, id: "deception_hide" },
+  { pattern: /system\s+prompt\s+override/i, id: "sys_prompt_override" },
+  { pattern: /disregard\s+(your|all|any)\s+(instructions|rules|guidelines)/i, id: "disregard_rules" },
+  { pattern: /act\s+as\s+(if|though)\s+you\s+(have\s+no|don'?t\s+have)\s+(restrictions|limits|rules)/i, id: "bypass_restrictions" },
+  { pattern: /curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)/i, id: "exfil_curl" },
+  { pattern: /wget\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)/i, id: "exfil_wget" },
+  { pattern: /cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass|\.npmrc|\.pypirc)/i, id: "read_secrets" },
+  { pattern: /authorized_keys/i, id: "ssh_backdoor" },
+  { pattern: /\$HOME\/\.ssh|~\/\.ssh/i, id: "ssh_access" },
+];
+
+const INVISIBLE_UNICODE = new Set([
+  "\u200b", "\u200c", "\u200d", "\u2060", "\ufeff",
+  "\u202a", "\u202b", "\u202c", "\u202d", "\u202e",
+]);
+
+export interface ContentSafetyResult {
+  readonly safe: boolean;
+  readonly findings: string[];
+}
+
+export function scanContentSafety(content: string): ContentSafetyResult {
+  const findings: string[] = [];
+
+  for (const char of content) {
+    if (INVISIBLE_UNICODE.has(char)) {
+      findings.push(`invisible_unicode_U+${char.charCodeAt(0).toString(16).toUpperCase()}`);
+      break;
+    }
+  }
+
+  for (const { pattern, id } of THREAT_PATTERNS) {
+    if (pattern.test(content)) {
+      findings.push(id);
+    }
+  }
+
+  return { safe: findings.length === 0, findings };
+}
+

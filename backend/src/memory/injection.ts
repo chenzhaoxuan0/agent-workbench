@@ -14,7 +14,7 @@
  * 也符合 hermes 的做法）；切换执行器会开新会话 → 冷启动时自然会重新注入。
  */
 
-import { readLongTerm, readDaily, resolvePaths } from "./projectMemory.ts";
+import { readLongTerm, readDaily, readStanding, resolvePaths } from "./projectMemory.ts";
 import { localDate } from "./dailyDigest.ts";
 import { measure, extractEntries } from "./limits.ts";
 import { redact } from "./redact.ts";
@@ -22,10 +22,12 @@ import {
   renderRule,
   MEMORY_BLOCK_OPEN,
   MEMORY_BLOCK_CLOSE,
+  STANDING_BLOCK_OPEN,
+  STANDING_BLOCK_CLOSE,
   INJECTION_SEPARATOR,
 } from "./ruleTemplate.ts";
 
-export type InjectionScope = "semantic" | "daily" | "procedural";
+export type InjectionScope = "semantic" | "daily" | "procedural" | "standing";
 
 export interface InjectedPart {
   readonly scope: InjectionScope;
@@ -74,6 +76,26 @@ export class FileMemoryInjector implements MemoryInjector {
 
     const parts: InjectedPart[] = [];
     const sections: string[] = [];
+
+    // 0. 常驻指令（红线与安全约束：STANDING.md，上限 1000 字符，只读禁令）
+    try {
+      const standing = await readStanding(rootPath);
+      if (standing.exists && hasRealEntries(standing.content)) {
+        const over = standing.chars > standing.limit;
+        const body = over ? truncateToBudget(standing.content, standing.limit, "STANDING.md") : standing.content.trim();
+        const standingSection = [
+          STANDING_BLOCK_OPEN,
+          "以下是当前项目的不可打破之常驻指令与红线（只读载入，严禁修改）：",
+          "",
+          body,
+          STANDING_BLOCK_CLOSE,
+        ].join("\n");
+        sections.push(standingSection);
+        parts.push({ scope: "standing", sourcePath: paths.standingMd, chars: standing.chars });
+      }
+    } catch {
+      // STANDING.md 读取失败不阻断后续记忆注入
+    }
 
     // 1. 语义记忆（长期事实：MEMORY.md，上限 2200 字符）
     if (scopes.includes("semantic")) {
