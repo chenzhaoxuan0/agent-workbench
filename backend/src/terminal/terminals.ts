@@ -161,12 +161,20 @@ export class TerminalManager {
       }
     }
 
+    const envOverrides: Record<string, string> = {
+      TERM: "xterm-256color",
+      COLORTERM: "truecolor",
+      TERM_PROGRAM: "vscode",
+      TERM_PROGRAM_VERSION: "1.93.0",
+      ...opts.env,
+    };
+
     const shellProcess = pty.spawn(shell, shellArgs, {
       name: "xterm-256color",
       cols,
       rows,
       cwd,
-      env: { ...process.env, ...opts.env } as Record<string, string>,
+      env: { ...process.env, ...envOverrides } as Record<string, string>,
     });
 
     shellProcess.onData((data) => {

@@ -10,6 +10,9 @@ import {
   Zap,
 } from "lucide-react";
 import { Terminal } from "@xterm/xterm";
+import { FitAddon } from "@xterm/addon-fit";
+import { Unicode11Addon } from "@xterm/addon-unicode11";
+import { CanvasAddon } from "@xterm/addon-canvas";
 import "@xterm/xterm/css/xterm.css";
 import { useWorkbench } from "../store/useWorkbench.ts";
 import { useShell } from "../store/useShell.ts";
@@ -21,7 +24,7 @@ import { cn } from "./cn.ts";
  *
  * 接的是 daemon 的真 PTY（ConPTY）：
  * terminal.create（cwd = 工作单元根目录，executorId = 当前活跃执行器）
- * → data 帧进 xterm → xterm.onData → terminal.input → ResizeObserver → terminal.resize。
+ * → data 帧进 xterm → xterm.onData → terminal.input → ResizeObserver（FitAddon 精确测算网格 + 防抖）→ terminal.resize。
  *
  * 入口三种：
  * - canvas（主视图）：会话区域的主画布（100% 充满，原生 TUI 与斜杠命令交互）；
@@ -51,6 +54,7 @@ export function TerminalPanel({
 
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
+  const fitAddonRef = useRef<FitAddon | null>(null);
   const terminalIdRef = useRef<string | null>(null);
   const [daemonDown, setDaemonDown] = useState(false);
   const [exited, setExited] = useState<number | null>(null);
@@ -62,6 +66,12 @@ export function TerminalPanel({
 
   const handleClear = () => {
     termRef.current?.clear();
+    const tid = terminalIdRef.current;
+    if (tid !== null) {
+      // 向底层真 PTY 发送 0x0c (Ctrl+L)，触发 CLI 进程（ZCode CLI / Ink 等）全量重绘屏幕，彻底治愈残影
+      const client = DaemonClient.get(defaultDaemonEndpoint());
+      void client.rpc("terminal.input", { terminalId: tid, data: "\x0c" }, 3000).catch(() => {});
+    }
   };
 
   // 真 PTY 生命周期：mount / 切换 Bot / 换执行器 / 点击重启 → 杀旧起新
@@ -72,11 +82,22 @@ export function TerminalPanel({
     setExited(null);
 
     const term = new Terminal({
+      allowProposedApi: true,
       fontSize: 13,
-      fontFamily: '"Cascadia Mono", Consolas, "Courier New", monospace',
+      fontFamily: '"Cascadia Mono", "Cascadia Code", Consolas, "Courier New", monospace',
       cursorBlink: true,
       cursorStyle: "bar",
-      convertEol: true,
+      // 真 PTY（Windows ConPTY）自行处理 \r\n；开启 convertEol 会导致单发 \n 被强行移回第 0 列，破坏 TUI 布局
+      convertEol: false,
+      customGlyphs: true,
+      allowTransparency: false,
+      smoothScrollDuration: 0,
+      scrollSensitivity: 1,
+      fastScrollSensitivity: 3,
+      windowsPty: {
+        backend: "conpty",
+        buildNumber: 22621,
+      },
       theme: {
         background: "#0f1115",
         foreground: "#e2e8f0",
@@ -102,9 +123,29 @@ export function TerminalPanel({
     });
     termRef.current = term;
 
+    // 官方 FitAddon：精确测量字符物理像素并自适应容器
+    const fitAddon = new FitAddon();
+    term.loadAddon(fitAddon);
+    fitAddonRef.current = fitAddon;
+
+    // Unicode 11 规范支持：让中文、制表符、Emoji 等宽字符对齐标准（对齐 Windows Terminal）
+    const unicode11 = new Unicode11Addon();
+    term.loadAddon(unicode11);
+    term.unicode.activeVersion = "11";
+
+    // Canvas GPU 硬件加速渲染器：基于物理像素点阵绘制字符，消除 DOM 模式下背景块与制表符的亚像素舍入断裂与错位
+    try {
+      const canvasAddon = new CanvasAddon();
+      term.loadAddon(canvasAddon);
+    } catch (err) {
+      console.warn("[terminal] Canvas addon fallback to DOM:", err);
+    }
+
     // 事先生成 terminalId，避免首批 PTY 帧在 RPC 往返期间漏发
     const myTerminalId = `term_${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
     terminalIdRef.current = myTerminalId;
+    (window as unknown as { __AGENT_TERMINAL_ID?: string; __AGENT_TERM?: Terminal }).__AGENT_TERMINAL_ID = myTerminalId;
+    (window as unknown as { __AGENT_TERMINAL_ID?: string; __AGENT_TERM?: Terminal }).__AGENT_TERM = term;
 
     const client = DaemonClient.get(defaultDaemonEndpoint());
     const onFrame = (f: DaemonTerminalFrame): void => {
@@ -117,16 +158,34 @@ export function TerminalPanel({
     };
     unsubs.push(client.onTerminalFrame(onFrame));
 
+    let lastCols = 80;
+    let lastRows = 24;
+    let resizeTimer: ReturnType<typeof setTimeout> | null = null;
+
     const boot = async (): Promise<void> => {
       await client.ensureConnected();
       if (disposed) return;
       term.open(containerRef.current!);
       term.focus();
 
-      // 按容器尺寸估列数/行数（13px 等宽：字符宽约 7.8px、行高约 18px）
-      const rect = containerRef.current!.getBoundingClientRect();
-      const cols = Math.max(20, Math.floor(rect.width / 7.8));
-      const rows = Math.max(8, Math.floor(rect.height / 18));
+      // 在 DOM 挂载后，用 FitAddon 精确获取当前容器可用行列数，绝不因写死宽度多算导致溢出折行
+      let cols = 80;
+      let rows = 24;
+      try {
+        const dims = fitAddon.proposeDimensions();
+        if (dims && dims.cols >= 10 && dims.rows >= 4) {
+          cols = dims.cols;
+          rows = dims.rows;
+          term.resize(cols, rows);
+        }
+      } catch {
+        const rect = containerRef.current!.getBoundingClientRect();
+        cols = Math.max(20, Math.floor((rect.width - 16) / 8.2));
+        rows = Math.max(8, Math.floor((rect.height - 8) / 18));
+        term.resize(cols, rows);
+      }
+      lastCols = cols;
+      lastRows = rows;
 
       const created = await client.rpc<{ terminalId: string; shell: string; executor?: string }>(
         "terminal.create",
@@ -149,6 +208,74 @@ export function TerminalPanel({
         if (terminalIdRef.current === null) return;
         void client.rpc("terminal.input", { terminalId: terminalIdRef.current, data }, 8000).catch(() => {});
       });
+
+      // 1. 挂载官方自定义滚轮事件分发器（对齐 VS Code 终端）：
+      // 当处于 TUI 界面时，阻止 xterm.js 默认滚动空的 scrollback 历史，
+      // 将滚轮精准转换为对应字符网格坐标的 SGR 鼠标滚轮转义序列（\x1b[<64... / \x1b[<65...）直通 PTY，
+      // 驱动 OpenTUI 的 ScrollBoxRenderable 和滑动条上下滑动；按住 Shift 则放行供划词复制。
+      const getCellCoords = (e: MouseEvent | WheelEvent): { col: number; row: number } | null => {
+        const el = containerRef.current;
+        if (!el) return null;
+        const screenEl = (el.querySelector(".xterm-screen") as HTMLElement | null) ?? el;
+        const rect = screenEl.getBoundingClientRect();
+        const curCols = term.cols || 80;
+        const curRows = term.rows || 24;
+        const cellW = rect.width / curCols;
+        const cellH = rect.height / curRows;
+        if (cellW <= 0 || cellH <= 0) return null;
+        const col = Math.min(curCols, Math.max(1, Math.floor((e.clientX - rect.left) / cellW) + 1));
+        const row = Math.min(curRows, Math.max(1, Math.floor((e.clientY - rect.top) / cellH) + 1));
+        return { col, row };
+      };
+
+      // 1. 挂载自定义滚轮事件分发器（对齐 VS Code 终端）：
+      // 在 TUI 交互界面中，将鼠标滚轮精准转换为光标方向键（ArrowUp: \x1b[A / ArrowDown: \x1b[B），
+      // 直接驱动 CLI 内部的视口与滑动条平滑上下翻滚；按住 Shift 则放行供划词复制。
+      term.attachCustomWheelEventHandler((e: WheelEvent) => {
+        if (e.shiftKey) return true;
+        const tid = terminalIdRef.current;
+        if (tid === null) return true;
+
+        // 滚轮方向：向上为 ArrowUp (\x1b[A)，向下为 ArrowDown (\x1b[B)
+        const isUp = e.deltaY < 0;
+        // 计算步长：根据滚轮幅度发送 1 ~ 3 个方向键，确保手感轻盈丝滑
+        const steps = Math.min(3, Math.max(1, Math.round(Math.abs(e.deltaY) / 35)));
+        const keySeq = isUp ? "\x1b[A" : "\x1b[B";
+        const payload = keySeq.repeat(steps);
+
+        void client.rpc("terminal.input", { terminalId: tid, data: payload }, 3000).catch(() => {});
+        return false; // 拦截默认的历史滚动
+      });
+
+      // 2. 滑动条与视口点击交互：
+      // 当用户用鼠标左键直接点击滑动条所在列或轨道时，分流发送 PageUp/PageDown 实现直觉式翻页
+      const containerEl = containerRef.current;
+      if (containerEl !== null) {
+        const onMouseDown = (e: MouseEvent) => {
+          if (e.shiftKey || e.button !== 0) return;
+          const tid = terminalIdRef.current;
+          if (tid === null) return;
+          const coords = getCellCoords(e);
+          if (!coords) return;
+
+          const curCols = term.cols || 80;
+          const curRows = term.rows || 24;
+
+          // 探测是否点击在右侧分割线/滑动条附近（通常在中间偏右或终端右边缘）
+          // 若点击在中下部则向下翻页（PageDown），点击在上部则向上翻页（PageUp）
+          const isScrollbarArea = coords.col >= Math.floor(curCols * 0.45) && coords.col <= Math.ceil(curCols * 0.55);
+          if (isScrollbarArea) {
+            const isTopHalf = coords.row < Math.floor(curRows / 2);
+            const navSeq = isTopHalf ? "\x1b[5~" : "\x1b[6~"; // PageUp or PageDown
+            void client.rpc("terminal.input", { terminalId: tid, data: navSeq }, 3000).catch(() => {});
+          }
+        };
+
+        containerEl.addEventListener("mousedown", onMouseDown);
+        unsubs.push(() => {
+          containerEl.removeEventListener("mousedown", onMouseDown);
+        });
+      }
     };
 
     void boot().catch((err: unknown) => {
@@ -158,22 +285,59 @@ export function TerminalPanel({
       }
     });
 
-    // 尺寸变化 → resize 帧
-    const ro = new ResizeObserver(() => {
+    // 尺寸响应：使用 FitAddon 精确计算 + 防抖向 PTY 发送 resize
+    const syncResize = (immediate = false) => {
       const el = containerRef.current;
       const tid = terminalIdRef.current;
-      if (el === null || tid === null) return;
+      if (disposed || el === null || tid === null) return;
       const rect = el.getBoundingClientRect();
-      if (rect.width < 40 || rect.height < 60) return;
-      const cols = Math.max(20, Math.floor(rect.width / 7.8));
-      const rows = Math.max(8, Math.floor(rect.height / 18));
-      term.resize(cols, rows);
-      void client.rpc("terminal.resize", { terminalId: tid, cols, rows }, 8000).catch(() => {});
+      if (rect.width < 40 || rect.height < 40) return;
+
+      try {
+        const dims = fitAddon.proposeDimensions();
+        if (!dims || dims.cols < 10 || dims.rows < 4) return;
+
+        // 若尺寸未变，坚决不发冗余事件
+        if (dims.cols === lastCols && dims.rows === lastRows) return;
+
+        const newCols = dims.cols;
+        const newRows = dims.rows;
+        lastCols = newCols;
+        lastRows = newRows;
+
+        // 本地 xterm 立即跟随缩放
+        term.resize(newCols, newRows);
+
+        // 防抖 60ms：避免拖拽或过渡动画期间向 Windows ConPTY 发送风暴式 resize 打烂缓冲
+        if (resizeTimer) clearTimeout(resizeTimer);
+        if (immediate) {
+          void client.rpc("terminal.resize", { terminalId: tid, cols: newCols, rows: newRows }, 8000).catch(() => {});
+        } else {
+          resizeTimer = setTimeout(() => {
+            if (disposed || terminalIdRef.current !== tid) return;
+            void client.rpc("terminal.resize", { terminalId: tid, cols: newCols, rows: newRows }, 8000).catch(() => {});
+          }, 60);
+        }
+      } catch {
+        // 忽略动画中短时测量异常
+      }
+    };
+
+    const ro = new ResizeObserver(() => {
+      syncResize(false);
     });
     if (containerRef.current !== null) ro.observe(containerRef.current);
 
+    // 字体就绪时，再次精准校准一次尺寸
+    if (typeof document !== "undefined" && document.fonts) {
+      void document.fonts.ready.then(() => {
+        if (!disposed) syncResize(true);
+      });
+    }
+
     return () => {
       disposed = true;
+      if (resizeTimer) clearTimeout(resizeTimer);
       ro.disconnect();
       for (const u of unsubs) u();
       const tid = terminalIdRef.current;
@@ -182,6 +346,7 @@ export function TerminalPanel({
       }
       termRef.current?.dispose();
       termRef.current = null;
+      fitAddonRef.current = null;
       terminalIdRef.current = null;
     };
   }, [unit?.rootPath, activeRuntimeId, restartNonce]);
@@ -304,8 +469,8 @@ export function TerminalPanel({
           </p>
         </div>
       ) : (
-        /* xterm 挂载点 */
-        <div ref={containerRef} className="min-h-0 flex-1 overflow-hidden p-1.5" />
+        /* xterm 挂载点：移除外层 padding，确保 FitAddon 精准贴合容器边界，绝不多算一列导致意外折行 */
+        <div ref={containerRef} className="min-h-0 flex-1 overflow-hidden bg-[#0f1115]" />
       )}
     </div>
   );
