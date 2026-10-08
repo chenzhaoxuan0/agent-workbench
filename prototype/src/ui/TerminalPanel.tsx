@@ -454,12 +454,17 @@ export function TerminalPanel({
       ) : maximizedInst ? (
         /* 当前窗格最大化展示 */
         <div className="min-h-0 flex-1 relative overflow-hidden">
-          <TerminalPaneSlot inst={maximizedInst} totalPanesInGroup={1} />
+          <TerminalPaneSlot
+            key={maximizedInst.id}
+            inst={maximizedInst}
+            totalPanesInGroup={1}
+          />
         </div>
       ) : activeGroup ? (
         /* 自由递归分屏树展示 */
         <div className="min-h-0 flex-1 relative overflow-hidden">
           <TerminalSplitTree
+            key={activeGroup.id}
             node={activeGroup.rootLayout}
             totalPanesInGroup={activeLeaves.length}
           />

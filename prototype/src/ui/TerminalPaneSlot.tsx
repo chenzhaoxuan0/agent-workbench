@@ -81,6 +81,10 @@ export const TerminalPaneSlot = memo(function TerminalPaneSlot({
     if (isActive) {
       session.focus();
     }
+
+    return () => {
+      session.detach();
+    };
   }, [inst.id, inst.shell, inst.cwd, inst.executorId, isActive]);
 
   // 当处于活跃状态时聚焦

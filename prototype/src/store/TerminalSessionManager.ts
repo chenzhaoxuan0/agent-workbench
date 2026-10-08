@@ -229,10 +229,20 @@ export class TerminalSession {
   }
 
   attachTo(container: HTMLElement): void {
+    // 确保清理容器中任何残留的非本终端 DOM 元素，杜绝多实例叠置遮挡 Bug
+    while (container.firstChild && container.firstChild !== this.element) {
+      container.removeChild(container.firstChild);
+    }
     if (this.element.parentElement !== container) {
       container.appendChild(this.element);
     }
-    this.fit();
+    this.fit(true);
+    requestAnimationFrame(() => {
+      this.fit(true);
+      try {
+        this.term.refresh(0, this.term.rows - 1);
+      } catch {}
+    });
   }
 
   detach(): void {

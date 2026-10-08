@@ -84,7 +84,13 @@ export function TerminalSplitTree({
   if (node.type === "leaf") {
     const inst = instances.find((i) => i.id === node.instanceId);
     if (!inst) return null;
-    return <TerminalPaneSlot inst={inst} totalPanesInGroup={totalPanesInGroup} />;
+    return (
+      <TerminalPaneSlot
+        key={node.instanceId}
+        inst={inst}
+        totalPanesInGroup={totalPanesInGroup}
+      />
+    );
   }
 
   // 分支节点：横向（左右）或纵向（上下）拆分
@@ -109,6 +115,7 @@ export function TerminalSplitTree({
         className="relative h-full w-full overflow-hidden"
       >
         <TerminalSplitTree
+          key={node.first.type === "leaf" ? node.first.instanceId : node.first.id}
           node={node.first}
           totalPanesInGroup={totalPanesInGroup}
         />
@@ -123,6 +130,7 @@ export function TerminalSplitTree({
         className="relative h-full w-full overflow-hidden"
       >
         <TerminalSplitTree
+          key={node.second.type === "leaf" ? node.second.instanceId : node.second.id}
           node={node.second}
           totalPanesInGroup={totalPanesInGroup}
         />
