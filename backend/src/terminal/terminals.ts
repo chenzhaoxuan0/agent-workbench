@@ -111,6 +111,27 @@ function defaultShell(): string {
   return cachedWinShell;
 }
 
+function resolveShell(requested?: string): string {
+  if (!requested || requested === "default") return defaultShell();
+  const lower = requested.toLowerCase().trim();
+  if (lower === "wsl" || lower === "wsl.exe") {
+    return whereExe("wsl.exe") ?? "C:\\Windows\\System32\\wsl.exe";
+  }
+  if (lower === "cmd" || lower === "cmd.exe") {
+    return process.env["ComSpec"] ?? "cmd.exe";
+  }
+  if (lower === "powershell" || lower === "powershell.exe") {
+    return whereExe("powershell.exe") ?? "powershell.exe";
+  }
+  if (lower === "bash" || lower === "bash.exe") {
+    return whereExe("bash.exe") ?? "bash.exe";
+  }
+  if (lower === "pwsh" || lower === "pwsh.exe") {
+    return defaultShell();
+  }
+  return whereExe(requested) ?? requested;
+}
+
 export class TerminalManager {
   private readonly sessions = new Map<string, TerminalSession>();
 
@@ -118,7 +139,7 @@ export class TerminalManager {
 
   create(opts: CreateOptions = {}): { terminalId: string; shell: string; executor?: string } {
     const terminalId = opts.terminalId ?? `term_${randomUUID()}`;
-    const shell = opts.shell ?? defaultShell();
+    const shell = resolveShell(opts.shell);
     const cols = opts.cols ?? DEFAULT_COLS;
     const rows = opts.rows ?? DEFAULT_ROWS;
     const cwd = opts.cwd ?? process.cwd();
@@ -137,6 +158,7 @@ export class TerminalManager {
     const isPwsh =
       shell.toLowerCase().includes("pwsh") || shell.toLowerCase().includes("powershell");
     const isCmd = shell.toLowerCase().includes("cmd.exe");
+    const isWsl = shell.toLowerCase().includes("wsl");
 
     if (targetCmd !== undefined && targetCmd.trim() !== "") {
       const extraArgs = (opts.args ?? []).join(" ");
