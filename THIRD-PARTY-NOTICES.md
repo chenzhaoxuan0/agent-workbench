@@ -12,17 +12,11 @@
 | t3code（T3 Tools Inc.） | MIT | 执行器品牌图标 `claude.svg` `codex.svg` `opencode.svg`（取自 marketing harnesses） | `prototype/public/icons/executors/` |
 | ZCode（`zocdeusually/ZCode`） | Apache-2.0 | 应用图标曾参照；**当前主图标为本项目原创**，无 ZCode 代码留存 | — |
 | pi（Mario Zechner / badlogic，pi-mono） | MIT | 供应商目录形态参照（`core/providerCatalog.ts` 为自写实现） | — |
-| hermes-agent（Nous Research） | MIT | 记忆安全扫描器的威胁模式（见下行 pi-hermes-memory） | `backend/src/memory/scanner.ts` |
-| pi-hermes-memory | **待确认** | content-scanner 威胁模式移植（prompt 注入 / 角色劫持等正则） | `backend/src/memory/scanner.ts` |
+| hermes-agent（Nous Research） | MIT | 品牌图标 `hermes.png` | `prototype/public/icons/executors/` |
+| pi-hermes-memory（Chandra Teja） | MIT | 记忆安全扫描器的威胁模式移植（prompt 注入 / 角色劫持等正则） | `backend/src/memory/scanner.ts` |
 | deepseek-harness（DeepSeek） | MIT | 品牌图标 `dsh`（终端图标取自桌面版资源；headless 适配器为自写实现） | `prototype/public/icons/executors/` |
 | kimi-code（Moonshot AI） | MIT | 品牌图标 `kimi.svg` | `prototype/public/icons/executors/` |
-
-> ⚠ **发布前待办**：确认 `pi-hermes-memory` 的许可证。若非宽松许可，
-> 需重写 `backend/src/memory/scanner.ts` 的威胁模式（正则模式本身较难构成
-> 著作权客体，但发布前确认最稳妥）。
->
-> ⚠ 外观系统的取值域与语义常量对齐 Codex-Dream-Skin（theme.json/safe-css），
-> 实现为本项目自写；Dream Skin 的许可证未在本仓核查，发布前建议确认。
+| Codex-Dream-Skin（Codex Dream Skin Studio） | MIT | 外观契约对齐（theme.json 取值域 / safe-css 变量 / 透明度语义）；实现为本项目自写 | `prototype/src/core/appearance.ts` |
 
 ## 品牌
 
@@ -36,7 +30,8 @@ Hermes 等）是其各自所有者的商标。本项目中的使用仅用于标�
 
 以下项目以 MIT 许可证发布：gpt_image_playground（CookSleep）、t3code（T3 Tools Inc.）、
 hermes-agent（Nous Research）、kimi-code（Moonshot AI）、pi（Mario Zechner）、
-deepseek-harness（DeepSeek）。
+deepseek-harness（DeepSeek）、pi-hermes-memory（Chandra Teja）、
+Codex-Dream-Skin（Codex Dream Skin Studio contributors）。
 
 > Permission is hereby granted, free of charge, to any person obtaining a copy of
 > this software and associated documentation files (the "Software"), to deal in
