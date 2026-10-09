@@ -71,6 +71,47 @@ Vite 7 + React 19 + TypeScript 5.9 + Tailwind CSS v4 + Zustand 5 + Electron（P2
 
 ---
 
+## 参考与致谢
+
+本项目**不 fork 任何参考仓库**，但架构、交互与视觉大量参照了开源社区的成果。
+代码中以 `对齐 ××` / `借鉴 ××` / `移植自 ××` 注释标注出处（200 余处）；
+「每个功能 → 参照来源 → 落点」的完整地图见
+[`docs/05-reference-map.md`](docs/05-reference-map.md)，
+起步时四家仓库的代码走查实证见 [`docs/02-reference-audit.md`](docs/02-reference-audit.md)。
+
+### 架构与实现参照
+
+| 仓库 | 许可证 | 参照内容与主要落点 |
+|---|---|---|
+| **ZCode**（`zocdeusual/ZCode`） | Apache-2.0 | 外壳骨架总蓝本：Shell 布局「收起即归零」、设置覆盖层、命令中心、自动化页两条口径、空态原则（功能不因空而消失） |
+| **t3code**（T3） | MIT | 供应商实例管理（ProviderInstancesPanel）、模型偏好系统（隐藏/排序/自定义模型）、harness 品牌图标、opencode 接入形态（serve + SSE） |
+| **deepseek-harness**（dsh） | MIT | 轨迹账本与轮次头、会话内页签、StatsPills/ModelsSection；其 ACP 协议实现是 dsh/mcode/hermes/kimi 四家 acp 接入的参照 |
+| **waku / waku-agent** | — | 记忆三柱（语义事实/情节事件/程序性技能）与编排、管家（steward）机制、内容扫描器（移植自 pi-hermes-memory） |
+| **pi**（badlogic/pi-mono） | MIT | 供应商目录、models.json 配置形态 |
+| **Codex-Dream-Skin**（DS） | — | 外观系统契约：theme.json 十组色、safe-css 变量域、透明度方向与「只染背景不染文字」的钉死行为 |
+| **gpt_image_playground**（CookSleep） | MIT | 出图工作台全链路移植（images/responses 双模式、SSE 解析、供应商映射） |
+| **cherry-studio** | GPL | **只看思路未抄码**：dsh SDK 进程内嵌形态的对比参照，最终选了 ACP；借鉴「resume token 事件化」 |
+| **VS Code** | MIT | 终端集成模式（terminalInstance / xtermTerminal 的会话持久化与分屏） |
+| **OpenClaw** | — | 渠道插件抽象（ChannelPlugin）与渠道编排 |
+| **GrokBot / Meta Muse** | — | 侧栏彩色 blob 头像、时间线思考折叠与工具卡片、行结构与相对时间 |
+| **WeKnora**（Tencent） | — | 记忆后端渠道之一（知识库 listKb / saveFact / search） |
+| **agents.md 规范** | — | bot 岗位说明书（AGENTS.md）格式 |
+
+### 接入的开源 Agent CLI（执行器）
+
+`zcode` · Claude Code · OpenAI Codex CLI · `pi`（@earendil-works/pi-coding-agent）·
+MiniMax Code（`mcode`）· DeepSeek Harness（`dsh`）· OpenCode · Hermes · Kimi Code（`kimi`）
+
+三种接入形态：一次性进程（每轮 spawn CLI 翻 JSONL）、ACP 常驻 stdio 子进程、
+常驻 HTTP server + SSE（见 `docs/03` §3.3.1）。
+
+### 关键开源依赖
+
+React 19 · Vite 7 · TypeScript · Tailwind CSS v4 · Zustand 5 ·
+`@xterm/xterm` · `react-resizable-panels` · `lucide-react` · Electron · tsx
+
+---
+
 ## 文档
 
 | 文件 | 内容 |
