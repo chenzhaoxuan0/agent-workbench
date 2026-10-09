@@ -529,12 +529,18 @@ function Stepper({
 // 「常驻调度」是「待实现」徽标。整个分区 100% 是假内容。
 
 function ShortcutsSection() {
-  const items: readonly (readonly [string, string, string])[] = [
-    ["命令面板", "⌘K", "全局"],
-    ["搜索", "⌘F", "全局"],
-    ["打开终端", "⌘`", "全局"],
-    ["发送", "Enter", "输入框"],
-    ["换行", "Shift + Enter", "输入框"],
+  // 与 bindShellShortcuts（useShell.ts）和 Electron 层的缩放绑定逐一对应。
+  // 旧表里的「打开终端 ⌘`」「发送 Enter / 换行 Shift+Enter」随终端抽屉与
+  // 输入框的移除一并删除 —— 列死快捷键比不列更误导。
+  const items: readonly (readonly [string, readonly string[], string])[] = [
+    ["命令面板", ["⌘", "K"], "全局"],
+    ["搜索", ["⌘", "F"], "全局"],
+    ["收起 / 展开侧栏", ["⌘", "B"], "全局"],
+    ["打开设置", ["⌘", ","], "全局"],
+    ["关闭弹层", ["Esc"], "全局"],
+    ["内容缩放", ["Ctrl", "="], "全局（Electron）"],
+    ["内容缩小", ["Ctrl", "-"], "全局（Electron）"],
+    ["缩放复位", ["Ctrl", "0"], "全局（Electron）"],
   ];
   return (
     <GroupCard>
@@ -542,10 +548,10 @@ function ShortcutsSection() {
         <SettingsRow
           key={label}
           label={label}
-          description={scope === "全局" ? "应用内任意位置生效" : "仅输入框聚焦时生效"}
+          description={scope}
           control={
             <span className="flex shrink-0 gap-1">
-              {keys.split(" + ").map((k) => (
+              {keys.map((k) => (
                 <kbd
                   key={k}
                   className="rounded-btn border border-line bg-canvas px-2 py-1 font-mono text-caption text-ink"
