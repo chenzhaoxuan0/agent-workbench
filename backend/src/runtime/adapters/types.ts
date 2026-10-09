@@ -88,6 +88,12 @@ export interface ExecutorAdapter {
   readonly capabilities: RuntimeCapabilities;
   /** 动态对齐/刷新模型清单与上下文参数（支持的 CLI 会实时查询，失败时保留 fallback） */
   syncModels?(): Promise<readonly ExecutorModelInfo[]>;
+  /**
+   * 交互式 TUI 的启动命令名（可选）。终端「一键直启」拼 pwsh 命令时用它
+   * 替换裸 id —— 适用于「TUI 由另一个 shim 拉起」的执行器（dsh 的 TUI 走
+   * dst shim，裸 dsh 是 automation/web 入口不是 TUI）。缺省 = 裸 id 即命令。
+   */
+  readonly tuiCommand?: string;
   /** 探测本机是否可用（版本/认证），结果缓存与否由适配器自己定 */
   probe(): Promise<ProbeResult>;
   /** 建会话并开始把翻译好的事件喂给 sink；返回后 host 补发 session.started */

@@ -215,6 +215,14 @@ export class DshAdapter implements ExecutorAdapter {
 
   private readonly sessions = new Map<string, DshSession>();
 
+  /**
+   * 交互式 TUI 的启动命令：dst shim（@deepseek-harness-tui/dsh-tui，裸命令即
+   * 启动 dsh-tui profile ≡ `dsh --profile dsh-tui`）。本适配器（dsh acp）只管
+   * headless 驱动；终端「一键直启」用 dst —— 原独立 dst 适配器已并入此处，
+   * terminal.create 拼装 pwsh 命令时会用 tuiCommand 替换裸 id。
+   */
+  readonly tuiCommand = "dst";
+
   async probe(): Promise<ProbeResult> {
     const t0 = Date.now();
     try {

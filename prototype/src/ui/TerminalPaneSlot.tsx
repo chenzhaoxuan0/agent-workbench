@@ -42,8 +42,6 @@ export function ShellOrAgentIcon({
       return <Sparkles className={cn("text-amber-400", className)} size={12} />;
     case "codex":
       return <Bot className={cn("text-emerald-400", className)} size={12} />;
-    case "dst":
-      return <Wand2 className={cn("text-blue-400", className)} size={12} />;
     case "hermes":
       return <Feather className={cn("text-violet-400", className)} size={12} />;
     case "kimi":
