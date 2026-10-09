@@ -44,11 +44,54 @@ export function setTerminalAppearanceSync(fn: (appearance: ResolvedAppearance) =
   lastTerminalSync = fn;
 }
 
+
+/* --------------------------------------------------------------------------- 壁纸 URL */
+
+/**
+ * 壁纸 data URL 不能直接塞 CSS 自定义属性：两 MB 的 base64 会被 Chrome
+ * 静默丢成 none（inline style 读回来就是 none，属性还在、图永远不渲染）。
+ * 这里把它转成 blob URL（几十个字符）再进 CSS，state 里仍保留完整 data URL。
+ * 同一张图复用同一个 blob；换图或关壁纸时 revoke 旧的。
+ */
+let lastWallpaperSource: string | null = null;
+let wallpaperBlobUrl: string | null = null;
+
+function wallpaperCssUrl(source: string | null): string | null {
+  if (source === lastWallpaperSource) return wallpaperBlobUrl;
+  if (wallpaperBlobUrl !== null) {
+    URL.revokeObjectURL(wallpaperBlobUrl);
+    wallpaperBlobUrl = null;
+  }
+  lastWallpaperSource = source;
+  if (source === null) return null;
+
+  const comma = source.indexOf(",");
+  const head = source.slice(0, comma);
+  const body = source.slice(comma + 1);
+  const mime = /^data:([^;]+)/.exec(head)?.[1] ?? "image/png";
+  try {
+    const bin = atob(body);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    wallpaperBlobUrl = URL.createObjectURL(new Blob([bytes], { type: mime }));
+  } catch {
+    wallpaperBlobUrl = null;
+  }
+  return wallpaperBlobUrl;
+}
+
 function applyToDom(state: AppearanceState): void {
   if (typeof document === "undefined") return;
   const root = document.documentElement;
   const resolved = resolveAppearance(state);
   const vars = deriveCssVariables(state.profiles[resolved], state.art, state.wallpaper);
+
+  // 壁纸图走 blob URL：deriveCssVariables 给出的是完整 data URL，超长会被 Chrome 丢掉
+  const wallpaperUrl =
+    state.wallpaper.enabled && state.wallpaper.source
+      ? wallpaperCssUrl(state.wallpaper.source)
+      : wallpaperCssUrl(null);
+  vars["--aw-wallpaper-image"] = wallpaperUrl ? `url("${wallpaperUrl}")` : "none";
 
   for (const [name, value] of Object.entries(vars)) {
     root.style.setProperty(name, value);
