@@ -120,6 +120,7 @@ export interface RuntimePresentation {
 
 export type ConnectionState =
   | { readonly status: "not_installed"; readonly hint: string }
+  | { readonly status: "unprobed" }
   | { readonly status: "stopped" }
   | { readonly status: "starting" }
   | { readonly status: "ready"; readonly version?: string; readonly pid?: number }

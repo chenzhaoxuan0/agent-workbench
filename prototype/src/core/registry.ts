@@ -44,7 +44,7 @@ export class RuntimeRegistry {
       throw new Error(`执行器 ${factory.id} 未声明可用模型`);
     }
     this.#factories.set(factory.id, factory);
-    this.#states.set(factory.id, { status: "stopped" });
+    this.#states.set(factory.id, { status: "unprobed" });
     this.#emit();
   }
 
@@ -98,7 +98,7 @@ export class RuntimeRegistry {
       transportKind: f.transport.kind,
       models,
       defaultModel: first,
-      state: this.#states.get(id) ?? { status: "stopped" },
+      state: this.#states.get(id) ?? { status: "unprobed" },
     };
   }
 

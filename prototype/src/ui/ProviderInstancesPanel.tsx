@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Check,
   CheckCircle2,
@@ -91,6 +91,17 @@ export function ProviderInstancesPanel() {
     setChecking(false);
     setCheckedLabel("刚刚");
   };
+
+  // 打开设置页自动探测一轮：否则上次会话的探测结果（或从未探测）会一直挂着
+  // 「已离线」，让人误以为执行器坏了。ref 防重：StrictMode 双挂载只探一次。
+  const autoProbedRef = useRef(false);
+  useEffect(() => {
+    if (autoProbedRef.current) return;
+    autoProbedRef.current = true;
+    setChecking(true);
+    void refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   if (!selected) {
     return <p className="p-4 text-body-sm text-ash">没有已注册的执行器。</p>;
@@ -189,7 +200,7 @@ export function ProviderInstancesPanel() {
                         )}
                       />
                       <span>
-                        {isEnabled ? statusLabel(r.state.status) : "已停用"}
+                        {isEnabled ? statusLabel(r.state.status, checking) : "已停用"}
                       </span>
                       {r.state.status === "ready" && r.state.version && (
                         <span className="font-mono text-[10px] text-ash">v{r.state.version}</span>
@@ -220,7 +231,11 @@ export function ProviderInstancesPanel() {
   );
 }
 
-function statusLabel(status: string): string {
+function statusLabel(status: string | undefined, checking = false): string {
+  // 探测进行中，还没拿到结论（ready/error/not_installed 都是结论）的先显示「启动中」
+  if (checking && status !== "ready" && status !== "error" && status !== "not_installed") {
+    return "启动中";
+  }
   switch (status) {
     case "ready":
       return "已就绪";
@@ -230,8 +245,10 @@ function statusLabel(status: string): string {
       return "未安装";
     case "error":
       return "异常";
-    default:
+    case "stopped":
       return "已离线";
+    default:
+      return "未探测";
   }
 }
 
