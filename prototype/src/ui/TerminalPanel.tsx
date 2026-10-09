@@ -5,7 +5,6 @@ import {
   X,
   RotateCw,
   Trash2,
-  FolderOpen,
   Zap,
   Plus,
   ChevronDown,
@@ -23,7 +22,6 @@ import {
 import { terminalSessionRegistry } from "../store/TerminalSessionManager.ts";
 import { TerminalSplitTree } from "./TerminalSplitTree.tsx";
 import { TerminalPaneSlot, ShellOrAgentIcon } from "./TerminalPaneSlot.tsx";
-import { openFolder } from "../adapters/daemon/client.ts";
 import { useAppearance } from "../store/useAppearance.ts";
 import { cn } from "./cn.ts";
 
@@ -393,18 +391,6 @@ export function TerminalPanel({
             <RotateCw size={12} />
             <span className="hidden sm:inline">重启</span>
           </button>
-
-          {/* 打开工作空间目录 */}
-          {unit && (
-            <button
-              type="button"
-              onClick={() => void openFolder({ path: unit.rootPath }).catch(() => {})}
-              title="在系统资源管理器中打开当前工作空间"
-              className="rounded-btn p-1 text-ash hover:bg-line-soft hover:text-ink transition"
-            >
-              <FolderOpen size={12} />
-            </button>
-          )}
 
           {/* 主画布模式下的视图切换按钮已随会话历史一并移除 */}
 

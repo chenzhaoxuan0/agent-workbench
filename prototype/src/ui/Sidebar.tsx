@@ -2,7 +2,6 @@ import { useMemo, useState } from "react";
 import {
   AlarmClock,
   Bot,
-  Check,
   ChevronLeft,
   FolderGit2,
   FolderOpen,
@@ -25,7 +24,6 @@ import {
 import { AddBotDialog, type AddBotDraft } from "./AddBotDialog.tsx";
 import { ImportBotDialog } from "./ImportBotDialog.tsx";
 import { ChannelMark, channelIdentityLabel } from "./ChannelMark.tsx";
-import { openFolder } from "../adapters/daemon/client.ts";
 import { cn } from "./cn.ts";
 
 /**
@@ -427,7 +425,6 @@ function UnitRow({
   // 副标题：身份角色，缺省回落到路径
   const subtitle = unit.identity?.role ?? "";
   const avatar = botAvatarStyle(unit.name);
-  const [justOpened, setJustOpened] = useState(false);
 
   return (
     // 整行是 button，button 里再套 button 是非法 HTML —— 设置入口做成
@@ -512,7 +509,7 @@ function UnitRow({
         </span>
       </button>
 
-      {/* 悬浮快捷操作：在文件资源管理器中打开 + 设置 */}
+      {/* 悬浮快捷操作：设置（打开目录统一走头部的工作区路径弹层） */}
       <div
         data-no-drag
         draggable={false}
@@ -520,29 +517,6 @@ function UnitRow({
         onDragStart={(e) => e.preventDefault()}
         className="absolute right-1.5 top-1.5 z-10 flex items-center gap-0.5 rounded-btn bg-canvas/95 p-0.5 shadow-xs opacity-0 backdrop-blur-xs transition hover:opacity-100 focus-within:opacity-100 group-hover/row:opacity-100 cursor-default"
       >
-        <button
-          type="button"
-          draggable={false}
-          onMouseDown={(e) => e.stopPropagation()}
-          onClick={async (e) => {
-            e.stopPropagation();
-            try {
-              await openFolder({ path: unit.rootPath });
-              setJustOpened(true);
-              setTimeout(() => setJustOpened(false), 2000);
-            } catch (err) {
-              console.error("[Sidebar] 打开文件夹失败:", err);
-            }
-          }}
-          aria-label={`在资源管理器中打开 ${unit.name} 文件夹`}
-          title={`在文件资源管理器中打开：\n${unit.rootPath}`}
-          className={cn(
-            "cursor-pointer rounded-btn p-1 transition active:scale-90",
-            justOpened ? "text-gain bg-gain/10" : "text-ash hover:bg-line-soft hover:text-ink",
-          )}
-        >
-          {justOpened ? <Check size={12} className="text-gain" /> : <FolderOpen size={12} />}
-        </button>
         <button
           type="button"
           draggable={false}
