@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { prefsOf, resolveVisibleModels } from "../core/modelPrefs.ts";
 import { useWorkbench } from "../store/useWorkbench.ts";
+import { executorIconSrc } from "./executorIcon.ts";
 import { ProviderModelPanel } from "./ModelSettings.tsx";
 import { cn } from "./cn.ts";
 
@@ -162,13 +163,22 @@ export function ProviderInstancesPanel() {
                     !isEnabled && "opacity-60",
                   )}
                 >
-                  <span
-                    className="flex h-7 w-7 shrink-0 items-center justify-center rounded-btn text-[11px] font-semibold text-white shadow-xs"
-                    style={{ background: r.presentation.accent }}
-                    aria-hidden
-                  >
-                    {r.presentation.glyph}
-                  </span>
+                  {executorIconSrc(r.id) ? (
+                    <img
+                      src={executorIconSrc(r.id) ?? undefined}
+                      alt=""
+                      className="h-7 w-7 shrink-0 rounded-btn object-contain"
+                      aria-hidden
+                    />
+                  ) : (
+                    <span
+                      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-btn text-[11px] font-semibold text-white shadow-xs"
+                      style={{ background: r.presentation.accent }}
+                      aria-hidden
+                    >
+                      {r.presentation.glyph}
+                    </span>
+                  )}
                   <span className="min-w-0 flex-1">
                     <span className="flex items-center gap-1.5 flex-wrap">
                       <span className="truncate text-body-sm font-medium text-ink">
@@ -315,12 +325,21 @@ function InstanceEditor({
       <section className="rounded-card border border-line bg-card p-4">
         <div className="flex items-start justify-between gap-4">
           <div className="flex items-center gap-3">
-            <span
-              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-card text-body font-medium text-white shadow-xs"
-              style={{ background: runtime.presentation.accent }}
-            >
-              {runtime.presentation.glyph}
-            </span>
+            {executorIconSrc(runtime.id) ? (
+              <img
+                src={executorIconSrc(runtime.id) ?? undefined}
+                alt=""
+                className="h-10 w-10 shrink-0 rounded-card object-contain"
+                aria-hidden
+              />
+            ) : (
+              <span
+                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-card text-body font-medium text-white shadow-xs"
+                style={{ background: runtime.presentation.accent }}
+              >
+                {runtime.presentation.glyph}
+              </span>
+            )}
             <div>
               <div className="flex items-center gap-2">
                 {editingName ? (

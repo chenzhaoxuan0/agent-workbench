@@ -22,6 +22,7 @@ import { terminalSessionRegistry } from "../store/TerminalSessionManager.ts";
 import { useAppearance } from "../store/useAppearance.ts";
 import { useShell } from "../store/useShell.ts";
 import { cn } from "./cn.ts";
+import { executorIconSrc } from "./executorIcon.ts";
 
 export function ShellOrAgentIcon({
   icon,
@@ -30,6 +31,10 @@ export function ShellOrAgentIcon({
   icon: string;
   className?: string;
 }) {
+  const brandSrc = executorIconSrc(icon);
+  if (brandSrc) {
+    return <img src={brandSrc} alt="" className={cn("h-3.5 w-3.5 shrink-0 object-contain", className)} aria-hidden />;
+  }
   switch (icon) {
     case "zcode":
       return <Zap className={cn("text-teal", className)} size={12} />;
