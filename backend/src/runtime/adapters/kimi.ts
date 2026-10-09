@@ -155,9 +155,15 @@ const DEFAULT_KIMI_MODELS: readonly ExecutorModelInfo[] = [
   },
 ];
 
-/** 认证失败的统一出口：kimi 的 -32000 没有结构化码，靠消息文本识别 */
-function isAuthError(message: string): boolean {
-  return message.includes("Authentication required");
+/**
+ * 认证失败的统一出口：kimi 的 -32000 没有结构化码，靠消息文本识别（协议侧）；
+ * 适配器自己抛的 executor_auth_required（resumeSession 等路径）直接认 code ——
+ * 它的 message 是中文指引，不含英文原文，只查文本会漏。
+ */
+function isAuthError(err: unknown): boolean {
+  if (err instanceof Error && (err as { code?: string }).code === "executor_auth_required") return true;
+  const msg = err instanceof Error ? err.message : String(err);
+  return msg.includes("Authentication required");
 }
 
 export class KimiAdapter implements ExecutorAdapter {
@@ -343,7 +349,7 @@ export class KimiAdapter implements ExecutorAdapter {
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         // 认证闸：kimi 未登录/凭据过期时 session/new 必然失败，翻译成可操作的指引
-        if (isAuthError(msg)) {
+        if (isAuthError(err)) {
           throw adapterError(
             "executor_auth_required",
             "kimi 未登录或凭据已过期 —— 在终端运行 `kimi login` 重新登录后重试（终端 TUI 菜单启动 kimi 也可在界面内登录）",
@@ -396,7 +402,7 @@ export class KimiAdapter implements ExecutorAdapter {
       this.syncModelsFromSession(res);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      if (isAuthError(msg)) {
+      if (isAuthError(err)) {
         throw adapterError(
           "executor_auth_required",
           "kimi 未登录或凭据已过期 —— 在终端运行 `kimi login` 重新登录后重试",
@@ -504,7 +510,7 @@ export class KimiAdapter implements ExecutorAdapter {
       state.sink?.({
         type: "error",
         sessionId: state.sessionId,
-        message: isAuthError(msg)
+        message: isAuthError(err)
           ? "kimi 未登录或凭据已过期 —— 在终端运行 `kimi login` 重新登录后重试"
           : `kimi turn failed: ${msg}`,
         recoverable: false,
