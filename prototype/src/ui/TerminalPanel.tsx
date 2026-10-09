@@ -6,7 +6,6 @@ import {
   RotateCw,
   Trash2,
   FolderOpen,
-  MessageSquare,
   Zap,
   Plus,
   ChevronDown,
@@ -16,7 +15,6 @@ import {
   Minimize2,
 } from "lucide-react";
 import { useWorkbench } from "../store/useWorkbench.ts";
-import { useShell } from "../store/useShell.ts";
 import {
   useTerminalStore,
   SUPPORTED_TERMINAL_PROFILES,
@@ -42,13 +40,12 @@ export function TerminalPanel({
   const activeRuntimeId = useWorkbench((s) => s.activeRuntimeId);
   const runtimes = useWorkbench((s) => s.runtimes);
   const runtime = useWorkbench((s) => s.runtimes.find((r) => r.id === s.activeRuntimeId));
-  const toggleTerminal = useShell((s) => s.toggleTerminal);
-  const setConversationView = useShell((s) => s.setConversationView);
 
   const isCanvas = variant === "canvas";
   const isPage = variant === "page";
-  const closeTerminal =
-    onClose ?? (isPage || isCanvas ? () => setConversationView("chat") : toggleTerminal);
+  // 会话历史/终端抽屉已移除（见 useShell.ts 顶部注释）：非画布变体当前无人渲染，
+  // 关闭动作只能由调用方显式传 onClose。
+  const closeTerminal = onClose ?? (() => {});
 
   // 多终端自由分屏树与标签组状态
   const {
@@ -409,18 +406,7 @@ export function TerminalPanel({
             </button>
           )}
 
-          {/* 主画布模式下提供切换至会话历史按钮 */}
-          {isCanvas && (
-            <button
-              type="button"
-              onClick={() => setConversationView("chat")}
-              title="切换至会话与历史列表视图"
-              className="flex items-center gap-1 rounded-btn bg-line-soft/60 px-2 py-0.5 text-caption text-graphite hover:bg-line-soft hover:text-ink transition"
-            >
-              <MessageSquare size={12} />
-              <span className="hidden sm:inline">会话历史</span>
-            </button>
-          )}
+          {/* 主画布模式下的视图切换按钮已随会话历史一并移除 */}
 
           {/* 关闭终端（非画布态） */}
           {!isCanvas && (

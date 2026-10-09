@@ -1,20 +1,14 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft } from "lucide-react";
 import { Group, Panel, Separator, type PanelImperativeHandle } from "react-resizable-panels";
-import { Composer } from "./ui/Composer.tsx";
 import { AutomationsPage } from "./ui/AutomationsPage.tsx";
 import { ImageStudioPage } from "./ui/ImageStudioPage.tsx";
 import { CommandCenter } from "./ui/CommandCenter.tsx";
 import { DesktopTopOverlay } from "./ui/DesktopTopOverlay.tsx";
-import { PermissionDialog } from "./ui/PermissionDialog.tsx";
 import { SettingsPage } from "./ui/SettingsPage.tsx";
 import { useWorkbench } from "./store/useWorkbench.ts";
 import { Sidebar } from "./ui/Sidebar.tsx";
 import { TerminalPanel } from "./ui/TerminalPanel.tsx";
-import { Timeline } from "./ui/Timeline.tsx";
 import { WorkspaceHeader } from "./ui/WorkspaceHeader.tsx";
-import { TrajectoryView } from "./ui/TrajectoryView.tsx";
-import { cn } from "./ui/cn.ts";
 import { bindNavRecorder } from "./store/useNav.ts";
 import { useShell, bindShellShortcuts } from "./store/useShell.ts";
 
@@ -22,10 +16,11 @@ import { useShell, bindShellShortcuts } from "./store/useShell.ts";
  * 工作台外壳 —— 布局结构对齐 ZCode 的 WorkspaceShellLayout。
  *
  * 照搬的 ZCode 约定：
- *   - 侧栏 264px 起，min 264，max 视口 50%，宽度持久化
- *   - 对话区纵向再切一层（会话 | 终端），终端默认 30% 高、可开关
- *   - **面板收起即归零**：左栏收起不留窄条、右栏关闭即让位（Group 里条件渲染），
- *     重开的唯一入口是工作区头部那颗状态感知的开关按钮
+ *   - 侧栏 200px 起，min 200，max 视口 50%，宽度持久化
+ *   - 会话区恒为终端画布（原「终端 / 会话历史 / 轨迹」三态切换已砍，
+ *     见 useShell.ts 顶部注释）
+ *   - **面板收起即归零**：左栏收起不留窄条，重开的唯一入口是
+ *     工作区头部那颗状态感知的开关按钮
  *     —— ZCode 的 DesktopTopOverlay / WorkspaceHeaderActionSection 同款约定
  *
  * 与 ZCode 的差异：ZCode 右侧是内嵌浏览器，本项目右侧换成标签页面板
@@ -151,10 +146,7 @@ function SidebarSlot() {
 /* ------------------------------------------------------------- 对话区 */
 
 function ConversationSlot() {
-  const terminalOpen = useShell((s) => s.terminalOpen);
   const mainView = useShell((s) => s.mainView);
-  const conversationView = useShell((s) => s.conversationView);
-  const setConversationView = useShell((s) => s.setConversationView);
 
   return (
     <Panel minSize="30%" className="min-w-0">
@@ -169,60 +161,15 @@ function ConversationSlot() {
           <ImageStudioPage />
         </main>
       ) : (
-        <Group orientation="vertical" id="workbench-conversation">
-          <Panel defaultSize="100%" minSize="30%" className="min-h-0">
-            <main className="flex h-full min-h-0 flex-col" aria-label="会话">
-              {/* 工作区头部：展示 Agent 身份卡、终端抽屉开关、Agent 档案抽屉开关 */}
-              <WorkspaceHeader />
+        <main className="flex h-full min-h-0 flex-col" aria-label="终端">
+          {/* 工作区头部：展示 Agent 身份卡与动作 */}
+          <WorkspaceHeader />
 
-              {conversationView === "trajectory" ? (
-                <>
-                  <div className="flex shrink-0 items-center justify-between border-b border-line bg-canvas px-6 py-2">
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => setConversationView("terminal")}
-                        className="flex items-center gap-1.5 rounded-btn px-2.5 py-1 text-body-sm text-graphite hover:bg-line-soft hover:text-ink transition"
-                      >
-                        <ArrowLeft size={13} />
-                        <span>返回终端</span>
-                      </button>
-                      <button
-                        onClick={() => setConversationView("chat")}
-                        className="flex items-center gap-1.5 rounded-btn px-2.5 py-1 text-body-sm text-graphite hover:bg-line-soft hover:text-ink transition"
-                      >
-                        <span>查看会话历史</span>
-                      </button>
-                    </div>
-                    <span className="text-caption text-ash font-mono">调用轨迹视图</span>
-                  </div>
-                  <TrajectoryView />
-                </>
-              ) : conversationView === "chat" ? (
-                <>
-                  <Timeline />
-                  <PermissionDialog />
-                  <Composer />
-                </>
-              ) : null}
-
-              {/* 终端画布持久挂载：切换视图时不杀进程、不丢缓冲，切回瞬间即达 */}
-              <div className={cn("min-h-0 flex-1 flex-col", conversationView === "terminal" ? "flex" : "hidden")}>
-                <TerminalPanel variant="canvas" />
-              </div>
-            </main>
-          </Panel>
-
-          {terminalOpen && conversationView !== "terminal" && (
-            <>
-              <Separator className="group relative h-px bg-line">
-                <span className="absolute inset-x-0 -top-1 -bottom-1 transition group-hover:bg-teal/20" />
-              </Separator>
-              <Panel defaultSize="30%" minSize="10%" maxSize="70%">
-                <TerminalPanel variant="dock" />
-              </Panel>
-            </>
-          )}
-        </Group>
+          {/* 终端画布持久挂载：切换主视图时不杀进程、不丢缓冲，切回瞬间即达 */}
+          <div className="flex min-h-0 flex-1 flex-col">
+            <TerminalPanel variant="canvas" />
+          </div>
+        </main>
       )}
     </Panel>
   );

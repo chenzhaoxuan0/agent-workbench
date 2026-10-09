@@ -10,12 +10,7 @@ import {
   FolderOpen,
   GitBranch,
   Hash,
-  History,
-  MessageSquare,
-  PanelRightClose,
-  PanelRightOpen,
   Pin,
-  SquareTerminal,
   Zap,
 } from "lucide-react";
 import { useShell } from "../store/useShell.ts";
@@ -30,10 +25,6 @@ const iconBtn =
 
 export function WorkspaceHeader() {
   const sidebarCollapsed = useShell((s) => s.sidebarCollapsed);
-  const terminalOpen = useShell((s) => s.terminalOpen);
-  const toggleTerminal = useShell((s) => s.toggleTerminal);
-  const conversationView = useShell((s) => s.conversationView);
-  const setConversationView = useShell((s) => s.setConversationView);
 
   const unit = useWorkbench(selectActiveUnit);
   const session = useWorkbench((s) => s.sessions.find((x) => x.id === s.activeSessionId));
@@ -105,74 +96,9 @@ export function WorkspaceHeader() {
         <span className="text-body-sm text-ash">未选择 Agent</span>
       )}
 
-      {/* ---- 中区：主视图切换（终端 TUI | 会话历史 | 轨迹） ---- */}
-      <div className="mx-auto hidden md:flex items-center rounded-btn bg-line-soft/80 p-0.5 border border-line/40">
-        <button
-          onClick={() => setConversationView("terminal")}
-          title="交互终端模式：直接在工作空间运行 Agent CLI（Claude Code / Codex / ZCode 等），享有原生 TUI 与斜杠命令"
-          className={cn(
-            "flex items-center gap-1.5 rounded-btn px-2.5 py-1 text-[12px] font-medium transition",
-            conversationView === "terminal"
-              ? "bg-card text-teal shadow-xs font-semibold border border-teal/25"
-              : "text-graphite hover:text-ink",
-          )}
-        >
-          <SquareTerminal size={13} />
-          <span>终端 TUI</span>
-        </button>
-
-        <button
-          onClick={() => setConversationView("chat")}
-          title="会话历史：查看过去对话、后台机器人转写记录与时间线"
-          className={cn(
-            "flex items-center gap-1.5 rounded-btn px-2.5 py-1 text-[12px] font-medium transition",
-            conversationView === "chat"
-              ? "bg-card text-teal shadow-xs font-semibold border border-teal/25"
-              : "text-graphite hover:text-ink",
-          )}
-        >
-          <MessageSquare size={13} />
-          <span>会话历史</span>
-        </button>
-
-        <button
-          onClick={() => setConversationView("trajectory")}
-          title="调用轨迹：底层事件流与调用明细"
-          className={cn(
-            "flex items-center gap-1.5 rounded-btn px-2.5 py-1 text-[12px] font-medium transition",
-            conversationView === "trajectory"
-              ? "bg-card text-teal shadow-xs font-semibold border border-teal/25"
-              : "text-graphite hover:text-ink",
-          )}
-        >
-          <History size={13} />
-          <span>轨迹透视</span>
-        </button>
-      </div>
-
-      {/* ---- 右区：后台守护指示器与动作 ---- */}
+      {/* ---- 右区：后台守护指示器 ---- */}
       <div className="ml-auto flex shrink-0 items-center gap-2">
-        {/* 后台守护状态指示 */}
         <BackgroundGuardianBadge />
-
-        {/* 仅在非全屏终端模式下提供底部抽屉开关 */}
-        {conversationView !== "terminal" && (
-          <button
-            onClick={toggleTerminal}
-            aria-label="终端抽屉"
-            aria-pressed={terminalOpen}
-            title="底部终端抽屉 · Ctrl+`"
-            className={cn(
-              "flex items-center gap-1.5 rounded-btn px-2.5 py-1 text-body-sm transition",
-              terminalOpen
-                ? "bg-teal-tint font-medium text-teal"
-                : "text-graphite hover:bg-line-soft hover:text-ink",
-            )}
-          >
-            <SquareTerminal size={14} />
-            <span className="hidden sm:inline">抽屉</span>
-          </button>
-        )}
       </div>
     </header>
   );
@@ -360,15 +286,6 @@ function MoreMenu() {
       label: copied === "session" ? "已复制会话 ID" : "复制会话 ID",
       disabled: !session,
       onClick: () => session && void copy(session.id, "session"),
-    },
-    {
-      key: "trace",
-      icon: History,
-      label: "查看调用轨迹",
-      disabled: !session,
-      onClick: () => {
-        useShell.getState().setConversationView("trajectory");
-      },
     },
   ];
 

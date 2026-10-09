@@ -26,9 +26,11 @@ import type { UnitId } from "../core/units.ts";
 export type MainView = "chat" | "automations" | "image";
 
 /**
- * 会话内视图：terminal 为交互终端（TUI 原生体验），chat 为会话历史与对话，trajectory 为审计轨迹。
+ * 会话内视图曾有三态（terminal / chat / trajectory），2026-10 砍掉后两项：
+ * 主用法是 TUI，会话历史与轨迹透视只覆盖工作台发起的会话，形同虚设。
+ * 现在会话区恒为终端画布。真要找回，从 git log 取
+ * （Timeline.tsx / TrajectoryView.tsx / Composer.tsx / core/trajectory.ts）。
  */
-export type ConversationView = "terminal" | "chat" | "trajectory";
 
 /**
  * 设置分区 id。
@@ -126,8 +128,6 @@ function persistWidth(w: number): void {
 interface ShellState {
   sidebarWidth: number;
   sidebarCollapsed: boolean;
-  terminalOpen: boolean;
-  terminalHeight: number;
 
   commandOpen: boolean;
   mainView: MainView;
@@ -143,13 +143,9 @@ interface ShellState {
   /** 导入已有文件夹对话框（docs/09 §七）。与 addBotOpen 互斥：两个都是「加一个 bot 进来」，
    *  但一个建新东西、一个只登记现成文件夹，后果不同，表单也不能复用。 */
   importBotOpen: boolean;
-  /** 会话内视图（dsh view-selection：对话 / 轨迹 / Ops 与 Chat 并列的页签） */
-  conversationView: ConversationView;
 
   setSidebarWidth: (w: number) => void;
   toggleSidebar: () => void;
-  toggleTerminal: () => void;
-  setTerminalHeight: (h: number) => void;
 
   setMainView: (v: MainView) => void;
   /** 打开设置覆盖层（ZCode 的 WorkspaceSettingsLayer），可直落某个分区 */
@@ -158,7 +154,6 @@ interface ShellState {
   closeSettings: () => void;
   /** 新建任务：回 chat 主视图并清空草稿（对齐 ZCode 的 newTask，⌘N） */
   newTask: () => void;
-  setConversationView: (v: ConversationView) => void;
 
   setCommandOpen: (open: boolean) => void;
   openAddBot: () => void;
@@ -172,14 +167,11 @@ interface ShellState {
 export const useShell = create<ShellState>((set, get) => ({
   sidebarWidth: readWidth(),
   sidebarCollapsed: false,
-  terminalOpen: false,
-  terminalHeight: 30,
 
   commandOpen: false,
   mainView: "chat",
   settingsOpen: false,
   settingsSection: "models",
-  conversationView: "terminal",
   addBotOpen: false,
   editUnitId: null,
   importBotOpen: false,
@@ -199,8 +191,6 @@ export const useShell = create<ShellState>((set, get) => ({
     useWorkbench.getState().setDraft("");
   },
 
-  setConversationView: (conversationView) => set({ conversationView }),
-
   setSidebarWidth: (w) => {
     const clamped = Math.max(SIDEBAR_MIN, Math.round(w));
     set({ sidebarWidth: clamped });
@@ -208,8 +198,6 @@ export const useShell = create<ShellState>((set, get) => ({
   },
 
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
-  toggleTerminal: () => set((s) => ({ terminalOpen: !s.terminalOpen })),
-  setTerminalHeight: (terminalHeight) => set({ terminalHeight }),
 
   setCommandOpen: (commandOpen) => set({ commandOpen }),
 
@@ -266,10 +254,6 @@ export function bindShellShortcuts(): () => void {
       else if (s.editUnitId !== null) s.closeUnitSettings();
       else if (s.settingsOpen) s.closeSettings();
       return;
-    }
-    if (mod && e.key === "`") {
-      e.preventDefault();
-      useShell.getState().toggleTerminal();
     }
   };
   window.addEventListener("keydown", onKey);

@@ -359,13 +359,6 @@ function useCommands(): readonly Command[] {
         run: () => shell().toggleSidebar(),
       },
       {
-        id: "toggle-terminal",
-        label: shell().terminalOpen ? "关闭终端抽屉" : "打开终端抽屉",
-        hint: "Ctrl+`",
-        group: "布局",
-        run: () => shell().toggleTerminal(),
-      },
-      {
         id: "new-agent",
         label: "新建 Agent",
         hint: "从 AGENTS.md 岗位说明书开始",
