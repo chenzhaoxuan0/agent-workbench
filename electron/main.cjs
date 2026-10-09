@@ -1,7 +1,49 @@
-const { app, BrowserWindow, shell } = require("electron");
+const { app, BrowserWindow, shell, ipcMain } = require("electron");
 const path = require("path");
 
 let mainWindow = null;
+
+/** zoomLevel 上下限：±4 档（每档 0.5），够用且不会把页面变成像素汤 */
+const ZOOM_MAX = 4;
+const ZOOM_MIN = -4;
+
+function applyZoom(delta) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const wc = mainWindow.webContents;
+  const next = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, wc.getZoomLevel() + delta));
+  wc.setZoomLevel(next);
+}
+
+function resetZoom() {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.setZoomLevel(0);
+}
+
+/**
+ * 内容缩放 —— 不依赖默认菜单的加速键：
+ * - 默认菜单的放大注册在 `Ctrl+Plus` 上，那个键要 Shift+= 才按得出来，
+ *   所以 `Ctrl+=` 永远不匹配（缩小 `Ctrl+-` 是直配键，因此能用）——这里自己接。
+ * - Ctrl+滚轮 Electron 本身不带，preload 把 ctrlKey 的 wheel 转发到这里的 IPC。
+ */
+function bindZoomShortcuts(wc) {
+  wc.on("before-input-event", (event, input) => {
+    if (input.type !== "keyDown" || !input.control || input.alt || input.meta) return;
+    const key = (input.key || "").toLowerCase();
+    if (key === "=" || key === "+" || input.code === "NumpadAdd") {
+      applyZoom(0.5);
+      event.preventDefault();
+    } else if (key === "-" || input.code === "NumpadSubtract") {
+      applyZoom(-0.5);
+      event.preventDefault();
+    } else if (key === "0") {
+      resetZoom();
+      event.preventDefault();
+    }
+  });
+}
+
+ipcMain.on("zoom-wheel", (_event, deltaY) => {
+  applyZoom(deltaY < 0 ? 0.5 : -0.5);
+});
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -22,6 +64,8 @@ function createWindow() {
       spellcheck: false,
     },
   });
+
+  bindZoomShortcuts(mainWindow.webContents);
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith("http://") || url.startsWith("https://")) {
