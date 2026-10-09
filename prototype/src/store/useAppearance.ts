@@ -270,12 +270,22 @@ export const useAppearance = create<AppearanceStore>((set, get) => ({
   },
 
   applyPreset: (preset) => {
+    // 预设 = 配色。只换十组色；用户调过的透明度/表面设置按亮暗档案各自保留，
+    // 壁纸/艺术/头像框等全局项更不动 —— 否则切一次主题自定义就被清零（实测）。
+    const cur = get();
+    const merge = (resolved: ResolvedAppearance, from: AppearanceProfile): AppearanceProfile => ({
+      ...cloneProfile(from),
+      surface: { ...cur.profiles[resolved].surface },
+      transparency: cur.profiles[resolved].transparency,
+      overlayTransparency: cur.profiles[resolved].overlayTransparency,
+      terminalTransparency: cur.profiles[resolved].terminalTransparency,
+    });
     const next: AppearanceState = {
-      ...get(),
+      ...cur,
       mode: preset.mode,
       profiles: {
-        light: cloneProfile(preset.light),
-        dark: cloneProfile(preset.dark),
+        light: merge("light", preset.light),
+        dark: merge("dark", preset.dark),
       },
       presetId: preset.id,
     };

@@ -271,7 +271,7 @@ export function AppearanceSettingsSection() {
       <SectionCard
         icon={<Palette size={16} />}
         title="预设主题"
-        desc="整套配色一次切换。选中的预设之后再微调，会变成「自定义」而不再声称等于该预设。"
+        desc="一键换十组配色。透明度、表面、壁纸等你的自定义设置在切换时原样保留；之后再微调会变成「自定义」。"
       >
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           {APPEARANCE_PRESETS.map((preset) => {
