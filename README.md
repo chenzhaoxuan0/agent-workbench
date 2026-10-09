@@ -1,8 +1,19 @@
 # Agent Workbench
 
-本地个人统一工作台 —— 一个界面，两种视图，多家 agent 工具平等切换。
+本地个人统一工作台 —— 一个界面，多种视图，多家 agent 工具平等切换。
 
-**当前阶段：P0 UI/UX 原型。** 不含任何厂商代码，mock 适配器驱动。
+![主界面](docs/images/main-window.png)
+
+---
+
+## 开源许可
+
+本项目以 [MIT](LICENSE) 协议开源。
+
+ incorporation 的第三方代码与资产（含移植与图标）的著作权与许可声明，
+见 [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md)。设计层面的参照
+（对齐/借鉴的架构与交互思路）不构成代码复制，出处以注释与
+[`docs/05-reference-map.md`](docs/05-reference-map.md) 为准。
 
 ---
 
