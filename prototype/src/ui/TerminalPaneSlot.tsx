@@ -73,6 +73,7 @@ export const TerminalPaneSlot = memo(function TerminalPaneSlot({
   const closePane = useTerminalStore((s) => s.closePane);
   const toggleMaximize = useTerminalStore((s) => s.toggleMaximize);
   const resolvedTheme = useAppearance((s) => s.resolvedAppearance);
+  const terminalTransparency = useAppearance((s) => s.activeProfile.terminalTransparency);
   const settingsOpen = useShell((s) => s.settingsOpen);
 
   const isActive = inst.id === activeInstanceId;
@@ -115,7 +116,7 @@ export const TerminalPaneSlot = memo(function TerminalPaneSlot({
     if (isActive && !settingsOpen) {
       session.focus();
     }
-  }, [resolvedTheme, settingsOpen, inst.id, isActive]);
+  }, [resolvedTheme, terminalTransparency, settingsOpen, inst.id, isActive]);
 
   return (
     <div

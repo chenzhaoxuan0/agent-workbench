@@ -3,7 +3,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { CanvasAddon } from "@xterm/addon-canvas";
 import "@xterm/xterm/css/xterm.css";
-import { toHex } from "../core/appearance.ts";
+import { toHex, withAlpha } from "../core/appearance.ts";
 import {
   DaemonClient,
   defaultDaemonEndpoint,
@@ -126,9 +126,12 @@ export function buildTerminalTheme(isDark: boolean): XtermTheme {
   const highlight = cssColor("--color-highlight", fallback.magenta);
   const gain = cssColor("--color-gain", fallback.green);
   const loss = cssColor("--color-loss", fallback.red);
+  // 终端透明度：外观设置写进 --aw-terminal-bg-alpha（0..1）。文字永不透明，只有底色透
+  const alphaRaw = Number(cssColor("--aw-terminal-bg-alpha", "1"));
+  const terminalAlpha = Number.isFinite(alphaRaw) ? Math.min(1, Math.max(0, alphaRaw)) : 1;
 
   return {
-    background: toHex(canvas, fallback.background),
+    background: withAlpha(canvas, terminalAlpha),
     foreground: toHex(ink, fallback.foreground),
     cursor: toHex(accent, fallback.cursor),
     selectionBackground: cssColor("--color-selection", fallback.selectionBackground),
@@ -224,6 +227,8 @@ export class TerminalSession {
     const isDark = getIsDarkMode();
     this.term = new Terminal({
       allowProposedApi: true,
+      // 底色带 alpha 时透出后面的壁纸；必须在构造时给，事后切换无效
+      allowTransparency: true,
       fontSize: 13,
       fontFamily:
         '"Cascadia Mono", "Cascadia Code", Consolas, "Courier New", monospace',

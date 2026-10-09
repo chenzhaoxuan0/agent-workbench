@@ -224,6 +224,11 @@ export interface AppearanceProfile {
    * 设置页叠在主界面上，不透明才不会透出下层文字；想要壁纸透进来自己调高。
    */
   overlayTransparency: number;
+  /**
+   * 终端画布底色的透明度，0..100，默认 0（完全不透明）。
+   * 只透底色，文字永远不透明；开着壁纸时 20~40% 左右观感与可读性平衡最好。
+   */
+  terminalTransparency: number;
 }
 
 /** bot 头像框形态：圆角（按名字哈希的 blob 形状）或无圆角方形 */
@@ -283,6 +288,8 @@ export const DEFAULT_TRANSPARENCY = 0;
 export const WALLPAPER_DEFAULT_TRANSPARENCY = 30;
 /** 设置页整页底色的默认透明度：0% = 不透明，叠在主界面上不透字 */
 export const DEFAULT_OVERLAY_TRANSPARENCY = 0;
+/** 终端画布底色的默认透明度：0% = 不透明，文字可读性优先 */
+export const DEFAULT_TERMINAL_TRANSPARENCY = 0;
 
 /* --------------------------------------------------------------------------- 预设 */
 
@@ -317,6 +324,7 @@ export const PRESET_PARCHMENT: AppearancePreset = {
     surface: DEFAULT_SURFACE,
     transparency: null,
     overlayTransparency: DEFAULT_OVERLAY_TRANSPARENCY,
+    terminalTransparency: DEFAULT_TERMINAL_TRANSPARENCY,
   },
   dark: {
     palette: {
@@ -334,6 +342,7 @@ export const PRESET_PARCHMENT: AppearancePreset = {
     surface: DEFAULT_SURFACE,
     transparency: null,
     overlayTransparency: DEFAULT_OVERLAY_TRANSPARENCY,
+    terminalTransparency: DEFAULT_TERMINAL_TRANSPARENCY,
   },
 };
 
@@ -368,6 +377,7 @@ export const PRESET_TWILIGHT: AppearancePreset = {
     surface: DEFAULT_SURFACE,
     transparency: null,
     overlayTransparency: DEFAULT_OVERLAY_TRANSPARENCY,
+    terminalTransparency: DEFAULT_TERMINAL_TRANSPARENCY,
   },
 };
 
@@ -401,6 +411,7 @@ function cloneProfile(profile: AppearanceProfile): AppearanceProfile {
     surface: { ...profile.surface },
     transparency: profile.transparency,
     overlayTransparency: profile.overlayTransparency,
+    terminalTransparency: profile.terminalTransparency,
   };
 }
 
@@ -538,6 +549,8 @@ export function deriveCssVariables(
   /** 设置页整页底色 —— 默认不透明；透明度由 profile.overlayTransparency 单独控制 */
   const overlayAlpha = clamp((100 - profile.overlayTransparency) / 100, 0, 1);
   vars["--color-canvas-solid"] = withAlpha(p.background, overlayAlpha);
+  /** 终端画布底色 alpha —— xterm 主题运行时读它合成 rgba 背景（文字永不受影响） */
+  vars["--aw-terminal-bg-alpha"] = String(clamp(1 - profile.terminalTransparency / 100, 0, 1));
 
   /* ---- 文字层：永不受透明度影响 ---- */
   vars["--color-ink"] = p.text;
@@ -742,8 +755,14 @@ function sanitizeProfile(raw: unknown, fallback: AppearanceProfile): AppearanceP
     100,
     fallback.overlayTransparency ?? 0,
   );
+  const terminalTransparency = clampNumber(
+    input.terminalTransparency,
+    0,
+    100,
+    fallback.terminalTransparency ?? 0,
+  );
 
-  return { palette, surface, transparency, overlayTransparency };
+  return { palette, surface, transparency, overlayTransparency, terminalTransparency };
 }
 
 function clampNumber(value: unknown, min: number, max: number, fallback: number): number {

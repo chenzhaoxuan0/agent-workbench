@@ -466,6 +466,30 @@ export function AppearanceSettingsSection() {
               叠在主界面上时不透出下层文字；调高后壁纸会透进设置页，但下层内容也会跟着显形。
             </p>
           </div>
+
+          <div className="space-y-3 border-t border-line-soft pt-4">
+            <div className="flex items-center justify-between">
+              <span className="text-body-sm text-ink">终端透明度</span>
+              <span className="rounded-chip bg-surface-hover px-2 py-0.5 text-caption font-mono text-graphite">
+                {activeProfile.terminalTransparency}%
+                {activeProfile.terminalTransparency === 0 ? "不透明" : activeProfile.terminalTransparency === 100 ? "全透" : ""}
+              </span>
+            </div>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              step={1}
+              value={activeProfile.terminalTransparency}
+              onChange={(e) => store.setTerminalTransparency(Number(e.target.value))}
+              aria-label="终端透明度"
+              className="w-full accent-teal"
+            />
+            <p className="text-caption text-ash">
+              只作用于终端画布的底色，终端文字永远不透明。默认 0%；开着壁纸时调到 20~40%
+              能透出壁纸，再高就会伤到正文可读性。
+            </p>
+          </div>
         </div>
       </SectionCard>
 
