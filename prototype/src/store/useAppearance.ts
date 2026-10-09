@@ -173,6 +173,8 @@ export interface AppearanceStore extends AppearanceState {
   resetPaletteColor: (key: PaletteKey) => void;
   resetPalette: () => void;
   setTransparency: (value: number | null) => void;
+  /** 设置页整页底色的透明度（默认 0% 不透明） */
+  setOverlayTransparency: (value: number) => void;
   setSurface: <K extends keyof AppearanceProfile["surface"]>(
     key: K,
     value: AppearanceProfile["surface"][K],
@@ -310,6 +312,12 @@ export const useAppearance = create<AppearanceStore>((set, get) => ({
     set(publish(next));
   },
 
+  setOverlayTransparency: (value) => {
+    const resolved = resolveAppearance(get());
+    const next = withProfile(get(), resolved, (profile) => ({ ...profile, overlayTransparency: value }));
+    set(publish(next));
+  },
+
   setSurface: (key, value) => {
     const resolved = resolveAppearance(get());
     const next = withProfile(get(), resolved, (profile) => ({
@@ -369,6 +377,7 @@ function cloneProfile(profile: AppearanceProfile): AppearanceProfile {
     palette: { ...profile.palette },
     surface: { ...profile.surface },
     transparency: profile.transparency,
+    overlayTransparency: profile.overlayTransparency,
   };
 }
 

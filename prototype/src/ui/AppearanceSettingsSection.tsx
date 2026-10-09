@@ -442,6 +442,30 @@ export function AppearanceSettingsSection() {
               跟随主题（清除覆盖）
             </button>
           )}
+
+          <div className="space-y-3 border-t border-line-soft pt-4">
+            <div className="flex items-center justify-between">
+              <span className="text-body-sm text-ink">设置页透明度</span>
+              <span className="rounded-chip bg-surface-hover px-2 py-0.5 text-caption font-mono text-graphite">
+                {activeProfile.overlayTransparency}%
+                {activeProfile.overlayTransparency === 0 ? "不透明" : activeProfile.overlayTransparency === 100 ? "全透" : ""}
+              </span>
+            </div>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              step={1}
+              value={activeProfile.overlayTransparency}
+              onChange={(e) => store.setOverlayTransparency(Number(e.target.value))}
+              aria-label="设置页透明度"
+              className="w-full accent-teal"
+            />
+            <p className="text-caption text-ash">
+              只作用于设置页整页底色，与上面的背景透明度相互独立。默认 0% 完全不透明，
+              叠在主界面上时不透出下层文字；调高后壁纸会透进设置页，但下层内容也会跟着显形。
+            </p>
+          </div>
         </div>
       </SectionCard>
 
@@ -789,6 +813,7 @@ export function AppearanceSettingsSection() {
               </li>
               <li>
                 <span className="font-mono">profiles.*.transparency</span> — null 表示跟随默认（无壁纸 0%，有壁纸 30%）
+            <span className="font-mono">profiles.*.overlayTransparency</span> — 设置页底色透明度，默认 0%
               </li>
               <li>
                 <span className="font-mono">profiles.*.surface</span> — 圆角 / 不透明度 / 模糊 / 边框 /

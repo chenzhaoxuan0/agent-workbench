@@ -217,8 +217,13 @@ export interface WallpaperSettings {
 export interface AppearanceProfile {
   palette: ThemePalette;
   surface: SurfaceSettings;
-  /** 0..100，null = 跟随主题默认（DS 默认 30）。100 = 全透 */
+  /** 0..100，null = 跟随主题默认（无壁纸 0%，有壁纸 30%）。100 = 全透 */
   transparency: number | null;
+  /**
+   * 设置页整页底色的透明度，0..100，默认 0（完全不透明）。
+   * 设置页叠在主界面上，不透明才不会透出下层文字；想要壁纸透进来自己调高。
+   */
+  overlayTransparency: number;
 }
 
 /** bot 头像框形态：圆角（按名字哈希的 blob 形状）或无圆角方形 */
@@ -276,6 +281,8 @@ export const DEFAULT_WALLPAPER: WallpaperSettings = {
  */
 export const DEFAULT_TRANSPARENCY = 0;
 export const WALLPAPER_DEFAULT_TRANSPARENCY = 30;
+/** 设置页整页底色的默认透明度：0% = 不透明，叠在主界面上不透字 */
+export const DEFAULT_OVERLAY_TRANSPARENCY = 0;
 
 /* --------------------------------------------------------------------------- 预设 */
 
@@ -309,6 +316,7 @@ export const PRESET_PARCHMENT: AppearancePreset = {
     },
     surface: DEFAULT_SURFACE,
     transparency: null,
+    overlayTransparency: DEFAULT_OVERLAY_TRANSPARENCY,
   },
   dark: {
     palette: {
@@ -325,6 +333,7 @@ export const PRESET_PARCHMENT: AppearancePreset = {
     },
     surface: DEFAULT_SURFACE,
     transparency: null,
+    overlayTransparency: DEFAULT_OVERLAY_TRANSPARENCY,
   },
 };
 
@@ -358,6 +367,7 @@ export const PRESET_TWILIGHT: AppearancePreset = {
     },
     surface: DEFAULT_SURFACE,
     transparency: null,
+    overlayTransparency: DEFAULT_OVERLAY_TRANSPARENCY,
   },
 };
 
@@ -390,6 +400,7 @@ function cloneProfile(profile: AppearanceProfile): AppearanceProfile {
     palette: { ...profile.palette },
     surface: { ...profile.surface },
     transparency: profile.transparency,
+    overlayTransparency: profile.overlayTransparency,
   };
 }
 
@@ -524,8 +535,9 @@ export function deriveCssVariables(
   vars["--color-canvas"] = withAlpha(p.background, alpha);
   vars["--color-card"] = withAlpha(p.panel, alpha);
   vars["--color-rail"] = withAlpha(p.panelAlt, alpha);
-  /** 不透明画布 —— 给设置页这类「整页覆盖层」用：叠在主界面上时绝不透出下层文字 */
-  vars["--color-canvas-solid"] = p.background;
+  /** 设置页整页底色 —— 默认不透明；透明度由 profile.overlayTransparency 单独控制 */
+  const overlayAlpha = clamp((100 - profile.overlayTransparency) / 100, 0, 1);
+  vars["--color-canvas-solid"] = withAlpha(p.background, overlayAlpha);
 
   /* ---- 文字层：永不受透明度影响 ---- */
   vars["--color-ink"] = p.text;
@@ -723,7 +735,15 @@ function sanitizeProfile(raw: unknown, fallback: AppearanceProfile): AppearanceP
         ? null
         : fallback.transparency;
 
-  return { palette, surface, transparency };
+  // 缺省当 0（不透明）：旧文件没有这个字段时，设置页必须保持可读
+  const overlayTransparency = clampNumber(
+    input.overlayTransparency,
+    0,
+    100,
+    fallback.overlayTransparency ?? 0,
+  );
+
+  return { palette, surface, transparency, overlayTransparency };
 }
 
 function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
