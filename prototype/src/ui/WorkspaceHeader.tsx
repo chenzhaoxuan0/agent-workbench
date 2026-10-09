@@ -1,9 +1,6 @@
 import { useState } from "react";
 import {
-  Brain,
   Check,
-  ChevronDown,
-  ChevronRight,
   Copy,
   Ellipsis,
   Folder,
@@ -11,7 +8,6 @@ import {
   GitBranch,
   Hash,
   Pin,
-  Zap,
 } from "lucide-react";
 import { useShell } from "../store/useShell.ts";
 import { useWorkbench, selectActiveUnit } from "../store/useWorkbench.ts";
@@ -41,7 +37,7 @@ export function WorkspaceHeader() {
       )}
       aria-label="工作区"
     >
-      {/* ---- 左区：Agent 身份卡片 + 执行器切换 ---- */}
+      {/* ---- 左区：Agent 身份卡片 ---- */}
       {unit ? (
         <div className="flex min-w-0 items-center gap-2">
           {/* 可点击的 Agent 头衔（点击打开 Agent 设置） */}
@@ -76,9 +72,6 @@ export function WorkspaceHeader() {
             )}
           </button>
 
-          {/* 快速执行器选择器 */}
-          <ExecutorSelector />
-
           {/* 会话名称（若有活跃会话） */}
           {session && (
             <span className="hidden xl:flex min-w-0 items-center gap-1.5 text-body-sm text-graphite">
@@ -101,78 +94,6 @@ export function WorkspaceHeader() {
         <BackgroundGuardianBadge />
       </div>
     </header>
-  );
-}
-
-/** 快速执行器下拉选择器 */
-function ExecutorSelector() {
-  const runtimes = useWorkbench((s) => s.runtimes);
-  const activeRuntimeId = useWorkbench((s) => s.activeRuntimeId);
-  const selectRuntime = useWorkbench((s) => s.selectRuntime);
-  const activeRuntime = runtimes.find((r) => r.id === activeRuntimeId);
-  const [open, setOpen] = useState(false);
-
-  const shellOption = { id: "shell", name: "PowerShell 终端", glyph: ">_" };
-  const allOptions = [
-    ...runtimes.filter((r) => !r.testOnly).map((r) => ({
-      id: r.id as string,
-      name: r.presentation.displayName,
-      glyph: r.presentation.glyph,
-    })),
-    shellOption,
-  ];
-
-  return (
-    <div className="relative">
-      <button
-        onClick={() => setOpen((o) => !o)}
-        aria-expanded={open}
-        title="快速切换当前执行器（在工作目录直接运行对应 Agent CLI）"
-        className={cn(
-          "flex items-center gap-1 rounded-btn border border-line/60 bg-line-soft/30 px-2 py-1 text-caption font-medium transition hover:border-teal/50 hover:bg-line-soft",
-          open && "border-teal text-teal",
-        )}
-      >
-        <Zap size={11} className="text-teal" />
-        <span className="font-mono text-[11px] text-ink">
-          {activeRuntime?.presentation.displayName ?? (activeRuntimeId === "shell" ? "PowerShell" : activeRuntimeId)}
-        </span>
-        <ChevronDown size={10} className={cn("text-ash transition-transform", open && "rotate-180")} />
-      </button>
-
-      {open && (
-        <>
-          <span className="fixed inset-0 z-30" onClick={() => setOpen(false)} aria-hidden />
-          <div className="absolute left-0 top-full z-40 mt-1 w-52 rounded-card border border-line bg-card py-1 shadow-xl">
-            <div className="px-3 py-1 text-[10px] text-ash font-medium border-b border-line-soft">
-              选择交互执行器 (CLI)
-            </div>
-            {allOptions.map((opt) => {
-              const isSelected = activeRuntimeId === opt.id;
-              return (
-                <button
-                  key={opt.id}
-                  onClick={() => {
-                    selectRuntime(opt.id);
-                    setOpen(false);
-                  }}
-                  className={cn(
-                    "flex w-full items-center justify-between px-3 py-1.5 text-left text-body-sm transition hover:bg-line-soft",
-                    isSelected ? "text-teal font-medium" : "text-graphite hover:text-ink",
-                  )}
-                >
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono text-caption text-ash w-4">{opt.glyph}</span>
-                    <span>{opt.name}</span>
-                  </div>
-                  {isSelected && <Check size={12} className="text-teal" />}
-                </button>
-              );
-            })}
-          </div>
-        </>
-      )}
-    </div>
   );
 }
 
