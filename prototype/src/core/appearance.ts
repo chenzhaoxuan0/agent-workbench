@@ -269,11 +269,13 @@ export const DEFAULT_WALLPAPER: WallpaperSettings = {
 };
 
 /**
- * 「跟随主题」的默认透明度。DS 是 30（renderer-inject.js:365 的 0.70 就是 100-30），
- * 本项目刻意改成 0（完全不透明）：没开壁纸时半透明面板等于能看见应用背后的东西，
- * 用户明确不要这个效果。设置项保留，想要通透自己拖滑块。
+ * 「跟随主题」的默认透明度，**按有无壁纸分两档**：
+ * - 无壁纸：0%（完全不透明）。没开壁纸时半透明面板等于能看见应用背后的东西，用户明确不要；
+ * - 有壁纸：30%（DS 原值，renderer-inject.js:365 的 0.70 就是 100-30）。壁纸垫在 z-index:-2，
+ *   底色不透它就永远不可见 —— 开壁纸却看不到壁纸是 bug，不是偏好。
  */
 export const DEFAULT_TRANSPARENCY = 0;
+export const WALLPAPER_DEFAULT_TRANSPARENCY = 30;
 
 /* --------------------------------------------------------------------------- 预设 */
 
@@ -370,7 +372,8 @@ export const APPEARANCE_PRESETS: readonly AppearancePreset[] = [
 export function defaultAppearanceState(): AppearanceState {
   return {
     schemaVersion: 1,
-    mode: PRESET_PARCHMENT.mode,
+    // 跟随系统明暗；预设的 mode 只在你主动选预设时生效
+    mode: "auto",
     profiles: {
       light: cloneProfile(PRESET_PARCHMENT.light),
       dark: cloneProfile(PRESET_OBSIDIAN.dark),
@@ -396,9 +399,10 @@ function cloneProfile(profile: AppearanceProfile): AppearanceProfile {
  * 透明度 0..100 → alpha。DS 用 (100 - value)/100，方向与 CSS 直觉相反：
  * 0 是不透明，100 是全透。抄这个公式，别自己写 value/100。
  */
-export function transparencyToAlpha(transparency: number | null): number {
+export function transparencyToAlpha(transparency: number | null, hasWallpaper = false): number {
   if (transparency === null || !Number.isFinite(transparency)) {
-    return (100 - DEFAULT_TRANSPARENCY) / 100;
+    const fallback = hasWallpaper ? WALLPAPER_DEFAULT_TRANSPARENCY : DEFAULT_TRANSPARENCY;
+    return (100 - fallback) / 100;
   }
   return clamp((100 - transparency) / 100, 0, 1);
 }
@@ -513,7 +517,7 @@ export function deriveCssVariables(
    * 本项目没有壁纸时，半透明面板会让整块 UI 变成能看见背后的半透明层 ——
    * 那是 bug 不是特性。所以这里按 hasWallpaper 短路。
    */
-  const alpha = hasWallpaper ? transparencyToAlpha(profile.transparency) : 1;
+  const alpha = hasWallpaper ? transparencyToAlpha(profile.transparency, true) : 1;
   const vars: Record<string, string> = {};
 
   /* ---- 背景层：受透明度影响 ---- */

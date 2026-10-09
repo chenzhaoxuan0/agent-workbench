@@ -22,6 +22,7 @@ import {
   APPEARANCE_PRESETS,
   contrastRatio,
   DEFAULT_TRANSPARENCY,
+  WALLPAPER_DEFAULT_TRANSPARENCY,
   resolveFocusX,
   resolveFocusY,
   toHex,
@@ -235,8 +236,11 @@ export function AppearanceSettingsSection() {
   const [importError, setImportError] = useState<string | null>(null);
 
   const { mode, resolvedAppearance, activeProfile, art, wallpaper, presetId } = store;
-  const transparency = activeProfile.transparency ?? DEFAULT_TRANSPARENCY;
   const followsTheme = activeProfile.transparency === null;
+  // 跟随默认的显示值按有无壁纸分档：无壁纸 0%（不透明），有壁纸 30%（否则壁纸被盖住）
+  const wallpaperOn = store.wallpaper.enabled && Boolean(store.wallpaper.source);
+  const transparency =
+    activeProfile.transparency ?? (wallpaperOn ? WALLPAPER_DEFAULT_TRANSPARENCY : DEFAULT_TRANSPARENCY);
   const hasWallpaper = wallpaper.enabled && Boolean(wallpaper.source);
 
   /**
@@ -426,7 +430,8 @@ export function AppearanceSettingsSection() {
           />
           <p className="text-caption text-ash">
             0% 为完全不透明，100% 为完全透明（方向与 CSS 的 alpha 相反，DS 也是这个约定）。
-            拖动后点「跟随主题」可清除自定义值、退回默认 {DEFAULT_TRANSPARENCY}%。
+            拖动后点「跟随主题」可清除自定义值、退回默认：无壁纸 0%（不透明）；
+            开着壁纸时 30% —— 壁纸垫在最底层，底色不半透它就永远看不见。
           </p>
           {!followsTheme && (
             <button
@@ -783,7 +788,7 @@ export function AppearanceSettingsSection() {
                 键名与 DS theme.json 一致
               </li>
               <li>
-                <span className="font-mono">profiles.*.transparency</span> — null 表示跟随主题默认 0%（不透明）
+                <span className="font-mono">profiles.*.transparency</span> — null 表示跟随默认（无壁纸 0%，有壁纸 30%）
               </li>
               <li>
                 <span className="font-mono">profiles.*.surface</span> — 圆角 / 不透明度 / 模糊 / 边框 /
