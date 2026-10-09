@@ -41,6 +41,8 @@ export interface TerminalInstanceItem {
   icon: string;
   cwd: string;
   executorId?: string;
+  /** 所属 bot（终端跟随 bot：切换 bot 时激活它的专属标签页） */
+  unitId?: string;
   createdAt: number;
 }
 
@@ -132,6 +134,7 @@ interface TerminalStoreState {
     cwd?: string;
     executorId?: string;
     title?: string;
+    unitId?: string;
   }) => string;
 
   /** 自由拆分当前窗格（支持任意嵌套左右 / 上下分屏） */
@@ -207,6 +210,7 @@ export const useTerminalStore = create<TerminalStoreState>((set, get) => ({
       icon: opts.executorId ? opts.executorId : profile.icon,
       cwd: opts.cwd ?? "",
       executorId: opts.executorId,
+      unitId: opts.unitId,
       createdAt: Date.now(),
     };
 

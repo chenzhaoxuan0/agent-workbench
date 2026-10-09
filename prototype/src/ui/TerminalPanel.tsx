@@ -64,25 +64,55 @@ export function TerminalPanel({
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
-  // 初始化：若无标签组，则自动新建一个默认终端
+  // 当前 bot 绑定的默认执行器（bindings.primary 优先；旧数据的裸 id 修复到注册表
+  // 命名空间；绑定的执行器已不存在时回落全局默认）。没有 bot 绑定时跟随全局默认。
+  const boundExecutor = useMemo(() => {
+    const binding = unit?.bindings.find((b) => b.primary) ?? unit?.bindings[0];
+    const rid = binding?.runtimeId;
+    if (!rid) return activeRuntimeId;
+    return (
+      runtimes.find((r) => r.id === rid)?.id ??
+      runtimes.find((r) => r.id === `daemon:${rid}`)?.id ??
+      activeRuntimeId
+    );
+  }, [unit, runtimes, activeRuntimeId]);
+
+  // 终端跟随 bot：切到某个 bot 时激活它的专属标签页（进程保持存活）；
+  // 还没有就用它绑定的默认执行器 + 它的工作目录新建一个
   useEffect(() => {
-    if (groups.length === 0) {
-      if (isCanvas && activeRuntimeId) {
-        // 画布模式默认在 PowerShell 7 中交互启动当前选中的 Agent CLI
-        createTab({
-          profileId: "pwsh",
-          cwd: unit?.rootPath,
-          executorId: activeRuntimeId,
-          title: `${runtime?.presentation.displayName ?? activeRuntimeId} (TUI)`,
-        });
-      } else {
-        createTab({
-          profileId: defaultProfileId,
-          cwd: unit?.rootPath,
-        });
+    if (!unit) {
+      if (groups.length === 0) {
+        createTab({ profileId: defaultProfileId });
       }
+      return;
     }
-  }, [groups.length, isCanvas, activeRuntimeId, unit?.rootPath, defaultProfileId, createTab, runtime]);
+    const own = instances.find((i) => i.unitId === unit.id);
+    if (own) {
+      const group = groups.find((g) => collectLeafIds(g.rootLayout).includes(own.id));
+      if (group) setActiveGroup(group.id);
+      setActiveInstance(own.id);
+      return;
+    }
+    // 启动引导期先建的普适标签（bot 列表还没到）：唯一且无标记时换成 bot 专属标签
+    const untagged = instances.filter((i) => !i.unitId);
+    const soleGroup = groups.length === 1 ? groups[0] : undefined;
+    if (untagged.length === 1 && soleGroup) {
+      closeTab(soleGroup.id);
+    }
+    const execName = runtimes.find((r) => r.id === boundExecutor)?.presentation.displayName ?? boundExecutor;
+    if (isCanvas && boundExecutor) {
+      createTab({
+        profileId: "pwsh",
+        cwd: unit.rootPath,
+        executorId: boundExecutor,
+        unitId: unit.id,
+        title: `${unit.name} · ${execName} (TUI)`,
+      });
+    } else {
+      createTab({ profileId: defaultProfileId, cwd: unit.rootPath, unitId: unit.id });
+    }
+    // 只在切换 bot（或首开）时走一次；createTab/setActive* 是稳定引用
+  }, [unit?.id]);
 
   // 点击外部关闭下拉菜单
   useEffect(() => {
