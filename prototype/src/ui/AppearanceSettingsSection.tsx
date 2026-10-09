@@ -629,6 +629,31 @@ export function AppearanceSettingsSection() {
             format={(v) => `${v}px`}
             hint="按原比例联动四档圆角（按钮/输入/卡片/胶囊）"
           />
+          <div className="sm:col-span-2">
+            <p className="mb-1.5 text-caption text-ash">bot 头像框形态</p>
+            <div className="flex gap-2">
+              {([
+                { id: "rounded", label: "圆角" },
+                { id: "square", label: "方形（无圆角）" },
+              ] as const).map((opt) => (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() => store.setAvatarFrame(opt.id)}
+                  aria-pressed={store.avatarFrame === opt.id}
+                  className={cn(
+                    "rounded-btn border px-3 py-1 text-body-sm transition",
+                    store.avatarFrame === opt.id
+                      ? "border-teal-edge bg-teal-tint font-medium text-teal"
+                      : "border-line text-graphite hover:bg-surface-hover hover:text-ink",
+                  )}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+            <p className="mt-1.5 text-caption text-ash">作用于侧栏的 bot 头像框。</p>
+          </div>
           <SliderField
             label="表面不透明度 opacity"
             value={activeProfile.surface.opacity}
@@ -758,7 +783,7 @@ export function AppearanceSettingsSection() {
                 键名与 DS theme.json 一致
               </li>
               <li>
-                <span className="font-mono">profiles.*.transparency</span> — null 表示跟随主题默认 30%
+                <span className="font-mono">profiles.*.transparency</span> — null 表示跟随主题默认 0%（不透明）
               </li>
               <li>
                 <span className="font-mono">profiles.*.surface</span> — 圆角 / 不透明度 / 模糊 / 边框 /

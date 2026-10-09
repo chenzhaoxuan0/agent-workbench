@@ -221,6 +221,9 @@ export interface AppearanceProfile {
   transparency: number | null;
 }
 
+/** bot 头像框形态：圆角（按名字哈希的 blob 形状）或无圆角方形 */
+export type AvatarFrame = "rounded" | "square";
+
 export interface AppearanceState {
   schemaVersion: 1;
   /** 外壳外观：auto=跟随系统，等价 DS 的 appearance */
@@ -229,6 +232,8 @@ export interface AppearanceState {
   profiles: Record<ResolvedAppearance, AppearanceProfile>;
   art: ArtSettings;
   wallpaper: WallpaperSettings;
+  /** bot 头像框形态（全局，不分亮暗） */
+  avatarFrame: AvatarFrame;
   /** 当前选中的预设 id，null = 用户已手工改过 */
   presetId: string | null;
 }
@@ -263,8 +268,12 @@ export const DEFAULT_WALLPAPER: WallpaperSettings = {
   taskIntensity: 0.35,
 };
 
-/** DS 的「跟随主题」默认透明度 30（renderer-inject.js:365 的 0.70 就是 100-30） */
-export const DEFAULT_TRANSPARENCY = 30;
+/**
+ * 「跟随主题」的默认透明度。DS 是 30（renderer-inject.js:365 的 0.70 就是 100-30），
+ * 本项目刻意改成 0（完全不透明）：没开壁纸时半透明面板等于能看见应用背后的东西，
+ * 用户明确不要这个效果。设置项保留，想要通透自己拖滑块。
+ */
+export const DEFAULT_TRANSPARENCY = 0;
 
 /* --------------------------------------------------------------------------- 预设 */
 
@@ -368,6 +377,7 @@ export function defaultAppearanceState(): AppearanceState {
     },
     art: { ...DEFAULT_ART },
     wallpaper: { ...DEFAULT_WALLPAPER },
+    avatarFrame: "rounded",
     presetId: PRESET_PARCHMENT.id,
   };
 }
@@ -668,6 +678,7 @@ export function sanitizeAppearanceState(raw: unknown): AppearanceState {
       dim: clampNumber(wallpaper.dim, 0, 0.8, 0),
       taskIntensity: clampNumber(wallpaper.taskIntensity, 0, 1, 0.35),
     },
+    avatarFrame: input.avatarFrame === "square" ? "square" : "rounded",
     presetId: typeof input.presetId === "string" ? input.presetId : null,
   };
 }

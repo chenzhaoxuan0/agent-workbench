@@ -89,7 +89,8 @@ export const SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
 // ---------------------------------------------------------------------------
 
 const WIDTH_KEY = "agent-workbench:sidebar-width-px";
-const SIDEBAR_DEFAULT = 200;
+/** 与设置页左侧导航（w-[264px]）对齐，两栏切换时视觉宽度一致 */
+const SIDEBAR_DEFAULT = 264;
 const SIDEBAR_MIN = 200;
 const SIDEBAR_MAX_RATIO = 0.5;
 
@@ -102,8 +103,8 @@ function readWidth(): number {
   try {
     const raw = window.localStorage.getItem(WIDTH_KEY);
     const n = raw === null ? NaN : Number(raw);
-    // 若为旧版默认值 264、布局异常值 351 或无效数值，重置为新的极简最窄默认值 200
-    if (!Number.isFinite(n) || n <= 0 || n === 264 || n === 351) {
+    // 若为旧版默认值 200、布局异常值 351 或无效数值，重置为当前默认 264
+    if (!Number.isFinite(n) || n <= 0 || n === 200 || n === 351) {
       return SIDEBAR_DEFAULT;
     }
     return Math.max(SIDEBAR_MIN, Math.round(n));

@@ -14,7 +14,9 @@ import {
   type PaletteKey,
   type ResolvedAppearance,
   type WallpaperSettings,
+  type AvatarFrame,
 } from "../core/appearance.ts";
+
 import {
   loadAppearance,
   writeAppearance,
@@ -121,6 +123,8 @@ export interface AppearanceStore extends AppearanceState {
   importWallpaper: (file: File) => Promise<void>;
 
   setMode: (mode: AppearanceMode) => void;
+  /** bot 头像框形态（全局设置，不分亮暗档案） */
+  setAvatarFrame: (frame: AvatarFrame) => void;
   applyPreset: (preset: AppearancePreset) => void;
   setPaletteColor: (key: PaletteKey, value: string) => void;
   resetPaletteColor: (key: PaletteKey) => void;
@@ -212,6 +216,10 @@ export const useAppearance = create<AppearanceStore>((set, get) => ({
 
   setMode: (mode) => {
     set(publish({ ...get(), mode }));
+  },
+
+  setAvatarFrame: (frame) => {
+    set(publish({ ...get(), avatarFrame: frame }));
   },
 
   applyPreset: (preset) => {

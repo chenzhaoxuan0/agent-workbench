@@ -14,6 +14,8 @@ import {
 } from "lucide-react";
 import { useWorkbench, type ViewMode, type BotWriteGuards } from "../store/useWorkbench.ts";
 import { useShell } from "../store/useShell.ts";
+import { useAppearance } from "../store/useAppearance.ts";
+import type { AvatarFrame } from "../core/appearance.ts";
 import {
   asModelId,
   asRuntimeId,
@@ -72,7 +74,6 @@ export function Sidebar() {
   const selectUnit = useWorkbench((s) => s.selectUnit);
   const addUnit = useWorkbench((s) => s.addUnit);
   const mainView = useShell((s) => s.mainView);
-  const openSettings = useShell((s) => s.openSettings);
 
   const [unitOrder, setUnitOrder] = useState<string[] | null>(null);
   const [dragUnit, setDragUnit] = useState<string | null>(null);
@@ -155,12 +156,19 @@ export function Sidebar() {
               label="出图"
               onClick={() => useShell.getState().setMainView("image")}
             />
+            <IconNavBtn
+              icon={Settings}
+              label="设置"
+              hint="⌘,"
+              active={settingsActive}
+              onClick={() => useShell.getState().openSettings()}
+            />
           </div>
         </div>
       )}
 
-      {/* Agent 智能体列表标题行 */}
-      <div className="flex items-center justify-between px-2.5 pb-2 pt-1.5">
+      {/* Agent 智能体列表标题行 —— h-9 与右侧终端工具栏同高，横向对齐 */}
+      <div className="flex h-9 shrink-0 items-center justify-between px-2.5">
         <div className="flex items-center gap-1 min-w-0">
           <Bot size={13} className="text-teal shrink-0" />
           <span className="text-caption font-medium text-ink truncate">Agent</span>
@@ -242,25 +250,6 @@ export function Sidebar() {
           );
         })}
 
-      </div>
-
-      {/* 底部工具条：设置 */}
-      <div className="shrink-0 border-t border-line/60 p-1.5">
-        <button
-          onClick={() => openSettings()}
-          aria-label="设置"
-          title="设置 · ⌘,"
-          className={cn(
-            "flex w-full items-center gap-2 rounded-btn px-2 py-1 text-caption font-medium transition",
-            settingsActive
-              ? "bg-teal-tint text-teal"
-              : "text-graphite hover:bg-line-soft hover:text-ink",
-          )}
-        >
-          <Settings size={13} />
-          <span>设置</span>
-          <span className="ml-auto font-mono text-[10px] text-ash">⌘,</span>
-        </button>
       </div>
 
       {/* bot 对话框（AGENTS.md 岗位说明书）—— 新建 / 编辑共用一个组件。
@@ -380,11 +369,12 @@ function guardsOf(u: WorkUnit): BotWriteGuards {
 const BOT_COLORS = ["#8b5cf6", "#3b82f6", "#22c55e", "#f59e0b", "#ef4444", "#ec4899", "#14b8a6", "#6366f1"];
 const BOT_SHAPES = ["rounded-full", "rounded-[38%]", "rounded-2xl"] as const;
 
-export function botAvatarStyle(name: string): { color: string; shape: string } {
+/** 外观设置的「方形」档统一压成无圆角；「圆角」档沿用按名字哈希的 blob 形状 */
+export function botAvatarStyle(name: string, frame: AvatarFrame = "rounded"): { color: string; shape: string } {
   const hash = [...name].reduce((a, c) => a + c.codePointAt(0)!, 0);
   return {
     color: BOT_COLORS[hash % BOT_COLORS.length]!,
-    shape: BOT_SHAPES[hash % BOT_SHAPES.length]!,
+    shape: frame === "square" ? "rounded-none" : BOT_SHAPES[hash % BOT_SHAPES.length]!,
   };
 }
 
@@ -424,7 +414,8 @@ function UnitRow({
 
   // 副标题：身份角色，缺省回落到路径
   const subtitle = unit.identity?.role ?? "";
-  const avatar = botAvatarStyle(unit.name);
+  const avatarFrame = useAppearance((st) => st.avatarFrame);
+  const avatar = botAvatarStyle(unit.name, avatarFrame);
 
   return (
     // 整行是 button，button 里再套 button 是非法 HTML —— 设置入口做成

@@ -3,7 +3,6 @@ import { Check, FolderOpen } from "lucide-react";
 import { useShell } from "../store/useShell.ts";
 import { useWorkbench, selectActiveUnit } from "../store/useWorkbench.ts";
 import { openFolder } from "../adapters/daemon/client.ts";
-import { botAvatarStyle } from "./Sidebar.tsx";
 import { cn } from "./cn.ts";
 
 /** 图标按钮的统一规格：28px 命中区（ZCode 的 icon-md），14px 图标 */
@@ -14,8 +13,6 @@ export function WorkspaceHeader() {
   const sidebarCollapsed = useShell((s) => s.sidebarCollapsed);
 
   const unit = useWorkbench(selectActiveUnit);
-
-  const avatar = unit ? botAvatarStyle(unit.name) : null;
   const isSteward = unit?.id === "steward";
 
   return (
@@ -35,13 +32,6 @@ export function WorkspaceHeader() {
             title="查看与编辑 Agent 设置（身份 / 执行器 / 模型 / AGENTS.md / 渠道）"
             className="group flex min-w-0 items-center gap-2 rounded-btn px-2 py-1 transition hover:bg-line-soft"
           >
-            {/* 头像 Blob */}
-            <span
-              className={cn("flex h-6 w-6 shrink-0 items-center justify-center text-[12px] font-medium text-canvas shadow-xs", avatar?.shape)}
-              style={{ backgroundColor: avatar?.color }}
-            >
-              {isSteward ? "👑" : unit.name.slice(0, 1)}
-            </span>
             {/* 名字 */}
             <span className="truncate text-body font-medium text-ink group-hover:text-teal">
               {unit.name}

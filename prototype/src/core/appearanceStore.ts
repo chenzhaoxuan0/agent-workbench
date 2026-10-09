@@ -79,6 +79,7 @@ export function serializeAppearance(state: AppearanceState): string {
       presetId: state.presetId,
       profiles: state.profiles,
       art: state.art,
+      avatarFrame: state.avatarFrame,
       wallpaper: {
         enabled: state.wallpaper.enabled,
         // 只写 path，不写 source：source 是 daemon 回的运行时 data URL，
