@@ -164,13 +164,23 @@ void ensureSteward(config.homeDir)
     // 白写盘，还会和别处的乐观锁打架。
     return botRegistry.getBot(STEWARD_ID).then(async (existing) => {
       const want = stewardDefinition(rootPath);
-      // 用户在设置页改的执行器/模型/头像属于**用户数据**，启动引导只补结构，
-      // 绝不覆盖 —— 否则每次重启都会把用户配置打回硬编码初始值（实测复现：
-      // 改成非 mcode 的执行器后重启必被回写）。比对与写盘都用 merged。
+      // 用户在设置页能改的都属于**用户数据**（执行器/模型/头像/渠道/记忆策略/
+      // 名称/角色人设），启动引导只补结构，绝不覆盖 —— 否则每次重启都会把
+      // 用户配置打回硬编码初始值（实测复现：改成非 mcode 的执行器后重启必被
+      // 回写）。比对与写盘都用 merged。
       const prev = (existing ?? {}) as Record<string, unknown>;
       const userOwned: Record<string, unknown> = {};
-      if (prev.bindings !== undefined) userOwned.bindings = prev.bindings;
-      if (prev.avatar !== undefined) userOwned.avatar = prev.avatar;
+      for (const k of ["name", "bindings", "avatar", "channels", "memory"] as const) {
+        if (prev[k] !== undefined) userOwned[k] = prev[k];
+      }
+      // identity 里 sourcePath 是结构指针（跟 want），role/persona 是用户数据
+      const prevIdentity = (prev.identity ?? {}) as Record<string, unknown>;
+      const wantIdentity = (want.identity ?? {}) as Record<string, unknown>;
+      userOwned.identity = {
+        ...wantIdentity,
+        ...(prevIdentity.role !== undefined ? { role: prevIdentity.role } : {}),
+        ...(prevIdentity.persona !== undefined ? { persona: prevIdentity.persona } : {}),
+      };
       const merged = { ...want, ...userOwned };
       if (existing !== undefined && stewardShape(existing) === stewardShape(merged)) {
         return { id: STEWARD_ID, revision: undefined, unchanged: true as const };
