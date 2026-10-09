@@ -78,41 +78,47 @@ export function TerminalPanel({
   }, [unit, runtimes, activeRuntimeId]);
 
   // 终端跟随 bot：切到某个 bot 时激活它的专属标签页（进程保持存活）；
-  // 还没有就用它绑定的默认执行器 + 它的工作目录新建一个
+  // 还没有就用它绑定的默认执行器 + 它的工作目录新建一个。
+  // ⚠ StrictMode 会把 effect 双调用 —— 全程用 getState() 读实时状态 + ref 防重，
+  // 不幂等的写法会建出两个标签（实测）。
+  const lastFollowedUnitRef = useRef<string | null | undefined>(undefined);
   useEffect(() => {
-    if (!unit) {
-      if (groups.length === 0) {
-        createTab({ profileId: defaultProfileId });
-      }
+    const uid = unit?.id ?? null;
+    if (lastFollowedUnitRef.current === uid) return;
+    lastFollowedUnitRef.current = uid;
+
+    const st = useTerminalStore.getState();
+    if (!uid || !unit) {
+      if (st.groups.length === 0) st.createTab({ profileId: st.defaultProfileId });
       return;
     }
-    const own = instances.find((i) => i.unitId === unit.id);
+    const own = st.instances.find((i) => i.unitId === uid);
     if (own) {
-      const group = groups.find((g) => collectLeafIds(g.rootLayout).includes(own.id));
-      if (group) setActiveGroup(group.id);
-      setActiveInstance(own.id);
+      const group = st.groups.find((g) => collectLeafIds(g.rootLayout).includes(own.id));
+      if (group) st.setActiveGroup(group.id);
+      st.setActiveInstance(own.id);
       return;
     }
     // 启动引导期先建的普适标签（bot 列表还没到）：唯一且无标记时换成 bot 专属标签
-    const untagged = instances.filter((i) => !i.unitId);
-    const soleGroup = groups.length === 1 ? groups[0] : undefined;
+    const untagged = st.instances.filter((i) => !i.unitId);
+    const soleGroup = st.groups.length === 1 ? st.groups[0] : undefined;
     if (untagged.length === 1 && soleGroup) {
-      closeTab(soleGroup.id);
+      st.closeTab(soleGroup.id);
     }
     const execName = runtimes.find((r) => r.id === boundExecutor)?.presentation.displayName ?? boundExecutor;
     if (isCanvas && boundExecutor) {
-      createTab({
+      st.createTab({
         profileId: "pwsh",
         cwd: unit.rootPath,
         executorId: boundExecutor,
-        unitId: unit.id,
+        unitId: uid,
         title: `${unit.name} · ${execName} (TUI)`,
       });
     } else {
-      createTab({ profileId: defaultProfileId, cwd: unit.rootPath, unitId: unit.id });
+      st.createTab({ profileId: st.defaultProfileId, cwd: unit.rootPath, unitId: uid });
     }
-    // 只在切换 bot（或首开）时走一次；createTab/setActive* 是稳定引用
-  }, [unit?.id]);
+    // 只在切换 bot（或首开）时走一次
+  }, [unit?.id, unit, boundExecutor, isCanvas, runtimes]);
 
   // 点击外部关闭下拉菜单
   useEffect(() => {
