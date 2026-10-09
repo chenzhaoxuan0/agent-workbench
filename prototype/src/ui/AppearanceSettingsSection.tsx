@@ -10,7 +10,8 @@ import {
   Frame,
   Type,
   Wand2,
-  Terminal,
+  FileJson,
+  RefreshCw,
   RotateCcw,
   Upload,
   Download,
@@ -238,36 +239,23 @@ export function AppearanceSettingsSection() {
   const followsTheme = activeProfile.transparency === null;
   const hasWallpaper = wallpaper.enabled && Boolean(wallpaper.source);
 
-  /* ---- 壁纸导入：缩到 2560px 再转 JPEG，避免撑爆 localStorage 的 5MB 配额 ---- */
-  const handleWallpaperFile = (file: File) => {
+  /**
+   * 壁纸导入：交给 daemon 落盘到 <homeDir>/wallpapers/，appearance.json 里只留一个路径。
+   * 图不再进 localStorage，5MB 配额这回事就不存在了；agent 也能直接把图丢进那个目录再改路径。
+   */
+  const handleWallpaperFile = async (file: File) => {
     setImportError(null);
     if (!file.type.startsWith("image/")) {
       setImportError("请选择图片文件");
       return;
     }
-    const reader = new FileReader();
-    reader.onload = () => {
-      const image = new Image();
-      image.onload = () => {
-        const MAX_EDGE = 2560;
-        const scale = Math.min(1, MAX_EDGE / Math.max(image.width, image.height));
-        const canvas = document.createElement("canvas");
-        canvas.width = Math.round(image.width * scale);
-        canvas.height = Math.round(image.height * scale);
-        const ctx = canvas.getContext("2d");
-        if (!ctx) {
-          setImportError("当前环境不支持图片解码");
-          return;
-        }
-        ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
-        store.setWallpaper("source", canvas.toDataURL("image/jpeg", 0.86));
-        store.setWallpaper("enabled", true);
-      };
-      image.onerror = () => setImportError("图片解码失败，请换一张试试");
-      image.src = String(reader.result);
-    };
-    reader.onerror = () => setImportError("读取文件失败");
-    reader.readAsDataURL(file);
+    try {
+      await store.importWallpaper(file);
+    } catch (error) {
+      setImportError(
+        error instanceof Error ? `保存失败：${error.message}` : "保存失败，请确认后台 daemon 在运行",
+      );
+    }
   };
 
   const textContrast = contrastRatio(activeProfile.palette.text, activeProfile.palette.background);
@@ -476,7 +464,7 @@ export function AppearanceSettingsSection() {
             className="hidden"
             onChange={(e) => {
               const file = e.target.files?.[0];
-              if (file) handleWallpaperFile(file);
+              if (file) void handleWallpaperFile(file);
               e.target.value = "";
             }}
           />
@@ -505,9 +493,15 @@ export function AppearanceSettingsSection() {
             )}
           </div>
           {importError && <p className="text-caption text-loss">{importError}</p>}
-          {!wallpaper.source && (
+          {!wallpaper.source && !wallpaper.path && (
             <p className="text-caption text-ash">
-              还没有图片。导入的图片会等比缩到 2560px 并转成 JPEG 存进本地，不会离开这台机器。
+              还没有图片。选中的图会由后台 daemon 落盘到工作目录的 wallpapers/ 下，
+              appearance.json 里只记一个路径 —— 图片本身不进配置文件。
+            </p>
+          )}
+          {wallpaper.path && (
+            <p className="rounded-btn border border-line/60 bg-line-soft/30 px-2.5 py-1.5 text-caption text-graphite">
+              壁纸文件：<span className="font-mono text-ink">{wallpaper.path}</span>
             </p>
           )}
 
@@ -718,13 +712,72 @@ export function AppearanceSettingsSection() {
         </div>
       </SectionCard>
 
-      {/* ---------------------------------------------------- 终端同步 + 导出 */}
+      {/* ---------------------------------------------------- 外观文件 */}
       <SectionCard
-        icon={<Terminal size={16} />}
-        title="终端同步与导出"
-        desc="终端配色由上面的配色档案推导，改颜色会一起变。导出的 JSON 即 DS 的 theme.json 形状。"
+        icon={<FileJson size={16} />}
+        title="外观文件"
+        desc="整套外观就是这一个 JSON 文件。直接让 agent 改它，应用几秒内自己跟进 —— 不用重启，也不用在这个页面里点。"
       >
         <div className="space-y-4">
+          <div className="rounded-btn border border-line bg-canvas p-3">
+            <div className="flex items-start justify-between gap-3">
+              <span className="text-caption text-graphite">当前外观文件</span>
+              <span
+                className={cn(
+                  "shrink-0 rounded-chip px-2 py-0.5 text-caption",
+                  store.source === "file"
+                    ? "bg-teal-tint text-teal"
+                    : "bg-surface-hover text-graphite",
+                )}
+              >
+                {store.source === "file"
+                  ? "文件已连接"
+                  : store.source === "fallback"
+                    ? "临时兜底（daemon 未运行）"
+                    : "内置默认"}
+              </span>
+            </div>
+            <p className="mt-1.5 select-all break-all font-mono text-body-sm text-ink">
+              {store.filePath ?? "~/.agent-workbench/appearance.json"}
+            </p>
+            {store.source !== "file" && (
+              <p className="mt-1.5 text-caption text-loss">
+                后台 daemon 没连上，改动只存在浏览器里，重开会丢。启动 daemon（pnpm dev:daemon）后自动接管。
+              </p>
+            )}
+          </div>
+
+          <div className="rounded-btn border border-line/60 bg-line-soft/30 p-3 text-caption leading-relaxed text-graphite">
+            <p className="font-medium text-ink">让 agent 改外观时，它会看到什么</p>
+            <ul className="mt-1.5 list-inside list-disc space-y-0.5 text-ash">
+              <li>
+                <span className="font-mono">mode</span> — auto / light / dark
+              </li>
+              <li>
+                <span className="font-mono">profiles.light|dark.palette</span> — 十组颜色，
+                键名与 DS theme.json 一致
+              </li>
+              <li>
+                <span className="font-mono">profiles.*.transparency</span> — null 表示跟随主题默认 30%
+              </li>
+              <li>
+                <span className="font-mono">profiles.*.surface</span> — 圆角 / 不透明度 / 模糊 / 边框 /
+                投影 / 字体 / 字号 / 密度 / 动效
+              </li>
+              <li>
+                <span className="font-mono">art</span> — focusX / focusY / safeArea / taskMode
+              </li>
+              <li>
+                <span className="font-mono">wallpaper.path</span> — 相对家目录或绝对路径；把图丢进
+                wallpapers/ 再改这里即可
+              </li>
+            </ul>
+            <p className="mt-2 text-ash">
+              改完保存即可，不用管谁写的。应用每 4 秒核对一次文件内容，变了就换新外观；
+              窗口重新获得焦点时也会立刻查一次。
+            </p>
+          </div>
+
           <div className="rounded-btn border border-line/60 bg-line-soft/30 p-3 text-caption leading-relaxed text-graphite">
             <p className="flex items-center gap-1.5 font-medium text-ink">
               <Type size={12} className="text-teal" />
@@ -736,7 +789,21 @@ export function AppearanceSettingsSection() {
             </p>
           </div>
 
+          {store.lastError && (
+            <p className="rounded-btn border border-loss/40 bg-loss/10 px-3 py-2 text-caption text-loss">
+              上次写入失败：{store.lastError}
+            </p>
+          )}
+
           <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => void store.reload()}
+              className="flex items-center gap-1.5 rounded-btn border border-line px-3 py-1.5 text-body-sm text-ink hover:bg-surface-hover"
+            >
+              <RefreshCw size={13} />
+              重新读取文件
+            </button>
             <button
               type="button"
               onClick={() => {

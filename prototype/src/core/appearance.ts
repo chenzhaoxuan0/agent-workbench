@@ -196,7 +196,15 @@ export interface SurfaceSettings {
 
 export interface WallpaperSettings {
   enabled: boolean;
-  /** data URL 或 http(s) URL，null = 无壁纸 */
+  /**
+   * **持久化值**：壁纸文件路径，相对 daemon 家（~/.agent-workbench）或写绝对路径。
+   * 这是写进 appearance.json 的字段，也是 agent 要改的那个 —— 图本身不进 JSON。
+   */
+  path: string | null;
+  /**
+   * **运行时值**：daemon 把图读成的 data URL，只活在内存里，不落盘。
+   * 渲染靠它，导出 JSON 时会被剥掉。
+   */
   source: string | null;
   /** 1..2，等价 DS --ds-theme-image-zoom */
   zoom: number;
@@ -248,6 +256,7 @@ export const DEFAULT_ART: ArtSettings = {
 
 export const DEFAULT_WALLPAPER: WallpaperSettings = {
   enabled: false,
+  path: null,
   source: null,
   zoom: 1,
   dim: 0,
@@ -317,31 +326,6 @@ export const PRESET_OBSIDIAN: AppearancePreset = {
   dark: PRESET_PARCHMENT.dark,
 };
 
-/** DS 两套内置预设原样移植，键名与 DS theme.json 完全一致 */
-export const PRESET_GOTHIC: AppearancePreset = {
-  id: "gothic-void-crusade",
-  name: "哥特虚空远征",
-  desc: "DS 内置预设 · 金烛哥特， cathedral-world 地平线",
-  mode: "dark",
-  light: PRESET_PARCHMENT.light,
-  dark: {
-    palette: {
-      background: "#0d0d0e",
-      panel: "#171513",
-      panelAlt: "#211d18",
-      accent: "#c8a55a",
-      accentAlt: "#e3c27a",
-      secondary: "#79b9f4",
-      highlight: "#8a2f27",
-      text: "#f3ead7",
-      muted: "#b5a386",
-      line: "#c8a55a",
-    },
-    surface: DEFAULT_SURFACE,
-    transparency: null,
-  },
-};
-
 export const PRESET_TWILIGHT: AppearancePreset = {
   id: "twilight-mirror",
   name: "暮色镜湖",
@@ -369,7 +353,6 @@ export const PRESET_TWILIGHT: AppearancePreset = {
 export const APPEARANCE_PRESETS: readonly AppearancePreset[] = [
   PRESET_PARCHMENT,
   PRESET_OBSIDIAN,
-  PRESET_GOTHIC,
   PRESET_TWILIGHT,
 ];
 
@@ -640,8 +623,20 @@ export function isValidColor(value: string): boolean {
 export function sanitizeAppearanceState(raw: unknown): AppearanceState {
   const fallback = defaultAppearanceState();
   if (!raw || typeof raw !== "object") return fallback;
-  const input = raw as Partial<AppearanceState>;
-  if (input.schemaVersion !== 1) return fallback;
+  const input = raw as Partial<AppearanceState> & {
+    /** 落盘形态把 schemaVersion 收在 $meta 里（对齐 bot.json 的 $meta 约定） */
+    $meta?: { schemaVersion?: unknown };
+  };
+
+  /**
+   * schemaVersion 接受两个位置：顶层，或 $meta 里。
+   * 这不是"宽容"，是必需的 —— 落盘形态写在 $meta 下（那是给人/agent 看的元信息区），
+   * 而内存里的 AppearanceState 把它放在顶层。只认顶层的话，从文件读回来的每一份
+   * 都会被判成"版本不对"而整个退回默认，症状是"文件改了但界面纹丝不动"。
+   * 手写文件时两种放法都有人用，所以两种都认。
+   */
+  const declared = input.schemaVersion ?? input.$meta?.schemaVersion;
+  if (declared !== 1) return fallback;
 
   const mode: AppearanceMode =
     input.mode === "auto" || input.mode === "light" || input.mode === "dark" ? input.mode : fallback.mode;
@@ -665,7 +660,10 @@ export function sanitizeAppearanceState(raw: unknown): AppearanceState {
     },
     wallpaper: {
       enabled: wallpaper.enabled === true,
-      source: typeof wallpaper.source === "string" && wallpaper.source ? wallpaper.source : null,
+      // path 才是持久化字段；source 是 daemon 回的运行时 data URL，读文件时一律清空，
+      // 免得把一张几百 KB 的图又写回 JSON
+      path: typeof wallpaper.path === "string" && wallpaper.path ? wallpaper.path : null,
+      source: null,
       zoom: clampNumber(wallpaper.zoom, 1, 2, 1),
       dim: clampNumber(wallpaper.dim, 0, 0.8, 0),
       taskIntensity: clampNumber(wallpaper.taskIntensity, 0, 1, 0.35),

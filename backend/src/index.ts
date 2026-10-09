@@ -34,6 +34,13 @@ import { parseCron } from "./automation/cron.ts";
 import { MemoryService } from "./memory/memory.ts";
 import { FileMemoryInjector } from "./memory/injection.ts";
 import { readLongTerm, writeLongTerm, readDaily, listDaily } from "./memory/projectMemory.ts";
+import {
+  readAppearance,
+  writeAppearance,
+  readWallpaperDataUrl,
+  saveWallpaper,
+  deleteWallpaper,
+} from "./appearance/store.ts";
 import { DailyDigest } from "./memory/dailyDigest.ts";
 import { stewardSearch, stewardRecent, ensureSteward, stewardRoot, stewardDefinition, STEWARD_ID } from "./memory/steward.ts";
 import { runCurator, renderReport, DEFAULT_CURATOR, DbMetaStore, type CuratorConfig } from "./memory/curator.ts";
@@ -785,6 +792,34 @@ registerMethod("channel.send", async (params) => {
   return feishuGateway.sendTo(p.botId, p.accountId ?? "main", p.receiveId, p.text);
 });
 registerMethod("bot.list", () => botRegistry.listBots());
+// ---- 外观（appearance）—— <homeDir>/appearance.json，用户可让 agent 直接改这个文件 ----
+registerMethod("appearance.read", async () => {
+  const meta = await readAppearance(config.homeDir);
+  // 壁纸单独带回来：图不进 JSON，否则那个文件会大到没法手改
+  const wallpaperDataUrl = meta.exists
+    ? await readWallpaperDataUrl(config.homeDir, meta.wallpaperRel)
+    : null;
+  return { ...meta, wallpaperDataUrl };
+});
+registerMethod("appearance.write", async (params) => {
+  const p = (params ?? {}) as { content?: string; expectedHash?: string | null };
+  if (typeof p.content !== "string") {
+    throw Object.assign(new Error("content is required"), { code: "bad_params" });
+  }
+  return writeAppearance(config.homeDir, p.content, { expectedHash: p.expectedHash ?? null });
+});
+// 落一张壁纸到 <homeDir>/wallpapers/，返回该写进 appearance.json 的 wallpaper.path
+registerMethod("appearance.wallpaper.save", async (params) => {
+  const p = (params ?? {}) as { name?: string; base64?: string };
+  if (typeof p.name !== "string" || typeof p.base64 !== "string") {
+    throw Object.assign(new Error("name and base64 are required"), { code: "bad_params" });
+  }
+  return saveWallpaper(config.homeDir, p.name, Buffer.from(p.base64, "base64"));
+});
+registerMethod("appearance.wallpaper.delete", async (params) => {
+  const p = (params ?? {}) as { path?: string };
+  return { deleted: await deleteWallpaper(config.homeDir, p.path ?? null) };
+});
 // 目录探测（docs/09 §七 P0-B）：纯读，导入对话框三分支全靠它决定
 registerMethod("bot.inspect", (params) => {
   const p = (params ?? {}) as { rootPath?: string };

@@ -5,7 +5,6 @@ import {
   deriveCssVariables,
   resolveFocusX,
   resolveFocusY,
-  sanitizeAppearanceState,
   toDreamSkinTheme,
   type AppearanceMode,
   type AppearancePreset,
@@ -16,46 +15,18 @@ import {
   type ResolvedAppearance,
   type WallpaperSettings,
 } from "../core/appearance.ts";
-
-const STORAGE_KEY = "agent-workbench:appearance";
-const LEGACY_THEME_KEY = "agent-workbench:theme-mode";
+import {
+  loadAppearance,
+  writeAppearance,
+  saveWallpaperFile,
+  type AppearanceLoadSource,
+} from "../core/appearanceStore.ts";
 
 function getSystemAppearance(): ResolvedAppearance {
   if (typeof window !== "undefined" && window.matchMedia) {
     return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
   }
   return "light";
-}
-
-function readStoredState(): AppearanceState {
-  if (typeof localStorage === "undefined") return defaultAppearanceState();
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return sanitizeAppearanceState(JSON.parse(raw));
-
-    // 一次性迁移旧版的 light/dark/system 三档，避免升级后主题被重置。
-    // 旧版的 "system" 在 DS 词汇里叫 "auto"，这里顺手对齐，
-    // 免得同一个概念在本项目里出现两个名字。
-    const legacy = localStorage.getItem(LEGACY_THEME_KEY);
-    if (legacy === "light" || legacy === "dark") {
-      return { ...defaultAppearanceState(), mode: legacy };
-    }
-    if (legacy === "system") {
-      return { ...defaultAppearanceState(), mode: "auto" };
-    }
-  } catch {
-    // localStorage 不可用（隐私模式）或 JSON 损坏 —— 退回默认值，不阻断渲染
-  }
-  return defaultAppearanceState();
-}
-
-function persist(state: AppearanceState): void {
-  if (typeof localStorage === "undefined") return;
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  } catch {
-    // 配额超限时静默失败：壁纸 data URL 可能撑爆 5MB，此时设置仍在内存里生效
-  }
 }
 
 /**
@@ -101,14 +72,53 @@ export function resolveAppearance(state: AppearanceState): ResolvedAppearance {
   return state.mode === "auto" ? getSystemAppearance() : state.mode;
 }
 
-const initialState = readStoredState();
-
-// 模块加载时立即应用，消除首屏闪白。与旧版 useTheme 的行为保持一致。
+/**
+ * 首屏先用内置默认立即上色，避免等 daemon 往返时闪一帧白；
+ * 真正的外观随后由 hydrateFromFile() 换上。
+ */
+const initialState: AppearanceState = defaultAppearanceState();
 applyToDom(initialState);
+
+/**
+ * 落盘用的乐观锁基准：我方最后一次见到的 appearance.json 内容哈希。
+ * 自己写完会更新它；poll 读到不同 hash 就判定「被 agent 改了」。
+ */
+let lastKnownHash = "";
+let lastPath: string | null = null;
+let lastSource: AppearanceLoadSource = "defaults";
+
+/** 写盘是异步的，但 UI 立刻要变。串成一条链，保证顺序、避免乱序回写互相覆盖 */
+let writeChain: Promise<unknown> = Promise.resolve();
+
+function persist(next: AppearanceState): void {
+  // 乐观锁在文件不可用（hash 为空）时传 null，表示无条件覆盖 —— 首启落盘就得这么写
+  const expected = lastKnownHash || null;
+  writeChain = writeChain
+    .then(() => writeAppearance(next, expected))
+    .then((result) => {
+      lastKnownHash = result.hash;
+      lastPath = result.path;
+      lastSource = "file";
+    })
+    .catch(() => {
+      // 写失败（daemon 没起 / hash 冲突 / 磁盘满）：界面已经变了，不回滚，
+      // 但也不能让这条链卡死 —— catch 吞掉，后面的写继续排队
+    });
+}
 
 export interface AppearanceStore extends AppearanceState {
   resolvedAppearance: ResolvedAppearance;
   activeProfile: AppearanceProfile;
+  /** 外观文件的绝对路径，设置页显示它，用户才知道该让 agent 改哪个文件 */
+  filePath: string | null;
+  /** 当前外观来自哪一层：文件 / 兜底 / 默认 */
+  source: AppearanceLoadSource;
+  /** 写盘失败时的最后一次错误，给设置页一条提示用 */
+  lastError: string | null;
+  /** 从 appearance.json 重新读一次（设置页的「重新读取文件」按钮 / 外部改动后） */
+  reload: () => Promise<void>;
+  /** 导入壁纸：落盘到 wallpapers/ 并把路径写回状态 */
+  importWallpaper: (file: File) => Promise<void>;
 
   setMode: (mode: AppearanceMode) => void;
   applyPreset: (preset: AppearancePreset) => void;
@@ -138,14 +148,15 @@ function activeProfileOf(state: AppearanceState): AppearanceProfile {
  * 统一出口：落盘 → 刷 DOM → 回填派生字段，返回可直接喂给 zustand set 的补丁。
  * 任何 setter 都不该绕过它，否则会出现「界面变了但没落盘」这种幽灵状态。
  */
-function publish(next: AppearanceState): AppearanceStore {
+function publish(next: AppearanceState): Partial<AppearanceStore> {
   persist(next);
   applyToDom(next);
   return {
     ...next,
     resolvedAppearance: resolveAppearance(next),
     activeProfile: activeProfileOf(next),
-  } as AppearanceStore;
+    lastError: null,
+  } as Partial<AppearanceStore>;
 }
 
 function withProfile(
@@ -166,6 +177,38 @@ export const useAppearance = create<AppearanceStore>((set, get) => ({
   ...initialState,
   resolvedAppearance: resolveAppearance(initialState),
   activeProfile: activeProfileOf(initialState),
+  filePath: null,
+  source: "defaults",
+  lastError: null,
+
+  reload: async () => {
+    await hydrate();
+  },
+
+  importWallpaper: async (file: File) => {
+    try {
+      const relPath = await saveWallpaperFile(file);
+      // 落盘成功后立刻把图读回来看效果；读不回来（比如 daemon 刚断）就只留路径，
+      // 下次 poll 会补上
+      const probe = await loadAppearance();
+      const fresh = probe.state.wallpaper.source;
+      const next = withProfile(get(), resolveAppearance(get()), (p) => ({ ...p }));
+      set(
+        publish({
+          ...next,
+          wallpaper: {
+            ...get().wallpaper,
+            enabled: true,
+            path: relPath,
+            source: fresh ?? null,
+          },
+        }),
+      );
+    } catch (error) {
+      set({ lastError: error instanceof Error ? error.message : String(error) });
+      throw error;
+    }
+  },
 
   setMode: (mode) => {
     set(publish({ ...get(), mode }));
@@ -276,6 +319,86 @@ function cloneProfile(profile: AppearanceProfile): AppearanceProfile {
     surface: { ...profile.surface },
     transparency: profile.transparency,
   };
+}
+
+/* --------------------------------------------------------------------------- 文件同步 */
+
+/**
+ * 从 appearance.json 读一次并上屏。
+ *
+ * hash 变了才动 —— 自己刚写完的那次 hash 会被 persist 记下来，
+ * 所以这里不会把自己的回写当成「外部改动」再来一遍。
+ */
+async function hydrate(): Promise<void> {
+  let result;
+  try {
+    result = await loadAppearance();
+  } catch {
+    return;
+  }
+
+  lastKnownHash = result.hash;
+  lastPath = result.path;
+  lastSource = result.source;
+  applyToDom(result.state);
+  useAppearance.setState({
+    ...result.state,
+    resolvedAppearance: resolveAppearance(result.state),
+    activeProfile: activeProfileOf(result.state),
+    filePath: result.path,
+    source: result.source,
+  } as Partial<AppearanceStore>);
+}
+
+/**
+ * 轮询盘上文件，把 agent 的改动接进来。
+ *
+ * 只在「上次读到的 hash 与本次不同」时才 set 状态，所以常驻开销只是一次小 RPC，
+ * 不会引起任何重渲染。4 秒一轮：既能在 agent 保存后很快看到，又不至于把回环打满。
+ */
+const POLL_INTERVAL_MS = 4000;
+
+async function pollExternalChanges(): Promise<void> {
+  let result;
+  try {
+    result = await loadAppearance();
+  } catch {
+    return;
+  }
+  if (result.hash === lastKnownHash) return;
+
+  // 兜底层降级时 hash 恒为空字符串，这种"变化"不是外部编辑，别覆盖用户在界面上的即时调整
+  if (!result.hash) {
+    lastSource = result.source;
+    useAppearance.setState({ source: result.source, filePath: result.path } as Partial<AppearanceStore>);
+    return;
+  }
+
+  lastKnownHash = result.hash;
+  lastPath = result.path;
+  lastSource = result.source;
+  applyToDom(result.state);
+  useAppearance.setState({
+    ...result.state,
+    resolvedAppearance: resolveAppearance(result.state),
+    activeProfile: activeProfileOf(result.state),
+    filePath: result.path,
+    source: result.source,
+  } as Partial<AppearanceStore>);
+}
+
+/* 首屏立即从文件取真实外观（此时界面已经用默认配色上色，不会闪） */
+void hydrate();
+
+if (typeof window !== "undefined") {
+  window.setInterval(() => {
+    void pollExternalChanges();
+  }, POLL_INTERVAL_MS);
+
+  // 切回这个窗口时立刻查一次：agent 改完文件、你切回来就看到了
+  window.addEventListener("focus", () => {
+    void pollExternalChanges();
+  });
 }
 
 /* 系统明暗变化时，auto 模式要跟着重算 —— 与旧版 useTheme 的行为一致 */

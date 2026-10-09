@@ -1,0 +1,237 @@
+/**
+ * 外观设置的落盘层 —— 唯一真相是 <homeDir>/appearance.json，浏览器 localStorage 只是没 daemon 时的兜底。
+ *
+ * 为什么要文件而不是 localStorage：用户要的是「让 agent 改外观」。
+ * localStorage 里的东西 agent 根本碰不到；appearance.json 在磁盘上，agent 用 Read/Write 直接改，
+ * 应用下一次读到就是新的。daemon 侧刻意不做内存缓存（对齐 bots/registry.ts 的「文件即数据库」），
+ * 所以这条链路不需要任何失效机制。
+ *
+ * 三层降级，逐层更弱但绝不把界面搞崩（沿用本项目 fail-open 的既有约定）：
+ *   文件（daemon 在跑） → localStorage（daemon 没了但上次存过） → 内置默认
+ *
+ * 外部改动检测：每次 read 拿回 hash，与上次不同就认定为「被 agent 改了」并采用。
+ * 前端自己写的时候会把 hash 记下来，所以自己的回写不会被误判成外部改动。
+ */
+
+import {
+  defaultAppearanceState,
+  sanitizeAppearanceState,
+  toDreamSkinTheme,
+  type AppearanceState,
+  type ResolvedAppearance,
+} from "../core/appearance.ts";
+
+/** daemon 没起来时的兜底键。只在文件不可用时读写，不是主存储。 */
+const FALLBACK_STORAGE_KEY = "agent-workbench:appearance:fallback";
+/** 旧版三档键，只为一次性迁移用，读完就不再关心 */
+const LEGACY_THEME_KEY = "agent-workbench:theme-mode";
+
+const RPC_TIMEOUT_MS = 8000;
+
+export interface AppearanceFileSnapshot {
+  readonly path: string;
+  readonly exists: boolean;
+  readonly content: string;
+  readonly hash: string;
+  readonly mtimeMs: number;
+  readonly bytes: number;
+  readonly wallpaperRel: string | null;
+  readonly wallpaperPath: string | null;
+  /** daemon 把壁纸读成 data URL 一起带回来（图不进 JSON） */
+  readonly wallpaperDataUrl: string | null;
+}
+
+export type AppearanceLoadSource = "file" | "fallback" | "defaults";
+
+export interface AppearanceLoadResult {
+  readonly state: AppearanceState;
+  readonly source: AppearanceLoadSource;
+  /** 文件的绝对路径，设置页要显示它，用户才知道该让 agent 改哪个文件 */
+  readonly path: string | null;
+  readonly hash: string;
+}
+
+async function call<T>(
+  method: string,
+  params: unknown = {},
+  timeoutMs = RPC_TIMEOUT_MS,
+): Promise<T> {
+  const { DaemonClient, defaultDaemonEndpoint } = await import("../adapters/daemon/client.ts");
+  return DaemonClient.get(defaultDaemonEndpoint()).rpc<T>(method, params, timeoutMs);
+}
+
+/* --------------------------------------------------------------------------- 序列化 */
+
+/**
+ * 落盘形态：$ 开头的是元信息（对齐 bot.json / listBots 的 $meta 约定），
+ * 其余全是 AppearanceState 的原样字段 —— 这样 agent 读这个文件时看到的就是设置页上那几项。
+ */
+export function serializeAppearance(state: AppearanceState): string {
+  return `${JSON.stringify(
+    {
+      $meta: {
+        schemaVersion: 1,
+        generator: "agent-workbench",
+        // 提示直接写在这里，agent 打开文件就知道这份 schema 是什么
+        note: "外观设置。改完保存，应用会自动读取。appearance/art/surface/wallpaper 的可选项见 prototype/src/core/appearance.ts",
+      },
+      mode: state.mode,
+      presetId: state.presetId,
+      profiles: state.profiles,
+      art: state.art,
+      wallpaper: {
+        enabled: state.wallpaper.enabled,
+        // 只写 path，不写 source：source 是 daemon 回的运行时 data URL，
+        // 把它留在文件里等于邀请 agent 往这塞一整张图的 base64 —— 既没意义也撑爆文件
+        path: state.wallpaper.path,
+        zoom: state.wallpaper.zoom,
+        dim: state.wallpaper.dim,
+        taskIntensity: state.wallpaper.taskIntensity,
+      },
+    },
+    null,
+    2,
+  )}\n`;
+}
+
+/** 读回来时把 wallpaper.path（文件路径）与图（data URL）合成前端要的那个 source。 */
+function deserializeAppearance(
+  json: AppearanceState,
+  wallpaperDataUrl: string | null,
+): AppearanceState {
+  if (!wallpaperDataUrl) {
+    // 文件里声明了壁纸但字节拿不到（路径越界/文件不在位）：关掉它，别留一个空壳开关
+    return json.wallpaper.source
+      ? { ...json, wallpaper: { ...json.wallpaper, enabled: false, source: null } }
+      : json;
+  }
+  return { ...json, wallpaper: { ...json.wallpaper, source: wallpaperDataUrl } };
+}
+
+/* --------------------------------------------------------------------------- 降级层 */
+
+function readFallbackState(): AppearanceState | null {
+  if (typeof localStorage === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(FALLBACK_STORAGE_KEY);
+    if (raw) return sanitizeAppearanceState(JSON.parse(raw));
+
+    const legacy = localStorage.getItem(LEGACY_THEME_KEY);
+    if (legacy === "light" || legacy === "dark") {
+      return { ...defaultAppearanceState(), mode: legacy };
+    }
+    if (legacy === "system") {
+      // 旧版叫 system，DS 词汇里叫 auto，顺手对齐免得同一个概念两个名字
+      return { ...defaultAppearanceState(), mode: "auto" };
+    }
+  } catch {
+    // localStorage 不可用（隐私模式）或 JSON 损坏 —— 退回默认值，不阻断渲染
+  }
+  return null;
+}
+
+function writeFallbackState(state: AppearanceState): void {
+  if (typeof localStorage === "undefined") return;
+  try {
+    localStorage.setItem(FALLBACK_STORAGE_KEY, JSON.stringify(state));
+  } catch {
+    // 配额超限时静默失败：设置仍在内存里生效，只是这次没能兜底存下来
+  }
+}
+
+/* --------------------------------------------------------------------------- 公开接口 */
+
+/**
+ * 读外观。永远返回一份可用的 AppearanceState —— 拿不到文件就退到 localStorage，再拿不到退默认。
+ */
+export async function loadAppearance(): Promise<AppearanceLoadResult> {
+  try {
+    const snapshot = await call<AppearanceFileSnapshot>("appearance.read");
+    if (snapshot?.exists) {
+      const parsed = JSON.parse(snapshot.content) as AppearanceState;
+      const state = deserializeAppearance(sanitizeAppearanceState(parsed), snapshot.wallpaperDataUrl);
+      // 文件里没有 wallpaper.path 但历史上走过兜底 —— 以文件为准，别把两处状态混起来
+      return { state, source: "file", path: snapshot.path, hash: snapshot.hash };
+    }
+
+    // 文件还没有（首次启动）：把兜底里那份迁上去，之后文件就是唯一真相
+    const fallback = readFallbackState();
+    const seed = fallback ?? defaultAppearanceState();
+    // 首次启动就落一份默认 —— 用户要的是「随时有个文件能交给 agent 改」，
+    // 要是等他先动一次设置才出现文件，那这个能力等于没有
+    const write = await call<{ hash: string }>("appearance.write", {
+      content: serializeAppearance(seed),
+      expectedHash: null,
+    });
+    return {
+      state: seed,
+      source: fallback ? "fallback" : "defaults",
+      path: snapshot.path,
+      hash: write.hash,
+    };
+  } catch {
+    // daemon 没起 / 鉴权失败 / 网络断 —— 一律降级，绝不让外观把整个界面拖垮
+    const fallback = readFallbackState();
+    return {
+      state: fallback ?? defaultAppearanceState(),
+      source: fallback ? "fallback" : "defaults",
+      path: null,
+      hash: "",
+    };
+  }
+}
+
+/** 我方写盘后的落点。只在文件可用时有意义。 */
+export interface AppearanceWriter {
+  readonly write: (state: AppearanceState, expectedHash: string | null) => Promise<void>;
+  readonly conflict: () => boolean;
+}
+
+export class AppearanceConflict extends Error {
+  constructor(readonly current: AppearanceState) {
+    super("appearance.json changed on disk");
+    this.name = "AppearanceConflict";
+  }
+}
+
+export async function writeAppearance(
+  state: AppearanceState,
+  expectedHash: string | null,
+): Promise<{ hash: string; path: string }> {
+  // 先落兜底：daemon 此刻不可用也不至于丢掉用户刚做的调整
+  writeFallbackState(state);
+  const result = await call<{ hash: string; path: string }>("appearance.write", {
+    content: serializeAppearance(state),
+    expectedHash,
+  });
+  return result;
+}
+
+/**
+ * 存一张壁纸：先让 daemon 落盘到 <homeDir>/wallpapers/，再把返回的相对路径写回 state。
+ * 这样 appearance.json 里只有一个路径字符串，图本身不进文件，agent 改起来毫无负担。
+ */
+export async function saveWallpaperFile(file: File): Promise<string> {
+  const buffer = await file.arrayBuffer();
+  const base64 = toBase64(buffer);
+  const result = await call<{ relPath: string }>(
+    "appearance.wallpaper.save",
+    { name: file.name, base64 },
+    // 大图要给足超时，32MB 的 base64 走回环也要一会儿
+    30_000,
+  );
+  return result.relPath;
+}
+
+function toBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(binary);
+}
+
+export { toDreamSkinTheme };
+export type { ResolvedAppearance };
