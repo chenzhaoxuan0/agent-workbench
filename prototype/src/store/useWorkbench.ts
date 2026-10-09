@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import type { Automation } from "../core/automation.ts";
-import { asModelId, canRuntimeUse, modelById, type ModelId, type ModelSpec } from "../core/models.ts";
-import { asSessionId, asUnitId, type SessionStatus } from "../core/units.ts";
+import { type ModelSpec } from "../core/models.ts";
+import { asUnitId, type UnitId, type WorkUnit } from "../core/units.ts";
 import {
   normalizePrefs,
   parsePrefsMap,
@@ -11,12 +11,7 @@ import {
   type ModelPrefsMap,
   type ProviderModelPrefs,
 } from "../core/modelPrefs.ts";
-import type { PermissionMode } from "../core/permission.ts";
-import type { LoopParams, RuntimeAdapter, PermissionDecision, MemoryInjectionOptions } from "../core/adapter.ts";
-import type { RuntimeEvent } from "../core/events.ts";
-import { runtimeRegistry } from "../core/registry.ts";
-import type { RuntimeEntry } from "../core/registry.ts";
-import type { Deliverable, Session, SessionId, UnitId, WorkUnit } from "../core/units.ts";
+import { runtimeRegistry, type RuntimeEntry } from "../core/registry.ts";
 import type { ChannelIdentityMap, LarkBotIdentity } from "../adapters/daemon/client.ts";
 
 // 注册执行器：见文件末尾的 bootstrap（优先本地 daemon，回退 mock）。
@@ -37,30 +32,9 @@ export interface RuntimePref {
   readonly lastCheckedAt?: number;
 }
 
-/** agent loop 参数 —— 每执行器各记一份；未设置的位用默认值（见 loopOf）
- *  ⚠ 不含采样参数（temperature/top_p）：zcode 协议无此位、codex 透传未证实被尊重，
- *  无效参数不进界面 —— 未来某家 CLI 真支持了再加回来。 */
-export interface LoopParamsState {
-  mode?: LoopParams["mode"];
-  reasoningLevel?: string;
-}
-
-const LOOP_PARAMS_KEY = "agent-workbench:loop-params";
-
-function readLoopParams(): Record<string, LoopParamsState> {
-  try {
-    const raw = localStorage.getItem(LOOP_PARAMS_KEY);
-    return raw === null ? {} : (JSON.parse(raw) as Record<string, LoopParamsState>);
-  } catch {
-    return {};
-  }
-}
-
-interface TimelineItem {
-  readonly id: number;
-  readonly event: RuntimeEvent;
-  readonly at: number;
-}
+/**
+ * agent loop 参数曾存这里（mode/reasoning），随工作台发话链路一起移除。
+ */
 
 interface WorkbenchState {
   units: readonly WorkUnit[];
@@ -69,41 +43,17 @@ interface WorkbenchState {
   runtimes: readonly RuntimeEntry[];
   activeRuntimeId: string;
   /**
-   * 每个执行器各自记住一个模型：`runtimeId → ModelId`。
-   *
-   * 刻意**不存全局单一模型**。全局那个在切执行器时必然出现非法组合：
-   * ZCode 选了 claude-sonnet-5，切到 Codex 后它根本不接 Anthropic 的模型。
-   * 各存各的，切回来时你上次选的那个还在。
-   */
-  runtimeModels: Readonly<Record<string, ModelId>>;
-  /**
    * 每个 CLI 各自的模型偏好（隐藏 / 排序 / 收藏 / 自定义模型）。
    * 对齐 T3code 的 `providerModelPreferences` + `customModels`。
    */
   modelPrefs: ModelPrefsMap;
   /** 偏好变更计数。偏好对象每次都是新的，effect 要个稳定的触发源 */
   modelPrefsVersion: number;
-  sessions: readonly Session[];
-  activeSessionId: SessionId | null;
-  /** 每执行器的 agent loop 参数（mode/reasoning/采样/预算），localStorage 持久化 */
-  loopParams: Record<string, LoopParamsState>;
-  setLoopParam: (runtimeId: string, patch: Partial<LoopParamsState>) => void;
-  timeline: readonly TimelineItem[];
-  deliverables: readonly Deliverable[];
-  busy: boolean;
-  /** 定时任务。bot模式的时间维度 */
-  automations: readonly Automation[];
-  /** 输入框草稿。空态建议卡片点一下就能预填 */
-  draft: string;
   /** 执行器实例偏好（T3 Providers 页逻辑：启用开关 / 覆盖 / 环境变量） */
   runtimePrefs: Readonly<Record<string, RuntimePref>>;
   setRuntimePref: (id: string, patch: Partial<Omit<RuntimePref, "enabled">> & { enabled?: boolean }) => void;
   /** 全量重探测（T3 的 Checked 刷新） */
   probeAll: () => Promise<void>;
-  /** 已裁决的权限请求：requestId → 决策。用于把权限卡切成「已处理」态 */
-  permissionDecisions: Readonly<Record<string, string>>;
-  /** 本次运行的权限模式（composer 右侧常驻） */
-  permissionMode: PermissionMode;
   /**
    * `lark-cli profile → 那个 profile 是哪个飞书机器人`（应用名 + 头像）。
    *
@@ -134,33 +84,15 @@ interface WorkbenchState {
    * 所以这能拿到用户在 VS Code 里改完的 AGENTS.md 新内容。
    */
   reloadUnit: (id: UnitId) => Promise<WorkUnit | null>;
-  selectSession: (id: SessionId | null) => void;
   selectRuntime: (id: string) => void;
-  /** 换模型。非法组合（该执行器不接这个模型）静默拒绝，不改状态 */
-  selectModel: (model: ModelId) => void;
   /** 改某个 CLI 的模型偏好。动作原子，不合法的输入原样返回由调用方处理 */
   setModelPrefs: (runtimeId: string, next: ProviderModelPrefs) => void;
   /** 批量入口：给一组动作依次应用，任一步失败则整组不动 */
   applyModelPrefs: (runtimeId: string, steps: readonly ((p: ProviderModelPrefs) => ProviderModelPrefs)[]) => void;
-  setDraft: (v: string) => void;
-  setPermissionMode: (m: PermissionMode) => void;
+  /** 定时任务。bot模式的时间维度 */
+  automations: readonly Automation[];
   toggleAutomation: (id: string) => void;
-  /** 本次/后续会话记忆注入范围（默认仅注入长期记忆 ["semantic"]） */
-  memoryScopes: readonly ("semantic" | "daily")[];
-  setMemoryScopes: (scopes: readonly ("semantic" | "daily")[]) => void;
-  toggleMemoryScope: (scope: "semantic" | "daily") => void;
-  pushNotice: (
-    title: string,
-    text: string,
-    options?: { level?: "info" | "success" | "warn"; meta?: Readonly<Record<string, string>> },
-  ) => void;
-  run: (prompt: string, opts?: { memoryOptions?: MemoryInjectionOptions }) => Promise<void>;
-  /** 停止当前运行。mock 适配器没有真正的取消通道，只翻 busy 位 */
-  cancelRun: () => void;
-  resolvePermission: (requestId: string, decision: PermissionDecision) => void;
 }
-
-let seq = 0;
 
 /* ------------------------------------------------------------------ 模型偏好 */
 
@@ -276,67 +208,14 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
   view: "bot",
   runtimes: [],
   activeRuntimeId: "zcode",
-  // 注册表订阅到位后由下方 syncRuntimeModels 补齐各执行器的默认模型
-  runtimeModels: {},
   modelPrefs: readPrefs(),
   modelPrefsVersion: 0,
-  sessions: [],
-  activeSessionId: null,
-  loopParams: readLoopParams(),
-  timeline: [],
-  deliverables: [],
-  busy: false,
-  draft: "",
   runtimePrefs: {} as Readonly<Record<string, RuntimePref>>,
-  permissionDecisions: {},
-  permissionMode: "ask",
   automations: [],
   // 启动时不预置：空 map 由 bootstrap 在合并 bot 定义后拉一次。
   // ⚠ 必须是**稳定引用**，selector 会逐个组件地读它（见 Sidebar 的 UnitRow），
   // 换新对象会让所有订阅者重渲染。
   channelIdentity: {},
-
-  setDraft: (draft) => set({ draft }),
-
-  setPermissionMode: (permissionMode) => set({ permissionMode }),
-
-  memoryScopes: ["semantic"] as readonly ("semantic" | "daily")[],
-  setMemoryScopes: (memoryScopes) => set({ memoryScopes }),
-  toggleMemoryScope: (scope) =>
-    set((s) => {
-      const has = s.memoryScopes.includes(scope);
-      const next = has ? s.memoryScopes.filter((x) => x !== scope) : [...s.memoryScopes, scope];
-      return { memoryScopes: next };
-    }),
-
-  pushNotice: (title, text, options) => {
-    set((s) => ({
-      timeline: [
-        ...s.timeline,
-        {
-          id: ++seq,
-          event: {
-            type: "system.notice",
-            sessionId: s.activeSessionId ?? ("sys" as SessionId),
-            title,
-            text,
-            level: options?.level ?? "info",
-            meta: options?.meta,
-          },
-          at: Date.now(),
-        },
-      ],
-    }));
-  },
-
-  setLoopParam: (runtimeId, patch) => {
-    set((s) => {
-      const loopParams = { ...s.loopParams, [runtimeId]: { ...s.loopParams[runtimeId], ...patch } };
-      try { localStorage.setItem(LOOP_PARAMS_KEY, JSON.stringify(loopParams)); } catch { /* 私有模式写不进就算了 */ }
-      return { loopParams };
-    });
-  },
-
 
   toggleAutomation: (id) =>
     set((s) => ({
@@ -349,13 +228,12 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
     set({ view, activeUnitId: first?.id ?? get().activeUnitId });
   },
 
-  selectUnit: (activeUnitId) => set({ activeUnitId, activeSessionId: null }),
+  selectUnit: (activeUnitId) => set({ activeUnitId }),
 
   addUnit: async (u) => {
     set((s) => ({
       units: [...s.units, u],
       activeUnitId: u.id,
-      activeSessionId: null,
     }));
     // WP-5 写穿：落盘 <rootPath>/.agent-workbench/bot.json 与 <rootPath>/AGENTS.md。
     // 这里**不吞异常**——目录不存在（root_not_found）时侧栏会多一个刷新即逝的幽灵 bot，
@@ -423,32 +301,7 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
     return { ...(get().units.find((x) => x.id === id) ?? fresh) };
   },
 
-  selectSession: (activeSessionId) => set({ activeSessionId }),
-
-  selectRuntime: (activeRuntimeId) => {
-    // 换执行器时保证模型组合合法。
-    // runtimeModels 是按执行器存的，所以理论上不会串；
-    // 但工作单元的 modelHint、注册表热更新都可能引入非法值，这里兜住。
-    const entry = get().runtimes.find((r) => r.id === activeRuntimeId);
-    if (!entry) return set({ activeRuntimeId });
-    const cur = get().runtimeModels[activeRuntimeId];
-    if (canRuntimeUse(entry.models, cur)) return set({ activeRuntimeId });
-    set({
-      activeRuntimeId,
-      runtimeModels: { ...get().runtimeModels, [activeRuntimeId]: entry.defaultModel },
-    });
-  },
-
-  selectModel: (model) =>
-    set((s) => {
-      const entry = s.runtimes.find((r) => r.id === s.activeRuntimeId);
-      if (!entry) return {};
-      // 按**有效清单**校验，不是按声明清单 ——
-      // 用户在设置里藏掉的模型，选择器里不该还能选到（那是个不一致）
-      const visible = visibleModelsFor(s, s.activeRuntimeId);
-      if (!visible.some((m) => m.id === model)) return {};
-      return { runtimeModels: { ...s.runtimeModels, [s.activeRuntimeId]: model } };
-    }),
+  selectRuntime: (activeRuntimeId) => set({ activeRuntimeId }),
 
   setModelPrefs: (runtimeId, next) =>
     set((s) => {
@@ -469,17 +322,6 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
       return { modelPrefs: map, modelPrefsVersion: s.modelPrefsVersion + 1 };
     }),
 
-  cancelRun: () => {
-    const { activeSessionId, activeRuntimeId } = get();
-    set({ busy: false });
-    if (activeSessionId !== null) {
-      void runtimeRegistry
-        .getOrCreate(activeRuntimeId as never)
-        .then((a: RuntimeAdapter) => a.cancel(activeSessionId))
-        .catch((err: unknown) => console.warn("[workbench] cancel failed", err instanceof Error ? err.message : err));
-    }
-  },
-
   setRuntimePref: (id, patch) =>
     set((s) => {
       const base: RuntimePref = s.runtimePrefs[id] ?? { enabled: true };
@@ -497,220 +339,13 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
     await Promise.resolve();
   },
 
-  resolvePermission: (requestId, decision) => {
-    const { sessions, timeline, activeSessionId } = get();
-
-    // 裁决必须回到**发起这条请求的那条会话**。
-    // 以前取 `sessions.at(-1)`：上一轮还没落定（权限卡挂着）又发了第二条消息时，
-    // sessions 末尾已经是新会话，裁决就发给别人了 —— daemon 按会话严格匹配
-    // requestId（host.resolvePermission），真实那次 tool call 永远等不到放行。
-    // 时间线里每条 permission.requested 自带 sessionId，这是唯一正确的归属来源。
-    let ownerId: SessionId | null = null;
-    for (const t of timeline) {
-      if (t.event.type === "permission.requested" && t.event.requestId === requestId) {
-        ownerId = t.event.sessionId;
-        break;
-      }
-    }
-    const session = sessions.find((s) => s.id === (ownerId ?? activeSessionId ?? sessions.at(-1)?.id));
-    if (!session) return;
-
-    // 先落本地裁决，UI 立刻放行，不等网络往返
-    set((s) => ({
-      permissionDecisions: { ...s.permissionDecisions, [requestId]: decision },
-    }));
-
-    void runtimeRegistry
-      .getOrCreate(session.runtimeId as never)
-      .then((a: RuntimeAdapter) => a.resolvePermission(session.id, requestId, decision))
-      // 拒绝必须可见：以前这条链没有 catch，适配器取不到时整个 Promise 静默 reject，
-      // 而 UI 已经把请求标成「已裁决」—— 人以为放行了，实际那一轮还挂着。
-      .catch((err: unknown) => {
-        get().pushNotice("授权没有送达执行器", err instanceof Error ? err.message : String(err), { level: "warn" });
-      });
-  },
-
-  /**
-   * 发一条消息 —— T3 语义：**活跃会话仍开着就同会话续聊**（agent loop 保持
-   * 上下文，工具记得前文），只有首条消息 / 上个会话已结束 / 换了执行器才
-   * startSession 开新会话。时间线在开新会话时重置，续聊时追加。
-   */
-  run: async (prompt, opts) => {
-    const { activeUnitId, activeRuntimeId, runtimeModels, activeSessionId } = get();
-    const unit = get().units.find((u) => u.id === activeUnitId);
-    if (!unit) return;
-
-    // 起会话 / 发送失败时的统一收尾。**必须有**：以前这两处 await 都没有 catch，
-    // RPC 一 reject（daemon 没起、CLI 拉不起来）busy 就永远停在 true ——
-    // composer 一直显示「停止」，时间线一直显示「正在思考与执行…」，
-    // 而且错误被吞在未处理的 Promise 里，用户什么都看不到。
-    const fail = (err: unknown): void => {
-      set({ busy: false });
-      get().pushNotice("这一轮没能发出去", err instanceof Error ? err.message : String(err), { level: "warn" });
-    };
-
-    let adapter: RuntimeAdapter;
-    try {
-      adapter = await runtimeRegistry.getOrCreate(activeRuntimeId as never);
-    } catch (err: unknown) {
-      fail(err);
-      return;
-    }
-    consumeEvents(adapter);
-
-    // agent loop 参数：每执行器各记一份；mode 未单独设置时跟随权限档位（ask→build 等）
-    const loopState = get().loopParams[activeRuntimeId] ?? {};
-    const pmToMode = (pm: PermissionMode): LoopParams["mode"] =>
-      pm === "ask" ? "build" : pm === "acceptEdits" ? "edit" : pm === "plan" ? "plan" : "yolo";
-    const loop: LoopParams = {
-      mode: loopState.mode ?? pmToMode(get().permissionMode),
-      ...(loopState.reasoningLevel ? { reasoningLevel: loopState.reasoningLevel } : {}),
-    };
-
-    // 模型三级回落：用户所选 → 工作单元 modelHint → 该 CLI 当前有效清单的第一个。
-    // 每一级都过「有效清单」校验：用户在设置里藏掉的模型不算数，
-    // modelHint 指向一个被藏掉 / 该 CLI 不接的模型时也不能生效。
-    const visible = visibleModelsFor(get(), activeRuntimeId);
-    const hint = unit.bindings.find((b) => b.runtimeId === activeRuntimeId)?.modelHint;
-    const picked = runtimeModels[activeRuntimeId];
-    const inVisible = (id: ModelId | null | undefined) => id !== null && id !== undefined && visible.some((m) => m.id === id);
-    const model: ModelId = inVisible(picked) ? picked! : inVisible(hint ? asModelId(hint) : null) ? (asModelId(hint!) as ModelId) : (visible[0]?.id ?? asModelId(""));
-
-    const pushUserBubble = (sessionId: SessionId) => {
-      set((s) => ({
-        timeline: [
-          ...s.timeline,
-          {
-            id: ++seq,
-            event: {
-              type: "message.delta",
-              sessionId,
-              messageId: `u${++seq}`,
-              role: "user" as const,
-              text: prompt,
-            } as const,
-            at: Date.now(),
-          },
-        ],
-      }));
-    };
-
-    // 续聊：活跃会话开着（未 done/failed）且属于当前执行器
-    const active = activeSessionId !== null ? get().sessions.find((s) => s.id === activeSessionId) : undefined;
-    if (active !== undefined && active.runtimeId === activeRuntimeId && active.status !== "done" && active.status !== "failed") {
-      set({ busy: true });
-      pushUserBubble(active.id);
-      try {
-        await adapter.sendMessage({
-          sessionId: active.id,
-          text: prompt,
-          loop: {
-            ...(loop.reasoningLevel ? { reasoningLevel: loop.reasoningLevel } : {}),
-          },
-        });
-      } catch (err: unknown) {
-        fail(err);
-      }
-      return;
-    }
-
-    // 新会话：时间线重置（新对话）
-    set({ busy: true, timeline: [] });
-
-    let session: Awaited<ReturnType<RuntimeAdapter["startSession"]>>;
-    try {
-      session = await adapter.startSession({
-        unit,
-        prompt,
-        model,
-        worktree: unit.kind === "project" ? { path: `${unit.rootPath}/.wt/session`, branch: "feat/session" } : undefined,
-        loop,
-        memoryOptions: opts?.memoryOptions ?? { scopes: get().memoryScopes },
-      });
-    } catch (err: unknown) {
-      fail(err);
-      return;
-    }
-
-    set((s) => ({ sessions: [...s.sessions, session], activeSessionId: session.id }));
-
-    // 用户消息是时间线的第一行（ZCode：右对齐的用户气泡）。
-    // sessionId 必须是真实会话 —— 右栏轨迹按会话过滤归档，占位 id 会被滤掉
-    pushUserBubble(session.id);
-  },
 }));
 
-/** 已挂事件消费循环的适配器 —— 每个 CLI 一条，进程内不重复挂（多挂会分抢单队列） */
-const consumerAttached = new WeakSet<RuntimeAdapter>();
-
-/** 归一化 turn 完成态 → 契约 SessionStatus */
-function mapTurnStatus(raw: string): SessionStatus {
-  if (raw.startsWith("failed")) return "failed";
-  if (raw === "idle" || raw === "running" || raw === "done" || raw === "awaiting_permission" || raw === "awaiting_input") return raw;
-  return "running";
-}
-
-/** 归一化事件流消费循环 —— UI 唯一的数据入口。每适配器挂一次，跨轮次常驻。 */
-function consumeEvents(adapter: RuntimeAdapter): void {
-  if (consumerAttached.has(adapter)) return;
-  consumerAttached.add(adapter);
-  void (async () => {
-    for await (const event of adapter.events()) {
-      useWorkbench.setState((s) => ({
-        timeline: [...s.timeline, { id: ++seq, event, at: Date.now() }],
-      }));
-      // 会话生命周期回写：status 变化 / ended → sessions[].status + busy
-      if (event.type === "session.status") {
-        const status = mapTurnStatus(event.status);
-        useWorkbench.setState((s) => ({
-          sessions: s.sessions.map((x) => (x.id === event.sessionId ? { ...x, status } : x)),
-          ...(s.activeSessionId === event.sessionId && status !== "running" ? { busy: false } : {}),
-        }));
-      }
-      if (event.type === "session.ended") {
-        useWorkbench.setState((s) => ({
-          sessions: s.sessions.map((x) =>
-            x.id === event.sessionId ? { ...x, status: event.reason === "error" ? ("failed" as const) : ("done" as const), endedAt: Date.now() } : x,
-          ),
-          busy: false,
-        }));
-      }
-      if (event.type === "message.completed") useWorkbench.setState({ busy: false });
-      if (event.type === "deliverable") {
-        useWorkbench.setState((s) => ({
-          deliverables: [
-            {
-              id: `d${seq}`,
-              unitId: event.unitId,
-              sessionId: event.sessionId,
-              title: event.title,
-              kind: event.kind,
-              path: event.path,
-              url: event.url,
-              createdAt: Date.now(),
-            },
-            ...s.deliverables,
-          ],
-        }));
-      }
-    }
-  })();
-}
 
 // 镜像注册表状态到 store。
 // 注意：订阅回调里只做「读状态 → 写 store」，绝不能在里面再触发注册表变更，
 // 否则会自触发成死循环。探测因此放在下面的独立一次性任务里。
 runtimeRegistry.subscribe((runtimes) => {
-  // 给还没选过模型的执行器补上它的默认模型。
-  // 缺了这一步，用户第一次打开模型下拉会看到「未选模型」，
-  // 而模型在 StartSessionRequest 里是必填的 —— 就成了个死路。
-  const patch: Record<string, ModelId> = {};
-  for (const r of runtimes) {
-    if (useWorkbench.getState().runtimeModels[r.id] === undefined) patch[r.id] = r.defaultModel;
-  }
-  if (Object.keys(patch).length > 0) {
-    useWorkbench.setState((s) => ({ runtimeModels: { ...s.runtimeModels, ...patch } }));
-  }
   useWorkbench.setState({ runtimes });
 });
 
@@ -733,48 +368,11 @@ void (async () => {
 export const selectActiveUnit = (s: WorkbenchState): WorkUnit | undefined =>
   s.units.find((u) => u.id === s.activeUnitId);
 
-export const selectActiveRuntime = (s: WorkbenchState): RuntimeEntry | undefined =>
-  s.runtimes.find((r) => r.id === s.activeRuntimeId);
-
-/** 当前执行器 + 当前模型。composer 与右栏「能力」页都读它 */
-export const selectActivePair = (
-  s: WorkbenchState,
-): { readonly runtime?: RuntimeEntry; readonly model?: ModelSpec; readonly modelId: ModelId | null } => {
-  const runtime = s.runtimes.find((r) => r.id === s.activeRuntimeId);
-  const visible = runtime ? visibleModelsFor(s, s.activeRuntimeId) : [];
-  const raw = s.runtimeModels[s.activeRuntimeId] ?? runtime?.defaultModel ?? null;
-  // 所选模型可能已被用户在设置里藏掉 → 回落到当前有效清单的第一个
-  const modelId = visible.some((m) => m.id === raw) ? raw : (visible[0]?.id ?? null);
-  return { runtime, model: modelById(modelId), modelId };
-};
-
 /** 某个 CLI 的有效模型清单。⚠ 返回引用稳定的数组（见 visibleModelsFor 的注释） */
 export const selectVisibleModels =
   (runtimeId: string) =>
   (s: WorkbenchState): readonly ModelSpec[] =>
     visibleModelsFor(s, runtimeId);
-
-/**
- * ⚠️ 这个 selector 每次调用都返回**新数组**。
- * 必须配合 zustand 的 useShallow 使用，否则 getSnapshot 每次返回不同引用，
- * React 19 的 useSyncExternalStore 会判定为无限循环（"Maximum update depth exceeded"）。
- * 右栏的产出列表就是踩了这个坑。
- */
-export const selectUnitDeliverables = (s: WorkbenchState): readonly Deliverable[] =>
-  s.deliverables.filter((d) => d.unitId === s.activeUnitId);
-
-/**
- * 当前工作单元下的会话列表，按最近更新倒序。
- * 对应 ZCode 侧栏里的 task 列表：workspace 展开后露出它的 tasks。
- * ⚠️ 返回新数组，必须配 useShallow。
- */
-export const selectUnitSessions = (s: WorkbenchState): readonly Session[] =>
-  s.sessions
-    .filter((x) => x.unitId === s.activeUnitId)
-    .slice()
-    .sort((a, b) => b.startedAt - a.startedAt);
-
-export type { SessionId };
 
 /** 当前工作单元的自动化，bot视图下最关心的一组 */
 export const selectUnitAutomations = (s: WorkbenchState): readonly Automation[] =>
@@ -814,8 +412,8 @@ void (async () => {
     try {
       const { listBotDefinitions, defaultDaemonEndpoint } = await import("../adapters/daemon/client.ts");
       const defs = (await listBotDefinitions(defaultDaemonEndpoint())) as WorkUnit[];
-      // 评审 P2：bot.json 手可编辑——缺 bindings/kind 的半成品合并进来会在 run() 里
-      // TypeError，最小必填面守卫不合格即跳过
+      // 评审 P2：bot.json 手可编辑——缺 bindings/kind 的半成品合并进来会把
+      // 绑定/渠道渲染搞出 TypeError，最小必填面守卫不合格即跳过
       const valid = defs.filter(
         (d) =>
           typeof d.id === "string" &&

@@ -1,6 +1,5 @@
 /**
- * 出图保存位置 —— File System Access API（与 core/localMemorySource.ts
- * 的本地文件夹来源同一套句柄持久化模式）。
+ * 出图保存位置 —— File System Access API，句柄持久化模式。
  *
  * 用户在设置页「出图 → 保存位置」选定一个真实文件夹：
  * - 句柄存 IndexedDB（db `agent-workbench:image-fs`，store `handles`，键 `saveDir`）；

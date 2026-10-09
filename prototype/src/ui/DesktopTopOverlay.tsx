@@ -1,9 +1,9 @@
-import { MessageCirclePlus, PanelLeftOpen } from "lucide-react";
+import { PanelLeftOpen } from "lucide-react";
 import { useShell } from "../store/useShell.ts";
 
 /**
- * 左上浮层 —— 仅在侧边栏折叠时常驻左上角，提供展开入口与新建会话。
- * 当侧栏展开时，由 Sidebar 自行渲染顶栏（A 图标、新建会话、搜索、自动化、出图；或在子页面时顶掉为统一的返回工作台）。
+ * 左上浮层 —— 仅在侧边栏折叠时常驻左上角，提供侧栏展开入口。
+ * 当侧栏展开时，由 Sidebar 自行渲染顶栏（A 图标、搜索、自动化、出图；或在子页面时顶掉为统一的返回工作台）。
  */
 export function DesktopTopOverlay() {
   const sidebarCollapsed = useShell((s) => s.sidebarCollapsed);
@@ -33,15 +33,6 @@ export function DesktopTopOverlay() {
           />
         </button>
 
-        {/* 新建会话 */}
-        <button
-          onClick={() => useShell.getState().newTask()}
-          aria-label="新建会话"
-          title="新建会话 · ⌘N"
-          className="rounded-btn p-1.5 text-graphite hover:bg-line-soft hover:text-ink"
-        >
-          <MessageCirclePlus size={14} />
-        </button>
       </div>
     </div>
   );

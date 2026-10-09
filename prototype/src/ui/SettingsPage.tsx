@@ -224,8 +224,6 @@ function SectionBody({ section }: { section: SettingsSectionDef }) {
       );
     case "shortcuts":
       return <ShortcutsSection />;
-    case "usage":
-      return <UsageSection />;
     case "memory":
       return <MemorySettingsSection />;
     case "image":
@@ -529,14 +527,12 @@ function Stepper({
 // 注：原「权限」分区（默认审批策略与信任范围）已删除。它当时只有两行：
 // 「错过时补跑」是个 onChange={() => {}} 的假开关，拨了什么都不发生；
 // 「常驻调度」是「待实现」徽标。整个分区 100% 是假内容。
-// 真正的审批控制在 Composer 的运行配置里（PermissionModePanel），那个是真的。
 
 function ShortcutsSection() {
   const items: readonly (readonly [string, string, string])[] = [
     ["命令面板", "⌘K", "全局"],
     ["搜索", "⌘F", "全局"],
     ["打开终端", "⌘`", "全局"],
-    ["新建任务", "⌘N", "全局"],
     ["发送", "Enter", "输入框"],
     ["换行", "Shift + Enter", "输入框"],
   ];
@@ -565,29 +561,3 @@ function ShortcutsSection() {
   );
 }
 
-function UsageSection() {
-  const sessions = useWorkbench((s) => s.sessions);
-  const units = useWorkbench((s) => s.units);
-
-  const rows = units.map((u) => {
-    const mine = sessions.filter((s) => s.unitId === u.id);
-    return {
-      name: u.name,
-      count: mine.length,
-      cost: mine.reduce((sum, s) => sum + s.stats.costUsd, 0),
-    };
-  });
-
-  return (
-    <GroupCard>
-      {rows.map((r) => (
-        <SettingsRow
-          key={r.name}
-          label={r.name}
-          description={`${r.count} 个会话`}
-          control={<span className="tnum shrink-0 font-mono text-body-sm text-ink">${r.cost.toFixed(3)}</span>}
-        />
-      ))}
-    </GroupCard>
-  );
-}

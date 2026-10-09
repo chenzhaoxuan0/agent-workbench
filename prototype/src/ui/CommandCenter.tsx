@@ -4,14 +4,12 @@ import {
   Bot,
   FolderGit2,
   Layers,
-  MessageSquare,
   Rocket,
   Search,
   Settings2,
   X,
 } from "lucide-react";
-import { useShallow } from "zustand/react/shallow";
-import { useWorkbench, selectUnitSessions } from "../store/useWorkbench.ts";
+import { useWorkbench } from "../store/useWorkbench.ts";
 import { SETTINGS_GROUPS, SETTINGS_SECTIONS, useShell } from "../store/useShell.ts";
 import { cn } from "./cn.ts";
 
@@ -27,12 +25,11 @@ import { cn } from "./cn.ts";
  *   分组结果列表（↑↓ 移动 · Enter 打开 · Esc 关闭）
  */
 
-type Scope = "all" | "commands" | "sessions" | "units" | "automations";
+type Scope = "all" | "commands" | "units" | "automations";
 
 const SCOPES: readonly { id: Scope; label: string; icon: typeof Rocket }[] = [
   { id: "all", label: "全部", icon: Layers },
   { id: "commands", label: "命令", icon: Rocket },
-  { id: "sessions", label: "会话", icon: MessageSquare },
   { id: "units", label: "Agent", icon: Bot },
   { id: "automations", label: "自动化", icon: AlarmClock },
 ];
@@ -48,14 +45,6 @@ interface Item {
   readonly run: () => void;
 }
 
-const relative = (at: number) => {
-  const mins = Math.max(1, Math.round((Date.now() - at) / 60000));
-  if (mins < 60) return `${mins} 分钟前`;
-  const hours = Math.round(mins / 60);
-  if (hours < 24) return `${hours} 小时前`;
-  return `${Math.round(hours / 24)} 天前`;
-};
-
 export function CommandCenter() {
   const open = useShell((s) => s.commandOpen);
   const setOpen = useShell((s) => s.setCommandOpen);
@@ -66,15 +55,12 @@ export function CommandCenter() {
   const listRef = useRef<HTMLDivElement>(null);
 
   const commands = useCommands();
-  const sessions = useWorkbench(useShallow(selectUnitSessions));
   const units = useWorkbench((s) => s.units);
   const automations = useWorkbench((s) => s.automations);
 
   // 搜索域数据（ZCode 的结果三类：命令/会话/文件；本项目无文件索引，
   // 以工作单元与自动化补位 —— 与 SearchPanel 时代的口径一致）
   const items = useMemo<readonly Item[]>(() => {
-    const wb = useWorkbench.getState();
-    const unitName = (id: string) => wb.units.find((u) => u.id === id)?.name ?? "未知单元";
     const out: Item[] = commands.map((c) => ({
       id: c.id,
       scope: "commands",
@@ -85,22 +71,6 @@ export function CommandCenter() {
       run: c.run,
     }));
 
-    for (const s of sessions) {
-      out.push({
-        id: `session-${s.id}`,
-        scope: "sessions",
-        group: "会话",
-        icon: MessageSquare,
-        label: s.title,
-        hint: unitName(s.unitId),
-        meta: relative(s.startedAt),
-        run: () => {
-          const st = useWorkbench.getState();
-          st.selectUnit(s.unitId);
-          st.selectSession(s.id);
-        },
-      });
-    }
     for (const u of units) {
       out.push({
         id: `unit-${u.id}`,
@@ -124,7 +94,7 @@ export function CommandCenter() {
       });
     }
     return out;
-  }, [commands, sessions, units, automations]);
+  }, [commands, units, automations]);
 
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -344,13 +314,6 @@ function useCommands(): readonly Command[] {
     }
 
     out.push(
-      {
-        id: "new-task",
-        label: "新建会话",
-        hint: "⌘N",
-        group: "布局",
-        run: () => shell().newTask(),
-      },
       {
         id: "toggle-sidebar",
         label: shell().sidebarCollapsed ? "展开侧栏" : "收起侧栏",

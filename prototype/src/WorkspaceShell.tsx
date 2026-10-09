@@ -9,8 +9,7 @@ import { useWorkbench } from "./store/useWorkbench.ts";
 import { Sidebar } from "./ui/Sidebar.tsx";
 import { TerminalPanel } from "./ui/TerminalPanel.tsx";
 import { WorkspaceHeader } from "./ui/WorkspaceHeader.tsx";
-import { bindNavRecorder } from "./store/useNav.ts";
-import { useShell, bindShellShortcuts } from "./store/useShell.ts";
+import { bindShellShortcuts, useShell } from "./store/useShell.ts";
 
 /**
  * 工作台外壳 —— 布局结构对齐 ZCode 的 WorkspaceShellLayout。
@@ -31,8 +30,6 @@ import { useShell, bindShellShortcuts } from "./store/useShell.ts";
  */
 export function WorkspaceShell() {
   const settingsOpen = useShell((s) => s.settingsOpen);
-  // 导航记账先于快捷键绑定：首帧快照作为历史起点
-  useEffect(() => bindNavRecorder(), []);
   useEffect(() => bindShellShortcuts(), []);
 
   return (

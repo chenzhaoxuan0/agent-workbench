@@ -5,8 +5,6 @@ import {
   Ellipsis,
   Folder,
   FolderOpen,
-  GitBranch,
-  Hash,
   Pin,
 } from "lucide-react";
 import { useShell } from "../store/useShell.ts";
@@ -23,8 +21,6 @@ export function WorkspaceHeader() {
   const sidebarCollapsed = useShell((s) => s.sidebarCollapsed);
 
   const unit = useWorkbench(selectActiveUnit);
-  const session = useWorkbench((s) => s.sessions.find((x) => x.id === s.activeSessionId));
-  const busy = useWorkbench((s) => s.busy);
 
   const avatar = unit ? botAvatarStyle(unit.name) : null;
   const isSteward = unit?.id === "steward";
@@ -61,24 +57,7 @@ export function WorkspaceHeader() {
             <span className="shrink-0 rounded-chip bg-line-soft px-1.5 py-0.5 text-[10px] text-graphite group-hover:bg-teal-tint group-hover:text-teal">
               {isSteward ? "总管" : unit.identity?.role || "Agent"}
             </span>
-            {/* 运行状态 */}
-            {busy ? (
-              <span className="flex items-center gap-1 text-[11px] text-teal">
-                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-teal" />
-                工作中
-              </span>
-            ) : (
-              <span className="h-1.5 w-1.5 rounded-full bg-line" title="就绪" />
-            )}
           </button>
-
-          {/* 会话名称（若有活跃会话） */}
-          {session && (
-            <span className="hidden xl:flex min-w-0 items-center gap-1.5 text-body-sm text-graphite">
-              <span className="text-ash">/</span>
-              <span className="truncate max-w-[140px]" title={session.title}>{session.title}</span>
-            </span>
-          )}
 
           {/* 路径与绑定弹层 */}
           <WorkspacePopover />
@@ -158,7 +137,6 @@ function BackgroundGuardianBadge() {
  */
 function MoreMenu() {
   const unit = useWorkbench(selectActiveUnit);
-  const session = useWorkbench((s) => s.sessions.find((x) => x.id === s.activeSessionId));
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
 
@@ -200,13 +178,6 @@ function MoreMenu() {
       label: copied === "path" ? "已复制路径" : "复制路径",
       disabled: !unit,
       onClick: () => unit && void copy(unit.rootPath, "path"),
-    },
-    {
-      key: "copy-session",
-      icon: Hash,
-      label: copied === "session" ? "已复制会话 ID" : "复制会话 ID",
-      disabled: !session,
-      onClick: () => session && void copy(session.id, "session"),
     },
   ];
 
@@ -255,9 +226,6 @@ function MoreMenu() {
  */
 function WorkspacePopover() {
   const unit = useWorkbench(selectActiveUnit);
-  const branch = useWorkbench(
-    (s) => s.sessions.find((x) => x.id === s.activeSessionId)?.worktree?.branch,
-  );
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [opened, setOpened] = useState(false);
@@ -291,11 +259,6 @@ function WorkspacePopover() {
           <span className="fixed inset-0 z-30" onClick={() => setOpen(false)} aria-hidden />
           <div className="absolute left-0 top-full z-40 mt-1 w-72 rounded-card border border-line bg-card p-3 shadow-xl">
             <p className="break-all font-mono text-body-sm text-ink">{unit.rootPath}</p>
-            {/* 分支行（ZCode 弹层的 GitBranch 行）：项目会话显示 worktree 分支 */}
-            <p className="mt-2 flex items-center gap-1.5 text-caption text-graphite">
-              <GitBranch size={12} className="shrink-0 text-ash" />
-              <span className="font-mono">{branch ?? "main"}</span>
-            </p>
             <div className="mt-2.5 flex items-center gap-1.5 border-t border-line-soft pt-2">
               <button
                 type="button"

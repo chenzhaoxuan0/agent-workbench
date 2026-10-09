@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   AlarmClock,
   Bot,
@@ -8,22 +8,17 @@ import {
   FolderOpen,
   FolderPlus,
   ImagePlus,
-  MessageCirclePlus,
   PanelLeftClose,
   Plus,
   Search,
   Settings,
-  SlidersHorizontal,
 } from "lucide-react";
-import { useShallow } from "zustand/react/shallow";
-import { useWorkbench, selectUnitSessions, type ViewMode, type BotWriteGuards } from "../store/useWorkbench.ts";
+import { useWorkbench, type ViewMode, type BotWriteGuards } from "../store/useWorkbench.ts";
 import { useShell } from "../store/useShell.ts";
 import {
   asModelId,
   asRuntimeId,
   asUnitId,
-  type Session,
-  type SessionId,
   type UnitId,
   type WorkUnit,
 } from "../core/units.ts";
@@ -65,33 +60,11 @@ import { cn } from "./cn.ts";
  */
 
 /** ZCode 是 4 种：grouped / workspace / timeline / archived */
-type Organize = "grouped" | "workspace" | "timeline" | "archived";
-type Sort = "updated" | "created";
-
-const ORGANIZE_OPTIONS: readonly Organize[] = ["grouped", "workspace", "timeline", "archived"];
-const ORGANIZE_LABEL: Record<Organize, string> = {
-  grouped: "按分组",
-  workspace: "按单元",
-  timeline: "按时间",
-  archived: "含归档",
-};
-
-const SORT_OPTIONS: readonly Sort[] = ["updated", "created"];
-const SORT_LABEL: Record<Sort, string> = { updated: "按更新", created: "按创建" };
 
 const VIEWS: readonly { id: ViewMode; label: string; icon: typeof Bot }[] = [
   { id: "bot", label: "bot", icon: Bot },
   { id: "project", label: "项目", icon: FolderGit2 },
 ];
-
-const STATUS_DOT: Record<string, string> = {
-  idle: "bg-ash",
-  running: "bg-teal",
-  awaiting_permission: "bg-loss",
-  awaiting_input: "bg-line",
-  failed: "bg-loss",
-  done: "bg-ash",
-};
 
 export function Sidebar() {
   const units = useWorkbench((s) => s.units);
@@ -103,12 +76,8 @@ export function Sidebar() {
   const mainView = useShell((s) => s.mainView);
   const openSettings = useShell((s) => s.openSettings);
 
-  const [organize, setOrganize] = useState<Organize>("grouped");
-  const [sort, setSort] = useState<Sort>("updated");
   const [unitOrder, setUnitOrder] = useState<string[] | null>(null);
   const [dragUnit, setDragUnit] = useState<string | null>(null);
-  const selectSession = useWorkbench((s) => s.selectSession);
-  const activeSessionId = useWorkbench((s) => s.activeSessionId);
   // 「添加 bot」的对话框开关在 useShell —— 标题行的 ＋ 和单元区空态两个入口共用
   const addBotOpen = useShell((s) => s.addBotOpen);
   const importBotOpen = useShell((s) => s.importBotOpen);
@@ -172,12 +141,6 @@ export function Sidebar() {
 
           {/* 全局动作区：新建会话 / 搜索 / 自动化 / 出图 */}
           <div className="flex items-center gap-0.5">
-            <IconNavBtn
-              icon={MessageCirclePlus}
-              label="新建会话"
-              hint="⌘N"
-              onClick={() => useShell.getState().newTask()}
-            />
             <IconNavBtn
               icon={Search}
               label="搜索"
@@ -277,7 +240,6 @@ export function Sidebar() {
                 onOpenSettings={() => useShell.getState().openUnitSettings(u.id as UnitId)}
                 schedule={u.schedule?.enabled ? u.schedule.description : undefined}
               />
-              {active && <TaskList unitId={u.id as UnitId} sort={sort} />}
             </div>
           );
         })}
@@ -393,7 +355,7 @@ export function Sidebar() {
             // 重新连接分支零写入（bot.json 早就在盘上），要自己并进 state；
             // 认领/脚手架分支 addUnit 已经并过了，别重复
             if (useWorkbench.getState().units.some((u) => u.id === unit.id)) return;
-            useWorkbench.setState((s) => ({ units: [...s.units, unit], activeUnitId: unit.id, activeSessionId: null }));
+            useWorkbench.setState((s) => ({ units: [...s.units, unit], activeUnitId: unit.id }));
           }}
         />
       )}
@@ -426,19 +388,6 @@ export function botAvatarStyle(name: string): { color: string; shape: string } {
     color: BOT_COLORS[hash % BOT_COLORS.length]!,
     shape: BOT_SHAPES[hash % BOT_SHAPES.length]!,
   };
-}
-
-/** 最后活动时间：今天显示时刻，昨天显示「昨天」，更早显示日期（GrokBot 的相对语义） */
-function lastActivityLabel(at: number): string {
-  const d = new Date(at);
-  const now = new Date();
-  if (d.toDateString() === now.toDateString()) {
-    return d.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false });
-  }
-  const yesterday = new Date(now);
-  yesterday.setDate(now.getDate() - 1);
-  if (d.toDateString() === yesterday.toDateString()) return "昨天";
-  return `${d.getMonth() + 1}月${d.getDate()}日`;
 }
 
 function UnitRow({
@@ -475,16 +424,8 @@ function UnitRow({
   const identities = useWorkbench((s) => s.channelIdentity);
   const isBot = unit.kind === "bot";
 
-  // 副标题 = 在行任务（本单元最新会话标题）优先，其次身份角色（GrokBot 的行结构）
-  const sessions = useWorkbench((s) => s.sessions);
-  const latest = useMemo(
-    () =>
-      sessions
-        .filter((s) => s.unitId === unit.id)
-        .reduce<(typeof sessions)[number] | null>((acc, s) => (acc === null || s.startedAt > acc.startedAt ? s : acc), null),
-    [sessions, unit.id],
-  );
-  const subtitle = latest?.title ?? unit.identity?.role ?? "";
+  // 副标题：身份角色，缺省回落到路径
+  const subtitle = unit.identity?.role ?? "";
   const avatar = botAvatarStyle(unit.name);
   const [justOpened, setJustOpened] = useState(false);
 
@@ -561,11 +502,6 @@ function UnitRow({
                 )}
               </span>
             )}
-            {latest && (
-              <span className="tnum ml-auto shrink-0 text-[10px] text-ash transition-opacity group-hover/row:opacity-0">
-                {lastActivityLabel(latest.startedAt)}
-              </span>
-            )}
           </span>
           <span className="truncate text-[11px] text-graphite">
             {subtitle || <span className="text-ash">{unit.rootPath}</span>}
@@ -626,73 +562,6 @@ function UnitRow({
   );
 }
 
-/* ------------------------------------------------------------- 会话行 */
-
-function TaskList({ unitId, sort }: { unitId: UnitId; sort: Sort }) {
-  const sessions = useWorkbench(useShallow(selectUnitSessions));
-  const activeUnitId = useWorkbench((s) => s.activeUnitId);
-  const selectSession = useWorkbench((s) => s.selectSession);
-  const activeSessionId = useWorkbench((s) => s.activeSessionId);
-
-  if (activeUnitId !== unitId) return null;
-
-  if (sessions.length === 0) {
-    return <p className="px-2.5 py-1.5 text-caption text-ash">暂无任务</p>;
-  }
-
-  const ordered =
-    sort === "created"
-      ? sessions.slice().sort((a, b) => a.startedAt - b.startedAt)
-      : sessions.slice().sort((a, b) => b.startedAt - a.startedAt);
-
-  return (
-    <div className="mb-1 ml-2 border-l border-line pl-1.5">
-      {ordered.map((s) => (
-        <SessionRow
-          key={s.id}
-          s={s}
-          active={s.id === activeSessionId}
-          onSelect={() => selectSession(s.id === activeSessionId ? null : s.id)}
-        />
-      ))}
-    </div>
-  );
-}
-
-function SessionRow({
-  s,
-  active,
-  muted,
-  onSelect,
-}: {
-  s: Session;
-  active?: boolean;
-  muted?: boolean;
-  onSelect?: () => void;
-}) {
-  return (
-    <button
-      onClick={onSelect}
-      aria-current={active}
-      className={cn(
-        "flex w-full items-center gap-1.5 rounded-btn px-1.5 py-1 text-left",
-        active ? "bg-canvas" : "hover:bg-line-soft",
-        muted && "opacity-70",
-      )}
-    >
-      <span
-        className={cn("h-1.5 w-1.5 shrink-0 rounded-full", STATUS_DOT[s.status] ?? "bg-ash", s.status === "running" && "animate-pulse")}
-        aria-hidden
-      />
-      <span className={cn("min-w-0 flex-1 truncate text-caption", active ? "text-ink font-medium" : "text-graphite")}>
-        {s.title}
-      </span>
-      <span className="tnum shrink-0 text-[10px] text-ash">
-        {new Date(s.startedAt).toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" })}
-      </span>
-    </button>
-  );
-}
 
 /* ------------------------------------------------------------- 小组件 */
 
@@ -733,107 +602,3 @@ function IconNavBtn({
   );
 }
 
-/**
- * 组织方式 / 排序 —— 两项收成一枚 ⚙。
- *
- * 为什么它们配得上浮层、而上面的导航入口不配：
- * 这两个是**纯视图偏好**。用户在一次会话里几乎不改，改了也不影响「能不能
- * 找到东西」；而 4 个选项 × 两组共 6 行文字，正好把「bot | 项目」那一行
- * 挤成一片小字（原来就是 264px 侧栏里最挤的一处）。
- *
- * 当前值不丢：触发器 title 里带「组织方式：X · 排序：Y」，
- * 浮层里两组各带一行小标题，选项打勾。
- */
-function ViewOptionsMenu({
-  organize,
-  onOrganize,
-  sort,
-  onSort,
-}: {
-  organize: Organize;
-  onOrganize: (v: Organize) => void;
-  sort: Sort;
-  onSort: (v: Sort) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
-  return (
-    <div ref={ref} className="relative ml-auto">
-      <button
-        onClick={() => setOpen((o) => !o)}
-        aria-expanded={open}
-        aria-haspopup="listbox"
-        aria-label="组织方式与排序"
-        title={`组织方式：${ORGANIZE_LABEL[organize]} · 排序：${SORT_LABEL[sort]}`}
-        className={cn(
-          "flex h-6 w-6 items-center justify-center rounded-btn",
-          open ? "bg-line-soft text-ink" : "text-graphite hover:bg-line-soft hover:text-ink",
-        )}
-      >
-        <SlidersHorizontal size={13} className="shrink-0" />
-      </button>
-
-      {open && (
-        <>
-          <span className="fixed inset-0 z-10" onClick={() => setOpen(false)} aria-hidden />
-          <div
-            role="listbox"
-            aria-label="组织方式与排序"
-            className="absolute right-0 top-full z-20 mt-1 w-40 overflow-hidden rounded-card border border-line bg-canvas py-1 shadow-subtle"
-          >
-            <p className="px-3 pt-1 pb-0.5 text-caption text-ash">组织方式</p>
-            {ORGANIZE_OPTIONS.map((o) => (
-              <button
-                key={o}
-                role="option"
-                aria-selected={o === organize}
-                onClick={() => onOrganize(o)}
-                className={cn(
-                  "block w-full whitespace-nowrap px-3 py-1.5 text-left text-body-sm",
-                  o === organize ? "bg-teal-tint font-medium text-ink" : "text-graphite hover:bg-line-soft",
-                )}
-              >
-                {ORGANIZE_LABEL[o]}
-              </button>
-            ))}
-
-            <p className="mt-1 border-t border-line-soft px-3 pt-1.5 pb-0.5 text-caption text-ash">
-              排序
-            </p>
-            {SORT_OPTIONS.map((o) => (
-              <button
-                key={o}
-                role="option"
-                aria-selected={o === sort}
-                onClick={() => onSort(o)}
-                className={cn(
-                  "block w-full whitespace-nowrap px-3 py-1.5 text-left text-body-sm",
-                  o === sort ? "bg-teal-tint font-medium text-ink" : "text-graphite hover:bg-line-soft",
-                )}
-              >
-                {SORT_LABEL[o]}
-              </button>
-            ))}
-          </div>
-        </>
-      )}
-    </div>
-  );
-}

@@ -1,5 +1,4 @@
 import { create } from "zustand";
-import { useWorkbench } from "./useWorkbench.ts";
 import type { UnitId } from "../core/units.ts";
 
 /**
@@ -44,10 +43,9 @@ export type SettingsSectionId =
   | "models"
   | "image"
   | "shortcuts"
-  | "memory"
-  | "usage";
+  | "memory";
 
-export type SettingsGroupId = "basics" | "agentCapabilities" | "dataAndStats";
+export type SettingsGroupId = "basics" | "agentCapabilities";
 
 export interface SettingsSectionDef {
   readonly id: SettingsSectionId;
@@ -62,7 +60,6 @@ export interface SettingsSectionDef {
 export const SETTINGS_GROUPS: readonly { id: SettingsGroupId; title: string }[] = [
   { id: "basics", title: "基础" },
   { id: "agentCapabilities", title: "Agent 能力" },
-  { id: "dataAndStats", title: "数据与统计" },
 ];
 
 /**
@@ -78,8 +75,6 @@ export const SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
 
   { id: "memory", title: "记忆", desc: "语义事实 / 情节事件 / 程序性技能 三层记忆（对齐 waku）", groupId: "agentCapabilities", icon: "brain" },
   { id: "image", title: "出图", desc: "图像供应商 profile 管理（gpt_image_playground 字段全集）", groupId: "agentCapabilities", icon: "image" },
-
-  { id: "usage", title: "用量", desc: "按执行器与工作单元的消耗统计", groupId: "dataAndStats", icon: "chart" },
 ];
 
 // ---------------------------------------------------------------------------
@@ -152,8 +147,6 @@ interface ShellState {
   openSettings: (section?: SettingsSectionId) => void;
   /** 关闭设置覆盖层。对齐 ZCode：退出设置统一回到 chat 主视图 */
   closeSettings: () => void;
-  /** 新建任务：回 chat 主视图并清空草稿（对齐 ZCode 的 newTask，⌘N） */
-  newTask: () => void;
 
   setCommandOpen: (open: boolean) => void;
   openAddBot: () => void;
@@ -185,11 +178,6 @@ export const useShell = create<ShellState>((set, get) => ({
     })),
 
   closeSettings: () => set({ settingsOpen: false, mainView: "chat" }),
-
-  newTask: () => {
-    set({ mainView: "chat" });
-    useWorkbench.getState().setDraft("");
-  },
 
   setSidebarWidth: (w) => {
     const clamped = Math.max(SIDEBAR_MIN, Math.round(w));
@@ -232,12 +220,6 @@ export function bindShellShortcuts(): () => void {
     if (mod && e.key.toLowerCase() === "b") {
       e.preventDefault();
       shell.toggleSidebar();
-      return;
-    }
-    // ZCode：newTask 默认 Cmd/Ctrl+N（浏览器可能吞掉，能拦则拦）
-    if (mod && e.key.toLowerCase() === "n") {
-      e.preventDefault();
-      shell.newTask();
       return;
     }
     // ZCode：openSettings 默认 Cmd/Ctrl+,
