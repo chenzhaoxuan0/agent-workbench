@@ -16,10 +16,10 @@ import {
   defaultDaemonEndpoint,
   type DaemonTerminalFrame,
 } from "../adapters/daemon/client.ts";
-import { useTheme } from "../store/useTheme.ts";
+import { useAppearance } from "../store/useAppearance.ts";
 import {
-  XTERM_LIGHT_THEME,
-  XTERM_DARK_THEME,
+  buildTerminalTheme,
+  buildThemeNotification,
 } from "../store/TerminalSessionManager.ts";
 
 export interface TerminalInstanceHandle {
@@ -56,16 +56,15 @@ export const TerminalInstanceView = memo(
       const fitAddonRef = useRef<FitAddon | null>(null);
       const [restartNonce, setRestartNonce] = useState(0);
       const [exited, setExited] = useState<number | null>(null);
-      const resolvedTheme = useTheme((s) => s.resolvedTheme);
+      const resolvedTheme = useAppearance((s) => s.resolvedAppearance);
 
       useEffect(() => {
         if (termRef.current) {
-          termRef.current.options.theme =
-            resolvedTheme === "dark" ? XTERM_DARK_THEME : XTERM_LIGHT_THEME;
+          const isDark = resolvedTheme === "dark";
+          const theme = buildTerminalTheme(isDark);
+          termRef.current.options.theme = theme;
           const client = DaemonClient.get(defaultDaemonEndpoint());
-          const themeSeq = resolvedTheme === "dark"
-            ? "\x1b[?997;1n\x1b]10;rgb:fafa/f9f9/f6f6\x1b\\\x1b]11;rgb:0000/0000/0000\x1b\\\x1b]10;#faf9f6\x07\x1b]11;#000000\x07"
-            : "\x1b[?997;2n\x1b]10;rgb:2626/2525/1e1e\x1b\\\x1b]11;rgb:f2f2/f1f1/eded\x1b\\\x1b]10;#26251e\x07\x1b]11;#f2f1ed\x07";
+          const themeSeq = buildThemeNotification(theme, isDark);
           void client.rpc("terminal.input", { terminalId, data: themeSeq }, 3000).catch(() => {});
         }
       }, [resolvedTheme, terminalId]);
@@ -114,8 +113,7 @@ export const TerminalInstanceView = memo(
             backend: "conpty",
             buildNumber: 22621,
           },
-          theme:
-            resolvedTheme === "dark" ? XTERM_DARK_THEME : XTERM_LIGHT_THEME,
+          theme: buildTerminalTheme(resolvedTheme === "dark"),
         });
         termRef.current = term;
 
@@ -141,9 +139,10 @@ export const TerminalInstanceView = memo(
           if (f.terminalId !== terminalId) return;
           if (f.kind === "data" && f.data !== undefined) {
             if (f.data.includes("]10;?") || f.data.includes("]11;?")) {
-              const oscReply = resolvedTheme === "dark"
-                ? "\x1b]10;rgb:fafa/f9f9/f6f6\x1b\\\x1b]11;rgb:0000/0000/0000\x1b\\\x1b]10;#faf9f6\x07\x1b]11;#000000\x07"
-                : "\x1b]10;rgb:2626/2525/1e1e\x1b\\\x1b]11;rgb:f2f2/f1f1/eded\x1b\\\x1b]10;#26251e\x07\x1b]11;#f2f1ed\x07";
+              const oscReply = buildThemeNotification(
+                buildTerminalTheme(resolvedTheme === "dark"),
+                resolvedTheme === "dark",
+              );
               void client.rpc("terminal.input", { terminalId, data: oscReply }, 3000).catch(() => {});
             }
             term.write(f.data);
