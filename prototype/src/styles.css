@@ -19,6 +19,7 @@
 @theme {
   /* ---- Surfaces：通过 CSS 变量动态映射，支持亮暗两套配色 ---- */
   --color-canvas: var(--color-canvas);
+  --color-canvas-solid: var(--color-canvas-solid);
   --color-rail: var(--color-rail);
   --color-card: var(--color-card);
   --color-line: var(--color-line);
@@ -93,6 +94,7 @@ html[data-theme="light"] {
   color-scheme: light;
   /* Surfaces — Cursor Parchment */
   --color-canvas: #f7f7f4;
+  --color-canvas-solid: #f7f7f4;
   --color-rail: #e6e5e0;
   --color-card: #f2f1ed;
   --color-line: #cdcdc9;
@@ -132,6 +134,7 @@ html[data-theme="dark"] {
   color-scheme: dark;
   /* Surfaces — Warp Obsidian */
   --color-canvas: #000000;
+  --color-canvas-solid: #000000;
   --color-rail: #121212;
   --color-card: #181817;
   --color-line: #222221;

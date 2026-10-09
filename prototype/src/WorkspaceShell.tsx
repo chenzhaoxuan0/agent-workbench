@@ -47,7 +47,7 @@ export function WorkspaceShell() {
       {/* 设置覆盖层 —— 对齐 ZCode 的 WorkspaceSettingsLayer：absolute inset-0 压在
           shell 之上，shell 不卸载；Esc / 返回工作台退出（useShell.closeSettings） */}
       {settingsOpen && (
-        <div className="absolute inset-0 z-40 bg-canvas">
+        <div className="absolute inset-0 z-40 bg-canvas-solid">
           <SettingsPage />
         </div>
       )}

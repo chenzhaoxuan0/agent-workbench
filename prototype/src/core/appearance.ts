@@ -524,6 +524,8 @@ export function deriveCssVariables(
   vars["--color-canvas"] = withAlpha(p.background, alpha);
   vars["--color-card"] = withAlpha(p.panel, alpha);
   vars["--color-rail"] = withAlpha(p.panelAlt, alpha);
+  /** 不透明画布 —— 给设置页这类「整页覆盖层」用：叠在主界面上时绝不透出下层文字 */
+  vars["--color-canvas-solid"] = p.background;
 
   /* ---- 文字层：永不受透明度影响 ---- */
   vars["--color-ink"] = p.text;
