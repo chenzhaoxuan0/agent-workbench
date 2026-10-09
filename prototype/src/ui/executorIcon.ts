@@ -9,6 +9,8 @@ const EXECUTOR_ICONS: Record<string, string> = {
   claude: "/icons/executors/claude.svg",
   codex: "/icons/executors/codex.svg",
   opencode: "/icons/executors/opencode.svg",
+  // MiniMax Code：官网 header 符号是纯白填充（浅色主题会隐形），用 96×96 favicon
+  mcode: "/icons/executors/mcode.png",
   zcode: "/icons/executors/zcode.png",
   dsh: "/icons/executors/dsh.svg",
   hermes: "/icons/executors/hermes.png",
