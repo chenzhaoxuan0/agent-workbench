@@ -1,266 +1,772 @@
-import { useTheme, type ThemeMode } from "../store/useTheme.ts";
-import { Sun, Moon, Monitor, Check, Palette, Sparkles, Terminal } from "lucide-react";
+import { useRef, useState } from "react";
+import {
+  Palette,
+  Check,
+  Sun,
+  Moon,
+  Monitor,
+  Image as ImageIcon,
+  Sparkles,
+  Frame,
+  Type,
+  Wand2,
+  Terminal,
+  RotateCcw,
+  Upload,
+  Download,
+  Trash2,
+} from "lucide-react";
+import { useAppearance } from "../store/useAppearance.ts";
+import {
+  APPEARANCE_PRESETS,
+  contrastRatio,
+  DEFAULT_TRANSPARENCY,
+  resolveFocusX,
+  resolveFocusY,
+  toHex,
+  type DensityScale,
+  type FontChoice,
+  type MotionLevel,
+  type PaletteKey,
+  type SafeArea,
+  type ShadowLevel,
+  type TaskMode,
+} from "../core/appearance.ts";
 import { cn } from "./cn.ts";
 
+/* ========================================================================== 小组件 */
+
+function SectionCard({
+  icon,
+  title,
+  desc,
+  action,
+  children,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  desc: string;
+  action?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="overflow-hidden rounded-card border border-line bg-card">
+      <div className="flex items-start justify-between gap-4 border-b border-line px-5 py-4">
+        <div className="flex items-start gap-2">
+          <span className="mt-0.5 text-teal">{icon}</span>
+          <div>
+            <h2 className="text-body font-medium text-ink">{title}</h2>
+            <p className="mt-1 text-body-sm text-graphite">{desc}</p>
+          </div>
+        </div>
+        {action}
+      </div>
+      <div className="p-5">{children}</div>
+    </div>
+  );
+}
+
+/** 颜色输入：色块 + 十六进制文本框。色块走原生 picker，文本框可精确粘贴。 */
+function ColorField({
+  label,
+  value,
+  onChange,
+  onReset,
+  hint,
+}: {
+  label: string;
+  value: string;
+  onChange: (next: string) => void;
+  onReset?: () => void;
+  hint?: string;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const hex = toHex(value, "#000000");
+
+  return (
+    <div className="flex items-center gap-2">
+      <label className="relative h-7 w-7 shrink-0 overflow-hidden rounded-btn border border-line">
+        <span className="absolute inset-0" style={{ backgroundColor: hex }} />
+        <input
+          type="color"
+          value={hex}
+          onChange={(e) => onChange(e.target.value)}
+          aria-label={`${label} 颜色`}
+          className="absolute inset-0 cursor-pointer opacity-0"
+        />
+      </label>
+      <div className="min-w-0 flex-1">
+        <span className="block text-caption text-ink">{label}</span>
+        {hint && <span className="block truncate text-caption text-ash">{hint}</span>}
+      </div>
+      <input
+        value={draft ?? value}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => {
+          if (draft !== null) {
+            onChange(draft);
+            setDraft(null);
+          }
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+        }}
+        spellCheck={false}
+        aria-label={`${label} 色值`}
+        className="w-24 shrink-0 rounded-btn border border-line bg-canvas px-2 py-1 text-caption font-mono text-ink outline-none focus:border-teal"
+      />
+      {onReset && (
+        <button
+          type="button"
+          onClick={onReset}
+          title="恢复该色默认值"
+          aria-label={`恢复 ${label} 默认值`}
+          className="h-7 w-7 shrink-0 rounded-btn text-ash hover:bg-surface-hover hover:text-ink"
+        >
+          <RotateCcw size={12} className="mx-auto" />
+        </button>
+      )}
+    </div>
+  );
+}
+
+function SliderField({
+  label,
+  value,
+  min,
+  max,
+  step,
+  onChange,
+  format,
+  hint,
+  disabled,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  onChange: (next: number) => void;
+  format: (v: number) => string;
+  hint?: string;
+  disabled?: boolean;
+}) {
+  return (
+    <div className={cn(disabled && "pointer-events-none opacity-40")}>
+      <div className="flex items-center justify-between">
+        <span className="text-body-sm text-ink">{label}</span>
+        <span className="rounded-chip bg-surface-hover px-2 py-0.5 text-caption font-mono text-graphite">
+          {format(value)}
+        </span>
+      </div>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        disabled={disabled}
+        onChange={(e) => onChange(Number(e.target.value))}
+        aria-label={label}
+        className="mt-2 w-full accent-teal"
+      />
+      {hint && <p className="mt-1 text-caption text-ash">{hint}</p>}
+    </div>
+  );
+}
+
+function SegmentedField<T extends string>({
+  label,
+  value,
+  options,
+  onChange,
+  hint,
+}: {
+  label: string;
+  value: T;
+  options: readonly { value: T; label: string }[];
+  onChange: (next: T) => void;
+  hint?: string;
+}) {
+  return (
+    <div>
+      <span className="block text-body-sm text-ink">{label}</span>
+      <div className="mt-1.5 inline-flex rounded-input border border-line bg-canvas p-0.5">
+        {options.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            onClick={() => onChange(option.value)}
+            className={cn(
+              "rounded-btn px-3 py-1 text-body-sm transition",
+              value === option.value
+                ? "bg-teal text-canvas"
+                : "text-graphite hover:bg-surface-hover hover:text-ink",
+            )}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+      {hint && <p className="mt-1 text-caption text-ash">{hint}</p>}
+    </div>
+  );
+}
+
+/* ========================================================================== 主组件 */
+
+const PALETTE_FIELDS: readonly { key: PaletteKey; label: string; hint: string }[] = [
+  { key: "background", label: "画布 background", hint: "全局底色" },
+  { key: "panel", label: "面板 panel", hint: "卡片与浮层" },
+  { key: "panelAlt", label: "次面板 panelAlt", hint: "侧栏与次级面" },
+  { key: "accent", label: "强调 accent", hint: "主按钮与激活态" },
+  { key: "accentAlt", label: "强调次色 accentAlt", hint: "强调色悬停态" },
+  { key: "secondary", label: "次要 secondary", hint: "终端蓝系" },
+  { key: "highlight", label: "高亮 highlight", hint: "终端品红系" },
+  { key: "text", label: "正文 text", hint: "主文字" },
+  { key: "muted", label: "弱化 muted", hint: "次级文字" },
+  { key: "line", label: "线条 line", hint: "发丝线与边框" },
+];
+
 export function AppearanceSettingsSection() {
-  const mode = useTheme((s) => s.mode);
-  const resolvedTheme = useTheme((s) => s.resolvedTheme);
-  const setMode = useTheme((s) => s.setMode);
+  const store = useAppearance();
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [importError, setImportError] = useState<string | null>(null);
+
+  const { mode, resolvedAppearance, activeProfile, art, wallpaper, presetId } = store;
+  const transparency = activeProfile.transparency ?? DEFAULT_TRANSPARENCY;
+  const followsTheme = activeProfile.transparency === null;
+  const hasWallpaper = wallpaper.enabled && Boolean(wallpaper.source);
+
+  /* ---- 壁纸导入：缩到 2560px 再转 JPEG，避免撑爆 localStorage 的 5MB 配额 ---- */
+  const handleWallpaperFile = (file: File) => {
+    setImportError(null);
+    if (!file.type.startsWith("image/")) {
+      setImportError("请选择图片文件");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const image = new Image();
+      image.onload = () => {
+        const MAX_EDGE = 2560;
+        const scale = Math.min(1, MAX_EDGE / Math.max(image.width, image.height));
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.round(image.width * scale);
+        canvas.height = Math.round(image.height * scale);
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          setImportError("当前环境不支持图片解码");
+          return;
+        }
+        ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+        store.setWallpaper("source", canvas.toDataURL("image/jpeg", 0.86));
+        store.setWallpaper("enabled", true);
+      };
+      image.onerror = () => setImportError("图片解码失败，请换一张试试");
+      image.src = String(reader.result);
+    };
+    reader.onerror = () => setImportError("读取文件失败");
+    reader.readAsDataURL(file);
+  };
+
+  const textContrast = contrastRatio(activeProfile.palette.text, activeProfile.palette.background);
+  const mutedContrast = contrastRatio(activeProfile.palette.muted, activeProfile.palette.background);
 
   return (
     <div className="space-y-6">
-      {/* 主题选择卡片网格 */}
-      <div className="overflow-hidden rounded-card border border-line bg-card">
-        <div className="border-b border-line px-5 py-4">
-          <div className="flex items-center gap-2">
-            <Palette size={16} className="text-teal" />
-            <h2 className="text-body font-medium text-ink">界面色彩与外观主题</h2>
-          </div>
-          <p className="mt-1 text-body-sm text-graphite">
-            选择界面的基础视觉风格。所有图标排版、内容间距与组件尺寸保持完全一致，仅切换纯色系渲染。
-          </p>
+      {/* ---------------------------------------------------- 预设主题 */}
+      <SectionCard
+        icon={<Palette size={16} />}
+        title="预设主题"
+        desc="整套配色一次切换。选中的预设之后再微调，会变成「自定义」而不再声称等于该预设。"
+      >
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          {APPEARANCE_PRESETS.map((preset) => {
+            const active = preset.id === presetId;
+            // 预览用「该预设自己会切过去的档案」，不是当前正在编辑的档案。
+            // 否则 DS 那两个深色预设（哥特/暮色）在浅色模式下会借用浅色档案，
+            // 四张卡片看上去一模一样 —— 选哪张都看不出区别。
+            const swatchProfile = preset.mode === "auto" ? preset.light : preset[preset.mode];
+            const swatches = swatchProfile.palette;
+            return (
+              <button
+                key={preset.id}
+                type="button"
+                onClick={() => store.applyPreset(preset)}
+                className={cn(
+                  "group relative rounded-card border p-3 text-left transition",
+                  active
+                    ? "border-teal bg-teal-tint/20 ring-1 ring-teal"
+                    : "border-line bg-canvas hover:border-line-soft hover:bg-surface-hover",
+                )}
+              >
+                <div className="mb-2.5 flex h-9 gap-1 overflow-hidden rounded-btn border border-line">
+                  {[swatches.background, swatches.panel, swatches.panelAlt, swatches.accent].map(
+                    (color, index) => (
+                      <span key={index} className="flex-1" style={{ backgroundColor: color }} />
+                    ),
+                  )}
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-body-sm font-medium text-ink">{preset.name}</span>
+                  {active && (
+                    <span className="flex h-4 w-4 items-center justify-center rounded-full bg-teal text-canvas">
+                      <Check size={11} strokeWidth={3} />
+                    </span>
+                  )}
+                </div>
+                <p className="mt-1 text-caption leading-relaxed text-graphite">{preset.desc}</p>
+              </button>
+            );
+          })}
+        </div>
+      </SectionCard>
+
+      {/* ---------------------------------------------------- 外观模式 */}
+      <SectionCard
+        icon={<Sun size={16} />}
+        title="外观模式"
+        desc="决定用哪一套配色档案。对应 DS 的 appearance 字段。"
+      >
+        <div className="grid grid-cols-3 gap-3">
+          {(
+            [
+              { value: "light", label: "浅色", icon: Sun },
+              { value: "dark", label: "深色", icon: Moon },
+              { value: "auto", label: "跟随系统", icon: Monitor },
+            ] as const
+          ).map((option) => {
+            const Icon = option.icon;
+            const active = mode === option.value;
+            return (
+              <button
+                key={option.value}
+                type="button"
+                onClick={() => store.setMode(option.value)}
+                className={cn(
+                  "flex items-center gap-2 rounded-card border p-3 transition",
+                  active
+                    ? "border-teal bg-teal-tint/20 ring-1 ring-teal"
+                    : "border-line bg-canvas hover:bg-surface-hover",
+                )}
+              >
+                <Icon size={14} className={active ? "text-teal" : "text-graphite"} />
+                <span className="text-body-sm font-medium text-ink">{option.label}</span>
+                {active && (
+                  <span className="ml-auto flex h-4 w-4 items-center justify-center rounded-full bg-teal text-canvas">
+                    <Check size={11} strokeWidth={3} />
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+        <p className="mt-3 text-caption text-ash">
+          正在编辑「{resolvedAppearance === "dark" ? "深色" : "浅色"}」档案。切换模式会切到另一套档案，两套的改动各自独立保存。
+        </p>
+      </SectionCard>
+
+      {/* ---------------------------------------------------- 配色 */}
+      <SectionCard
+        icon={<Sparkles size={16} />}
+        title="配色"
+        desc="十组颜色，键名与 DS 的 theme.json.colors 完全一致，方便日后与 DS 主题包互通。"
+        action={
+          <button
+            type="button"
+            onClick={() => store.resetPalette()}
+            className="flex shrink-0 items-center gap-1.5 rounded-btn border border-line px-2.5 py-1 text-body-sm text-graphite hover:bg-surface-hover hover:text-ink"
+          >
+            <RotateCcw size={12} />
+            全部重置
+          </button>
+        }
+      >
+        <div className="grid grid-cols-1 gap-x-6 gap-y-3 sm:grid-cols-2">
+          {PALETTE_FIELDS.map((field) => (
+            <ColorField
+              key={field.key}
+              label={field.label}
+              hint={field.hint}
+              value={activeProfile.palette[field.key]}
+              onChange={(next) => store.setPaletteColor(field.key, next)}
+              onReset={() => store.resetPaletteColor(field.key)}
+            />
+          ))}
         </div>
 
-        <div className="p-5">
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            {/* 1. 亮色：Cursor 羊皮纸 */}
-            <button
-              type="button"
-              onClick={() => setMode("light")}
-              className={cn(
-                "group relative flex flex-col text-left rounded-card border p-3.5 transition",
-                mode === "light"
-                  ? "border-teal bg-teal-tint/20 ring-1 ring-teal"
-                  : "border-line bg-canvas hover:border-line-soft hover:bg-surface-hover",
-              )}
-            >
-              {/* 拟态迷你预览窗 */}
-              <div className="relative mb-3.5 h-24 w-full overflow-hidden rounded-btn border border-[#cdcdc9] bg-[#f7f7f4] p-2 select-none shadow-xs">
-                {/* 迷你顶栏 */}
-                <div className="flex h-3 items-center justify-between border-b border-[#cdcdc9] pb-1">
-                  <div className="flex items-center gap-1">
-                    <span className="h-1.5 w-1.5 rounded-full bg-[#cdcdc9]" />
-                    <span className="h-1.5 w-1.5 rounded-full bg-[#cdcdc9]" />
-                    <span className="h-1.5 w-1.5 rounded-full bg-[#cdcdc9]" />
-                  </div>
-                  <span className="h-1 w-8 rounded-chip bg-[#cdcdc9]" />
-                </div>
-                {/* 迷你主体：左侧栏 + 右主卡 */}
-                <div className="mt-1.5 flex h-14 gap-1.5">
-                  <div className="w-6 shrink-0 rounded-btn bg-[#e6e5e0] p-1 flex flex-col gap-1">
-                    <span className="h-1 w-full rounded bg-[#cdcdc9]" />
-                    <span className="h-1 w-3/4 rounded bg-[#cdcdc9]" />
-                  </div>
-                  <div className="flex-1 rounded-btn bg-[#f2f1ed] p-1.5 flex flex-col justify-between border border-[#cdcdc9]/60">
-                    <div className="space-y-1">
-                      <span className="block h-1.5 w-3/4 rounded bg-[#26251e]" />
-                      <span className="block h-1 w-1/2 rounded bg-[#84847e]" />
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="h-1.5 w-5 rounded bg-[#26251e]" />
-                      <span className="h-2 w-2 rounded-full bg-[#f54e00]" />
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* 标题与勾选 */}
-              <div className="flex items-center justify-between mb-1">
-                <div className="flex items-center gap-1.5">
-                  <Sun size={14} className="text-[#f54e00]" />
-                  <span className="text-body-sm font-medium text-ink">温润羊皮纸</span>
-                </div>
-                {mode === "light" && (
-                  <span className="flex h-4 w-4 items-center justify-center rounded-full bg-teal text-canvas">
-                    <Check size={11} strokeWidth={3} />
-                  </span>
-                )}
-              </div>
-              <p className="text-caption text-graphite leading-relaxed">
-                Cursor 暖白奶油画布、纸阶平坦分层与 Ember 炽橙高亮。
-              </p>
-            </button>
-
-            {/* 2. 暗色：Warp 黑曜石 */}
-            <button
-              type="button"
-              onClick={() => setMode("dark")}
-              className={cn(
-                "group relative flex flex-col text-left rounded-card border p-3.5 transition",
-                mode === "dark"
-                  ? "border-teal bg-teal-tint/20 ring-1 ring-teal"
-                  : "border-line bg-canvas hover:border-line-soft hover:bg-surface-hover",
-              )}
-            >
-              {/* 拟态迷你预览窗 */}
-              <div className="relative mb-3.5 h-24 w-full overflow-hidden rounded-btn border border-[#222221] bg-[#000000] p-2 select-none shadow-xs">
-                {/* 迷你顶栏 */}
-                <div className="flex h-3 items-center justify-between border-b border-[#222221] pb-1">
-                  <div className="flex items-center gap-1">
-                    <span className="h-1.5 w-1.5 rounded-full bg-[#333333]" />
-                    <span className="h-1.5 w-1.5 rounded-full bg-[#333333]" />
-                    <span className="h-1.5 w-1.5 rounded-full bg-[#333333]" />
-                  </div>
-                  <span className="h-1 w-8 rounded-chip bg-[#222221]" />
-                </div>
-                {/* 迷你主体：左侧栏 + 右主卡 */}
-                <div className="mt-1.5 flex h-14 gap-1.5">
-                  <div className="w-6 shrink-0 rounded-btn bg-[#121212] p-1 flex flex-col gap-1 border border-[#222221]">
-                    <span className="h-1 w-full rounded bg-[#333333]" />
-                    <span className="h-1 w-3/4 rounded bg-[#333333]" />
-                  </div>
-                  <div className="flex-1 rounded-btn bg-[#181817] p-1.5 flex flex-col justify-between border border-[#222221]">
-                    <div className="space-y-1">
-                      <span className="block h-1.5 w-3/4 rounded bg-[#faf9f6]" />
-                      <span className="block h-1 w-1/2 rounded bg-[#b4b4b2]" />
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="h-1.5 w-5 rounded bg-[#faf9f6]" />
-                      <span className="h-2 w-2 rounded-full bg-[#cbb0f7]" />
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* 标题与勾选 */}
-              <div className="flex items-center justify-between mb-1">
-                <div className="flex items-center gap-1.5">
-                  <Moon size={14} className="text-[#cbb0f7]" />
-                  <span className="text-body-sm font-medium text-ink">深邃黑曜石</span>
-                </div>
-                {mode === "dark" && (
-                  <span className="flex h-4 w-4 items-center justify-center rounded-full bg-teal text-canvas">
-                    <Check size={11} strokeWidth={3} />
-                  </span>
-                )}
-              </div>
-              <p className="text-caption text-graphite leading-relaxed">
-                纯黑终端虚空底色、平坦炭黑面板与荧光紫光标强调。
-              </p>
-            </button>
-
-            {/* 3. 跟随系统 */}
-            <button
-              type="button"
-              onClick={() => setMode("system")}
-              className={cn(
-                "group relative flex flex-col text-left rounded-card border p-3.5 transition",
-                mode === "system"
-                  ? "border-teal bg-teal-tint/20 ring-1 ring-teal"
-                  : "border-line bg-canvas hover:border-line-soft hover:bg-surface-hover",
-              )}
-            >
-              {/* 拟态迷你预览窗（对角/左右分屏） */}
-              <div className="relative mb-3.5 h-24 w-full overflow-hidden rounded-btn border border-line p-2 select-none shadow-xs flex">
-                {/* 左半侧：羊皮纸 */}
-                <div className="h-full w-1/2 bg-[#f7f7f4] -m-2 p-2 border-r border-[#cdcdc9] flex flex-col justify-between">
-                  <div className="flex items-center gap-1">
-                    <span className="h-1.5 w-1.5 rounded-full bg-[#cdcdc9]" />
-                    <span className="h-1.5 w-1.5 rounded-full bg-[#cdcdc9]" />
-                  </div>
-                  <div className="space-y-1">
-                    <span className="block h-1.5 w-4/5 rounded bg-[#26251e]" />
-                    <span className="block h-1 w-3/5 rounded bg-[#84847e]" />
-                  </div>
-                  <span className="h-2 w-2 rounded-full bg-[#f54e00]" />
-                </div>
-                {/* 右半侧：黑曜石 */}
-                <div className="h-full w-1/2 bg-[#000000] -m-2 ml-0 p-2 flex flex-col justify-between">
-                  <div className="flex items-center justify-end gap-1">
-                    <span className="h-1.5 w-1.5 rounded-full bg-[#333333]" />
-                  </div>
-                  <div className="space-y-1">
-                    <span className="block h-1.5 w-4/5 rounded bg-[#faf9f6]" />
-                    <span className="block h-1 w-3/5 rounded bg-[#b4b4b2]" />
-                  </div>
-                  <span className="h-2 w-2 rounded-full bg-[#cbb0f7]" />
-                </div>
-              </div>
-
-              {/* 标题与勾选 */}
-              <div className="flex items-center justify-between mb-1">
-                <div className="flex items-center gap-1.5">
-                  <Monitor size={14} className="text-graphite" />
-                  <span className="text-body-sm font-medium text-ink">跟随系统</span>
-                </div>
-                {mode === "system" && (
-                  <span className="flex h-4 w-4 items-center justify-center rounded-full bg-teal text-canvas">
-                    <Check size={11} strokeWidth={3} />
-                  </span>
-                )}
-              </div>
-              <p className="text-caption text-graphite leading-relaxed">
-                自动根据当前操作系统明暗设置实时响应切换。
-              </p>
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {/* 当前生效色彩参数卡片 */}
-      <div className="overflow-hidden rounded-card border border-line bg-card">
-        <div className="border-b border-line px-5 py-3.5 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Sparkles size={14} className="text-teal" />
-            <span className="text-body-sm font-medium text-ink">
-              当前渲染主题状态：
-              <span className="text-teal ml-1">
-                {resolvedTheme === "dark" ? "深邃黑曜石 (Dark)" : "温润羊皮纸 (Light)"}
-              </span>
-            </span>
-          </div>
-          <span className="rounded-chip bg-teal-tint px-2 py-0.5 text-caption font-mono text-teal">
-            模式: {mode}
+        <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1 text-caption">
+          <span className={cn(textContrast < 4.5 ? "text-loss" : "text-ash")}>
+            正文对比度 {textContrast.toFixed(2)}:1 {textContrast < 4.5 ? "· 低于 WCAG AA 4.5" : "· 达标"}
+          </span>
+          <span className={cn(mutedContrast < 3 ? "text-loss" : "text-ash")}>
+            弱化文字对比度 {mutedContrast.toFixed(2)}:1
           </span>
         </div>
+      </SectionCard>
 
-        <div className="p-5 space-y-4">
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-caption font-mono">
-            <div className="rounded-btn border border-line bg-canvas p-2.5">
-              <span className="text-ash block text-[10px] uppercase font-sans">画布 Canvas</span>
-              <span className="text-ink font-semibold mt-1 block">
-                {resolvedTheme === "dark" ? "#000000 (Obsidian)" : "#f7f7f4 (Parchment)"}
-              </span>
-            </div>
-            <div className="rounded-btn border border-line bg-card p-2.5">
-              <span className="text-ash block text-[10px] uppercase font-sans">卡片 Card</span>
-              <span className="text-ink font-semibold mt-1 block">
-                {resolvedTheme === "dark" ? "#181817 (Onyx)" : "#f2f1ed (Bone)"}
-              </span>
-            </div>
-            <div className="rounded-btn border border-line bg-rail p-2.5">
-              <span className="text-ash block text-[10px] uppercase font-sans">侧栏 Rail</span>
-              <span className="text-ink font-semibold mt-1 block">
-                {resolvedTheme === "dark" ? "#121212 (Graphite)" : "#e6e5e0 (Linen)"}
-              </span>
-            </div>
-            <div className="rounded-btn border border-line bg-card p-2.5">
-              <span className="text-ash block text-[10px] uppercase font-sans">强调色 Accent</span>
-              <div className="flex items-center gap-1.5 mt-1">
-                <span
-                  className="h-2.5 w-2.5 rounded-full inline-block"
-                  style={{
-                    backgroundColor: resolvedTheme === "dark" ? "#cbb0f7" : "#f54e00",
-                  }}
-                />
-                <span className="text-ink font-semibold">
-                  {resolvedTheme === "dark" ? "#cbb0f7 (Violet)" : "#f54e00 (Ember)"}
+      {/* ---------------------------------------------------- 透明度 */}
+      <SectionCard
+        icon={<Frame size={16} />}
+        title="面板透明度"
+        desc="只改背景底色的通透度，文字与图标始终完全不透明 —— 这条与 DS 的行为一致，并有测试钉死。"
+      >
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <span className="text-body-sm text-ink">背景透明度</span>
+            <div className="flex items-center gap-2">
+              {followsTheme && (
+                <span className="rounded-chip bg-teal-tint px-2 py-0.5 text-caption text-teal">
+                  跟随主题
                 </span>
-              </div>
+              )}
+              <span className="rounded-chip bg-surface-hover px-2 py-0.5 text-caption font-mono text-graphite">
+                {transparency}% {transparency === 0 ? "不透明" : transparency === 100 ? "全透" : ""}
+              </span>
             </div>
           </div>
+          <input
+            type="range"
+            min={0}
+            max={100}
+            step={1}
+            value={transparency}
+            onChange={(e) => store.setTransparency(Number(e.target.value))}
+            aria-label="背景透明度"
+            className="w-full accent-teal"
+          />
+          <p className="text-caption text-ash">
+            0% 为完全不透明，100% 为完全透明（方向与 CSS 的 alpha 相反，DS 也是这个约定）。
+            拖动后点「跟随主题」可清除自定义值、退回默认 {DEFAULT_TRANSPARENCY}%。
+          </p>
+          {!followsTheme && (
+            <button
+              type="button"
+              onClick={() => store.setTransparency(null)}
+              className="rounded-btn border border-line px-2.5 py-1 text-body-sm text-graphite hover:bg-surface-hover hover:text-ink"
+            >
+              跟随主题（清除覆盖）
+            </button>
+          )}
+        </div>
+      </SectionCard>
 
-          <div className="rounded-btn border border-line/60 bg-line-soft/30 p-3 flex items-start gap-2 text-caption text-graphite leading-relaxed">
-            <Terminal size={14} className="shrink-0 mt-0.5 text-teal" />
-            <div>
-              <p className="font-medium text-ink">终端与编辑器实时同步</p>
-              <p className="mt-0.5 text-ash">
-                切换主题时，内置的 xterm 终端画布与背景色会实时同步更新，无需重启后台 Shell 会话。所有历史输出与运行进程完整保留。
-              </p>
-            </div>
+      {/* ---------------------------------------------------- 壁纸 */}
+      <SectionCard
+        icon={<ImageIcon size={16} />}
+        title="背景壁纸"
+        desc="一张图铺满整窗。焦点与安全区决定压暗往哪边让，内容才不会被壁纸吃掉。"
+        action={
+          <button
+            type="button"
+            onClick={() => store.resetWallpaper()}
+            className="flex shrink-0 items-center gap-1.5 rounded-btn border border-line px-2.5 py-1 text-body-sm text-graphite hover:bg-surface-hover hover:text-ink"
+          >
+            <RotateCcw size={12} />
+            清除
+          </button>
+        }
+      >
+        <div className="space-y-4">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) handleWallpaperFile(file);
+              e.target.value = "";
+            }}
+          />
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="flex items-center gap-1.5 rounded-btn border border-line px-3 py-1.5 text-body-sm text-ink hover:bg-surface-hover"
+            >
+              <Upload size={13} />
+              选择图片
+            </button>
+            {wallpaper.source && (
+              <button
+                type="button"
+                onClick={() => store.setWallpaper("enabled", !wallpaper.enabled)}
+                className={cn(
+                  "flex items-center gap-1.5 rounded-btn px-3 py-1.5 text-body-sm transition",
+                  wallpaper.enabled
+                    ? "bg-teal text-canvas"
+                    : "border border-line text-graphite hover:bg-surface-hover",
+                )}
+              >
+                {wallpaper.enabled ? "已启用" : "已停用"}
+              </button>
+            )}
+          </div>
+          {importError && <p className="text-caption text-loss">{importError}</p>}
+          {!wallpaper.source && (
+            <p className="text-caption text-ash">
+              还没有图片。导入的图片会等比缩到 2560px 并转成 JPEG 存进本地，不会离开这台机器。
+            </p>
+          )}
+
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+            <SliderField
+              label="缩放"
+              value={wallpaper.zoom}
+              min={1}
+              max={2}
+              step={0.05}
+              onChange={(v) => store.setWallpaper("zoom", v)}
+              format={(v) => `${v.toFixed(2)}×`}
+              disabled={!hasWallpaper}
+            />
+            <SliderField
+              label="压暗"
+              value={wallpaper.dim}
+              min={0}
+              max={0.8}
+              step={0.05}
+              onChange={(v) => store.setWallpaper("dim", v)}
+              format={(v) => `${Math.round(v * 100)}%`}
+              disabled={!hasWallpaper}
+            />
+            <SliderField
+              label="内容沉底强度"
+              value={wallpaper.taskIntensity}
+              min={0}
+              max={1}
+              step={0.05}
+              onChange={(v) => store.setWallpaper("taskIntensity", v)}
+              format={(v) => `${Math.round(v * 100)}%`}
+              disabled={!hasWallpaper}
+            />
+          </div>
+
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <SegmentedField<SafeArea>
+              label="安全区 safeArea"
+              value={art.safeArea}
+              onChange={(v) => store.setArt("safeArea", v)}
+              options={[
+                { value: "auto", label: "自动" },
+                { value: "left", label: "左" },
+                { value: "right", label: "右" },
+                { value: "center", label: "中" },
+                { value: "none", label: "无" },
+              ]}
+              hint="决定压暗从哪一侧扩散，把对比度让给内容区"
+            />
+            <SegmentedField<TaskMode>
+              label="任务模式 taskMode"
+              value={art.taskMode}
+              onChange={(v) => store.setArt("taskMode", v)}
+              options={[
+                { value: "auto", label: "自动" },
+                { value: "ambient", label: "氛围" },
+                { value: "banner", label: "横幅" },
+                { value: "full", label: "铺满" },
+                { value: "off", label: "关闭" },
+              ]}
+            />
+          </div>
+
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <SliderField
+              label="焦点 X"
+              value={resolveFocusX(art)}
+              min={0}
+              max={1}
+              step={0.01}
+              onChange={(v) => store.setArt("focusX", v)}
+              format={(v) => `${Math.round(v * 100)}%`}
+              hint={`安全区默认 ${Math.round(resolveFocusX({ ...art, focusX: null }) * 100)}%`}
+              disabled={!hasWallpaper}
+            />
+            <SliderField
+              label="焦点 Y"
+              value={resolveFocusY(art)}
+              min={0}
+              max={1}
+              step={0.01}
+              onChange={(v) => store.setArt("focusY", v)}
+              format={(v) => `${Math.round(v * 100)}%`}
+              disabled={!hasWallpaper}
+            />
+          </div>
+
+          {hasWallpaper && (
+            <button
+              type="button"
+              onClick={() => store.resetArt()}
+              className="rounded-btn border border-line px-2.5 py-1 text-body-sm text-graphite hover:bg-surface-hover hover:text-ink"
+            >
+              重置焦点与安全区
+            </button>
+          )}
+        </div>
+      </SectionCard>
+
+      {/* ---------------------------------------------------- 表面 */}
+      <SectionCard
+        icon={<Wand2 size={16} />}
+        title="表面与排版"
+        desc="对应 DS safe-css 策略里允许的表面变量。每一项的取值域都照抄 DS 校验器的上下限。"
+        action={
+          <button
+            type="button"
+            onClick={() => store.resetSurface()}
+            className="flex shrink-0 items-center gap-1.5 rounded-btn border border-line px-2.5 py-1 text-body-sm text-graphite hover:bg-surface-hover hover:text-ink"
+          >
+            <RotateCcw size={12} />
+            重置
+          </button>
+        }
+      >
+        <div className="grid grid-cols-1 gap-x-6 gap-y-5 sm:grid-cols-2">
+          <SliderField
+            label="圆角 radius"
+            value={activeProfile.surface.radius}
+            min={0}
+            max={28}
+            step={1}
+            onChange={(v) => store.setSurface("radius", v)}
+            format={(v) => `${v}px`}
+            hint="按原比例联动四档圆角（按钮/输入/卡片/胶囊）"
+          />
+          <SliderField
+            label="表面不透明度 opacity"
+            value={activeProfile.surface.opacity}
+            min={0.65}
+            max={1}
+            step={0.01}
+            onChange={(v) => store.setSurface("opacity", v)}
+            format={(v) => `${Math.round(v * 100)}%`}
+            hint="有壁纸时会在正文下垫一层画布色"
+          />
+          <SliderField
+            label="背景模糊 blur"
+            value={activeProfile.surface.blur}
+            min={0}
+            max={30}
+            step={1}
+            onChange={(v) => store.setSurface("blur", v)}
+            format={(v) => `${v}px`}
+          />
+          <SliderField
+            label="边框强度 borderAlpha"
+            value={activeProfile.surface.borderAlpha}
+            min={0}
+            max={1}
+            step={0.02}
+            onChange={(v) => store.setSurface("borderAlpha", v)}
+            format={(v) => v.toFixed(2)}
+          />
+          <SliderField
+            label="字号缩放 fontScale"
+            value={activeProfile.surface.fontScale}
+            min={0.85}
+            max={1.3}
+            step={0.01}
+            onChange={(v) => store.setSurface("fontScale", v)}
+            format={(v) => `${v.toFixed(2)}×`}
+            hint={`当前正文 ${Math.round(14 * activeProfile.surface.fontScale)}px`}
+          />
+          <SegmentedField<ShadowLevel>
+            label="投影 shadow"
+            value={activeProfile.surface.shadow}
+            onChange={(v) => store.setSurface("shadow", v)}
+            options={[
+              { value: "none", label: "无" },
+              { value: "soft", label: "轻" },
+              { value: "strong", label: "重" },
+            ]}
+          />
+          <SegmentedField<FontChoice>
+            label="字体 fontFamily"
+            value={activeProfile.surface.fontFamily}
+            onChange={(v) => store.setSurface("fontFamily", v)}
+            options={[
+              { value: "system", label: "系统" },
+              { value: "grotesk", label: "无衬线" },
+              { value: "serif", label: "衬线" },
+              { value: "mono", label: "等宽" },
+            ]}
+          />
+          <SegmentedField<DensityScale>
+            label="密度 density"
+            value={activeProfile.surface.density}
+            onChange={(v) => store.setSurface("density", v)}
+            options={[
+              { value: "compact", label: "紧凑" },
+              { value: "standard", label: "标准" },
+              { value: "comfortable", label: "宽松" },
+            ]}
+          />
+          <SegmentedField<MotionLevel>
+            label="动效 motion"
+            value={activeProfile.surface.motion}
+            onChange={(v) => store.setSurface("motion", v)}
+            options={[
+              { value: "off", label: "关闭" },
+              { value: "reduced", label: "减弱" },
+              { value: "standard", label: "标准" },
+            ]}
+            hint="只影响颜色过渡的时长，不引入位移或缩放"
+          />
+        </div>
+      </SectionCard>
+
+      {/* ---------------------------------------------------- 终端同步 + 导出 */}
+      <SectionCard
+        icon={<Terminal size={16} />}
+        title="终端同步与导出"
+        desc="终端配色由上面的配色档案推导，改颜色会一起变。导出的 JSON 即 DS 的 theme.json 形状。"
+      >
+        <div className="space-y-4">
+          <div className="rounded-btn border border-line/60 bg-line-soft/30 p-3 text-caption leading-relaxed text-graphite">
+            <p className="flex items-center gap-1.5 font-medium text-ink">
+              <Type size={12} className="text-teal" />
+              终端画布实时同步
+            </p>
+            <p className="mt-1 text-ash">
+              内置 xterm 终端的前景、背景、光标与 ANSI 十六色全部取自当前配色档案，切换主题时无需重启后台 Shell
+              会话。历史输出与运行进程完整保留。
+            </p>
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                const theme = store.exportDreamSkinTheme();
+                const blob = new Blob([JSON.stringify(theme, null, 2)], {
+                  type: "application/json",
+                });
+                const url = URL.createObjectURL(blob);
+                const anchor = document.createElement("a");
+                anchor.href = url;
+                anchor.download = "theme.json";
+                anchor.click();
+                URL.revokeObjectURL(url);
+              }}
+              className="flex items-center gap-1.5 rounded-btn border border-line px-3 py-1.5 text-body-sm text-ink hover:bg-surface-hover"
+            >
+              <Download size={13} />
+              导出 theme.json
+            </button>
+            <button
+              type="button"
+              onClick={() => store.resetAll()}
+              className="flex items-center gap-1.5 rounded-btn border border-line px-3 py-1.5 text-body-sm text-graphite hover:bg-surface-hover hover:text-ink"
+            >
+              <Trash2 size={13} />
+              恢复全部默认
+            </button>
           </div>
         </div>
-      </div>
+      </SectionCard>
     </div>
   );
 }

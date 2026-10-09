@@ -3,6 +3,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { CanvasAddon } from "@xterm/addon-canvas";
 import "@xterm/xterm/css/xterm.css";
+import { toHex } from "../core/appearance.ts";
 import {
   DaemonClient,
   defaultDaemonEndpoint,
@@ -17,6 +18,11 @@ export interface TerminalSessionCreateOptions {
   onExit?: (code: number) => void;
 }
 
+/**
+ * 兜底配色。正常路径不走这里 —— 终端颜色从 <html> 上算出来的 CSS 变量读，
+ * 这样用户在外观设置里改的颜色会真的进到终端，而不是各走各的。
+ * 只有在 CSS 变量读不到（首帧 / 非浏览器环境）时才退回这两套。
+ */
 export const XTERM_LIGHT_THEME = {
   background: "#f2f1ed",
   foreground: "#26251e",
@@ -62,6 +68,111 @@ export const XTERM_DARK_THEME = {
   brightCyan: "#dfc8ff",
   brightWhite: "#ffffff",
 };
+
+/** 读 <html> 上算出来的 CSS 变量，读不到就退回 fallback。 */
+function cssColor(name: string, fallback: string): string {
+  if (typeof window === "undefined" || typeof document === "undefined") return fallback;
+  const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return value || fallback;
+}
+
+/**
+ * xterm 配色。
+ *
+ * 刻意不用 xterm 的 ITheme —— 那个类型每一项都是可选的，于是
+ * theme.background 变成 string | undefined，后面塞进 DOM style 和 OSC
+ * 序列时就得到处判空。自己收窄成必填字符串，一次转换，全链路干净。
+ */
+export interface XtermTheme {
+  background: string;
+  foreground: string;
+  cursor: string;
+  selectionBackground: string;
+  black: string;
+  red: string;
+  green: string;
+  yellow: string;
+  blue: string;
+  magenta: string;
+  cyan: string;
+  white: string;
+  brightBlack: string;
+  brightRed: string;
+  brightGreen: string;
+  brightYellow: string;
+  brightBlue: string;
+  brightMagenta: string;
+  brightCyan: string;
+  brightWhite: string;
+}
+
+/**
+ * 由当前外观档案推导 xterm 配色。
+ *
+ * ANSI 16 色直接映射外观的十组色：面板当黑、正文当白、强调色当黄光标，
+ * 次要色当蓝、高亮色当品红，语义色原样给红绿。这样「换一套配色」时
+ * 终端里的 diff 绿/错误红也一起跟着变，不会出现界面变了、终端还是旧配色。
+ */
+export function buildTerminalTheme(isDark: boolean): XtermTheme {
+  const fallback = isDark ? XTERM_DARK_THEME : XTERM_LIGHT_THEME;
+  const canvas = cssColor("--color-canvas", fallback.background);
+  const panel = cssColor("--color-rail", fallback.black);
+  const card = cssColor("--color-card", fallback.white);
+  const ink = cssColor("--color-ink", fallback.foreground);
+  const muted = cssColor("--color-graphite", fallback.brightBlack);
+  const accent = cssColor("--color-teal", fallback.cursor);
+  const accentAlt = cssColor("--color-teal-hover", fallback.brightYellow);
+  const secondary = cssColor("--color-secondary", fallback.blue);
+  const highlight = cssColor("--color-highlight", fallback.magenta);
+  const gain = cssColor("--color-gain", fallback.green);
+  const loss = cssColor("--color-loss", fallback.red);
+
+  return {
+    background: toHex(canvas, fallback.background),
+    foreground: toHex(ink, fallback.foreground),
+    cursor: toHex(accent, fallback.cursor),
+    selectionBackground: cssColor("--color-selection", fallback.selectionBackground),
+    black: toHex(panel, fallback.black),
+    red: toHex(loss, fallback.red),
+    green: toHex(gain, fallback.green),
+    yellow: toHex(accent, fallback.yellow),
+    blue: toHex(secondary, fallback.blue),
+    magenta: toHex(highlight, fallback.magenta),
+    cyan: toHex(secondary, fallback.cyan),
+    white: toHex(card, fallback.white),
+    brightBlack: toHex(muted, fallback.brightBlack),
+    brightRed: toHex(loss, fallback.brightRed),
+    brightGreen: toHex(gain, fallback.brightGreen),
+    brightYellow: toHex(accentAlt, fallback.brightYellow),
+    brightBlue: toHex(secondary, fallback.brightBlue),
+    brightMagenta: toHex(highlight, fallback.brightMagenta),
+    brightCyan: toHex(accentAlt, fallback.brightCyan),
+    brightWhite: toHex(ink, fallback.brightWhite),
+  };
+}
+
+/**
+ * 构造发往后台 PTY 的主题变更通知序列。
+ *
+ * 前台跑的 TUI 应用靠两个信号感知明暗切换：
+ *   - DEC Mode 997（带 1=暗 / 2=亮参数），部分 TUI 只认这个
+ *   - OSC 10/11 颜色通报，程序主动来问「前景/背景色是什么」时回它
+ * 两段一起发，两类实现都能立刻重绘，不用重启会话。
+ * 颜色来自当前外观档案，用户改过配色后通报的也是新色。
+ */
+export function buildThemeNotification(theme: XtermTheme, isDark: boolean): string {
+  const fg = toHex(theme.foreground, "#000000").slice(1);
+  const bg = toHex(theme.background, "#ffffff").slice(1);
+  const fg16 = (fg.match(/../g) ?? []).map((part) => part.padStart(2, "0")).join("/");
+  const bg16 = (bg.match(/../g) ?? []).map((part) => part.padStart(2, "0")).join("/");
+  return (
+    `\x1b[?997;${isDark ? 1 : 2}n` +
+    `\x1b]10;rgb:${fg16}\x1b\\` +
+    `\x1b]11;rgb:${bg16}\x1b\\` +
+    `\x1b]10;#${fg}\x07` +
+    `\x1b]11;#${bg}\x07`
+  );
+}
 
 export function getIsDarkMode(): boolean {
   if (typeof document === "undefined") return false;
@@ -295,7 +406,7 @@ export class TerminalSession {
    * 动态切换终端配色主题（深色/浅色），立即穿透更新 DOM 与 xterm 内部渲染图层
    */
   applyTheme(isDark: boolean): void {
-    const theme = isDark ? XTERM_DARK_THEME : XTERM_LIGHT_THEME;
+    const theme = buildTerminalTheme(isDark);
 
     // 1. 同步更新 xterm options 配置
     // ⚠ 注意：必须使用 options.theme = { ...theme }，切勿将整个包含 cols/rows 的 options 覆盖，避免 constructor 校验抛错
@@ -346,11 +457,10 @@ export class TerminalSession {
 
     // 6. 向后台 PTY 注入终端主题模式通知（DEC Mode 2031 + OSC 10/11 颜色通报）
     // 让正在前台运行的 TUI 应用（如 ZCode、Codex 等）立即同步收到主题变更信号，触发内置的主题重绘！
+    // 颜色取自当前外观档案推导出的终端配色，用户改过配色后通报的也是新色。
     try {
       const client = DaemonClient.get(defaultDaemonEndpoint());
-      const themeSeq = isDark
-        ? "\x1b[?997;1n\x1b]10;rgb:fafa/f9f9/f6f6\x1b\\\x1b]11;rgb:0000/0000/0000\x1b\\\x1b]10;#faf9f6\x07\x1b]11;#000000\x07"
-        : "\x1b[?997;2n\x1b]10;rgb:2626/2525/1e1e\x1b\\\x1b]11;rgb:f2f2/f1f1/eded\x1b\\\x1b]10;#26251e\x07\x1b]11;#f2f1ed\x07";
+      const themeSeq = buildThemeNotification(theme, isDark);
       void client
         .rpc("terminal.input", { terminalId: this.terminalId, data: themeSeq }, 3000)
         .catch(() => {});

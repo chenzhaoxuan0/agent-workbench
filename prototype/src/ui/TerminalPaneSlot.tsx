@@ -16,7 +16,7 @@ import {
   type TerminalInstanceItem,
 } from "../store/useTerminalStore.ts";
 import { terminalSessionRegistry } from "../store/TerminalSessionManager.ts";
-import { useTheme } from "../store/useTheme.ts";
+import { useAppearance } from "../store/useAppearance.ts";
 import { useShell } from "../store/useShell.ts";
 import { cn } from "./cn.ts";
 
@@ -63,7 +63,7 @@ export const TerminalPaneSlot = memo(function TerminalPaneSlot({
   const splitPane = useTerminalStore((s) => s.splitPane);
   const closePane = useTerminalStore((s) => s.closePane);
   const toggleMaximize = useTerminalStore((s) => s.toggleMaximize);
-  const resolvedTheme = useTheme((s) => s.resolvedTheme);
+  const resolvedTheme = useAppearance((s) => s.resolvedAppearance);
   const settingsOpen = useShell((s) => s.settingsOpen);
 
   const isActive = inst.id === activeInstanceId;
@@ -111,11 +111,8 @@ export const TerminalPaneSlot = memo(function TerminalPaneSlot({
   return (
     <div
       onClick={() => setActiveInstance(inst.id)}
-      style={{
-        backgroundColor: resolvedTheme === "dark" ? "#000000" : "#f2f1ed",
-      }}
       className={cn(
-        "group/pane flex h-full w-full flex-col overflow-hidden select-none",
+        "group/pane flex h-full w-full flex-col overflow-hidden select-none bg-canvas",
         isActive
           ? "ring-1 ring-teal/50 shadow-sm"
           : "ring-1 ring-line/20 hover:ring-line/60",
@@ -200,10 +197,7 @@ export const TerminalPaneSlot = memo(function TerminalPaneSlot({
       {/* xterm 实体挂载容器 */}
       <div
         ref={mountRef}
-        style={{
-          backgroundColor: resolvedTheme === "dark" ? "#000000" : "#f2f1ed",
-        }}
-        className="min-h-0 min-w-0 flex-1 overflow-hidden relative"
+        className="min-h-0 min-w-0 flex-1 overflow-hidden relative bg-canvas"
       />
     </div>
   );
