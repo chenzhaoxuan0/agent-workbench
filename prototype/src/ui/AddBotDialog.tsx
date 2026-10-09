@@ -4,6 +4,7 @@ import {
   Check,
   FileText,
   FolderOpen,
+  ImagePlus,
   Plus,
   RefreshCw,
   Wand2,
@@ -41,6 +42,8 @@ export interface BotMemoryPolicy {
 export interface AddBotDraft {
   readonly name: string;
   readonly role: string;
+  /** 自定义头像（96×96 data URL）。undefined = 用按名字生成的默认头像 */
+  readonly avatar?: string;
   readonly rootPath: string;
   readonly runtimeId: string;
   readonly modelHint: string | null;
@@ -122,6 +125,7 @@ export function AddBotDialog({
   const [error, setError] = useState<string | null>(null);
   const [runtimeId, setRuntimeId] = useState<string>("");
   const [modelHint, setModelHint] = useState<string | null>(null);
+  const [avatar, setAvatar] = useState<string | null>(null);
   /** 打开这一刻盘上的真值，保存时当乐观锁基线传回 daemon */
   const [baseGuards, setBaseGuards] = useState<BotWriteGuards>({});
   /** 盘上已被改过、未写入。等用户选：覆盖 / 重新加载 / 取消 */
@@ -143,6 +147,8 @@ export function AddBotDialog({
   /** 用一个单元定义填满整张表单（预填与「重新加载」共用，免得两处走偏） */
   const fillFrom = (b: WorkUnit) => {
     const binding = b.bindings.find((x) => x.primary) ?? b.bindings[0];
+    // 初始默认不为空：没绑过执行器/模型时，预填当前执行器与它的默认模型，保存即可用
+    const rid = binding?.runtimeId ?? (runtimes.length > 0 ? useWorkbench.getState().activeRuntimeId : "");
     setName(b.name);
     setRole(b.identity?.role ?? "");
     setRootPath(b.rootPath);
@@ -151,8 +157,9 @@ export function AddBotDialog({
     setPersona(b.identity?.persona ?? "");
     setPersonaTouched(true);
     setMemory(b.memory ?? { semantic: true, episodic: true, procedural: true });
-    setRuntimeId(binding?.runtimeId ?? "");
-    setModelHint(binding?.modelHint ?? null);
+    setRuntimeId(rid);
+    setModelHint(binding?.modelHint ?? runtimes.find((r) => r.id === rid)?.defaultModel ?? null);
+    setAvatar(b.avatar ?? null);
     setChannels(b.channels ?? []);
     setAgentsMdMeta(b.agentsMdMeta);
     setBaseGuards({
@@ -184,10 +191,12 @@ export function AddBotDialog({
       // activeRuntimeId 在没有 daemon 时是个残留的默认字符串（如 "zcode"），
       // 直接用它会让「默认模型」列出某个并不存在的执行器的模型，
       // 提交时还会写出一条指向幽灵执行器的绑定。没有可用执行器就置空。
-      setRuntimeId(
-        useWorkbench.getState().runtimes.length > 0 ? useWorkbench.getState().activeRuntimeId : "",
+      const st = useWorkbench.getState();
+      setRuntimeId(st.runtimes.length > 0 ? st.activeRuntimeId : "");
+      setModelHint(
+        st.runtimes.find((r) => r.id === st.activeRuntimeId)?.defaultModel ?? null,
       );
-      setModelHint(null);
+      setAvatar(null);
       setChannels([]);
       setAgentsMdMeta(undefined);
       setBaseGuards({});
@@ -219,9 +228,30 @@ export function AddBotDialog({
     return () => document.removeEventListener("keydown", onKey);
   }, [open, onClose]);
 
+  /** 选图 → 居中裁 96×96 → dataURL（webp 优先，浏览器不支持时 toDataURL 自动回退 png） */
+  const onAvatarFile = (file: File): void => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const side = Math.min(img.naturalWidth, img.naturalHeight);
+      const canvas = document.createElement("canvas");
+      canvas.width = 96;
+      canvas.height = 96;
+      const ctx = canvas.getContext("2d");
+      if (ctx) {
+        ctx.drawImage(img, (img.naturalWidth - side) / 2, (img.naturalHeight - side) / 2, side, side, 0, 0, 96, 96);
+        setAvatar(canvas.toDataURL("image/webp", 0.9));
+      }
+      URL.revokeObjectURL(url);
+    };
+    img.onerror = () => URL.revokeObjectURL(url);
+    img.src = url;
+  };
+
   const draft = (): AddBotDraft => ({
     name: name.trim(),
     role: role.trim(),
+    avatar: avatar ?? undefined,
     rootPath: rootPath.trim().replace(/\/+$/, ""),
     runtimeId,
     modelHint,
@@ -371,6 +401,46 @@ export function AddBotDialog({
                     </button>
                   </div>
                 </Field>
+                <Field label="头像" hint="可选，上传后居中裁成方形；外框形态跟随外观设置的「bot 头像框形态」">
+                  <div className="flex items-center gap-3">
+                    {avatar ? (
+                      <img
+                        src={avatar}
+                        alt="bot 头像预览"
+                        className="h-12 w-12 shrink-0 rounded-full object-cover"
+                      />
+                    ) : (
+                      <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-line-soft text-body-sm font-medium text-graphite">
+                        {name.trim().slice(0, 1) || "?"}
+                      </span>
+                    )}
+                    <div className="flex items-center gap-1.5">
+                      <label className="flex cursor-pointer items-center gap-1 rounded-btn border border-line bg-canvas px-2.5 py-1.5 text-caption font-medium text-graphite transition hover:bg-line-soft hover:text-ink">
+                        <ImagePlus size={12} />
+                        <span>{avatar ? "更换图片" : "选择图片"}</span>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          onChange={(e) => {
+                            const f = e.target.files?.[0];
+                            if (f) onAvatarFile(f);
+                            e.target.value = "";
+                          }}
+                        />
+                      </label>
+                      {avatar && (
+                        <button
+                          type="button"
+                          onClick={() => setAvatar(null)}
+                          className="rounded-btn border border-line px-2.5 py-1.5 text-caption text-graphite transition hover:bg-line-soft hover:text-ink"
+                        >
+                          恢复默认
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </Field>
                 <Field label="默认执行器 (CLI)" hint="这个 bot 主要由哪家 CLI 执行">
                   {runtimes.length === 0 ? (
                     <div className="rounded-input bg-rail px-3 py-2.5">
@@ -383,8 +453,9 @@ export function AddBotDialog({
                     <select
                       value={runtimeId}
                       onChange={(e) => {
-                        setRuntimeId(e.target.value);
-                        setModelHint(null);
+                        const rid = e.target.value;
+                        setRuntimeId(rid);
+                        setModelHint(runtimes.find((r) => r.id === rid)?.defaultModel ?? null);
                       }}
                       className="w-full rounded-input border border-line bg-canvas px-3 py-2 text-body-sm text-ink outline-none focus:border-teal"
                     >

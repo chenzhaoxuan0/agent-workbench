@@ -140,6 +140,8 @@ export interface WorkUnit {
   readonly name: string;
   readonly kind: UnitKind;
   readonly identity?: WorkspaceIdentity;
+  /** 自定义头像（data URL，上传时已居中裁成 96×96）。缺省 = 按名字生成的彩色头像 */
+  readonly avatar?: string;
   readonly schedule?: UnitSchedule;
   readonly bindings: readonly RuntimeBinding[];
   /** AGENTS.md / SKILL.md / automations 继续可用，UI 只是渲染层 */

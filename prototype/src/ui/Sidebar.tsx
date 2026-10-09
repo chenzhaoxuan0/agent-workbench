@@ -294,6 +294,7 @@ export function Sidebar() {
                   agentsMd: draft.agentsMd,
                   memory: draft.memory,
                   channels: draft.channels,
+                  avatar: draft.avatar,
                 },
                 opts?.overwrite === true ? {} : guardsOf(editingUnit),
               );
@@ -325,6 +326,7 @@ export function Sidebar() {
                 agentsMd: draft.agentsMd,
                 memory: draft.memory,
                 channels: draft.channels,
+                avatar: draft.avatar,
                 tags: ["新建"],
                 lastActiveAt: Date.now(),
               });
@@ -362,19 +364,17 @@ function guardsOf(u: WorkUnit): BotWriteGuards {
 /* ------------------------------------------------------------- 单元行 */
 
 /**
- * bot 头像的身份色与形状 —— 对齐 GrokBot 的彩色 blob 形态。
- * 颜色是**身份数据**（与执行器徽标的 accent 同类例外），不是 UI 装饰；
- * 由单元名哈希出稳定的「颜色 × 形状」组合，同一个 bot 永远长一样。
+ * bot 头像的身份色 —— 颜色是**身份数据**（与执行器徽标的 accent 同类例外），
+ * 不是 UI 装饰；由单元名哈希出稳定颜色，同一个 bot 永远长一样。
+ * 外框**全员统一**（圆角档=正圆，方形档=无圆角），个性化交给自定义头像本身。
  */
 const BOT_COLORS = ["#8b5cf6", "#3b82f6", "#22c55e", "#f59e0b", "#ef4444", "#ec4899", "#14b8a6", "#6366f1"];
-const BOT_SHAPES = ["rounded-full", "rounded-[38%]", "rounded-2xl"] as const;
 
-/** 外观设置的「方形」档统一压成无圆角；「圆角」档沿用按名字哈希的 blob 形状 */
 export function botAvatarStyle(name: string, frame: AvatarFrame = "rounded"): { color: string; shape: string } {
   const hash = [...name].reduce((a, c) => a + c.codePointAt(0)!, 0);
   return {
     color: BOT_COLORS[hash % BOT_COLORS.length]!,
-    shape: frame === "square" ? "rounded-none" : BOT_SHAPES[hash % BOT_SHAPES.length]!,
+    shape: frame === "square" ? "rounded-none" : "rounded-full",
   };
 }
 
@@ -431,16 +431,20 @@ function UnitRow({
         )}
       >
         {isBot ? (
-          /* 彩色 blob 头像 + 双眼（GrokBot 式吉祥物形态），右下角日程角标 */
+          /* 自定义头像优先；缺省是彩色底 + 双眼（GrokBot 式吉祥物形态），右下角日程角标 */
           <span
             aria-hidden
-            className={cn("relative flex h-8 w-8 shrink-0 items-center justify-center", avatar.shape)}
-            style={{ background: avatar.color }}
+            className={cn("relative flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden", avatar.shape)}
+            style={unit.avatar ? undefined : { background: avatar.color }}
           >
-            <span className="mt-0.5 flex gap-0.5">
-              <span className="h-1.5 w-0.5 rounded-full bg-white/90" />
-              <span className="h-1.5 w-0.5 rounded-full bg-white/90" />
-            </span>
+            {unit.avatar ? (
+              <img src={unit.avatar} alt="" className="h-full w-full object-cover" />
+            ) : (
+              <span className="mt-0.5 flex gap-0.5">
+                <span className="h-1.5 w-0.5 rounded-full bg-white/90" />
+                <span className="h-1.5 w-0.5 rounded-full bg-white/90" />
+              </span>
+            )}
             {schedule && (
               <span
                 className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-rail bg-teal"
