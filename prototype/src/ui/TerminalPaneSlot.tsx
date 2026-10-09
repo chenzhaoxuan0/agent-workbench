@@ -12,6 +12,7 @@ import {
   Bot,
   Wand2,
   Feather,
+  MoonStar,
 } from "lucide-react";
 import {
   useTerminalStore,
@@ -40,6 +41,8 @@ export function ShellOrAgentIcon({
       return <Wand2 className={cn("text-blue-400", className)} size={12} />;
     case "hermes":
       return <Feather className={cn("text-violet-400", className)} size={12} />;
+    case "kimi":
+      return <MoonStar className={cn("text-cyan-400", className)} size={12} />;
     case "pwsh":
       return <Terminal className={cn("text-teal", className)} size={12} />;
     case "powershell":

@@ -1,12 +1,11 @@
 /**
- * 终端 TUI 直启冒烟：验证 dst / hermes 在 ConPTY 里的 executorId 直启链路。
+ * 终端 TUI 直启冒烟：验证 dst / hermes / kimi 在 ConPTY 里的 executorId 直启链路。
  *
  * terminals.ts 的规则：executorId（非 shell/pwsh/mockperm）就是 pwsh 里
- * `& '<命令>'` 的命令名。这里分别用 executorId="dst" / "hermes" 起终端，
- * 收集几秒输出，确认 TUI 真起来了（出现 TUI 特征：hermes 的 banner 框线 /
- * dst 的 dsh-tui 界面），然后 kill。
+ * `& '<命令>'` 的命令名。这里分别用 executorId 起终端，收集几秒输出，确认 TUI
+ * 真起来了（出现各家的 TUI 特征串），然后 kill。
  *
- * 用法：cd backend && npx tsx scripts/smoke-tui-dst-hermes.ts
+ * 用法：cd backend && npx tsx scripts/smoke-tui-executors.ts
  */
 import { TerminalManager } from "../src/terminal/terminals.ts";
 
@@ -41,5 +40,7 @@ function collect(
 // 等待窗口给足；特征串取自实测渲染输出（模型行 / Tips 条）
 const dstOk = await collect("DeepSeek Harness TUI", "dst", ["deepseek", "Tips"], 30000);
 const hermesOk = await collect("Hermes Agent", "hermes", ["Hermes", "│", "─"], 15000);
-console.log(`\n${dstOk && hermesOk ? "all green" : "FAILURES"}`);
-process.exit(dstOk && hermesOk ? 0 : 1);
+// kimi 起来后先出工作区信任对话框（实测特征串）；160MB 打包二进制冷启动给 20s
+const kimiOk = await collect("Kimi Code", "kimi", ["Trust this folder", "Kimi"], 20000);
+console.log(`\n${dstOk && hermesOk && kimiOk ? "all green" : "FAILURES"}`);
+process.exit(dstOk && hermesOk && kimiOk ? 0 : 1);

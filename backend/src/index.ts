@@ -29,6 +29,7 @@ import { DshAdapter } from "./runtime/adapters/dsh.ts";
 import { OpencodeAdapter } from "./runtime/adapters/opencode.ts";
 import { DstAdapter } from "./runtime/adapters/dst.ts";
 import { HermesAdapter } from "./runtime/adapters/hermes.ts";
+import { KimiAdapter } from "./runtime/adapters/kimi.ts";
 import { TerminalManager } from "./terminal/terminals.ts";
 import { Store } from "./store/db.ts";
 import { AutomationScheduler } from "./automation/scheduler.ts";
@@ -139,6 +140,7 @@ host.register(new DshAdapter());
 host.register(new OpencodeAdapter());
 host.register(new DstAdapter());
 host.register(new HermesAdapter());
+host.register(new KimiAdapter());
 host.register(new MockPermAdapter());
 host.loadPersisted();
 memoryScheduler?.start();
@@ -214,6 +216,7 @@ registerMethod("driver.catalog", () => [
   },
   { id: "dst", installed: true, registered: true, hint: "纯 TUI 形态（DeepSeek Harness TUI 启动器），仅终端一键直启；headless 驱动走 dsh（ACP）" },
   { id: "hermes", installed: true, registered: true, hint: "ACP 接入（hermes acp），模型/模式走 session/set_model、session/set_mode；终端裸命令 hermes 即全屏 TUI" },
+  { id: "kimi", installed: true, registered: true, hint: "ACP 接入（kimi acp），模型走 session/set_config_option（无 set_model）；凭据过期时报 kimi login 指引，终端裸命令 kimi 即全屏 TUI" },
   { id: "cursor-agent", installed: false, registered: false, hint: "未安装（cursor-agent install）" },
   { id: "grok", installed: false, registered: false, hint: "未安装" },
   { id: "antigravity", installed: false, registered: false, hint: "未安装" },
