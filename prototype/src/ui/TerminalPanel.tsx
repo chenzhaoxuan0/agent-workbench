@@ -158,7 +158,7 @@ export function TerminalPanel({
     <div
       className={cn(
         "flex h-full min-h-0 flex-1 flex-col",
-        isCanvas ? "bg-canvas" : "bg-card",
+        isCanvas ? undefined : "bg-card",
         !isCanvas && !isPage && "border-t border-line",
       )}
     >

@@ -122,7 +122,7 @@ export const TerminalPaneSlot = memo(function TerminalPaneSlot({
     <div
       onClick={() => setActiveInstance(inst.id)}
       className={cn(
-        "group/pane flex h-full w-full flex-col overflow-hidden select-none bg-canvas",
+        "group/pane flex h-full w-full flex-col overflow-hidden select-none",
         isActive
           ? "ring-1 ring-teal/50 shadow-sm"
           : "ring-1 ring-line/20 hover:ring-line/60",
@@ -207,7 +207,7 @@ export const TerminalPaneSlot = memo(function TerminalPaneSlot({
       {/* xterm 实体挂载容器 */}
       <div
         ref={mountRef}
-        className="min-h-0 min-w-0 flex-1 overflow-hidden relative bg-canvas"
+        className="min-h-0 min-w-0 flex-1 overflow-hidden relative"
       />
     </div>
   );

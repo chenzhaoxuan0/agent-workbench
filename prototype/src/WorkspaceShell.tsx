@@ -33,7 +33,9 @@ export function WorkspaceShell() {
   useEffect(() => bindShellShortcuts(), []);
 
   return (
-    <div className="relative flex h-screen flex-col bg-canvas">
+    /* 画布底色只由 body 刷一次（开壁纸时它就是唯一的全局半透明层），
+       这里不再叠 bg-canvas —— 嵌套重复刷会让壁纸被多层 70% 黑乘到不可见 */
+    <div className="relative flex h-screen flex-col">
       {/* 左上浮层 —— 侧栏开关 / 新建任务（ZCode 的 DesktopTopOverlay）。
           悬浮在侧栏区域上方，侧栏收起后原地保留，主视图切换不消失 */}
       <DesktopTopOverlay />

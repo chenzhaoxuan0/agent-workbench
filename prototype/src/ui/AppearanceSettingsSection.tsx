@@ -486,9 +486,9 @@ export function AppearanceSettingsSection() {
               className="w-full accent-teal"
             />
             <p className="text-caption text-ash">
-              只作用于终端画布的底色，终端文字永远不透明。默认 0%；开着壁纸时调到 20~40%
-              能透出壁纸，再高就会伤到正文可读性。改完需刷新页面（F5）重建终端才生效
-              —— xterm 的透明开关只在创建时读取，已存在的终端实例无法事后补上。
+              只作用于终端画布的底色，终端文字永远不透明。开着壁纸时建议 60% 以上
+              才能明显透出壁纸（终端后面还垫着一层全局底色）。改完需刷新页面（F5）
+              重建终端才生效 —— xterm 的透明开关只在创建时读取。
             </p>
           </div>
         </div>
