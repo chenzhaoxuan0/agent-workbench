@@ -1,12 +1,5 @@
 import { useState } from "react";
-import {
-  Check,
-  Copy,
-  Ellipsis,
-  Folder,
-  FolderOpen,
-  Pin,
-} from "lucide-react";
+import { Check, FolderOpen } from "lucide-react";
 import { useShell } from "../store/useShell.ts";
 import { useWorkbench, selectActiveUnit } from "../store/useWorkbench.ts";
 import { openFolder } from "../adapters/daemon/client.ts";
@@ -59,10 +52,8 @@ export function WorkspaceHeader() {
             </span>
           </button>
 
-          {/* 路径与绑定弹层 */}
-          <WorkspacePopover />
-          {/* 任务更多菜单 */}
-          <MoreMenu />
+          {/* 工作区：单击直接在资源管理器中打开，路径悬停可见 */}
+          {unit && <OpenWorkspaceFolder path={unit.rootPath} />}
         </div>
       ) : (
         <span className="text-body-sm text-ash">未选择 Agent</span>
@@ -124,184 +115,31 @@ function BackgroundGuardianBadge() {
   );
 }
 
-/* ------------------------------------------------------------- 更多菜单 */
+/* ------------------------------------------------------------- 工作区直达 */
 
 /**
- * 任务更多菜单 —— 标题后的 Ellipsis。
- *
- * 菜单结构同构：复制组 — 轨迹。
- * 这两项是真实动作。
- *
- * 原先还有 置顶 / 重命名 / 归档 / 反馈 四项，点下去只关菜单（`placeholder: true`），
- * 已删除。留着一排点了没反应的按钮，比没有这排按钮更让人以为功能坏了。
+ * 工作区打开按钮 —— 单击直接在资源管理器中打开，不再经弹层二跳。
+ * 路径放 title 里悬停可见；打开成功短暂打勾作为反馈（daemon 不可达时失败只进 console）。
  */
-function MoreMenu() {
-  const unit = useWorkbench(selectActiveUnit);
-  const [open, setOpen] = useState(false);
-  const [copied, setCopied] = useState<string | null>(null);
-
-  const copy = async (text: string, key: string) => {
-    try {
-      await navigator.clipboard?.writeText(text);
-      setCopied(key);
-      window.setTimeout(() => setCopied(null), 1200);
-    } catch {
-      /* 剪贴板不可用就安静放弃 */
-    }
-  };
-
-  const rows: readonly {
-    key: string;
-    icon: typeof Pin;
-    label: string;
-    hint?: string;
-    disabled?: boolean;
-    onClick?: () => void;
-  }[] = [
-    {
-      key: "open-folder",
-      icon: FolderOpen,
-      label: "在资源管理器中打开",
-      disabled: !unit,
-      onClick: () => {
-        // 与下面的 WorkspacePopover 同一处理：daemon 不可达是常态（README 明说），
-        // 不 catch 就是一个未处理的 Promise 拒绝 + 点了没反应
-        if (!unit) return;
-        void openFolder({ path: unit.rootPath }).catch((err: unknown) => {
-          console.error("[workbench] openFolder failed", err);
-        });
-      },
-    },
-    {
-      key: "copy-path",
-      icon: Copy,
-      label: copied === "path" ? "已复制路径" : "复制路径",
-      disabled: !unit,
-      onClick: () => unit && void copy(unit.rootPath, "path"),
-    },
-  ];
-
-  return (
-    <div className="relative shrink-0">
-      <button
-        onClick={() => setOpen((o) => !o)}
-        aria-expanded={open}
-        aria-label="更多"
-        title="更多"
-        className={cn(iconBtn, open && "bg-line-soft text-ink")}
-      >
-        <Ellipsis size={14} />
-      </button>
-
-      {open && (
-        <>
-          <span className="fixed inset-0 z-30" onClick={() => setOpen(false)} aria-hidden />
-          <div className="absolute left-0 top-full z-40 mt-1 w-48 rounded-card border border-line bg-card py-1 shadow-xl">
-            {rows.map(({ key, icon: Icon, label, disabled, onClick }) => (
-              <button
-                key={key}
-                disabled={disabled}
-                onClick={() => {
-                  onClick?.();
-                  setOpen(false);
-                }}
-                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-body-sm text-graphite hover:bg-line-soft hover:text-ink disabled:pointer-events-none disabled:opacity-40"
-              >
-                <Icon size={12} />
-                {label}
-              </button>
-            ))}
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
-/* ------------------------------------------------------------- 工作区弹层 */
-
-/**
- * 工作区上下文按钮 —— 对齐 ZCode 的 WorkspaceContextPath：
- * 按钮本体是 Folder 图标，点开弹层看完整路径 / 单元信息 / 执行器绑定。
- */
-function WorkspacePopover() {
-  const unit = useWorkbench(selectActiveUnit);
-  const [open, setOpen] = useState(false);
-  const [copied, setCopied] = useState(false);
+function OpenWorkspaceFolder({ path }: { path: string }) {
   const [opened, setOpened] = useState(false);
 
-  if (!unit) return null;
-
-  const copyPath = () => {
-    try {
-      void navigator.clipboard?.writeText(unit.rootPath).then(() => {
-        setCopied(true);
-        window.setTimeout(() => setCopied(false), 1200);
-      });
-    } catch {
-      /* 剪贴板不可用就安静放弃 */
-    }
-  };
-
   return (
-    <div className="relative">
-      <button
-        onClick={() => setOpen((o) => !o)}
-        aria-expanded={open}
-        title={`工作区路径：${unit.rootPath}\n点击查看详情与打开文件夹`}
-        className={cn(iconBtn, open && "bg-line-soft text-ink")}
-      >
-        <Folder size={14} />
-      </button>
-
-      {open && (
-        <>
-          <span className="fixed inset-0 z-30" onClick={() => setOpen(false)} aria-hidden />
-          <div className="absolute left-0 top-full z-40 mt-1 w-72 rounded-card border border-line bg-card p-3 shadow-xl">
-            <p className="break-all font-mono text-body-sm text-ink">{unit.rootPath}</p>
-            <div className="mt-2.5 flex items-center gap-1.5 border-t border-line-soft pt-2">
-              <button
-                type="button"
-                onClick={async () => {
-                  try {
-                    await openFolder({ path: unit.rootPath });
-                    setOpened(true);
-                    setTimeout(() => setOpened(false), 2000);
-                  } catch (err) {
-                    console.error("[WorkspaceHeader] 打开文件夹失败:", err);
-                  }
-                }}
-                className={cn(
-                  "flex items-center gap-1 rounded-btn px-2 py-1 text-caption font-medium transition active:scale-95",
-                  opened ? "bg-gain/15 text-gain" : "bg-teal-tint text-teal hover:bg-teal/15",
-                )}
-              >
-                {opened ? <Check size={12} className="text-gain" /> : <FolderOpen size={12} />}
-                <span>{opened ? "已在资源管理器打开" : "打开文件夹"}</span>
-              </button>
-              <button
-                onClick={copyPath}
-                className="ml-auto flex items-center gap-1 rounded-btn px-1.5 py-1 text-caption text-graphite hover:bg-line-soft hover:text-ink transition"
-              >
-                {copied ? <Check size={12} className="text-gain" /> : <Copy size={12} />}
-                {copied ? "已复制" : "复制路径"}
-              </button>
-            </div>
-
-            {unit.bindings.length > 0 && (
-              <div className="mt-2 space-y-1 border-t border-line-soft pt-2">
-                <p className="text-caption text-ash">执行器绑定</p>
-                {unit.bindings.map((b) => (
-                  <p key={b.runtimeId} className="flex items-center gap-1.5 font-mono text-caption text-graphite">
-                    <span className="text-ink">{b.runtimeId}</span>
-                    {b.modelHint && <span className="truncate">→ {b.modelHint}</span>}
-                  </p>
-                ))}
-              </div>
-            )}
-          </div>
-        </>
-      )}
-    </div>
+    <button
+      onClick={() => {
+        void openFolder({ path })
+          .then(() => {
+            setOpened(true);
+            window.setTimeout(() => setOpened(false), 1500);
+          })
+          .catch((err: unknown) => console.error("[WorkspaceHeader] 打开文件夹失败:", err));
+      }}
+      aria-label="在资源管理器中打开工作区文件夹"
+      title={`工作区路径：${path}
+单击在资源管理器中打开`}
+      className={cn(iconBtn, opened && "text-gain")}
+    >
+      {opened ? <Check size={14} className="text-gain" /> : <FolderOpen size={14} />}
+    </button>
   );
 }
