@@ -14,6 +14,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
+import type { ScheduleRule } from "../../../prototype/src/core/automation.ts";
 import { log } from "../log.ts";
 
 export interface SessionRow {
@@ -150,6 +151,28 @@ export class Store {
     } catch {
       // 列已存在
     }
+    // 自动化 v2（对齐 ZCode 的调度状态机）：
+    // 「下次何时跑」是持久化事实（next_run_at），scheduler 只认 DB 不靠内存推算，
+    // daemon 重启 / 崩溃不丢拍；recurring/max_runs/run_count 收口一次性与有限次任务；
+    // last_error 撑卡片的失败徽章。
+    for (const stmt of [
+      `ALTER TABLE automations ADD COLUMN name TEXT`,
+      `ALTER TABLE automations ADD COLUMN schedule_rule TEXT`,
+      `ALTER TABLE automations ADD COLUMN recurring INTEGER NOT NULL DEFAULT 1`,
+      `ALTER TABLE automations ADD COLUMN max_runs INTEGER`,
+      `ALTER TABLE automations ADD COLUMN run_count INTEGER NOT NULL DEFAULT 0`,
+      `ALTER TABLE automations ADD COLUMN next_run_at INTEGER`,
+      `ALTER TABLE automations ADD COLUMN last_run_at INTEGER`,
+      `ALTER TABLE automations ADD COLUMN last_error TEXT`,
+      `ALTER TABLE automations ADD COLUMN last_error_at INTEGER`,
+      `ALTER TABLE automation_runs ADD COLUMN trigger TEXT`,
+    ]) {
+      try {
+        this.db.exec(stmt);
+      } catch {
+        // 列已存在
+      }
+    }
     log.info("store opened", { db: path.join(homeDir, "state.db") });
   }
 
@@ -265,24 +288,81 @@ export class Store {
     return Number(result.changes) > 0;
   }
 
-  // ---- 自动化（Phase 5）------------------------------------------------------
+  // ---- 自动化（Phase 5，v2 调度状态机）---------------------------------------
+
+  /** automations 行的读取形态。scheduleRule 为调度权威（共享引擎的规则对象）。 */
+  automationRow(r: Record<string, unknown>): ReturnType<Store["listAutomations"]>[number] {
+    let rule: ScheduleRule | null = null;
+    const raw = r["schedule_rule"];
+    if (typeof raw === "string" && raw !== "") {
+      try {
+        rule = JSON.parse(raw) as ScheduleRule;
+      } catch {
+        rule = null; // 坏 JSON 按纯 cron 处理，不让一行脏数据掀掉整个列表
+      }
+    }
+    const unitName = String(r["unit_name"]);
+    return {
+      id: Number(r["id"]),
+      unitId: String(r["unit_id"]),
+      unitName,
+      name: r["name"] === null || r["name"] === undefined ? unitName : String(r["name"]),
+      runtimeId: String(r["runtime_id"]),
+      rootPath: String(r["root_path"]),
+      prompt: String(r["prompt"]),
+      model: r["model"] === null ? null : String(r["model"]),
+      mode: r["mode"] === null ? null : String(r["mode"]),
+      cron: String(r["cron"]),
+      scheduleRule: rule,
+      recurring: Number(r["recurring"] ?? 1) === 1,
+      maxRuns: r["max_runs"] === null || r["max_runs"] === undefined ? null : Number(r["max_runs"]),
+      runCount: Number(r["run_count"] ?? 0),
+      enabled: Number(r["enabled"]) === 1,
+      nextRunAt: r["next_run_at"] === null || r["next_run_at"] === undefined ? null : Number(r["next_run_at"]),
+      lastRunAt: r["last_run_at"] === null || r["last_run_at"] === undefined ? null : Number(r["last_run_at"]),
+      lastError: r["last_error"] === null || r["last_error"] === undefined ? null : String(r["last_error"]),
+      lastErrorAt: r["last_error_at"] === null || r["last_error_at"] === undefined ? null : Number(r["last_error_at"]),
+      createdAt: Number(r["created_at"]),
+    };
+  }
 
   createAutomation(a: {
     unitId: string;
     unitName: string;
+    name: string;
     runtimeId: string;
     rootPath: string;
     prompt: string;
     model: string | null;
     mode: string | null;
     cron: string;
+    scheduleRule: ScheduleRule | null;
+    recurring: boolean;
+    maxRuns: number | null;
+    nextRunAt: number | null;
   }): number {
     const result = this.db
       .prepare(
-        `INSERT INTO automations (unit_id, unit_name, runtime_id, root_path, prompt, model, mode, cron, enabled, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+        `INSERT INTO automations (unit_id, unit_name, name, runtime_id, root_path, prompt, model, mode, cron,
+           schedule_rule, recurring, max_runs, run_count, next_run_at, enabled, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 1, ?)`,
       )
-      .run(a.unitId, a.unitName, a.runtimeId, a.rootPath, a.prompt, a.model, a.mode, a.cron, Date.now());
+      .run(
+        a.unitId,
+        a.unitName,
+        a.name,
+        a.runtimeId,
+        a.rootPath,
+        a.prompt,
+        a.model,
+        a.mode,
+        a.cron,
+        a.scheduleRule === null ? null : JSON.stringify(a.scheduleRule),
+        a.recurring ? 1 : 0,
+        a.maxRuns,
+        a.nextRunAt,
+        Date.now(),
+      );
     return Number(result.lastInsertRowid);
   }
 
@@ -290,34 +370,103 @@ export class Store {
     id: number;
     unitId: string;
     unitName: string;
+    name: string;
     runtimeId: string;
     rootPath: string;
     prompt: string;
     model: string | null;
     mode: string | null;
     cron: string;
+    scheduleRule: ScheduleRule | null;
+    recurring: boolean;
+    maxRuns: number | null;
+    runCount: number;
     enabled: boolean;
+    nextRunAt: number | null;
+    lastRunAt: number | null;
+    lastError: string | null;
+    lastErrorAt: number | null;
     createdAt: number;
   }> {
     const rows = this.db.prepare(`SELECT * FROM automations ORDER BY id DESC`).all() as Array<Record<string, unknown>>;
-    return rows.map((r) => ({
-      id: Number(r["id"]),
-      unitId: String(r["unit_id"]),
-      unitName: String(r["unit_name"]),
-      runtimeId: String(r["runtime_id"]),
-      rootPath: String(r["root_path"]),
-      prompt: String(r["prompt"]),
-      model: r["model"] === null ? null : String(r["model"]),
-      mode: r["mode"] === null ? null : String(r["mode"]),
-      cron: String(r["cron"]),
-      enabled: Number(r["enabled"]) === 1,
-      createdAt: Number(r["created_at"]),
-    }));
+    return rows.map((r) => this.automationRow(r));
   }
 
   getAutomation(id: number): { automation: ReturnType<Store["listAutomations"]>[number] } | undefined {
     const hit = this.listAutomations().find((a) => a.id === id);
     return hit === undefined ? undefined : { automation: hit };
+  }
+
+  /**
+   * 局部更新。只写传入的字段（undefined = 不动），调度字段变化后由调用方
+   * 负责把 nextRunAt 一起算好传进来 —— store 不懂调度语义。
+   */
+  updateAutomation(
+    id: number,
+    patch: Partial<{
+      name: string;
+      unitId: string;
+      unitName: string;
+      runtimeId: string;
+      rootPath: string;
+      prompt: string;
+      model: string | null;
+      mode: string | null;
+      cron: string;
+      scheduleRule: ScheduleRule | null;
+      recurring: boolean;
+      maxRuns: number | null;
+      enabled: boolean;
+      nextRunAt: number | null;
+      lastRunAt: number | null;
+    }>,
+  ): boolean {
+    const sets: string[] = [];
+    const values: Array<string | number | null> = [];
+    const put = (col: string, v: string | number | boolean | null): void => {
+      sets.push(`${col} = ?`);
+      if (typeof v === "boolean") values.push(v ? 1 : 0);
+      else values.push(v);
+    };
+    if (patch.name !== undefined) put("name", patch.name);
+    if (patch.unitId !== undefined) put("unit_id", patch.unitId);
+    if (patch.unitName !== undefined) put("unit_name", patch.unitName);
+    if (patch.runtimeId !== undefined) put("runtime_id", patch.runtimeId);
+    if (patch.rootPath !== undefined) put("root_path", patch.rootPath);
+    if (patch.prompt !== undefined) put("prompt", patch.prompt);
+    if (patch.model !== undefined) put("model", patch.model);
+    if (patch.mode !== undefined) put("mode", patch.mode);
+    if (patch.cron !== undefined) put("cron", patch.cron);
+    if (patch.scheduleRule !== undefined) put("schedule_rule", patch.scheduleRule === null ? null : JSON.stringify(patch.scheduleRule));
+    if (patch.recurring !== undefined) put("recurring", patch.recurring);
+    if (patch.maxRuns !== undefined) put("max_runs", patch.maxRuns);
+    if (patch.enabled !== undefined) put("enabled", patch.enabled);
+    if (patch.nextRunAt !== undefined) put("next_run_at", patch.nextRunAt);
+    if (patch.lastRunAt !== undefined) put("last_run_at", patch.lastRunAt);
+    if (sets.length === 0) return true;
+    values.push(id);
+    const result = this.db.prepare(`UPDATE automations SET ${sets.join(", ")} WHERE id = ?`).run(...values);
+    return Number(result.changes) > 0;
+  }
+
+  /**
+   * 发火结算（认领）：next_run_at 先行前推 + run_count+1，之后再异步派发 ——
+   * 两帧 tick 之间不会对同一次触发重复发火（single-flight 靠 DB 前推，不靠内存锁）。
+   * terminal=true 同时停用（一次性/有限次任务跑完，对齐 ZCode 的 completed 收口）。
+   */
+  markAutomationFired(id: number, nextRunAt: number | null, lastRunAt: number, terminal: boolean): boolean {
+    const result = this.db
+      .prepare(
+        `UPDATE automations SET next_run_at = ?, last_run_at = ?, run_count = run_count + 1,
+           enabled = CASE WHEN ? THEN 0 ELSE enabled END WHERE id = ?`,
+      )
+      .run(nextRunAt, lastRunAt, terminal ? 1 : 0, id);
+    return Number(result.changes) > 0;
+  }
+
+  /** 失败徽章：message=null 表示清除（下次成功发火时调用） */
+  setAutomationError(id: number, message: string | null, at: number | null): void {
+    this.db.prepare(`UPDATE automations SET last_error = ?, last_error_at = ? WHERE id = ?`).run(message, at, id);
   }
 
   setAutomationEnabled(id: number, enabled: boolean): boolean {
@@ -330,10 +479,19 @@ export class Store {
     return Number(result.changes) > 0;
   }
 
-  startAutomationRun(automationId: number, sessionId: string | null): number {
+  startAutomationRun(automationId: number, sessionId: string | null, trigger: "schedule" | "manual" = "schedule"): number {
     const result = this.db
-      .prepare(`INSERT INTO automation_runs (automation_id, session_id, status, started_at) VALUES (?, ?, 'running', ?)`)
-      .run(automationId, sessionId, Date.now());
+      .prepare(`INSERT INTO automation_runs (automation_id, session_id, status, trigger, started_at) VALUES (?, ?, 'running', ?, ?)`)
+      .run(automationId, sessionId, trigger, Date.now());
+    return Number(result.lastInsertRowid);
+  }
+
+  /** 错过窗口的记账：不派发，只留痕 + 由调用方推进 next_run_at（misfire 不补跑口径） */
+  recordSkippedAutomationRun(automationId: number, scheduledAt: number, reason: string): number {
+    const result = this.db
+      .prepare(`INSERT INTO automation_runs (automation_id, session_id, status, trigger, started_at, finished_at, detail)
+                VALUES (?, NULL, 'skipped', 'schedule', ?, ?, ?)`)
+      .run(automationId, scheduledAt, Date.now(), reason);
     return Number(result.lastInsertRowid);
   }
 
@@ -352,6 +510,7 @@ export class Store {
     automationId: number;
     sessionId: string | null;
     status: string;
+    trigger: string;
     startedAt: number;
     finishedAt: number | null;
     detail: string | null;
@@ -364,6 +523,7 @@ export class Store {
       automationId: Number(r["automation_id"]),
       sessionId: r["session_id"] === null ? null : String(r["session_id"]),
       status: String(r["status"]),
+      trigger: r["trigger"] === null || r["trigger"] === undefined ? "schedule" : String(r["trigger"]),
       startedAt: Number(r["started_at"]),
       finishedAt: r["finished_at"] === null ? null : Number(r["finished_at"]),
       detail: r["detail"] === null ? null : String(r["detail"]),

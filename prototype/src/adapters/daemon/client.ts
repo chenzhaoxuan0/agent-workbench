@@ -21,6 +21,7 @@
 
 import type { RuntimeCapabilities } from "../../core/adapter.ts";
 import type { RuntimeEvent } from "../../core/events.ts";
+import { ruleFromCron, type Automation, type AutomationRun, type ScheduleRule } from "../../core/automation.ts";
 import type { WorkUnit } from "../../core/units.ts";
 
 export interface DaemonModelInfo {
@@ -586,5 +587,157 @@ export async function openFolder(
       throw err;
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// 自动化（Phase 5 v2）—— 定时任务 CRUD / 开关 / 立即运行 / 运行记录。
+// daemon 返回的是带 scheduleRule 的权威形态（调度引擎与 UI 共享同一份规则对象），
+// 映射成 core/automation.ts 的 Automation 给页面用。
+// ---------------------------------------------------------------------------
+
+export interface DaemonAutomationRun {
+  readonly id: number;
+  readonly automationId: number;
+  readonly sessionId: string | null;
+  /** running | done | failed | skipped */
+  readonly status: string;
+  /** schedule | manual */
+  readonly trigger: string;
+  readonly startedAt: number;
+  readonly finishedAt: number | null;
+  readonly detail: string | null;
+}
+
+export interface DaemonAutomation {
+  readonly id: number;
+  readonly unitId: string;
+  readonly unitName: string;
+  readonly name: string;
+  readonly runtimeId: string;
+  readonly rootPath: string;
+  readonly prompt: string;
+  readonly model: string | null;
+  readonly mode: string | null;
+  readonly cron: string;
+  readonly scheduleRule: ScheduleRule | null;
+  readonly recurring: boolean;
+  readonly maxRuns: number | null;
+  readonly runCount: number;
+  readonly enabled: boolean;
+  readonly nextRunAt: number | null;
+  readonly lastRunAt: number | null;
+  readonly lastError: string | null;
+  readonly lastErrorAt: number | null;
+  readonly createdAt: number;
+  readonly runs: readonly DaemonAutomationRun[];
+}
+
+/** 创建/更新共用的入参。调度三选一：scheduleRule（权威）/ cron（兼容）/ delayMinutes（“N 分钟后”） */
+export interface AutomationWriteInput {
+  readonly name?: string;
+  readonly unitId?: string;
+  readonly unitName?: string;
+  /** 裸执行器 id（如 "zcode"），不带 daemon: 前缀 —— host 侧注册表认裸 id */
+  readonly runtimeId?: string;
+  readonly rootPath?: string;
+  readonly prompt?: string;
+  readonly model?: string | null;
+  readonly mode?: string | null;
+  readonly recurring?: boolean;
+  readonly maxRuns?: number | null;
+  readonly scheduleRule?: ScheduleRule;
+  readonly cron?: string;
+  readonly delayMinutes?: number;
+}
+
+function mapAutomationRun(r: DaemonAutomationRun): AutomationRun {
+  return {
+    startedAt: r.startedAt,
+    endedAt: r.finishedAt ?? undefined,
+    status: r.status === "done" ? "completed" : r.status === "failed" ? "failed" : "running",
+    summary: r.detail ?? undefined,
+  };
+}
+
+/** daemon 权威形态 → 页面 Automation。runs 按时间升序（页面取 .at(-1) 当「最近」）。 */
+export function daemonAutomationToAutomation(a: DaemonAutomation): Automation {
+  return {
+    id: String(a.id),
+    name: a.name,
+    description: a.prompt,
+    unitId: a.unitId,
+    runtimeId: a.runtimeId,
+    // 纯 cron 旧行没有 rule：尽力还原成规则用于展示与本地预估，还原不出给个每日兜底
+    rule: a.scheduleRule ??
+      ruleFromCron(a.cron) ?? { frequency: "daily", hour: 0, minute: 0, weekdays: [], dayOfMonth: 1 },
+    enabled: a.enabled,
+    recurring: a.recurring,
+    maxRuns: a.maxRuns ?? undefined,
+    runs: [...a.runs].sort((x, y) => x.startedAt - y.startedAt).map(mapAutomationRun),
+    deliverableIds: [],
+    createdAt: a.createdAt,
+    model: a.model,
+    mode: a.mode,
+    nextRunAt: a.nextRunAt ?? undefined,
+    lastFailure: a.lastError === null ? undefined : { at: a.lastErrorAt ?? a.createdAt, reason: a.lastError },
+  };
+}
+
+export async function fetchAutomations(endpoint: string = defaultDaemonEndpoint()): Promise<Automation[]> {
+  const client = DaemonClient.get(endpoint);
+  const raw = await client.rpc<DaemonAutomation[]>("automation.list", null, 15000);
+  return raw.map(daemonAutomationToAutomation);
+}
+
+export async function createAutomation(
+  input: AutomationWriteInput,
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<{ id: number; nextRunAt: number | null }> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<{ id: number; nextRunAt: number | null }>("automation.create", input, 15000);
+}
+
+export async function updateAutomation(
+  id: number,
+  patch: AutomationWriteInput,
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<{ automation: DaemonAutomation | null }> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<{ automation: DaemonAutomation | null }>("automation.update", { id, ...patch }, 15000);
+}
+
+export async function setAutomationEnabled(
+  id: number,
+  enabled: boolean,
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<{ changed: boolean; nextRunAt: number | null }> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<{ changed: boolean; nextRunAt: number | null }>("automation.setEnabled", { id, enabled }, 15000);
+}
+
+export async function deleteAutomation(
+  id: number,
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<{ deleted: boolean }> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<{ deleted: boolean }>("automation.delete", { id }, 15000);
+}
+
+export async function fetchAutomationRuns(
+  id: number,
+  limit = 50,
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<DaemonAutomationRun[]> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<DaemonAutomationRun[]>("automation.runs", { id, limit }, 15000);
+}
+
+/** 立即运行：手动触发一次（不消耗定时次数口径） */
+export async function runAutomationNow(
+  id: number,
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<{ runId: number; sessionId: string }> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<{ runId: number; sessionId: string }>("automation.runNow", { id }, 30000);
 }
 

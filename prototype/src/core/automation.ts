@@ -60,6 +60,15 @@ export interface Automation {
   /** 跑出来的产出，指向 deliverables */
   readonly deliverableIds: readonly string[];
   readonly createdAt: number;
+  /** 到点会话用的模型（null/缺省 = 跟随执行器默认） */
+  readonly model?: string | null;
+  /** 到点会话的权限模式（缺省 = 执行器默认） */
+  readonly mode?: string | null;
+  /**
+   * daemon 持久化的下次触发时间（权威值）。有它显示就用它，
+   * 没有再退回 nextRunAt() 本地预估 —— 两边共用一个引擎，通常一致。
+   */
+  readonly nextRunAt?: number;
   /** 最近一次失败会一直挂着徽章，不被后续成功覆盖 —— 对齐 ZCode 的 hasAutomationFailureState */
   readonly lastFailure?: { at: number; reason: string };
 }
@@ -127,71 +136,238 @@ export function describeSchedule(a: Pick<Automation, "rule" | "recurring" | "max
 }
 
 // ---------------------------------------------------------------------------
-// 下次运行
+// 权威调度引擎 —— daemon（backend/src）与 UI 共用这一份（同 units.ts 的共享方式）
 // ---------------------------------------------------------------------------
 
 /**
- * 算下一次触发时间。
- * 一次性任务用 anchorAt + interval 表达相对时间，不走日历推进。
+ * ScheduleRule → 5 段 cron（本地时区）。
+ *
+ * cron 只是**兼容展示与兜底**，不是调度依据 —— 「每 30 个月」这类超出 cron
+ * 字段上限的间隔在 cron 里写不出真值。custom/weeks 干脆没有 cron 语义，
+ * 落一个每日占位表达式：有 scheduleRule 的地方调度永远走 rule（见
+ * computeScheduleNextRunAt），这个占位只在「rule 丢失」的极端兜底里被读到。
+ */
+export function scheduleRuleToCron(rule: ScheduleRule): string {
+  const m = Math.min(59, Math.max(0, Math.round(rule.minute)));
+  const h = Math.min(23, Math.max(0, Math.round(rule.hour)));
+  const day = Math.min(31, Math.max(1, Math.round(rule.dayOfMonth)));
+  switch (rule.frequency) {
+    case "hourly":
+      return `${m} * * * *`;
+    case "daily":
+      return `${m} ${h} * * *`;
+    case "weekly": {
+      const days = rule.weekdays.length > 0 ? [...rule.weekdays].sort((a, b) => a - b).join(",") : "*";
+      return `${m} ${h} * * ${days}`;
+    }
+    case "monthly":
+      return `${m} ${h} ${day} * *`;
+    case "custom": {
+      const n = Math.max(1, Math.round(rule.interval ?? 1));
+      switch (rule.unit) {
+        case "minutes":
+          return `*/${n} * * * *`;
+        case "hours":
+          return `${m} */${n} * * *`;
+        case "days":
+          return `${m} ${h} */${n} * *`;
+        case "weeks":
+          return `${m} ${h} * * *`; // cron 表达不了「每 N 周」，占位；调度走 rule
+        case "months":
+          return `${m} ${h} ${day} */${n} *`;
+        default:
+          return `${m} ${h} * * *`;
+      }
+    }
+  }
+}
+
+/**
+ * 规则的下一次触发点（严格大于 from；无解返回 null）。本地时区。
+ *
+ * 锚点推进口径（对齐 ZCode automationCron.ts）：
+ * - **分钟 / 小时间隔从 anchorAt 推导**（anchorAt + k·step），不与墙钟刻度对齐。
+ *   首次触发 = anchorAt + step（「4 分钟后」就是 4 分钟后，不是立刻也不吃墙钟整分）；
+ *   scheduler 晚醒一拍也不会像 cron 的星号斜杠步进那样逐轮累积漂移。
+ * - 日历类（daily/weekly/monthly 与 custom 的天以上单位）从锚点日起逐格推进，
+ *   weekly 空星期按周一算（历史上空数组导致 nextRunAt 恒 null 的坑），
+ *   monthly 溢出月（2 月 31 日）跳过。
+ */
+export function computeScheduleNextRunAt(rule: ScheduleRule, from = Date.now()): number | null {
+  const anchor = rule.anchorAt ?? from;
+
+  // 分钟 / 小时：锚点推进
+  if (rule.frequency === "hourly" || (rule.frequency === "custom" && rule.unit === "hours")) {
+    const n = rule.frequency === "hourly" ? 1 : Math.max(1, Math.round(rule.interval ?? 1));
+    const step = n * 3_600_000;
+    const k = Math.max(1, Math.floor((from - anchor) / step) + 1);
+    return anchor + k * step;
+  }
+  if (rule.frequency === "custom" && rule.unit === "minutes") {
+    const step = Math.max(1, Math.round(rule.interval ?? 1)) * 60_000;
+    const k = Math.max(1, Math.floor((from - anchor) / step) + 1);
+    return anchor + k * step;
+  }
+
+  const at = (y: number, mo: number, d: number): number =>
+    new Date(y, mo, d, Math.min(23, Math.max(0, Math.round(rule.hour))), Math.min(59, Math.max(0, Math.round(rule.minute))), 0, 0).getTime();
+
+  // 月推进（monthly / custom months）：跳过溢出月
+  if (rule.frequency === "monthly" || (rule.frequency === "custom" && rule.unit === "months")) {
+    const n = rule.frequency === "monthly" ? 1 : Math.max(1, Math.round(rule.interval ?? 1));
+    const day = Math.min(31, Math.max(1, Math.round(rule.dayOfMonth)));
+    const a = new Date(anchor);
+    let y = a.getFullYear();
+    let mo = a.getMonth();
+    for (let i = 0; i < 1200; i += n) {
+      const t = at(y, mo, day);
+      // getMonth() 回读能查出「这个月没有这一天」（溢出会滚到下个月）
+      if (new Date(y, mo, day).getMonth() === mo && t > from) return t;
+      mo += n;
+      y += Math.floor(mo / 12);
+      mo %= 12;
+    }
+    return null;
+  }
+
+  // 日推进：daily / weekly / custom days|weeks
+  const dayStep = (() => {
+    if (rule.frequency === "daily") return 1;
+    if (rule.frequency === "weekly") return 1;
+    if (rule.frequency === "custom") {
+      const n = Math.max(1, Math.round(rule.interval ?? 1));
+      if (rule.unit === "days") return n;
+      if (rule.unit === "weeks") return n * 7;
+    }
+    return 1; // 兜底：未知形态按每天推
+  })();
+  // 没选具体星期时按周一算 —— 空数组永远不匹配会让 nextRunAt 恒为 null
+  const weeklyDays = rule.frequency === "weekly" && rule.weekdays.length > 0 ? rule.weekdays : null;
+
+  const a = new Date(anchor);
+  let y = a.getFullYear();
+  let mo = a.getMonth();
+  let d = a.getDate();
+  for (let i = 0; i < 800; i++) {
+    const dayOk = weeklyDays === null || weeklyDays.includes(new Date(y, mo, d).getDay() as Weekday);
+    if (dayOk) {
+      const t = at(y, mo, d);
+      if (t > from) return t;
+    }
+    d += dayStep;
+    // 归一化溢出（Date 构造器自己会滚，但 y/mo 要跟着读回来）
+    const norm = new Date(y, mo, d);
+    y = norm.getFullYear();
+    mo = norm.getMonth();
+    d = norm.getDate();
+  }
+  return null;
+}
+
+/**
+ * 「N 分钟后」一次性任务 —— 以服务端真实时钟为锚点的相对规则。
+ *
+ * 相对表达绝不让调用方自己换算绝对时间：两边时钟差一分钟就是差一次触发。
+ * recurring=false + maxRuns=1 的终态由调度器在首次发火后收口。
+ */
+export function buildRelativeDelaySchedule(delayMinutes: number, from = Date.now()): ScheduleRule {
+  const target = new Date(from + delayMinutes * 60_000);
+  return {
+    frequency: "custom",
+    hour: target.getHours(),
+    minute: target.getMinutes(),
+    weekdays: [],
+    dayOfMonth: 1,
+    interval: Math.max(1, Math.round(delayMinutes)),
+    unit: "minutes",
+    anchorAt: from,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// cron 兜底解析（仅展示与 rule 缺失时的降级，不是调度依据）
+// ---------------------------------------------------------------------------
+
+/** 把 5 段 cron 尽力还原成 ScheduleRule（认不出的形态返回 null，不瞎猜）。 */
+export function ruleFromCron(expr: string): ScheduleRule | null {
+  const parts = expr.trim().split(/\s+/);
+  if (parts.length !== 5) return null;
+  const parse = (field: string, min: number, max: number): { values: number[]; star: boolean; step: number | null } | null => {
+    if (field === "*") return { values: [], star: true, step: null };
+    const slash = field.indexOf("/");
+    const step = slash >= 0 ? Number.parseInt(field.slice(slash + 1), 10) : null;
+    const base = slash >= 0 ? field.slice(0, slash) : field;
+    const values: number[] = [];
+    for (const piece of base.split(",")) {
+      const dash = piece.indexOf("-");
+      const lo = dash >= 0 ? Number.parseInt(piece.slice(0, dash), 10) : Number.parseInt(piece, 10);
+      const hi = dash >= 0 ? Number.parseInt(piece.slice(dash + 1), 10) : lo;
+      if (!Number.isFinite(lo) || !Number.isFinite(hi) || lo < min || hi > max) return null;
+      for (let v = lo; v <= hi; v++) values.push(v);
+    }
+    if (values.length === 0) return null;
+    if (step !== null && (!Number.isFinite(step) || step < 1)) return null;
+    return { values, star: false, step };
+  };
+  const minute = parse(parts[0]!, 0, 59);
+  const hour = parse(parts[1]!, 0, 23);
+  const dom = parse(parts[2]!, 1, 31);
+  const month = parse(parts[3]!, 1, 12);
+  const dow = parse(parts[4]!, 0, 7);
+  if (minute === null || hour === null || dom === null || month === null || dow === null) return null;
+  // 步进/区间形态（*/15、1-5）交给 custom 兜底； month 受限的直接放弃还原
+  if (month.star === false) return null;
+
+  const mk = (over: Partial<ScheduleRule>): ScheduleRule => ({
+    frequency: "daily",
+    hour: hour.values[0] ?? 0,
+    minute: minute.values[0] ?? 0,
+    weekdays: [],
+    dayOfMonth: dom.values[0] ?? 1,
+    ...over,
+  });
+
+  // */N 分钟
+  if (hour.star && dom.star && dow.star && minute.star && minute.step !== null) {
+    return mk({ frequency: "custom", interval: minute.step, unit: "minutes" });
+  }
+  // 每小时（hour=*，分钟为具体值）
+  if (hour.star && dom.star && dow.star && minute.star === false && minute.step === null) {
+    return mk({ frequency: "hourly" });
+  }
+  // 固定时刻系列：分钟、小时都必须是具体值
+  if (minute.star || hour.star || minute.step !== null || hour.step !== null || minute.values.length !== 1 || hour.values.length !== 1) {
+    return mk({ frequency: "custom", interval: 1, unit: "days" });
+  }
+  if (dom.star && dow.star) return mk({ frequency: "daily" });
+  if (dom.star && dow.star === false) {
+    return mk({ frequency: "weekly", weekdays: dow.values.map((v) => (v === 7 ? 0 : v)) as Weekday[] });
+  }
+  if (dom.star === false && dow.star) return mk({ frequency: "monthly", dayOfMonth: dom.values[0]! });
+  return mk({ frequency: "custom", interval: 1, unit: "days" });
+}
+
+// ---------------------------------------------------------------------------
+// 下次运行（UI 预估；权威值由 daemon 持久化的 next_run_at 提供）
+// ---------------------------------------------------------------------------
+
+/**
+ * 算下一次触发时间。一次性任务用 anchorAt + interval 表达相对时间，不走日历推进。
+ * 递归部分统一委托给 computeScheduleNextRunAt —— daemon 调度与卡片预估同一口径，
+ * 不会出现「卡片说 9 点、daemon 9 点半才跑」的两套算术。
  */
 export function nextRunAt(a: Automation, from = Date.now()): number | null {
   if (!a.enabled) return null;
   if (a.recurring === false && (a.maxRuns ?? 1) <= 1) {
     if (a.runs.length >= (a.maxRuns ?? 1)) return null;
+    // 「N 分钟后」形态（custom minutes + 锚点）走引擎：下次 = 锚点 + 间隔，
+    // 与 daemon 的首次触发时刻一致；纯 anchorAt（旧数据）原样返回。
+    if (a.rule.frequency === "custom" && a.rule.unit === "minutes" && a.rule.anchorAt !== undefined) {
+      return computeScheduleNextRunAt(a.rule, from);
+    }
     return a.rule.anchorAt ?? null;
   }
-
-  const { rule } = a;
-  const d = new Date(from);
-  d.setSeconds(0, 0);
-  d.setMinutes(rule.minute);
-  d.setHours(rule.hour);
-
-  const step = (() => {
-    switch (rule.frequency) {
-      case "hourly":
-        return () => d.setHours(d.getHours() + 1);
-      case "daily":
-        return () => d.setDate(d.getDate() + 1);
-      case "weekly": {
-        const days = rule.weekdays.length > 0 ? rule.weekdays : [1];
-        return () => d.setDate(d.getDate() + 1);
-      }
-      case "monthly":
-        return () => d.setMonth(d.getMonth() + 1);
-      case "custom": {
-        const n = rule.interval ?? 1;
-        switch (rule.unit) {
-          case "minutes":
-            return () => d.setMinutes(d.getMinutes() + n);
-          case "hours":
-            return () => d.setHours(d.getHours() + n);
-          case "days":
-            return () => d.setDate(d.getDate() + n);
-          case "weeks":
-            return () => d.setDate(d.getDate() + n * 7);
-          case "months":
-            return () => d.setMonth(d.getMonth() + n);
-          default:
-            return () => d.setDate(d.getDate() + n);
-        }
-      }
-    }
-  })();
-
-  // 最多推进 400 天仍不匹配就放弃，避免 weekly 配错导致死循环
-  // 没选具体星期时按周一算（与上面 step 里的 days 兜底同一口径）。
-  // 以前这句 days 算了不用，循环直接读 rule.weekdays —— 空数组永远不匹配，
-  // 于是「每周」但不选星期的规则 nextRunAt 恒为 null：不显示下次运行，也永不触发。
-  const weeklyDays = rule.weekdays.length > 0 ? rule.weekdays : [1];
-  for (let i = 0; i < 400; i++) {
-    if (d.getTime() > from) {
-      if (rule.frequency !== "weekly") return d.getTime();
-      if (weeklyDays.includes(d.getDay() as Weekday)) return d.getTime();
-    }
-    step();
-  }
-  return null;
+  return computeScheduleNextRunAt(a.rule, from);
 }
 
 /** 「3 小时后」 / 「2 天前」 —— 对齐 ZCode 的 formatAutomationCardNextRun */

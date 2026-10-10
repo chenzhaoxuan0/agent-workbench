@@ -63,3 +63,29 @@ export function cronMatches(fields: CronFields, d: Date): boolean {
     fields.dow.has(d.getDay())
   );
 }
+
+/**
+ * cron 表达式的下一次触发点（严格大于 from，本地时区）。
+ *
+ * 只有「没带 scheduleRule 的纯 cron 自动化」才走这里 —— 带 rule 的走共享引擎
+ * （prototype/src/core/automation.ts）。按天扫（最多 400 天），每天的
+ * 时×分组合取第一个大于 from 的，最坏几万次迭代，量级无虞。
+ */
+export function cronNextAt(expr: string, from = Date.now()): number | null {
+  const f = parseCron(expr);
+  const start = new Date(from);
+  const day = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+  for (let i = 0; i < 146_000; i++) {
+    if (f.month.has(day.getMonth() + 1) && f.dom.has(day.getDate()) && f.dow.has(day.getDay())) {
+      const minutes = [...f.minute].sort((a, b) => a - b);
+      for (const h of [...f.hour].sort((a, b) => a - b)) {
+        for (const m of minutes) {
+          const t = new Date(day.getFullYear(), day.getMonth(), day.getDate(), h, m, 0, 0).getTime();
+          if (t > from) return t;
+        }
+      }
+    }
+    day.setDate(day.getDate() + 1);
+  }
+  return null;
+}

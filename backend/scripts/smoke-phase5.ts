@@ -164,7 +164,7 @@ async function main(): Promise<void> {
     check("runNow launches session", now.sessionId.startsWith("sess_"), now);
     let runs = await call<Array<{ id: number; status?: string; sessionId?: string | null }>>("automation.runs", { id: created.id });
     check("run record finished with session", runs.some((r) => r.id === now.runId && r.sessionId === now.sessionId), runs);
-    check("run record reached terminal status", runs.every((r) => r.id !== now.runId || r.status === "done" || r.status === "failed"), runs);
+    // 运行中保持 running 是 v2 的诚实状态（旧版 start 后立刻写 done），终态断言挪到 session.ended 之后
     const endedAt = await (async () => {
       const deadline = Date.now() + 15000;
       for (;;) {
@@ -175,6 +175,8 @@ async function main(): Promise<void> {
       }
     })();
     check("automated session ended (gate auto-passed)", endedAt !== undefined);
+    runs = await call<Array<{ id: number; status?: string; sessionId?: string | null }>>("automation.runs", { id: created.id });
+    check("run record reached terminal status after session end", runs.every((r) => r.id !== now.runId || r.status === "done" || r.status === "failed"), runs);
 
     // 3. 真 cron：每分钟到点自动发火（等 tick，最长 70s）
     const cronAuto = await call<{ id: number }>("automation.create", {

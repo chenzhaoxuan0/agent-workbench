@@ -1,11 +1,14 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   CircleAlert,
   CircleCheck,
   CircleDot,
   MoreHorizontal,
+  Pencil,
   Play,
   Plus,
+  History,
+  Trash2,
 } from "lucide-react";
 import {
   STATUS_FILTERS,
@@ -13,19 +16,21 @@ import {
   describeSchedule,
   filterByStatus,
   formatRelative,
-  nextRunAt,
+  nextRunAt as estimateNextRunAt,
   resolveStatusKind,
   type Automation,
   type StatusFilter,
+  type Weekday,
 } from "../core/automation.ts";
 import { useWorkbench } from "../store/useWorkbench.ts";
+import { AutomationDialog, type AutomationDialogPrefill } from "./AutomationDialog.tsx";
 import { cn } from "./cn.ts";
 
 /**
  * 自动化面板 —— 对齐 ZCode 的 AutomationsSection。
  *
  * 照搬的结构：
- *   tab（定时 / 闲时）+ 状态筛选（全部/进行中/已完成/失败）
+ *   状态筛选（全部/进行中/已完成/失败）
  *   卡片网格：名称 / 描述 / 频率徽章 / 下次运行 / 最近运行 / 状态徽章 / 开关 / 操作菜单
  *   空态时的模板宫格
  *
@@ -34,13 +39,37 @@ import { cn } from "./cn.ts";
  * 2. **切 tab 即回到「全部」筛选**，不恢复上次那个 tab 的旧筛选。
  *
  * 与 ZCode 的差异：ZCode 的「闲时」是低优先级的闲时任务，本项目暂未实现，
- * 所以该 tab 呈现为「即将推出」而不是空白页。
+ * 所以没有该 tab。数据全部来自 daemon（SQLite 持久化 + 20s tick 调度），
+ * 新建/开关/删除/立即运行都是 daemon RPC，失败会在顶部横幅说实话。
  */
+
+/** 对话框的打开状态：新建（可带模板预填）或编辑 */
+type DialogState =
+  | { mode: "create"; prefill?: AutomationDialogPrefill }
+  | { mode: "edit"; automation: Automation }
+  | null;
+
 export function AutomationsPage() {
   const automations = useWorkbench((s) => s.automations);
   const units = useWorkbench((s) => s.units);
+  const notice = useWorkbench((s) => s.automationNotice);
+  const setNotice = useWorkbench((s) => s.setAutomationNotice);
+  const refreshAutomations = useWorkbench((s) => s.refreshAutomations);
 
   const [filter, setFilter] = useState<StatusFilter>("all");
+  const [dialog, setDialog] = useState<DialogState>(null);
+
+  // 挂载即拉一次（store 在 daemon bootstrap 时也拉过，这里覆盖「先开后端」的时序）
+  useEffect(() => {
+    void refreshAutomations();
+  }, [refreshAutomations]);
+
+  // 通知 5 秒自动消失
+  useEffect(() => {
+    if (notice === null) return;
+    const t = setTimeout(() => setNotice(null), 5000);
+    return () => clearTimeout(t);
+  }, [notice, setNotice]);
 
   const unitName = (id: string) => units.find((u) => u.id === id)?.name ?? "—";
 
@@ -65,11 +94,30 @@ export function AutomationsPage() {
               按日程自动派活给工作单元，跑完归档产出
             </p>
           </div>
-          <button className="flex shrink-0 items-center gap-1.5 rounded-btn bg-ink px-3 py-2 text-body-sm text-canvas hover:opacity-90 active:scale-95 transition">
+          <button
+            onClick={() => setDialog({ mode: "create" })}
+            className="flex shrink-0 items-center gap-1.5 rounded-btn bg-ink px-3 py-2 text-body-sm text-canvas hover:opacity-90 active:scale-95 transition"
+          >
             <Plus size={12} />
             新建
           </button>
         </header>
+
+        {notice !== null && (
+          <div
+            role="status"
+            className={cn(
+              "mb-4 flex items-start gap-2 rounded-btn px-3 py-2 text-body-sm",
+              notice.kind === "error" ? "bg-loss/10 text-loss" : "bg-teal-tint text-teal",
+            )}
+          >
+            <CircleAlert size={13} className="mt-px shrink-0" />
+            <span className="min-w-0 break-words">{notice.text}</span>
+            <button onClick={() => setNotice(null)} className="ml-auto shrink-0 opacity-60 hover:opacity-100" aria-label="关闭提示">
+              ×
+            </button>
+          </div>
+        )}
 
         {/* 状态筛选 */}
         <div className="mb-4 flex flex-wrap items-center gap-2">
@@ -99,15 +147,30 @@ export function AutomationsPage() {
             title={filter === "all" ? "还没有定时任务" : `没有${STATUS_FILTER_LABEL[filter]}的任务`}
             desc={filter === "all" ? "从下面的模板挑一个开始" : "换个筛选看看"}
             templates={filter === "all"}
+            onTemplate={(t) => setDialog({ mode: "create", prefill: t })}
           />
         ) : (
           <div className="grid grid-cols-2 gap-3">
             {visible.map((a) => (
-              <AutomationCard key={a.id} a={a} unitName={unitName(a.unitId)} />
+              <AutomationCard
+                key={a.id}
+                a={a}
+                unitName={unitName(a.unitId)}
+                onEdit={() => setDialog({ mode: "edit", automation: a })}
+              />
             ))}
           </div>
         )}
       </div>
+
+      {dialog !== null && (
+        <AutomationDialog
+          key={dialog.mode === "edit" ? dialog.automation.id : (dialog.prefill?.name ?? "new")}
+          initial={dialog.mode === "edit" ? dialog.automation : null}
+          prefill={dialog.mode === "create" ? dialog.prefill : undefined}
+          onClose={() => setDialog(null)}
+        />
+      )}
     </div>
   );
 }
@@ -120,18 +183,33 @@ const STATUS_META = {
   failed: { icon: CircleAlert, cls: "bg-loss/10 text-loss", label: "失败" },
 } as const;
 
-function AutomationCard({ a, unitName }: { a: Automation; unitName: string }) {
+const RUN_STATUS_META = {
+  running: { icon: CircleDot, cls: "text-graphite", label: "运行中" },
+  completed: { icon: CircleCheck, cls: "text-gain", label: "完成" },
+  failed: { icon: CircleAlert, cls: "text-loss", label: "失败" },
+  skipped: { icon: CircleAlert, cls: "text-ash", label: "已跳过" },
+} as const;
+
+function AutomationCard({ a, unitName, onEdit }: { a: Automation; unitName: string; onEdit: () => void }) {
   const toggle = useWorkbench((s) => s.toggleAutomation);
+  const runNow = useWorkbench((s) => s.runAutomationNowAction);
+  const remove = useWorkbench((s) => s.deleteAutomationAction);
+
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [runsOpen, setRunsOpen] = useState(false);
+
   const kind = resolveStatusKind(a);
   const meta = STATUS_META[kind];
   const Icon = meta.icon;
-  const next = nextRunAt(a);
+  // daemon 持久化的 next_run_at 是权威值；没有（旧数据 / 停用）再本地预估
+  const next = a.enabled ? (a.nextRunAt ?? estimateNextRunAt(a)) : null;
   const last = a.runs.at(-1);
 
   return (
     <div
       className={cn(
-        "flex flex-col gap-2.5 rounded-card border border-line bg-card px-4 py-3",
+        "relative flex flex-col gap-2.5 rounded-card border border-line bg-card px-4 py-3",
         !a.enabled && "opacity-60",
       )}
     >
@@ -144,12 +222,56 @@ function AutomationCard({ a, unitName }: { a: Automation; unitName: string }) {
             </p>
           )}
         </div>
-        <button
-          aria-label={`${a.name} 更多操作`}
-          className="shrink-0 rounded-btn p-1 text-ash hover:bg-line-soft hover:text-ink"
-        >
-          <MoreHorizontal size={12} />
-        </button>
+        <div className="relative shrink-0">
+          <button
+            aria-label={`${a.name} 更多操作`}
+            aria-expanded={menuOpen}
+            onClick={() => {
+              setMenuOpen((v) => !v);
+              setConfirmingDelete(false);
+            }}
+            className="rounded-btn p-1 text-ash hover:bg-line-soft hover:text-ink"
+          >
+            <MoreHorizontal size={12} />
+          </button>
+          {menuOpen && (
+            <>
+              {/* 点击外部即收起：全屏透明捕获层 */}
+              <div className="fixed inset-0 z-40" onClick={() => setMenuOpen(false)} aria-hidden />
+              <div className="absolute right-0 top-6 z-50 flex w-36 flex-col rounded-card border border-line bg-card p-1 shadow-subtle">
+                <MenuItem
+                  icon={<Pencil size={12} />}
+                  label="编辑"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    onEdit();
+                  }}
+                />
+                <MenuItem
+                  icon={<History size={12} />}
+                  label={runsOpen ? "收起运行记录" : "运行记录"}
+                  onClick={() => {
+                    setMenuOpen(false);
+                    setRunsOpen((v) => !v);
+                  }}
+                />
+                <MenuItem
+                  icon={<Trash2 size={12} />}
+                  label={confirmingDelete ? "确认删除？" : "删除"}
+                  danger
+                  onClick={() => {
+                    if (!confirmingDelete) {
+                      setConfirmingDelete(true);
+                      return;
+                    }
+                    setMenuOpen(false);
+                    void remove(a.id);
+                  }}
+                />
+              </div>
+            </>
+          )}
+        </div>
       </div>
 
       <div className="flex flex-wrap items-center gap-1.5">
@@ -197,9 +319,38 @@ function AutomationCard({ a, unitName }: { a: Automation; unitName: string }) {
         </p>
       )}
 
+      {runsOpen && (
+        <div className="flex flex-col gap-1 rounded-btn bg-rail px-2.5 py-2">
+          {a.runs.length === 0 ? (
+            <p className="text-caption text-ash">还没有运行记录（daemon 保留最近若干条）</p>
+          ) : (
+            [...a.runs].reverse().map((r) => {
+              const rm = (RUN_STATUS_META as Record<string, { icon: typeof CircleDot; cls: string; label: string }>)[r.status] ??
+                RUN_STATUS_META.running;
+              const RIcon = rm.icon;
+              return (
+                <div key={r.startedAt} className="flex items-center gap-2 text-caption">
+                  <RIcon size={11} className={cn("shrink-0", rm.cls)} />
+                  <span className="text-graphite">{rm.label}</span>
+                  <span className="text-ash">{formatRelative(r.startedAt)}</span>
+                  {r.summary !== undefined && (
+                    <span className="min-w-0 truncate text-ash" title={r.summary}>
+                      {r.summary}
+                    </span>
+                  )}
+                </div>
+              );
+            })
+          )}
+        </div>
+      )}
+
       <div className="mt-auto flex items-center gap-2 border-t border-line-soft pt-2.5">
         <span className="font-mono text-caption text-ash">{a.runtimeId}</span>
-        <button className="flex items-center gap-1 rounded-btn px-1.5 py-1 text-caption text-graphite hover:bg-line-soft hover:text-ink">
+        <button
+          onClick={() => void runNow(a.id)}
+          className="flex items-center gap-1 rounded-btn px-1.5 py-1 text-caption text-graphite hover:bg-line-soft hover:text-ink"
+        >
           <Play size={12} />
           立即运行
         </button>
@@ -207,7 +358,7 @@ function AutomationCard({ a, unitName }: { a: Automation; unitName: string }) {
           role="switch"
           aria-checked={a.enabled}
           aria-label={`${a.name} 开关`}
-          onClick={() => toggle(a.id)}
+          onClick={() => void toggle(a.id)}
           className={cn(
             "relative ml-auto h-5 w-9 shrink-0 rounded-chip transition",
             a.enabled ? "bg-teal" : "bg-line",
@@ -225,25 +376,43 @@ function AutomationCard({ a, unitName }: { a: Automation; unitName: string }) {
   );
 }
 
+function MenuItem({ icon, label, onClick, danger }: { icon: React.ReactNode; label: string; onClick: () => void; danger?: boolean }): React.ReactElement {
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        "flex items-center gap-2 rounded-btn px-2 py-1.5 text-left text-caption transition hover:bg-line-soft",
+        danger === true ? "text-loss hover:text-loss" : "text-graphite hover:text-ink",
+      )}
+    >
+      {icon}
+      {label}
+    </button>
+  );
+}
+
 /* ------------------------------------------------------------------ 空态 */
 
-const TEMPLATES = [
-  { name: "每日内容产出", desc: "每天早上跑一次，产出当天草稿", freq: "每天 08:00" },
-  { name: "周报汇总", desc: "每周五下班前汇总本周进展", freq: "每周五 18:30" },
-  { name: "依赖巡检", desc: "每天检查依赖与工具版本", freq: "每天 09:00" },
-  { name: "剪藏入库", desc: "把新抓取内容归档进知识库", freq: "每 6 小时" },
-] as const;
+/** 模板 = 预填好的表单草稿（点开对话框，不是静默建任务 —— 用户得看到自己同意了什么） */
+const TEMPLATES: readonly AutomationDialogPrefill[] = [
+  { name: "每日内容产出", desc: "每天早上跑一次，产出当天草稿", prompt: "跑一遍今天的内容产出流程，把草稿写到 docs/drafts/ 下", freq: "daily", time: "08:00" },
+  { name: "周报汇总", desc: "每周五下班前汇总本周进展", prompt: "汇总本周会话与产出，写一份周报到 docs/reports/", freq: "weekly", time: "18:30", weekdays: [5] },
+  { name: "依赖巡检", desc: "每天检查依赖与工具版本", prompt: "检查依赖有没有新版本与安全告警，输出一份简短摘要", freq: "daily", time: "09:00" },
+  { name: "剪藏入库", desc: "把新抓取内容归档进知识库", prompt: "把最近抓取的新内容归档进知识库并打标签", freq: "custom", interval: 6, unit: "hours" },
+];
 
 function EmptyPanel({
   icon,
   title,
   desc,
   templates,
+  onTemplate,
 }: {
   icon: React.ReactNode;
   title: string;
   desc: string;
   templates?: boolean;
+  onTemplate: (t: AutomationDialogPrefill) => void;
 }) {
   return (
     <div>
@@ -260,12 +429,13 @@ function EmptyPanel({
             {TEMPLATES.map((t) => (
               <button
                 key={t.name}
+                onClick={() => onTemplate(t)}
                 className="flex flex-col gap-1.5 rounded-card bg-card px-4 py-3 text-left shadow-subtle hover:bg-surface-hover"
               >
                 <span className="text-body-sm font-medium text-ink">{t.name}</span>
                 <span className="text-caption text-graphite">{t.desc}</span>
                 <span className="rounded-chip bg-line-soft px-2 py-0.5 text-caption text-ash w-fit">
-                  {t.freq}
+                  {templateFreqLabel(t)}
                 </span>
               </button>
             ))}
@@ -274,4 +444,21 @@ function EmptyPanel({
       )}
     </div>
   );
+}
+
+function templateFreqLabel(t: AutomationDialogPrefill): string {
+  switch (t.freq) {
+    case "delay":
+      return "一次性";
+    case "hourly":
+      return "每小时";
+    case "daily":
+      return `每天 ${t.time ?? ""}`.trim();
+    case "weekly":
+      return `每周${(t.weekdays ?? []).map((d) => ["日", "一", "二", "三", "四", "五", "六"][d]).join("、")} ${t.time ?? ""}`.trim();
+    case "monthly":
+      return `每月 ${t.time ?? ""}`.trim();
+    case "custom":
+      return `每 ${t.interval ?? 1} ${{ minutes: "分钟", hours: "小时", days: "天", weeks: "周", months: "个月" }[t.unit ?? "hours"]}`;
+  }
 }

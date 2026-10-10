@@ -32,7 +32,13 @@ import { KimiAdapter } from "./runtime/adapters/kimi.ts";
 import { TerminalManager } from "./terminal/terminals.ts";
 import { Store } from "./store/db.ts";
 import { AutomationScheduler } from "./automation/scheduler.ts";
-import { parseCron } from "./automation/cron.ts";
+import { cronNextAt, parseCron } from "./automation/cron.ts";
+import {
+  buildRelativeDelaySchedule,
+  computeScheduleNextRunAt,
+  scheduleRuleToCron,
+  type ScheduleRule,
+} from "../../prototype/src/core/automation.ts";
 import { MemoryService } from "./memory/memory.ts";
 import { FileMemoryInjector } from "./memory/injection.ts";
 import { readLongTerm, writeLongTerm, readDaily, listDaily } from "./memory/projectMemory.ts";
@@ -112,11 +118,13 @@ const host = new RuntimeHost((event, seq) => {
   broadcastEvent(wss, event, seq);
   // 自动化运行记录的终态回灌（Phase 5）
   if (event.type === "session.ended") {
-    const runId = automationRunBySession.get(event.sessionId);
-    if (runId !== undefined) {
+    const hit = automationRunBySession.get(event.sessionId);
+    if (hit !== undefined) {
       automationRunBySession.delete(event.sessionId);
       const failed = event.reason === "error" || event.reason === "executor_exited";
-      store.finishAutomationRun(runId, failed ? "failed" : "done", `ended: ${event.reason}`);
+      store.finishAutomationRun(hit.runId, failed ? "failed" : "done", `ended: ${event.reason}`);
+      // 会话本身跑挂了也要挂失败徽章 —— 不然调度层看不到，卡片一直显示「已完成」
+      if (failed) store.setAutomationError(hit.automationId, `ended: ${event.reason}`, Date.now());
     }
   }
 }, traceSink, config.homeDir, store, gate, new FileMemoryInjector());
@@ -250,22 +258,25 @@ const terminals = new TerminalManager((frame) =>
   broadcastTerminal(wss, { v: WIRE_VERSION, type: "terminal", ...frame }),
 );
 
-// ---- 自动化调度（Phase 5）---------------------------------------------------
+// ---- 自动化调度（Phase 5 v2）-------------------------------------------------
 
-/** sessionId → runId：会话结束态回灌运行记录 */
-const automationRunBySession = new Map<string, number>();
+/** sessionId → { runId, automationId }：会话结束态回灌运行记录与失败徽章 */
+const automationRunBySession = new Map<string, { runId: number; automationId: number }>();
 
-async function runAutomation(a: {
-  id: number;
-  unitId: string;
-  unitName: string;
-  runtimeId: string;
-  rootPath: string;
-  prompt: string;
-  model: string | null;
-  mode: string | null;
-}): Promise<{ runId: number; sessionId: string }> {
-  const runId = store.startAutomationRun(a.id, null);
+async function runAutomation(
+  a: {
+    id: number;
+    unitId: string;
+    unitName: string;
+    runtimeId: string;
+    rootPath: string;
+    prompt: string;
+    model: string | null;
+    mode: string | null;
+  },
+  opts: { trigger: "schedule" | "manual" },
+): Promise<{ runId: number; sessionId: string }> {
+  const runId = store.startAutomationRun(a.id, null, opts.trigger);
   try {
     const session = await host.startSession({
       runtimeId: a.runtimeId,
@@ -276,13 +287,28 @@ async function runAutomation(a: {
       model: a.model === null ? null : asModelId(a.model),
       mode: (a.mode as "plan" | "build" | "edit" | "yolo" | undefined) ?? undefined,
     });
-    store.finishAutomationRun(runId, "done", `session ${session.id} started`);
+    // 派发成功只回填 sessionId，status 留在 running —— 终态由 session.ended 回灌；
+    // 旧写法 start 后立刻写 done，会话真失败前界面上一直显示「已完成」。
     store.setAutomationRunSession(runId, session.id);
-    automationRunBySession.set(session.id, runId);
-    log.info("automation session launched", { automationId: a.id, runId, sessionId: session.id });
+    // mockperm 这类快执行器，会话可能在 startSession 的 promise 落定**之前**就已 ended
+    // （几十毫秒答完是常态）：终态广播跑在登记前面，回灌永远等不到。已终态就当场收口。
+    // 判据用 endedAt 而不是 status —— status="failed" 也可能是轮次失败而会话仍开着。
+    const ended = store.getSession(session.id);
+    const endedFailed = ended !== undefined && ended.endedAt !== null && ended.status === "failed";
+    if (ended !== undefined && ended.endedAt !== null) {
+      store.finishAutomationRun(runId, endedFailed ? "failed" : "done", `ended: ${ended.status}`);
+    } else {
+      automationRunBySession.set(session.id, { runId, automationId: a.id });
+    }
+    // 失败徽章：这次派发以失败告终就挂上；否则清掉（上一次的失败由这次成功翻篇）
+    if (endedFailed) store.setAutomationError(a.id, `ended: ${ended!.status}`, Date.now());
+    else store.setAutomationError(a.id, null, null);
+    log.info("automation session launched", { automationId: a.id, runId, sessionId: session.id, trigger: opts.trigger });
     return { runId, sessionId: session.id };
   } catch (err: unknown) {
-    store.finishAutomationRun(runId, "failed", err instanceof Error ? err.message : String(err));
+    const message = err instanceof Error ? err.message : String(err);
+    store.finishAutomationRun(runId, "failed", message);
+    store.setAutomationError(a.id, message, Date.now());
     throw err;
   }
 }
@@ -552,65 +578,216 @@ registerMethod("terminal.kill", (params) => {
 });
 registerMethod("terminal.list", () => terminals.list());
 
-// ---- 自动化方法（Phase 5）---------------------------------------------------
+// ---- 自动化方法（Phase 5 v2）-------------------------------------------------
+
+const badAutomation = (message: string): Error => Object.assign(new Error(message), { code: "bad_params" });
+
+/** scheduleRule 入参校验：共享引擎的规则对象落库前把范围钉死 */
+function parseScheduleRule(raw: unknown): ScheduleRule {
+  if (raw === null || typeof raw !== "object") throw badAutomation("scheduleRule must be an object");
+  const r = raw as Record<string, unknown>;
+  const frequency = r["frequency"];
+  if (frequency !== "hourly" && frequency !== "daily" && frequency !== "weekly" && frequency !== "monthly" && frequency !== "custom") {
+    throw badAutomation(`bad scheduleRule.frequency: ${String(frequency)}`);
+  }
+  const int = (key: string, min: number, max: number, fallback?: number): number => {
+    const v = r[key];
+    if (v === undefined || v === null) {
+      if (fallback !== undefined) return fallback;
+      throw badAutomation(`scheduleRule.${key} is required`);
+    }
+    const n = Math.round(Number(v));
+    if (!Number.isFinite(n) || n < min || n > max) throw badAutomation(`scheduleRule.${key} out of range (${min}..${max})`);
+    return n;
+  };
+  const weekdays = (
+    Array.isArray(r["weekdays"])
+      ? (r["weekdays"] as unknown[]).map((d) => Number(d)).filter((d) => Number.isInteger(d) && d >= 0 && d <= 6)
+      : []
+  ) as ScheduleRule["weekdays"];
+  const unit = r["unit"];
+  const unitOk =
+    frequency === "custom" &&
+    (unit === "minutes" || unit === "hours" || unit === "days" || unit === "weeks" || unit === "months");
+  const rule: ScheduleRule = {
+    frequency,
+    hour: int("hour", 0, 23, 0),
+    minute: int("minute", 0, 59, 0),
+    weekdays,
+    dayOfMonth: int("dayOfMonth", 1, 31, 1),
+    ...(frequency === "custom" ? { interval: int("interval", 1, 10_000, 1) } : {}),
+    ...(unitOk ? { unit: unit as "minutes" | "hours" | "days" | "weeks" | "months" } : {}),
+    ...(typeof r["anchorAt"] === "number" && Number.isFinite(r["anchorAt"]) ? { anchorAt: r["anchorAt"] as number } : {}),
+  };
+  return rule;
+}
+
+/**
+ * 创建/更新共用的调度入参归一，三选一（对齐 ZCode 的 contract）：
+ *   delayMinutes ——「N 分钟后」一次性（相对表达以 daemon 时钟为锚，不信客户端换算）
+ *   scheduleRule —— 权威规则（anchorAt 缺省 = 现在，即「改频率即重新锚定」）
+ *   cron         —— 纯 cron 兼容（调度走 cronNextAt；cron 的整点语义只有它自己算得准）
+ */
+function resolveSchedule(p: {
+  cron?: unknown;
+  scheduleRule?: unknown;
+  delayMinutes?: unknown;
+}): { cron: string; rule: ScheduleRule | null; nextRunAt: number | null } {
+  if (typeof p.delayMinutes === "number") {
+    if (!Number.isFinite(p.delayMinutes) || p.delayMinutes < 1 || p.delayMinutes > 525_600) {
+      throw badAutomation("delayMinutes must be 1..525600");
+    }
+    const rule = buildRelativeDelaySchedule(p.delayMinutes);
+    return { cron: scheduleRuleToCron(rule), rule, nextRunAt: computeScheduleNextRunAt(rule) };
+  }
+  if (p.scheduleRule !== undefined && p.scheduleRule !== null) {
+    const parsed = parseScheduleRule(p.scheduleRule);
+    const rule: ScheduleRule = parsed.anchorAt === undefined ? { ...parsed, anchorAt: Date.now() } : parsed;
+    return { cron: scheduleRuleToCron(rule), rule, nextRunAt: computeScheduleNextRunAt(rule) };
+  }
+  if (typeof p.cron === "string" && p.cron.trim() !== "") {
+    parseCron(p.cron); // 坏表达式在创建时就拒，不等 tick 才发现
+    return { cron: p.cron, rule: null, nextRunAt: cronNextAt(p.cron) };
+  }
+  throw badAutomation("需要 cron / scheduleRule / delayMinutes 之一");
+}
 
 registerMethod("automation.create", (params) => {
   const p = (params ?? {}) as {
-    unitId?: string; unitName?: string; runtimeId?: string; rootPath?: string;
-    prompt?: string; model?: string; mode?: string; cron?: string;
+    unitId?: string; unitName?: string; name?: string; runtimeId?: string; rootPath?: string;
+    prompt?: string; model?: string; mode?: string;
+    cron?: string; scheduleRule?: unknown; delayMinutes?: number;
+    recurring?: boolean; maxRuns?: number;
   };
   if (typeof p.unitId !== "string" || typeof p.runtimeId !== "string" ||
-      typeof p.rootPath !== "string" || typeof p.prompt !== "string" || typeof p.cron !== "string") {
-    throw Object.assign(new Error("unitId, runtimeId, rootPath, prompt, cron are required"), { code: "bad_params" });
+      typeof p.rootPath !== "string" || typeof p.prompt !== "string") {
+    throw badAutomation("unitId, runtimeId, rootPath, prompt are required");
   }
-  parseCron(p.cron); // 坏表达式在创建时就拒，不等 tick 才发现
+  if (typeof p.delayMinutes === "number" && p.recurring === true) {
+    throw badAutomation("delayMinutes 是一次性任务，不能配 recurring=true");
+  }
+  const { cron, rule, nextRunAt } = resolveSchedule(p);
+  if (nextRunAt === null) throw badAutomation("当前规则推不出任何未来的触发时间");
+  // recurring 缺省 = 循环；显式 false 且未给 maxRuns = 一次性（跑一次收口，ZCode 同口径）。
+  // delayMinutes 本质是一次性的相对表达，强制 recurring=false —— 否则它会按间隔永远跑下去。
+  const recurring = typeof p.delayMinutes === "number" ? false : p.recurring !== false;
+  const maxRuns = typeof p.maxRuns === "number" ? p.maxRuns : (recurring ? null : 1);
+  const unitName = p.unitName ?? p.unitId;
   const id = store.createAutomation({
     unitId: p.unitId,
-    unitName: p.unitName ?? p.unitId,
+    unitName,
+    name: p.name ?? unitName,
     runtimeId: p.runtimeId,
     rootPath: p.rootPath,
     prompt: p.prompt,
     model: typeof p.model === "string" ? p.model : null,
     mode: typeof p.mode === "string" ? p.mode : null,
-    cron: p.cron,
+    cron,
+    scheduleRule: rule,
+    recurring,
+    maxRuns,
+    nextRunAt,
   });
-  return { id };
+  return { id, nextRunAt };
 });
-registerMethod("automation.list", (params) => {
-  const p = (params ?? {}) as { runsFor?: number };
-  const list = store.listAutomations();
-  const wantRuns = typeof p.runsFor === "number";
-  return list.map((a) => ({
-    ...a,
-    runs: wantRuns && a.id === p.runsFor ? store.listAutomationRuns(a.id) : undefined,
-  }));
+
+registerMethod("automation.update", (params) => {
+  const p = (params ?? {}) as {
+    id?: number; name?: string; prompt?: string; model?: string | null; mode?: string | null;
+    unitId?: string; unitName?: string; runtimeId?: string; rootPath?: string;
+    cron?: string; scheduleRule?: unknown; delayMinutes?: number;
+    recurring?: boolean; maxRuns?: number | null;
+  };
+  if (typeof p.id !== "number") throw badAutomation("id is required");
+  const hit = store.getAutomation(p.id);
+  if (hit === undefined) throw Object.assign(new Error(`no such automation: ${p.id}`), { code: "unknown_automation" });
+  const prev = hit.automation;
+
+  const patch: Partial<Parameters<Store["updateAutomation"]>[1]> = {};
+  if (typeof p.name === "string") patch.name = p.name;
+  if (typeof p.prompt === "string") patch.prompt = p.prompt;
+  if (p.model !== undefined) patch.model = typeof p.model === "string" ? p.model : null;
+  if (p.mode !== undefined) patch.mode = typeof p.mode === "string" ? p.mode : null;
+  if (typeof p.unitId === "string") patch.unitId = p.unitId;
+  if (typeof p.unitName === "string") patch.unitName = p.unitName;
+  if (typeof p.runtimeId === "string") patch.runtimeId = p.runtimeId;
+  if (typeof p.rootPath === "string") patch.rootPath = p.rootPath;
+
+  if (typeof p.delayMinutes === "number" && p.recurring === true) {
+    throw badAutomation("delayMinutes 是一次性任务，不能配 recurring=true");
+  }
+  // 次数口径：recurring=false 而 maxRuns 未给 → 补成 1（一次性）
+  const wantsRuns = p.recurring !== undefined || p.maxRuns !== undefined;
+  const recurring = p.recurring ?? prev.recurring;
+  const maxRuns = p.maxRuns !== undefined
+    ? (p.maxRuns === null ? (recurring ? null : 1) : p.maxRuns)
+    : (p.recurring !== undefined && !recurring && prev.maxRuns === null ? 1 : prev.maxRuns);
+
+  const scheduleChanged = p.cron !== undefined || p.scheduleRule !== undefined || p.delayMinutes !== undefined;
+  if (scheduleChanged) {
+    const resolved = resolveSchedule(p);
+    patch.cron = resolved.cron;
+    patch.scheduleRule = resolved.rule;
+    patch.nextRunAt = resolved.nextRunAt;
+  } else if (wantsRuns) {
+    // 只动次数口径：下一个触发点从现有规则重算
+    patch.nextRunAt = prev.scheduleRule !== null
+      ? computeScheduleNextRunAt(prev.scheduleRule)
+      : cronNextAt(prev.cron);
+  }
+  if (wantsRuns) {
+    patch.recurring = recurring;
+    patch.maxRuns = maxRuns;
+  }
+  if (scheduleChanged || wantsRuns) scheduler.invalidate(p.id);
+
+  store.updateAutomation(p.id, patch);
+  const after = store.getAutomation(p.id);
+  return { automation: after?.automation ?? null };
+});
+
+registerMethod("automation.list", () => {
+  // 卡片需要运行记录（最近运行 / 状态徽章），每条带上最近 10 条
+  return store.listAutomations().map((a) => ({ ...a, runs: store.listAutomationRuns(a.id, 10) }));
 });
 registerMethod("automation.setEnabled", (params) => {
   const p = (params ?? {}) as { id?: number; enabled?: boolean };
   if (typeof p.id !== "number" || typeof p.enabled !== "boolean") {
-    throw Object.assign(new Error("id and enabled are required"), { code: "bad_params" });
+    throw badAutomation("id and enabled are required");
   }
-  const changed = store.setAutomationEnabled(p.id, p.enabled);
+  const hit = store.getAutomation(p.id);
+  if (hit === undefined) throw Object.assign(new Error(`no such automation: ${p.id}`), { code: "unknown_automation" });
   scheduler.invalidate(p.id);
-  return { changed };
+  const changed = store.setAutomationEnabled(p.id, p.enabled);
+  // 重新启用一个 next_run_at 为空的行（终态任务被手动拉起）：从现在重算一次，
+  // 否则永远没人认领。停用期间「错过」的旧时刻交给 misfire 宽限跳过。
+  let nextRunAt = hit.automation.nextRunAt;
+  if (p.enabled && nextRunAt === null) {
+    const a = hit.automation;
+    nextRunAt = a.scheduleRule !== null ? computeScheduleNextRunAt(a.scheduleRule) : cronNextAt(a.cron);
+    store.updateAutomation(p.id, { nextRunAt });
+  }
+  return { changed, nextRunAt };
 });
 registerMethod("automation.delete", (params) => {
   const p = (params ?? {}) as { id?: number };
-  if (typeof p.id !== "number") throw Object.assign(new Error("id is required"), { code: "bad_params" });
+  if (typeof p.id !== "number") throw badAutomation("id is required");
   scheduler.invalidate(p.id);
   return { deleted: store.deleteAutomation(p.id) };
 });
 registerMethod("automation.runs", (params) => {
-  const p = (params ?? {}) as { id?: number };
-  if (typeof p.id !== "number") throw Object.assign(new Error("id is required"), { code: "bad_params" });
-  return store.listAutomationRuns(p.id);
+  const p = (params ?? {}) as { id?: number; limit?: number };
+  if (typeof p.id !== "number") throw badAutomation("id is required");
+  const limit = typeof p.limit === "number" ? Math.min(Math.max(p.limit, 1), 200) : 20;
+  return store.listAutomationRuns(p.id, limit);
 });
 registerMethod("automation.runNow", (params) => {
   const p = (params ?? {}) as { id?: number };
-  if (typeof p.id !== "number") throw Object.assign(new Error("id is required"), { code: "bad_params" });
+  if (typeof p.id !== "number") throw badAutomation("id is required");
   const hit = store.getAutomation(p.id);
   if (hit === undefined) throw Object.assign(new Error(`no such automation: ${p.id}`), { code: "unknown_automation" });
-  return runAutomation(hit.automation);
+  // 手动触发不消耗 run_count（那是 scheduled 跑的账，一次性任务的终态判断只看它）
+  return runAutomation(hit.automation, { trigger: "manual" });
 });
 
 

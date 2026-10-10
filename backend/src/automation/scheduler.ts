@@ -1,33 +1,46 @@
 /**
- * 自动化调度器（Phase 5）—— daemon 内 cron，到点起会话，运行记录落盘（docs/06 Phase 5）。
+ * 自动化调度器（Phase 5 v2）—— 对齐 ZCode 的调度状态机，按本项目体量裁剪。
  *
- * 结构：tick 每 20 秒扫一遍 enabled 的自动化；cron 命中当前分钟且这一分钟
- * 还没发过火，就调 runner（由 host 侧注入：起会话 + 挂 run 记录）。
- * 会话结束态由 host 的事件流回灌（markFinished），调度器只管「到点没到点」。
+ * 权威状态在 DB（automations.next_run_at），不靠内存推算：daemon 重启不丢拍，
+ * 调度器只认 store。tick 每 20 秒扫一遍：
+ *
+ *   1. 重试到期的 → 原地再派（next_run_at 已在首次认领时前推，不再动它）
+ *   2. next_run_at <= now 的 → 先认领（markAutomationFired 原子前推 + 计数）再异步派发，
+ *      两帧 tick 不会对同一次触发重复发火
+ *   3. 错过超过宽限（停机/休眠）→ 记 skipped 不补跑，直接排到下一个未来触发点；
+ *      一次性任务错过即终态（completed），不会从延迟规则里推导出后续周期
+ *   4. 派发失败 → 指数退避重试（30s 起步、15min 封顶、最多 5 次）；
+ *      放弃时循环任务保持已前推的 next_run_at（这一窗丢掉、下一窗正常）
+ *
+ * 会话结束态由 host 的事件流回灌（index.ts），调度器只管「到点没到点」。
+ * 调度权威是 scheduleRule（共享引擎 computeScheduleNextRunAt，与 UI 同一份算术），
+ * 纯 cron 的旧行走 cronNextAt 兜底。
  */
 
-import { cronMatches, parseCron } from "./cron.ts";
+import { cronNextAt } from "./cron.ts";
+import { computeScheduleNextRunAt, type ScheduleRule } from "../../../prototype/src/core/automation.ts";
 import type { Store } from "../store/db.ts";
 import { log } from "../log.ts";
 
-export type AutomationRunner = (a: {
-  id: number;
-  unitId: string;
-  unitName: string;
-  runtimeId: string;
-  rootPath: string;
-  prompt: string;
-  model: string | null;
-  mode: string | null;
-}) => Promise<{ runId: number; sessionId: string }>;
+export type AutomationRow = ReturnType<Store["listAutomations"]>[number];
+
+export type AutomationRunner = (a: AutomationRow, opts: { trigger: "schedule" | "manual" }) => Promise<{
+  runId: number;
+  sessionId: string;
+}>;
 
 const TICK_MS = 20_000;
+/** misfire 宽限：next_run_at 早于 now 超过它 = 停机/休眠期间错过 → skipped 不补跑 */
+const MISFIRE_GRACE_MS = 5 * 60_000;
+/** 派发失败退避：30s 起步、15min 封顶、最多 5 次（对齐 ZCode 的 DISPATCH_RETRY_*） */
+const RETRY_BASE_MS = 30_000;
+const RETRY_CAP_MS = 15 * 60_000;
+const MAX_ATTEMPTS = 5;
 
 export class AutomationScheduler {
   private timer: NodeJS.Timeout | null = null;
-  /** 已发过火的分钟（本地时区 YYYY-MM-DD HH:mm），防同分钟重复 */
-  private lastFiredMinute = "";
-  private readonly crons = new Map<number, ReturnType<typeof parseCron>>();
+  /** 派发失败退避表（内存）：daemon 重启即清零 —— 重试是尽力而为，不是持久承诺 */
+  private readonly retries = new Map<number, { attempts: number; at: number }>();
 
   constructor(
     private readonly store: Store,
@@ -36,6 +49,7 @@ export class AutomationScheduler {
 
   start(): void {
     if (this.timer !== null) return;
+    this.backfill();
     this.timer = setInterval(() => this.tick(), TICK_MS);
     this.timer.unref();
     log.info("automation scheduler started", { tickMs: TICK_MS });
@@ -46,34 +60,100 @@ export class AutomationScheduler {
     this.timer = null;
   }
 
-  private tick(): void {
-    const now = new Date();
-    const minuteKey = `${now.getFullYear()}-${now.getMonth()}-${now.getDate()} ${now.getHours()}:${now.getMinutes()}`;
-    if (minuteKey === this.lastFiredMinute) return;
-    this.lastFiredMinute = minuteKey;
-
+  /** 旧库迁移：next_run_at 为空的启用行按当前规则补算一次，否则永远无人认领 */
+  private backfill(): void {
     for (const a of this.store.listAutomations()) {
-      if (!a.enabled) continue;
-      let fields = this.crons.get(a.id);
-      if (fields === undefined) {
-        try {
-          fields = parseCron(a.cron);
-        } catch (err: unknown) {
-          log.warn("automation has bad cron, skipping", { id: a.id, cron: a.cron, error: err instanceof Error ? err.message : String(err) });
-          continue;
-        }
-        this.crons.set(a.id, fields);
-      }
-      if (!cronMatches(fields, now)) continue;
-      log.info("automation due, firing", { id: a.id, cron: a.cron });
-      void this.run(a).catch((err: unknown) =>
-        log.warn("automation run failed", { id: a.id, error: err instanceof Error ? err.message : String(err) }),
-      );
+      if (!a.enabled || a.nextRunAt !== null) continue;
+      const next = this.computeNext(a);
+      this.store.updateAutomation(a.id, { nextRunAt: next });
+      log.info("automation next_run_at backfilled", { id: a.id, next });
     }
   }
 
-  /** cron 变更后清缓存 */
+  /** 规则的下一次触发点。rule 缺失或坏 cron 都返回 null（由调用方决定兜底）。 */
+  private computeNext(a: Pick<AutomationRow, "scheduleRule" | "cron">, from = Date.now()): number | null {
+    if (a.scheduleRule !== null) {
+      try {
+        return computeScheduleNextRunAt(a.scheduleRule, from);
+      } catch (err: unknown) {
+        log.warn("automation rule compute failed", { error: err instanceof Error ? err.message : String(err) });
+        return null;
+      }
+    }
+    try {
+      return cronNextAt(a.cron, from);
+    } catch (err: unknown) {
+      log.warn("automation has bad cron", { cron: a.cron, error: err instanceof Error ? err.message : String(err) });
+      return null;
+    }
+  }
+
+  private tick(): void {
+    const now = Date.now();
+    for (const a of this.store.listAutomations()) {
+      if (!a.enabled) continue;
+
+      // 重试窗口：到点就原地再派。run_count 在首次认领时已消耗，重试不再计数。
+      const retry = this.retries.get(a.id);
+      if (retry !== undefined) {
+        if (now < retry.at) continue;
+        log.info("automation dispatch retry", { id: a.id, attempts: retry.attempts });
+        void this.dispatch(a, "schedule");
+        continue;
+      }
+
+      if (a.nextRunAt === null || a.nextRunAt > now) continue;
+
+      // misfire：停机/休眠期间错过的窗口跳过不补跑（调度器的职责是到点起会话，不是补账）
+      if (now - a.nextRunAt > MISFIRE_GRACE_MS) {
+        const oneShot = !a.recurring && (a.maxRuns ?? 1) <= 1;
+        const forward = oneShot ? null : this.computeNext(a, now);
+        this.store.recordSkippedAutomationRun(a.id, a.nextRunAt, "missed: computer_asleep_or_app_not_running");
+        this.store.updateAutomation(a.id, { nextRunAt: forward, ...(oneShot ? { enabled: false } : {}) });
+        log.info("automation misfire skipped", { id: a.id, missedAt: a.nextRunAt, next: forward, oneShot });
+        continue;
+      }
+
+      // 认领：先原子前推 next_run_at 再异步派发 —— 同一分钟内三帧 tick 只有一帧能认领
+      const willBeCount = a.runCount + 1;
+      const terminal = !a.recurring && willBeCount >= (a.maxRuns ?? 1);
+      const forward = terminal ? null : this.computeNext(a, now);
+      if (forward === null && !terminal) {
+        // 规则推不出下一次（比如坏 cron）：停用并挂失败徽章，别让它在每帧 tick 里空转
+        this.store.updateAutomation(a.id, { enabled: false, nextRunAt: null });
+        this.store.setAutomationError(a.id, "无法从当前规则推算下一次触发时间（规则已停用）", now);
+        log.warn("automation unschedulable, disabled", { id: a.id, cron: a.cron });
+        continue;
+      }
+      this.store.markAutomationFired(a.id, forward, now, terminal);
+      if (terminal) log.info("automation reached max runs, completed", { id: a.id, runs: willBeCount });
+      void this.dispatch(a, "schedule");
+    }
+  }
+
+  private async dispatch(a: AutomationRow, trigger: "schedule" | "manual"): Promise<void> {
+    try {
+      await this.run(a, { trigger });
+      this.retries.delete(a.id);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      const attempts = (this.retries.get(a.id)?.attempts ?? 0) + 1;
+      if (attempts >= MAX_ATTEMPTS) {
+        // 放弃 = failed 终态（ZCode 口径）：停用，等用户手动重开（setEnabled 会重排）。
+        // 失败徽章由 runner 在每次失败时写；这里补上停用，别让坏任务每个周期空转。
+        this.retries.delete(a.id);
+        this.store.setAutomationEnabled(a.id, false);
+        log.warn("automation dispatch gave up, disabled", { id: a.id, attempts, error: message });
+      } else {
+        const at = Date.now() + Math.min(RETRY_BASE_MS * 2 ** (attempts - 1), RETRY_CAP_MS);
+        this.retries.set(a.id, { attempts, at });
+        log.warn("automation dispatch failed, will retry", { id: a.id, attempts, retryAt: at, error: message });
+      }
+    }
+  }
+
+  /** cron/规则变更后由 RPC 层调用：清退避表。next_run_at 的重算在 handler 里随更新落库。 */
   invalidate(id: number): void {
-    this.crons.delete(id);
+    this.retries.delete(id);
   }
 }

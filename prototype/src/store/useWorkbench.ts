@@ -2,6 +2,7 @@ import { create } from "zustand";
 import type { Automation } from "../core/automation.ts";
 import { type ModelSpec } from "../core/models.ts";
 import { asUnitId, type UnitId, type WorkUnit } from "../core/units.ts";
+import type { AutomationWriteInput } from "../adapters/daemon/client.ts";
 import {
   normalizePrefs,
   parsePrefsMap,
@@ -89,9 +90,21 @@ interface WorkbenchState {
   setModelPrefs: (runtimeId: string, next: ProviderModelPrefs) => void;
   /** 批量入口：给一组动作依次应用，任一步失败则整组不动 */
   applyModelPrefs: (runtimeId: string, steps: readonly ((p: ProviderModelPrefs) => ProviderModelPrefs)[]) => void;
-  /** 定时任务。bot模式的时间维度 */
+  /**
+   * 定时任务 —— 权威数据在 daemon（SQLite），这里只是运行态视图。
+   * 每个动作都「先调 daemon、成功后刷新」，失败在 automationNotice 里说实话。
+   */
   automations: readonly Automation[];
-  toggleAutomation: (id: string) => void;
+  /** 页面级通知（操作成败的一行实话）。null = 无 */
+  automationNotice: { readonly kind: "error" | "info"; readonly text: string } | null;
+  setAutomationNotice: (n: { readonly kind: "error" | "info"; readonly text: string } | null) => void;
+  /** 从 daemon 重拉全量（启动、页面挂载、每次写操作之后） */
+  refreshAutomations: () => Promise<void>;
+  toggleAutomation: (id: string) => Promise<void>;
+  createAutomationAction: (input: AutomationWriteInput) => Promise<boolean>;
+  updateAutomationAction: (id: string, patch: AutomationWriteInput) => Promise<boolean>;
+  deleteAutomationAction: (id: string) => Promise<void>;
+  runAutomationNowAction: (id: string) => Promise<void>;
 }
 
 /* ------------------------------------------------------------------ 模型偏好 */
@@ -212,15 +225,111 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
   modelPrefsVersion: 0,
   runtimePrefs: {} as Readonly<Record<string, RuntimePref>>,
   automations: [],
+  automationNotice: null,
   // 启动时不预置：空 map 由 bootstrap 在合并 bot 定义后拉一次。
   // ⚠ 必须是**稳定引用**，selector 会逐个组件地读它（见 Sidebar 的 UnitRow），
   // 换新对象会让所有订阅者重渲染。
   channelIdentity: {},
 
-  toggleAutomation: (id) =>
+  setAutomationNotice: (automationNotice) => set({ automationNotice }),
+
+  refreshAutomations: async () => {
+    const { fetchAutomations, defaultDaemonEndpoint } = await import("../adapters/daemon/client.ts");
+    try {
+      const list = await fetchAutomations(defaultDaemonEndpoint());
+      set({ automations: list });
+    } catch (err: unknown) {
+      // daemon 没起是正常态：空着 + 控制台留痕，不打断用户正在看的页面
+      console.info("[workbench] 自动化列表拉取失败", err instanceof Error ? err.message : err);
+    }
+  },
+
+  toggleAutomation: async (id) => {
+    const current = get().automations.find((a) => a.id === id);
+    if (current === undefined) return;
+    // 乐观翻转 + 失败回滚：开关的即时反馈重要，但「显示开了、daemon 没开」更糟
     set((s) => ({
       automations: s.automations.map((a) => (a.id === id ? { ...a, enabled: !a.enabled } : a)),
-    })),
+    }));
+    const { setAutomationEnabled, defaultDaemonEndpoint } = await import("../adapters/daemon/client.ts");
+    try {
+      await setAutomationEnabled(Number(id), !current.enabled, defaultDaemonEndpoint());
+    } catch (err: unknown) {
+      set((s) => ({
+        automations: s.automations.map((a) => (a.id === id ? { ...a, enabled: current.enabled } : a)),
+        automationNotice: {
+          kind: "error",
+          text: `开关没生效：${err instanceof Error ? err.message : String(err)}`,
+        },
+      }));
+    }
+  },
+
+  createAutomationAction: async (input) => {
+    const { createAutomation, defaultDaemonEndpoint } = await import("../adapters/daemon/client.ts");
+    try {
+      await createAutomation(input, defaultDaemonEndpoint());
+      await get().refreshAutomations();
+      return true;
+    } catch (err: unknown) {
+      set({
+        automationNotice: {
+          kind: "error",
+          text: `创建失败：${err instanceof Error ? err.message : String(err)}`,
+        },
+      });
+      return false;
+    }
+  },
+
+  updateAutomationAction: async (id, patch) => {
+    const { updateAutomation, defaultDaemonEndpoint } = await import("../adapters/daemon/client.ts");
+    try {
+      await updateAutomation(Number(id), patch, defaultDaemonEndpoint());
+      await get().refreshAutomations();
+      return true;
+    } catch (err: unknown) {
+      set({
+        automationNotice: {
+          kind: "error",
+          text: `保存失败：${err instanceof Error ? err.message : String(err)}`,
+        },
+      });
+      return false;
+    }
+  },
+
+  deleteAutomationAction: async (id) => {
+    const { deleteAutomation, defaultDaemonEndpoint } = await import("../adapters/daemon/client.ts");
+    try {
+      await deleteAutomation(Number(id), defaultDaemonEndpoint());
+      await get().refreshAutomations();
+    } catch (err: unknown) {
+      set({
+        automationNotice: {
+          kind: "error",
+          text: `删除失败：${err instanceof Error ? err.message : String(err)}`,
+        },
+      });
+    }
+  },
+
+  runAutomationNowAction: async (id) => {
+    const { runAutomationNow, defaultDaemonEndpoint } = await import("../adapters/daemon/client.ts");
+    try {
+      await runAutomationNow(Number(id), defaultDaemonEndpoint());
+      set({ automationNotice: { kind: "info", text: "已派发，正在起新会话" } });
+      // 稍等片刻再刷，让「最近运行」立刻出现这条
+      setTimeout(() => void get().refreshAutomations(), 1500);
+    } catch (err: unknown) {
+      set({
+        automationNotice: {
+          kind: "error",
+          text: `立即运行失败：${err instanceof Error ? err.message : String(err)}`,
+        },
+      });
+    }
+  },
 
   setView: (view) => {
     // 切视图时自动落到该身份的第一个单元
@@ -439,6 +548,8 @@ void (async () => {
     } catch (err: unknown) {
       console.info("[workbench] 落盘 bot 定义缺失（不致命）", err instanceof Error ? err.message : err);
     }
+    // 自动化（Phase 5 v2）：daemon 可达时拉全量列表，页面打开即有数据
+    void useWorkbench.getState().refreshAutomations();
   } catch (err: unknown) {
     console.info(
       "[workbench] 本地 daemon 不可达 —— 无执行器可用（启动 backend/ 的 daemon 即接入真实执行）",
