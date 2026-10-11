@@ -280,6 +280,13 @@ async function flow(): Promise<void> {
       return (await evaluate<boolean>(`document.body.innerText.includes("E2E 冒烟任务")`)) === true;
     }, 8000);
     check("card appears in UI after create", created);
+    if (!created) {
+      // 失败时把对话框留在屏上的话捞出来 —— banner 里的报错就是根因
+      const dialogText = await evaluate<string>(
+        `(() => { const d = document.querySelector('[role="dialog"]'); return d === null ? "(dialog closed)" : d.innerText.slice(0, 400); })()`,
+      );
+      console.error("  dialog on failure:", dialogText);
+    }
 
     const afterCreate = await call<Array<{ id: number; name: string; enabled: boolean; unitId: string; cron: string; scheduleRule: { frequency: string; hour: number; minute: number } | null }>>("automation.list", null);
     const mine = afterCreate.find((a) => a.name === "E2E 冒烟任务");
@@ -288,6 +295,65 @@ async function flow(): Promise<void> {
     check("card shows unit binding", (mine?.unitId ?? "") !== "");
 
     if (mine === undefined) return;
+
+    // 5b. 一次性（delayMinutes）创建：回归「delay 分支同时发 maxRuns 被 create 拒」
+    //     的缺陷 —— 修好前这条路径 100% 报「delayMinutes 是一次性任务，不能配 maxRuns」。
+    await evaluate(`(() => {
+      const btns = [...document.querySelectorAll("button")].filter((b) => b.textContent?.replace(/\\s+/g, "") === "新建");
+      const hit = btns.at(-1);
+      if (hit === undefined) return false;
+      hit.click();
+      return true;
+    })()`);
+    const delayDialogOpened = await waitFor("create dialog (one-shot)", async () => {
+      return (await evaluate<boolean>(`document.querySelector('[role="dialog"][aria-label="新建自动化"]') !== null`)) === true;
+    });
+    check("one-shot dialog opens", delayDialogOpened);
+    if (delayDialogOpened) {
+      const delayFill = await evaluate<string>(`(() => {
+        const set = window.__awbSetReactValue;
+        const dlg = document.querySelector('[aria-label="新建自动化"]');
+        if (dlg === null) return "no dialog";
+        const name = dlg.querySelector('input[placeholder^="例如"]');
+        if (name === null) return "no name input";
+        set(name, "E2E 一次性任务");
+        const ta = dlg.querySelector("textarea");
+        if (ta === null) return "no textarea";
+        set(ta, "E2E 一次性：回答 2+2 然后结束");
+        const tab = [...dlg.querySelectorAll("button")].find((b) => b.textContent?.trim() === "一次性");
+        if (tab === undefined) return "no delay tab";
+        tab.click();
+        return "ok";
+      })()`);
+      check("one-shot form filled + delay tab", delayFill === "ok", delayFill);
+      await sleep(300);
+      // delay 分支渲染出分钟输入后再填
+      await evaluate(`(() => {
+        const set = window.__awbSetReactValue;
+        const num = document.querySelector('[aria-label="新建自动化"] input[type="number"]');
+        if (num === null) return false;
+        set(num, "3");
+        return true;
+      })()`);
+      await sleep(200);
+      await evaluate(`(() => {
+        const btns = [...document.querySelectorAll('[role="dialog"] button')];
+        const hit = btns.find((b) => b.textContent?.trim() === "创建");
+        if (hit === undefined) return false;
+        hit.click();
+        return true;
+      })()`);
+      const delayCard = await waitFor("one-shot card appears (UI)", async () => {
+        return (await evaluate<boolean>(`document.body.innerText.includes("E2E 一次性任务")`)) === true;
+      }, 8000);
+      check("one-shot create accepted (no maxRuns conflict)", delayCard);
+      const afterDelay = await call<Array<{ id: number; name: string; recurring: boolean; maxRuns: number | null; scheduleRule: { frequency: string } | null }>>("automation.list", null);
+      const delayRow = afterDelay.find((a) => a.name === "E2E 一次性任务");
+      check("one-shot persisted recurring=false maxRuns=1", delayRow?.recurring === false && delayRow?.maxRuns === 1, delayRow);
+      check("one-shot rule is custom interval", delayRow?.scheduleRule?.frequency === "custom", delayRow?.scheduleRule);
+      // 立刻删掉，别让 3 分钟后真的替 steward 起会话
+      if (delayRow !== undefined) await call("automation.delete", { id: delayRow.id });
+    }
 
     // 6. 开关：点 role=switch → daemon 侧 enabled 变 false（持久化真值）
     await evaluate(`(() => {

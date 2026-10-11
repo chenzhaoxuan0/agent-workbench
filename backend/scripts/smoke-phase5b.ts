@@ -14,6 +14,7 @@
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -202,7 +203,16 @@ async function main(): Promise<void> {
     check("one-shot fired within 150s", fired);
     const shotRow = await listOne(oneShot.id);
     check("one-shot auto-disabled after fire", shotRow.enabled === false && shotRow.nextRunAt === null, shotRow);
-    check("one-shot run recorded", shotRow.runs.some((r) => r.status === "done" || r.status === "failed"), shotRow.runs);
+    // 触发 ≠ 落定：run 行在派发瞬间就是 running，终态要等会话结束回灌。
+    // 立刻断言会在 mockperm 慢半拍时假失败 —— 给它一个轮询窗口。
+    const settleDeadline = Date.now() + 20_000;
+    let settled = false;
+    while (Date.now() < settleDeadline) {
+      const r = await listOne(oneShot.id);
+      if (r.runs.some((x) => x.status === "done" || x.status === "failed")) { settled = true; break; }
+      await sleep(500);
+    }
+    check("one-shot run recorded", settled, (await listOne(oneShot.id)).runs);
     await sleep(25_000);
     const shotRow2 = await listOne(oneShot.id);
     check("one-shot does not fire twice", shotRow2.runCount === 1, shotRow2.runCount);
@@ -219,7 +229,6 @@ async function main(): Promise<void> {
       prompt: "misfire 冒烟",
       scheduleRule: { frequency: "daily", hour: 23, minute: 50, weekdays: [], dayOfMonth: 1 },
     });
-    const { DatabaseSync } = await import("node:sqlite");
     const rawDb = new DatabaseSync(path.join(home, "state.db"));
     for (let i = 0; i < 5; i++) {
       try {
@@ -272,8 +281,83 @@ async function main(): Promise<void> {
     check("manual runNow does not consume run_count", doomedRow2.runCount === countBefore, { countBefore, after: doomedRow2.runCount });
     check("successful manual run clears badge", doomedRow2.lastError === null, doomedRow2.lastError);
 
-    // 8. 每条 list 都带 runs（卡片渲染依赖）
+    // 8. 只传 delayMinutes 的更新必须把 recurring 一起收口成一次性 ——
+    //    否则「只改提示词」的一次性任务保存完就悄悄变成永久循环
+    const conv = await call<{ id: number }>("automation.create", {
+      unitId: "u5b",
+      unitName: "v2 冒烟",
+      name: "循环转一次性",
+      runtimeId: "mockperm",
+      rootPath: home,
+      prompt: "转换冒烟",
+      scheduleRule: { frequency: "daily", hour: 9, minute: 0, weekdays: [], dayOfMonth: 1 },
+    });
+    const convUpd = await call<{ automation: AutoRow }>("automation.update", { id: conv.id, delayMinutes: 5 });
+    check(
+      "delayMinutes-only update forces one-shot",
+      convUpd.automation?.recurring === false && convUpd.automation?.maxRuns === 1,
+      { recurring: convUpd.automation?.recurring, maxRuns: convUpd.automation?.maxRuns },
+    );
+
+    // 9. 推不出任何未来的 cron 在 update 时也要拒（create 同拒）——
+    //    否则写下去就是 enabled + next_run_at=null 的无声卡死行
+    let impossibleRejected = false;
+    await call("automation.update", { id: conv.id, cron: "0 0 31 2 *" }).catch(() => {
+      impossibleRejected = true; // 2 月没有 31 日，永远不触发
+    });
+    check("impossible cron rejected at update", impossibleRejected);
+
+    // 10. 每条 list 都带 runs（卡片渲染依赖）
     check("list includes runs", doomedRow2.runs.length > 0);
+
+    // 11. 重启自愈：session→run 的回灌映射在内存里，重启即丢 —— 上个周期遗留的
+    //     running 记录要按会话台账收口（已结束→终态；无会话→failed），卡片不再假「运行中」
+    const healAuto = await call<{ id: number }>("automation.create", {
+      unitId: "u5b",
+      unitName: "v2 冒烟",
+      name: "自愈冒烟",
+      runtimeId: "mockperm",
+      rootPath: home,
+      prompt: "heal 冒烟",
+      cron: "0 0 1 1 *",
+    });
+    const healDb = new DatabaseSync(path.join(home, "state.db"));
+    const endedSession = "sess-heal-ended";
+    healDb
+      .prepare(
+        `INSERT INTO sessions (id, unit_id, runtime_id, title, status, started_at, ended_at, stats_json)
+         VALUES (?, 'u5b', 'mockperm', 'heal', 'done', ?, ?, '{}')`,
+      )
+      .run(endedSession, Date.now() - 60_000, Date.now() - 30_000);
+    healDb
+      .prepare(`INSERT INTO automation_runs (automation_id, session_id, status, trigger, started_at)
+                VALUES (?, ?, 'running', 'schedule', ?)`)
+      .run(healAuto.id, endedSession, Date.now() - 60_000);
+    healDb
+      .prepare(`INSERT INTO automation_runs (automation_id, session_id, status, trigger, started_at)
+                VALUES (?, NULL, 'running', 'schedule', ?)`)
+      .run(healAuto.id, Date.now() - 30_000);
+    healDb.close();
+
+    await call("daemon.stop", null, 15000);
+    await stopDaemon();
+    await sleep(500);
+    startDaemon(port, home);
+    check("daemon healthy after restart #2", await waitHealthy(port));
+    await connect(port);
+    const healed = await call<Array<{ status: string; sessionId: string | null; detail: string | null }>>("automation.runs", {
+      id: healAuto.id,
+    });
+    check(
+      "heal settles run attached to ended session",
+      healed.some((r) => r.sessionId === endedSession && r.status === "done"),
+      healed,
+    );
+    check(
+      "heal settles run without session as failed",
+      healed.some((r) => r.sessionId === null && r.status === "failed"),
+      healed,
+    );
 
     await call("daemon.stop", null, 15000);
     let exitCode: number | null | "timeout" = "timeout";

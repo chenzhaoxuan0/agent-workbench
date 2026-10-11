@@ -65,7 +65,13 @@ export class AutomationScheduler {
     for (const a of this.store.listAutomations()) {
       if (!a.enabled || a.nextRunAt !== null) continue;
       const next = this.computeNext(a);
-      this.store.updateAutomation(a.id, { nextRunAt: next });
+      try {
+        this.store.updateAutomation(a.id, { nextRunAt: next });
+      } catch (err: unknown) {
+        // 单行写失败不该拖垮启动 —— 下一轮 tick 的兜底分支会把它停用 + 亮徽章
+        log.warn("automation backfill write failed", { id: a.id, error: err instanceof Error ? err.message : String(err) });
+        continue;
+      }
       log.info("automation next_run_at backfilled", { id: a.id, next });
     }
   }
@@ -89,6 +95,16 @@ export class AutomationScheduler {
   }
 
   private tick(): void {
+    // 兜底：tick 是 daemon 的心跳，任何一行抛了（磁盘抖动 / 半损坏的行 / store 竞态）
+    // 都不能让 interval 回调变成未捕获异常 —— 记下来，下一帧继续扫。
+    try {
+      this.tickInner();
+    } catch (err: unknown) {
+      log.warn("automation tick failed", { error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  private tickInner(): void {
     const now = Date.now();
     for (const a of this.store.listAutomations()) {
       if (!a.enabled) continue;
@@ -102,7 +118,15 @@ export class AutomationScheduler {
         continue;
       }
 
-      if (a.nextRunAt === null || a.nextRunAt > now) continue;
+      // 启用却推不出下次触发点：规则半损坏（手改库 / 旧数据迁移 / 重算失败落了 null）。
+      // 不处理就是无声卡死 —— 永远不跑、界面上也没有任何解释。停用 + 亮徽章。
+      if (a.nextRunAt === null) {
+        this.store.updateAutomation(a.id, { enabled: false, nextRunAt: null });
+        this.store.setAutomationError(a.id, "无法从当前规则推算下一次触发时间（已自动停用）", now);
+        log.warn("automation unschedulable, disabled", { id: a.id, cron: a.cron });
+        continue;
+      }
+      if (a.nextRunAt > now) continue;
 
       // misfire：停机/休眠期间错过的窗口跳过不补跑（调度器的职责是到点起会话，不是补账）
       if (now - a.nextRunAt > MISFIRE_GRACE_MS) {
@@ -125,7 +149,12 @@ export class AutomationScheduler {
         log.warn("automation unschedulable, disabled", { id: a.id, cron: a.cron });
         continue;
       }
-      this.store.markAutomationFired(a.id, forward, now, terminal);
+      // 认领失败（行刚被删除 / 并发改写）就别派发了 —— 否则给一条已删的自动化
+      // 起会话，留下孤儿运行记录
+      if (!this.store.markAutomationFired(a.id, forward, now, terminal)) {
+        log.warn("automation claim lost (row gone or changed), skipping dispatch", { id: a.id });
+        continue;
+      }
       if (terminal) log.info("automation reached max runs, completed", { id: a.id, runs: willBeCount });
       void this.dispatch(a, "schedule");
     }

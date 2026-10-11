@@ -112,11 +112,7 @@ function draftOf(a: Automation): BuilderDraft {
   };
 }
 
-/** 除锚点外的规则内容（锚点不变就不重置相位） */
-function ruleShape(rule: ScheduleRule): string {
-  const { anchorAt: _anchorAt, ...rest } = rule;
-  return JSON.stringify(rest);
-}
+/** 除锚点外的规则内容（保留策略已由 scheduleTouched 承担，此比较器不再需要） */
 
 /** bot.json 里存的是裸执行器 id；主绑定的优先 */
 function unitRuntimeId(u: { readonly bindings: readonly { readonly runtimeId: string; readonly primary: boolean }[] } | undefined): string {
@@ -160,6 +156,8 @@ export function AutomationDialog({
           }
         : DEFAULT_DRAFT,
   );
+  /** 编辑时碰过调度控件没有。没碰过 = 提交时原样保留旧调度（见 submit），表单的还原是近似的，不能拿来改写用户的原表达式 */
+  const [scheduleTouched, setScheduleTouched] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -168,6 +166,12 @@ export function AutomationDialog({
 
   // 保存时真正要发的时间粒度（预览 cron 用）
   const patch = (p: Partial<BuilderDraft>): void => setDraft((d) => ({ ...d, ...p }));
+
+  /** 调度字段专用：任何一碰就意味着「用户要改调度」，提交时不再保留旧 cron/锚点 */
+  const patchSchedule = (p: Partial<BuilderDraft>): void => {
+    setScheduleTouched(true);
+    setDraft((d) => ({ ...d, ...p }));
+  };
 
   const namespacedRuntime = `daemon:${runtimeBare}`;
   const models = useWorkbench((s) => visibleModelsFor(s, namespacedRuntime));
@@ -210,6 +214,7 @@ export function AutomationDialog({
   }, [draft, ruleFromDraft]);
 
   const submit = async (): Promise<void> => {
+    if (submitting) return; // 防双击双发
     if (unit === undefined) {
       setErr("先选一个归属单元（bot）—— 自动化是替它跑的");
       return;
@@ -227,16 +232,21 @@ export function AutomationDialog({
       return;
     }
 
-    // 锚点策略：编辑且规则内容没变 → 保留旧锚点（「每 30 分钟」的相位不被保存动作推走）；
-    // 新建 / 真改了规则 → daemon 侧以保存时刻重新锚定（anchorAt 缺省即现在）。
-    let scheduleRule = ruleFromDraft;
-    if (
-      scheduleRule !== null &&
-      initial !== null &&
-      initial.rule.anchorAt !== undefined &&
-      ruleShape(initial.rule) === ruleShape({ ...scheduleRule, anchorAt: initial.rule.anchorAt })
-    ) {
-      scheduleRule = { ...scheduleRule, anchorAt: initial.rule.anchorAt };
+    // 调度保留策略（编辑且没碰调度控件时，原样回传 daemon 的权威调度）：
+    // - 纯 cron 行：回传 cron 原文。表单的 ruleFromCron 是近似还原（复杂表达式直接
+    //   还原不出），拿它落库 = 静默把用户的调度改写成另一回事。
+    // - 规则行：回传旧规则对象（含锚点）。改个名字不该重置「每 30 分钟」的相位，
+    //   更不该把「N 分钟后」的触发时刻推走。
+    const touched = initial === null || scheduleTouched;
+    let scheduleRule: ScheduleRule | null = ruleFromDraft;
+    let cronPassthrough: string | undefined;
+    if (!touched) {
+      if (initial.scheduleSource === "cron" && typeof initial.cron === "string" && initial.cron !== "") {
+        cronPassthrough = initial.cron;
+        scheduleRule = null;
+      } else {
+        scheduleRule = initial.rule;
+      }
     }
 
     const input: AutomationWriteInput = {
@@ -249,9 +259,12 @@ export function AutomationDialog({
       model: model === "" ? null : model,
       mode: mode === "" ? null : mode,
       recurring: draft.freq === "delay" ? false : draft.recurring,
-      maxRuns: draft.freq === "delay" ? 1 : (draft.recurring ? null : Math.max(1, Math.round(draft.maxRuns))),
-      ...(draft.freq === "delay" ? { delayMinutes: Math.max(1, Math.round(draft.delayMinutes)) } : {}),
+      // delay 分支不发 maxRuns：delayMinutes 本身就定性一次性（跑一次收口），
+      // 后端 create 明确拒绝「delayMinutes + maxRuns」组合，带上就是必报错
+      maxRuns: draft.freq === "delay" ? undefined : (draft.recurring ? null : Math.max(1, Math.round(draft.maxRuns))),
+      ...(touched && draft.freq === "delay" ? { delayMinutes: Math.max(1, Math.round(draft.delayMinutes)) } : {}),
       ...(scheduleRule !== null ? { scheduleRule } : {}),
+      ...(cronPassthrough !== undefined ? { cron: cronPassthrough } : {}),
     };
     setSubmitting(true);
     setErr(null);
@@ -339,7 +352,7 @@ export function AutomationDialog({
                   <button
                     key={t.id}
                     type="button"
-                    onClick={() => patch({ freq: t.id })}
+                    onClick={() => patchSchedule({ freq: t.id })}
                     className={cn(
                       "rounded-chip px-2.5 py-1 text-caption transition",
                       draft.freq === t.id ? "bg-teal-tint font-medium text-teal" : "text-ash hover:bg-line-soft hover:text-graphite",
@@ -357,7 +370,7 @@ export function AutomationDialog({
                     type="number"
                     min={1}
                     value={draft.delayMinutes}
-                    onChange={(e) => patch({ delayMinutes: Number(e.target.value) })}
+                    onChange={(e) => patchSchedule({ delayMinutes: Number(e.target.value) })}
                     className={cn(inputCls, "w-24")}
                   />
                   <span>分钟后跑一次（以 daemon 时钟为锚，跑完即停）</span>
@@ -372,7 +385,7 @@ export function AutomationDialog({
                       <input
                         type="time"
                         value={draft.time}
-                        onChange={(e) => patch({ time: e.target.value })}
+                        onChange={(e) => patchSchedule({ time: e.target.value })}
                         className={cn(inputCls, "w-32")}
                       />
                     </div>
@@ -387,7 +400,7 @@ export function AutomationDialog({
                             type="button"
                             aria-pressed={on}
                             onClick={() =>
-                              patch({
+                              patchSchedule({
                                 weekdays: on
                                   ? draft.weekdays.filter((x) => x !== d)
                                   : [...draft.weekdays, d as Weekday].sort((a, b) => a - b),
@@ -412,7 +425,7 @@ export function AutomationDialog({
                         min={1}
                         max={31}
                         value={draft.dayOfMonth}
-                        onChange={(e) => patch({ dayOfMonth: Number(e.target.value) })}
+                        onChange={(e) => patchSchedule({ dayOfMonth: Number(e.target.value) })}
                         className={cn(inputCls, "w-24")}
                       />
                       <span>日（当月没有这天就跳过）</span>
@@ -425,12 +438,12 @@ export function AutomationDialog({
                         type="number"
                         min={1}
                         value={draft.interval}
-                        onChange={(e) => patch({ interval: Number(e.target.value) })}
+                        onChange={(e) => patchSchedule({ interval: Number(e.target.value) })}
                         className={cn(inputCls, "w-20")}
                       />
                       <select
                         value={draft.unit}
-                        onChange={(e) => patch({ unit: e.target.value as BuilderDraft["unit"] })}
+                        onChange={(e) => patchSchedule({ unit: e.target.value as BuilderDraft["unit"] })}
                         className={cn(inputCls, "w-28")}
                       >
                         {UNIT_OPTIONS.map((u) => (

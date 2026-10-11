@@ -314,6 +314,47 @@ async function runAutomation(
 }
 
 const scheduler = new AutomationScheduler(store, runAutomation);
+
+/**
+ * 重启自愈 —— 「sessionId → 运行记录」的回灌映射在内存里，daemon 重启即丢。
+ * 不做这一遍：上一次运行周期里 status=running 的运行记录永远停在 running
+ * （卡片假「运行中」），还活着的会话结束时也等不到结算。
+ * 按会话台账逐条收口：已结束 → 按其状态落终态；记录缺失 → failed；仍活着 → 重新挂回。
+ */
+function healAutomationRuns(): void {
+  let settled = 0;
+  let reattached = 0;
+  for (const a of store.listAutomations()) {
+    for (const r of store.listAutomationRuns(a.id, 200)) {
+      if (r.status !== "running") continue;
+      if (r.sessionId === null) {
+        // 派发在 startSession 完成前中断：会话从未存在
+        store.finishAutomationRun(r.id, "failed", "daemon 重启前未完成派发");
+        settled++;
+        continue;
+      }
+      const s = store.getSession(r.sessionId);
+      if (s === undefined) {
+        store.finishAutomationRun(r.id, "failed", "daemon 重启后会话记录缺失");
+        settled++;
+        continue;
+      }
+      if (s.endedAt !== null) {
+        const failed = s.status === "failed";
+        store.finishAutomationRun(r.id, failed ? "failed" : "done", `ended: ${s.status}`);
+        if (failed) store.setAutomationError(a.id, `ended: ${s.status}`, s.endedAt);
+        settled++;
+        continue;
+      }
+      // 会话还活着（loadPersisted 已把它装回台账）：重新挂回终态回灌
+      automationRunBySession.set(r.sessionId, { runId: r.id, automationId: a.id });
+      reattached++;
+    }
+  }
+  if (settled > 0 || reattached > 0) log.info("automation runs healed after restart", { settled, reattached });
+}
+
+healAutomationRuns();
 scheduler.start();
 
 // 渠道网关（docs/08 WP-8）：bot 的 IM 入站通道。
@@ -615,7 +656,9 @@ function parseScheduleRule(raw: unknown): ScheduleRule {
     minute: int("minute", 0, 59, 0),
     weekdays,
     dayOfMonth: int("dayOfMonth", 1, 31, 1),
-    ...(frequency === "custom" ? { interval: int("interval", 1, 10_000, 1) } : {}),
+    // 上限与 delayMinutes 对齐（525600 分钟 = 1 年）：delayMinutes 路径产出的规则
+    // 会被原样回传校验，上限不一致时「编辑一个大间隔一次性任务」会莫名保存失败
+    ...(frequency === "custom" ? { interval: int("interval", 1, 525_600, 1) } : {}),
     ...(unitOk ? { unit: unit as "minutes" | "hours" | "days" | "weeks" | "months" } : {}),
     ...(typeof r["anchorAt"] === "number" && Number.isFinite(r["anchorAt"]) ? { anchorAt: r["anchorAt"] as number } : {}),
   };
@@ -665,6 +708,12 @@ registerMethod("automation.create", (params) => {
   }
   if (typeof p.delayMinutes === "number" && p.recurring === true) {
     throw badAutomation("delayMinutes 是一次性任务，不能配 recurring=true");
+  }
+  if (typeof p.delayMinutes === "number" && typeof p.maxRuns === "number") {
+    throw badAutomation("delayMinutes 是一次性任务，不能配 maxRuns（跑一次即停）");
+  }
+  if (typeof p.maxRuns === "number" && (!Number.isFinite(p.maxRuns) || p.maxRuns < 1 || p.maxRuns > 10_000)) {
+    throw badAutomation("maxRuns 必须是 1..10000");
   }
   const { cron, rule, nextRunAt } = resolveSchedule(p);
   if (nextRunAt === null) throw badAutomation("当前规则推不出任何未来的触发时间");
@@ -716,24 +765,40 @@ registerMethod("automation.update", (params) => {
   if (typeof p.delayMinutes === "number" && p.recurring === true) {
     throw badAutomation("delayMinutes 是一次性任务，不能配 recurring=true");
   }
-  // 次数口径：recurring=false 而 maxRuns 未给 → 补成 1（一次性）
-  const wantsRuns = p.recurring !== undefined || p.maxRuns !== undefined;
-  const recurring = p.recurring ?? prev.recurring;
+  if (p.maxRuns !== undefined && p.maxRuns !== null &&
+      (!Number.isFinite(p.maxRuns) || p.maxRuns < 1 || p.maxRuns > 10_000)) {
+    throw badAutomation("maxRuns 必须是 1..10000（null = 不限次数）");
+  }
+  // 次数口径：recurring=false 而 maxRuns 未给 → 补成 1（一次性）。
+  // delayMinutes 本质是一次性的相对表达 —— 必须连 recurring 一起强制收口，
+  // 否则「只改提示词」的一次性任务保存完就悄悄变成永久循环。
+  const delay = typeof p.delayMinutes === "number";
+  const wantsRuns = p.recurring !== undefined || p.maxRuns !== undefined || delay;
+  const recurring = delay ? false : (p.recurring ?? prev.recurring);
   const maxRuns = p.maxRuns !== undefined
     ? (p.maxRuns === null ? (recurring ? null : 1) : p.maxRuns)
-    : (p.recurring !== undefined && !recurring && prev.maxRuns === null ? 1 : prev.maxRuns);
+    : ((delay || (p.recurring !== undefined && !recurring)) && prev.maxRuns === null ? 1 : prev.maxRuns);
 
-  const scheduleChanged = p.cron !== undefined || p.scheduleRule !== undefined || p.delayMinutes !== undefined;
+  const scheduleChanged = p.cron !== undefined || p.scheduleRule !== undefined || delay;
   if (scheduleChanged) {
     const resolved = resolveSchedule(p);
+    // create 拒绝「推不出未来」的表达式，update 也必须拒 —— 否则写下去就是
+    // enabled + next_run_at=null 的无声卡死行
+    if (resolved.nextRunAt === null) throw badAutomation("当前规则推不出任何未来的触发时间");
     patch.cron = resolved.cron;
     patch.scheduleRule = resolved.rule;
     patch.nextRunAt = resolved.nextRunAt;
   } else if (wantsRuns) {
-    // 只动次数口径：下一个触发点从现有规则重算
-    patch.nextRunAt = prev.scheduleRule !== null
-      ? computeScheduleNextRunAt(prev.scheduleRule)
-      : cronNextAt(prev.cron);
+    // 只动次数口径：下一个触发点从现有规则重算。
+    // 盘上的行可能被手改坏（weekly 缺 weekdays / 坏 cron）——这里抛不得，
+    // 落 null 让调度器在下一 tick 把它停用 + 亮徽章。
+    try {
+      patch.nextRunAt = prev.scheduleRule !== null
+        ? computeScheduleNextRunAt(prev.scheduleRule)
+        : cronNextAt(prev.cron);
+    } catch {
+      patch.nextRunAt = null;
+    }
   }
   if (wantsRuns) {
     patch.recurring = recurring;
@@ -764,7 +829,13 @@ registerMethod("automation.setEnabled", (params) => {
   let nextRunAt = hit.automation.nextRunAt;
   if (p.enabled && nextRunAt === null) {
     const a = hit.automation;
-    nextRunAt = a.scheduleRule !== null ? computeScheduleNextRunAt(a.scheduleRule) : cronNextAt(a.cron);
+    // 坏 cron / 半损坏的规则在这里会抛 —— 不能让 500 留下 enabled+null 的卡死行。
+    // 落 null 交给调度器：下一 tick 会把它停用 + 亮徽章（可见的失败，不是无声的消失）。
+    try {
+      nextRunAt = a.scheduleRule !== null ? computeScheduleNextRunAt(a.scheduleRule) : cronNextAt(a.cron);
+    } catch {
+      nextRunAt = null;
+    }
     store.updateAutomation(p.id, { nextRunAt });
   }
   return { changed, nextRunAt };

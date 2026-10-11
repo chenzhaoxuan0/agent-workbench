@@ -654,7 +654,13 @@ function mapAutomationRun(r: DaemonAutomationRun): AutomationRun {
   return {
     startedAt: r.startedAt,
     endedAt: r.finishedAt ?? undefined,
-    status: r.status === "done" ? "completed" : r.status === "failed" ? "failed" : "running",
+    // skipped（错过窗口被跳过）必须保真 —— 映成 running 的话，misfire 过的任务
+    // 会在卡片上永远挂着一个假「运行中」
+    status:
+      r.status === "done" ? "completed"
+      : r.status === "failed" ? "failed"
+      : r.status === "skipped" ? "skipped"
+      : "running",
     summary: r.detail ?? undefined,
   };
 }
@@ -678,6 +684,8 @@ export function daemonAutomationToAutomation(a: DaemonAutomation): Automation {
     createdAt: a.createdAt,
     model: a.model,
     mode: a.mode,
+    cron: a.cron,
+    scheduleSource: a.scheduleRule === null ? "cron" : "rule",
     nextRunAt: a.nextRunAt ?? undefined,
     lastFailure: a.lastError === null ? undefined : { at: a.lastErrorAt ?? a.createdAt, reason: a.lastError },
   };

@@ -39,7 +39,8 @@ export type RunStatus = "idle" | "running" | "completed" | "failed" | "paused";
 export interface AutomationRun {
   readonly startedAt: number;
   readonly endedAt?: number;
-  readonly status: Exclude<RunStatus, "idle" | "paused">;
+  /** skipped = 错过窗口被跳过（misfire 不补跑）——它没真的跑过，徽章上不能算「运行中」 */
+  readonly status: "running" | "completed" | "failed" | "skipped";
   readonly summary?: string;
 }
 
@@ -64,6 +65,10 @@ export interface Automation {
   readonly model?: string | null;
   /** 到点会话的权限模式（缺省 = 执行器默认） */
   readonly mode?: string | null;
+  /** daemon 权威行上的 cron 原文（兼容展示；scheduleSource="cron" 时编辑未动调度要原样回传） */
+  readonly cron?: string;
+  /** 调度权威来源：rule = scheduleRule；cron = 纯 cron 行（表单的规则还原能力有限，不能拿来改写它） */
+  readonly scheduleSource?: "rule" | "cron";
   /**
    * daemon 持久化的下次触发时间（权威值）。有它显示就用它，
    * 没有再退回 nextRunAt() 本地预估 —— 两边共用一个引擎，通常一致。

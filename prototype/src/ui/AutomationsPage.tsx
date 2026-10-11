@@ -59,9 +59,12 @@ export function AutomationsPage() {
   const [filter, setFilter] = useState<StatusFilter>("all");
   const [dialog, setDialog] = useState<DialogState>(null);
 
-  // 挂载即拉一次（store 在 daemon bootstrap 时也拉过，这里覆盖「先开后端」的时序）
+  // 挂载即拉一次 + 30s 轻轮询：daemon 是唯一权威，下一次运行的倒计时、
+  // 运行记录的终态都要跟着它走 —— 不然「3 分钟后」会永远停在 3 分钟前
   useEffect(() => {
     void refreshAutomations();
+    const timer = setInterval(() => void refreshAutomations(), 30_000);
+    return () => clearInterval(timer);
   }, [refreshAutomations]);
 
   // 通知 5 秒自动消失
