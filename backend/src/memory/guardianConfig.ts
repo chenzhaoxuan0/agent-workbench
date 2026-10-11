@@ -26,6 +26,8 @@ export interface MemoryGuardianConfig {
   readonly consolidateThresholdRatio: number;
   /** 是否开启写入时的安全威胁与敏感凭据拦截（Content Scanner） */
   readonly contentScannerEnabled: boolean;
+  /** 是否启用每日总结定时任务（设置页开关的权威值；关掉只停定时跑，手动试跑不受影响） */
+  readonly digestEnabled: boolean;
 }
 
 export const DEFAULT_GUARDIAN_CONFIG: MemoryGuardianConfig = {
@@ -35,6 +37,7 @@ export const DEFAULT_GUARDIAN_CONFIG: MemoryGuardianConfig = {
   autoConsolidate: true,
   consolidateThresholdRatio: 0.95,
   contentScannerEnabled: true,
+  digestEnabled: true,
 };
 
 const KV_KEY = "memory.guardian";
@@ -56,6 +59,7 @@ export function getGuardianConfig(store: Store): MemoryGuardianConfig {
           : DEFAULT_GUARDIAN_CONFIG.consolidateThresholdRatio,
       contentScannerEnabled:
         typeof parsed.contentScannerEnabled === "boolean" ? parsed.contentScannerEnabled : DEFAULT_GUARDIAN_CONFIG.contentScannerEnabled,
+      digestEnabled: typeof parsed.digestEnabled === "boolean" ? parsed.digestEnabled : DEFAULT_GUARDIAN_CONFIG.digestEnabled,
     };
   } catch {
     return DEFAULT_GUARDIAN_CONFIG;

@@ -16,6 +16,11 @@ export interface TerminalSessionCreateOptions {
   cwd: string;
   executorId?: string;
   onExit?: (code: number) => void;
+  /**
+   * 重挂模式：PTY 已在 daemon 里活着（F5 刷新后 terminal.list 找回来的），
+   * 传最近输出回放。设置后不再 terminal.create —— 再 create 同 id 会起第二个进程。
+   */
+  attachScrollback?: string;
 }
 
 /**
@@ -203,7 +208,9 @@ export class TerminalSession {
   cwd: string;
   executorId?: string;
 
+  /** 首帧输出到达前是否还可写入回放（避免与实时帧交叠） */
   private disposed = false;
+  private readonly attachScrollback?: string;
   private resizeObserver: ResizeObserver | null = null;
   private resizeTimer: ReturnType<typeof setTimeout> | null = null;
   private lastCols = 80;
@@ -217,6 +224,7 @@ export class TerminalSession {
     this.cwd = opts.cwd;
     this.executorId = opts.executorId;
     this.onExitCallback = opts.onExit;
+    this.attachScrollback = opts.attachScrollback;
 
     // 创建持久化包装容器
     this.element = document.createElement("div");
@@ -290,6 +298,13 @@ export class TerminalSession {
     };
     this.unsubFrame = client.onTerminalFrame(onFrame);
 
+    // 重挂回放：订阅完帧立即写快照 —— 不等首条实时帧（空闲的 PTY 可能永远不出帧，
+    // 等它 = 空白屏）。订阅之后的实时帧自然接在快照后面，顺序正确。
+    if (this.attachScrollback !== undefined && this.attachScrollback !== "") {
+      this.term.write(this.attachScrollback);
+      this.term.write("\r\n\x1b[2m[页面已刷新，重挂到原进程 —— 以上是最近输出]\x1b[0m\r\n");
+    }
+
     // 高频输入批次缓冲（对齐 VS Code 流式调度）：
     // 鼠标拖拽、连续移动、快速滚轮会产生高密度的 DEC/SGR 字符序列，
     // 在 4ms 微批次内合并发送，避免数百次并发 RPC 造成 WebSocket 阻塞与丢帧。
@@ -344,8 +359,12 @@ export class TerminalSession {
     });
     this.resizeObserver.observe(this.element);
 
-    // 启动真 PTY 进程
-    void this.boot();
+    // 启动真 PTY 进程。失败必须落到终端画布上 —— void 掉的 rejection
+    // 只会留一块空白窗格，用户无从知道是 daemon 没起还是 cwd 非法。
+    void this.boot().catch((err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.term.write(`\r\n\x1b[31m[终端启动失败：${msg}]\x1b[0m\r\n`);
+    });
   }
 
   private async boot(): Promise<void> {
@@ -374,6 +393,15 @@ export class TerminalSession {
     this.lastRows = rows;
 
     const isDark = getIsDarkMode();
+    // 重挂模式：PTY 已在 daemon 活着，绝不能再 create（同 id 会起第二个进程）。
+    // 只把 PTY 尺寸对齐到当前窗格 —— F5 前后窗格大小很可能不同。
+    if (this.attachScrollback !== undefined) {
+      await client
+        .rpc("terminal.resize", { terminalId: this.terminalId, cols, rows }, 8000)
+        .catch(() => {});
+      return;
+    }
+
     await client.rpc(
       "terminal.create",
       {

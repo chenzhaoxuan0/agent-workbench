@@ -6,6 +6,7 @@ import { CommandCenter } from "./ui/CommandCenter.tsx";
 import { DesktopTopOverlay } from "./ui/DesktopTopOverlay.tsx";
 import { SettingsPage } from "./ui/SettingsPage.tsx";
 import { useWorkbench } from "./store/useWorkbench.ts";
+import { useTerminalStore } from "./store/useTerminalStore.ts";
 import { Sidebar } from "./ui/Sidebar.tsx";
 import { TerminalPanel } from "./ui/TerminalPanel.tsx";
 import { WorkspaceHeader } from "./ui/WorkspaceHeader.tsx";
@@ -31,6 +32,12 @@ import { bindShellShortcuts, useShell } from "./store/useShell.ts";
 export function WorkspaceShell() {
   const settingsOpen = useShell((s) => s.settingsOpen);
   useEffect(() => bindShellShortcuts(), []);
+
+  // 首载重挂：F5 后把 daemon 里还活着的终端进程找回成标签（带最近输出回放）。
+  // 不找回的话那些 PTY 就是界面再也关不掉的孤儿进程。
+  useEffect(() => {
+    void useTerminalStore.getState().reattachFromDaemon();
+  }, []);
 
   return (
     /* 画布底色只由 body 刷一次（开壁纸时它就是唯一的全局半透明层），

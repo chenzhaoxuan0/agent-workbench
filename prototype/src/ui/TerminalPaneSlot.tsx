@@ -92,6 +92,8 @@ export const TerminalPaneSlot = memo(function TerminalPaneSlot({
       shell: inst.shell,
       cwd: inst.cwd,
       executorId: inst.executorId,
+      // 重挂标签带回的输出快照：只在会话首次创建时消费一次
+      attachScrollback: inst.attachScrollback,
     });
 
     session.attachTo(container);

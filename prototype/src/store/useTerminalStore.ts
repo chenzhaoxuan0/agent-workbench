@@ -44,6 +44,10 @@ export interface TerminalInstanceItem {
   /** 所属 bot（终端跟随 bot：切换 bot 时激活它的专属标签页） */
   unitId?: string;
   createdAt: number;
+  /** 重挂（F5 找回 daemon 存活 PTY）时的一次性回放快照；新建标签没有它 */
+  attachScrollback?: string;
+  /** 来自重挂 —— 背后是活进程，不是占位标签，不许被「换 bot 专属标签」的启发式顺手关掉 */
+  reattached?: boolean;
 }
 
 export interface TerminalTabGroup {
@@ -127,6 +131,8 @@ interface TerminalStoreState {
   activeInstanceId: string | null;
   maximizedInstanceId: string | null;
   defaultProfileId: string;
+  /** 首载重挂是否已尝试过（无论找没找到）—— 空态自动建标签必须等它，否则抢占重挂 */
+  reattachDone: boolean;
 
   /** 新建独立标签页 */
   createTab: (opts?: {
@@ -174,6 +180,12 @@ interface TerminalStoreState {
   /** 全部清空销毁 */
   clearAll: () => void;
 
+  /**
+   * F5 重挂：把 daemon 里还活着的 PTY 找回来（terminal.list），逐个还原成标签。
+   * 没有它，刷新一次就积累一批孤儿进程 —— 界面上再也关不掉，直到手杀 daemon。
+   */
+  reattachFromDaemon: () => Promise<void>;
+
   // 兼容别名
   createInstance: (opts?: { profileId?: string; cwd?: string; executorId?: string; title?: string }) => string;
   closeInstance: (id: string) => void;
@@ -187,6 +199,7 @@ export const useTerminalStore = create<TerminalStoreState>((set, get) => ({
   activeInstanceId: null,
   maximizedInstanceId: null,
   defaultProfileId: "pwsh",
+  reattachDone: false,
 
   createTab: (opts = {}) => {
     const profileId = opts.profileId ?? get().defaultProfileId;
@@ -442,6 +455,72 @@ export const useTerminalStore = create<TerminalStoreState>((set, get) => ({
       activeGroupId: null,
       activeInstanceId: null,
       maximizedInstanceId: null,
+    });
+  },
+
+  reattachFromDaemon: async () => {
+    // 用户这次会话已经建过标签就不动 —— 重挂只在首载跑一次
+    if (get().instances.length > 0 || get().reattachDone) {
+      set({ reattachDone: true });
+      return;
+    }
+    let list: Array<{ terminalId: string; shell: string; cwd: string; executor: string; scrollback?: string }>;
+    try {
+      const { DaemonClient, defaultDaemonEndpoint } = await import("../adapters/daemon/client.ts");
+      const client = DaemonClient.get(defaultDaemonEndpoint());
+      list = await client.rpc<typeof list>("terminal.list", null, 10000);
+    } catch {
+      set({ reattachDone: true }); // daemon 没起：放行空态自动建标签
+      return;
+    }
+    if (get().instances.length > 0 || get().reattachDone) {
+      set({ reattachDone: true });
+      return;
+    }
+    if (list.length === 0) {
+      set({ reattachDone: true });
+      return;
+    }
+
+    const shellToProfile = (shell: string): string => {
+      const s = shell.toLowerCase();
+      if (s.includes("pwsh")) return "pwsh";
+      if (s.includes("powershell")) return "powershell";
+      if (s.includes("cmd")) return "cmd";
+      if (s.includes("wsl")) return "wsl";
+      if (s.includes("bash")) return "bash";
+      return "pwsh";
+    };
+
+    const instances: TerminalInstanceItem[] = [];
+    const groups: TerminalTabGroup[] = [];
+    for (const t of list) {
+      const isShell = t.executor === "shell" || t.executor === undefined || t.executor === "";
+      const profileId = shellToProfile(t.shell);
+      const profile = SUPPORTED_TERMINAL_PROFILES.find((p) => p.id === profileId);
+      instances.push({
+        id: t.terminalId,
+        title: isShell ? `${profile?.name ?? "终端"}（重挂）` : `${t.executor}（重挂）`,
+        shell: t.shell,
+        profileId,
+        icon: isShell ? (profile?.icon ?? "pwsh") : t.executor,
+        cwd: t.cwd,
+        executorId: isShell ? undefined : t.executor,
+        createdAt: Date.now(),
+        attachScrollback: t.scrollback,
+        reattached: true,
+      });
+      groups.push({
+        id: `group_${t.terminalId}`,
+        rootLayout: { type: "leaf", instanceId: t.terminalId },
+      });
+    }
+    set({
+      instances,
+      groups,
+      activeGroupId: groups[0]?.id ?? null,
+      activeInstanceId: instances[0]?.id ?? null,
+      reattachDone: true,
     });
   },
 

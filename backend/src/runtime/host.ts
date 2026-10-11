@@ -826,15 +826,26 @@ export class RuntimeHost {
     }
   }
 
-  /** 权限闸（Phase 4）：规则命中就自动决策，不命中保持挂起等人 */
+  /** 权限闸（Phase 4）：规则命中就自动决策；交互会话不命中保持挂起等人 */
   private evaluateGate(h: HostSession, event: Extract<RuntimeEvent, { type: "permission.requested" }>): void {
     this.pendingPerms.set(`${h.id}:${event.requestId}`, { kind: event.kind, detail: event.detail });
     const decision = this.gate.evaluate(h.runtimeId, event.kind, h.lastTool ?? "", event.detail);
-    if (decision === null) return;
-    log.info("permission auto-resolved by rule", { sessionId: h.id, requestId: event.requestId, decision });
-    void h.impl?.resolvePermission(event.requestId, decision).catch((err: unknown) =>
-      log.warn("gate auto-resolve failed", { error: err instanceof Error ? err.message : String(err) }),
-    );
+    if (decision !== null) {
+      log.info("permission auto-resolved by rule", { sessionId: h.id, requestId: event.requestId, decision });
+      void h.impl?.resolvePermission(event.requestId, decision).catch((err: unknown) =>
+        log.warn("gate auto-resolve failed", { error: err instanceof Error ? err.message : String(err) }),
+      );
+      return;
+    }
+    // headless 会话（automation / 渠道 / webhook / mcp）没有人可等：挂着就是永远挂着，
+    // 运行记录卡 running、渠道这轮永远不回。按 docs/08 的既定语义【完全放行】——
+    // 敏感命令的收口靠 deny 规则（上面 evaluate 已按规则优先拦过一轮）。
+    if (h.source !== "workbench") {
+      log.info("permission auto-allowed for headless session", { sessionId: h.id, requestId: event.requestId, source: h.source });
+      void h.impl?.resolvePermission(event.requestId, "allow").catch((err: unknown) =>
+        log.warn("headless auto-allow failed", { error: err instanceof Error ? err.message : String(err) }),
+      );
+    }
   }
 
   async cancelSession(sessionId: SessionId): Promise<void> {

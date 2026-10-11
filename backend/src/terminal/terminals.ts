@@ -9,6 +9,7 @@
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 import pty from "node-pty";
 import { log } from "../log.ts";
@@ -35,7 +36,21 @@ export interface CreateOptions {
 interface TerminalSession {
   readonly terminalId: string;
   readonly pty: pty.IPty;
+  /** create 时的 shell / cwd / 前台执行器 —— 重挂（F5）时前端靠它们还原标签 */
+  readonly shell: string;
+  readonly cwd: string;
+  readonly executor: string;
+  /**
+   * 输出滚动环 buffer（按字节截断的最近输出）。只为「浏览器刷新后重挂」服务：
+   * 刷新即丢 xterm 的全部画布，没有它用户面对的是一块不知道进程还活着的安全黑屏。
+   * 不追求无限历史 —— 超过上限从最旧的帧开始丢。
+   */
+  readonly scrollback: string[];
+  scrollbackBytes: number;
 }
+
+/** 每终端滚动回放上限。128KB ≈ 千行级输出，够看清「刚才跑到哪了」，内存也可承受 */
+const SCROLLBACK_CAP_BYTES = 128 * 1024;
 
 const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
@@ -142,7 +157,9 @@ export class TerminalManager {
     const shell = resolveShell(opts.shell);
     const cols = opts.cols ?? DEFAULT_COLS;
     const rows = opts.rows ?? DEFAULT_ROWS;
-    const cwd = opts.cwd ?? process.cwd();
+    // 空串 cwd 会让 pty.spawn 直接失败（前端「无归属 bot」的标签就是空串）——
+    // 当作没给，落到用户主目录比落到 daemon 进程 cwd 更符合直觉
+    const cwd = opts.cwd && opts.cwd.trim() !== "" ? opts.cwd : homedir();
 
     // 解析前台执行器命令（Claude Code, Codex, ZCode, OpenCode, Pi, MCode, DSH 等）
     const rawTarget =
@@ -203,7 +220,23 @@ export class TerminalManager {
       conptyInheritCursor: isWindows,
     });
 
+    const session: TerminalSession = {
+      terminalId,
+      pty: shellProcess,
+      shell,
+      cwd,
+      executor: targetCmd ?? "shell",
+      scrollback: [],
+      scrollbackBytes: 0,
+    };
+
     shellProcess.onData((data) => {
+      session.scrollback.push(data);
+      session.scrollbackBytes += Buffer.byteLength(data);
+      while (session.scrollbackBytes > SCROLLBACK_CAP_BYTES && session.scrollback.length > 1) {
+        const dropped = session.scrollback.shift();
+        session.scrollbackBytes -= Buffer.byteLength(dropped ?? "");
+      }
       this.emit({ terminalId, kind: "data", data });
     });
     shellProcess.onExit(({ exitCode }) => {
@@ -212,7 +245,7 @@ export class TerminalManager {
       this.emit({ terminalId, kind: "exit", exitCode });
     });
 
-    this.sessions.set(terminalId, { terminalId, pty: shellProcess });
+    this.sessions.set(terminalId, session);
     log.info("terminal created", {
       terminalId,
       shell,
@@ -240,11 +273,15 @@ export class TerminalManager {
     session.pty.kill();
   }
 
-  list(): Array<{ terminalId: string; shell: string; pid: number }> {
+  list(): Array<{ terminalId: string; shell: string; pid: number; cwd: string; executor: string; scrollback: string }> {
     return [...this.sessions.values()].map((s) => ({
       terminalId: s.terminalId,
       shell: s.pty.process,
       pid: s.pty.pid,
+      cwd: s.cwd,
+      executor: s.executor,
+      // 拼好整段回放：前端刷新后没有别的途径找回这段输出
+      scrollback: s.scrollback.join(""),
     }));
   }
 

@@ -257,8 +257,9 @@ function ChannelCard({
                 谁在群里 @ 它，谁就能让它动这个文件夹。
               </p>
               <p className="mt-1 text-caption text-ash">
-                收权办法：先在 Ops 里给这个执行器配好预置规则（拒绝敏感命令），
-                再回来启用。规则是后端强制的，比这里口头承诺可靠。
+                收权办法：无规则命中时 headless 会话按【完全放行】执行；要拦敏感命令，
+                用 daemon 的权限规则接口（POST /api/permissions/rules，decision=deny）预置拒绝规则。
+                规则是后端强制的，比这里口头承诺可靠。
               </p>
             </div>
           )}
@@ -266,6 +267,11 @@ function ChannelCard({
           {channel.kind === "feishu" && (
             <DiagnosePanel botId={botId} accounts={accountsOf(channel)} />
           )}
+
+          {/* 运行态反馈：声明 ≠ 接管，这里告诉用户网关到底接没接上 */}
+          <div className="flex items-center gap-1.5">
+            <ChannelStatusHint botId={botId} />
+          </div>
         </div>
       )}
     </div>
@@ -500,15 +506,69 @@ function WebhookBody({
   );
 }
 
-/** 渠道保存后由 daemon reconcile 自动生效，UI 只提示这一点 */
-export function ChannelStatusHint() {
-  const [checking, setChecking] = useState(false);
+/**
+ * 渠道运行态提示：向 daemon 问 channel.status，看这个 bot 声明的渠道有没有
+ * 真被网关接管。保存后 reconcile 周期最长 15s —— 挂载后轮询几次，
+ * 从「等待接管」翻成「已接管」或「未接管」，用户不用靠猜。
+ */
+export function ChannelStatusHint({ botId }: { botId: string }) {
+  const [state, setState] = useState<"checking" | "taken" | "waiting">("checking");
+  const [info, setInfo] = useState<string>("");
+
   useEffect(() => {
-    return () => undefined;
-  }, []);
+    if (botId === "") {
+      setState("waiting");
+      return;
+    }
+    let alive = true;
+    let attempts = 0;
+    const poll = async (): Promise<void> => {
+      attempts += 1;
+      try {
+        const { fetchChannelStatus } = await import("../adapters/daemon/client.ts");
+        const s = await fetchChannelStatus();
+        if (!alive) return;
+        const mine = s.bots.find((b) => b.id === botId);
+        const enabled = mine?.channels.filter((c) => c.enabled) ?? [];
+        if (mine !== undefined && enabled.length > 0 && (s.gateways.feishu > 0 || s.gateways.telegram > 0)) {
+          const kinds = [...new Set(enabled.map((c) => c.kind))].join(" / ");
+          setState("taken");
+          setInfo(`已接管（${kinds}，飞书网关 ${s.gateways.feishu} 账号 · Telegram ${s.gateways.telegram}）`);
+          return;
+        }
+        if (attempts < 5) {
+          setTimeout(() => void poll(), 3500);
+        } else {
+          setState("waiting");
+          setInfo(mine === undefined ? "bot.json 里还没有这个 bot 的渠道声明 —— 先保存" : "网关尚未接管（账号未配好或仍在 15s 对账周期内）");
+        }
+      } catch {
+        if (alive && attempts < 5) setTimeout(() => void poll(), 3500);
+        else if (alive) {
+          setState("waiting");
+          setInfo("daemon 未连接，无法确认运行态");
+        }
+      }
+    };
+    void poll();
+    return () => {
+      alive = false;
+    };
+  }, [botId]);
+
   return (
-    <span className="text-caption text-ash">
-      {checking ? <Loader2 size={9} className="inline animate-spin" /> : null} 保存后约 15 秒内生效，不用重启
+    <span className={cn("text-caption", state === "taken" ? "text-teal" : "text-ash")}>
+      {state === "checking" ? (
+        <>
+          <Loader2 size={9} className="inline animate-spin" /> 正在向 daemon 确认运行态…
+        </>
+      ) : state === "taken" ? (
+        <>
+          <Check size={9} className="inline" /> {info}
+        </>
+      ) : (
+        <>保存后约 15 秒内生效，不用重启{info === "" ? "" : ` · ${info}`}</>
+      )}
     </span>
   );
 }
@@ -529,6 +589,18 @@ function DiagnosePanel({ botId, accounts }: { botId: string; accounts: readonly 
   const [busyId, setBusyId] = useState<string | null>(null);
   const [result, setResult] = useState<Record<string, DiagnosisResult>>({});
   const [err, setErr] = useState<string | null>(null);
+
+  // 诊断读的是 daemon 从盘上 bot.json reconcile 出来的账号（15s 周期）——
+  // 新建向导里 bot 还没落盘，botId 是空串，按钮只会换来一个永恒的
+  // "botId is required"。没保存就不给点，把前提说清楚。
+  if (botId === "") {
+    return (
+      <p className="text-caption text-ash">
+        连通性诊断要等 bot 保存后可用 —— 诊断读的是盘上 bot.json 里已保存的账号配置。
+        先完成创建，再回到渠道设置里测。
+      </p>
+    );
+  }
 
   const run = async (acc: ChannelAccount) => {
     setBusyId(acc.id);

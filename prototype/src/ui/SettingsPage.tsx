@@ -27,7 +27,7 @@ import {
 import { useWorkbench, selectActiveUnit } from "../store/useWorkbench.ts";
 import type { WorkUnit } from "../core/units.ts";
 import { useMemorySettings } from "../store/useMemoryPrefs.ts";
-import { readProjectMemory, runDigestDryRun, setGuardianConfigRpc, type DigestResult } from "../store/useMemoryPanel.ts";
+import { getGuardianConfigRpc, readProjectMemory, runDigestDryRun, setGuardianConfigRpc, type DigestResult } from "../store/useMemoryPanel.ts";
 import { ProviderInstancesPanel } from "./ProviderInstancesPanel.tsx";
 import { ImageSettingsSection } from "./ImageSettingsSection.tsx";
 import { AppearanceSettingsSection } from "./AppearanceSettingsSection.tsx";
@@ -254,6 +254,30 @@ function MemorySettingsSection() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
+  // 挂载时用 daemon kv 里的权威配置校准显示。localStorage 只是离线兜底——
+  // 换浏览器 / 清缓存 / agent 直改配置文件后，不同步就会显示一个假状态，
+  // 用户「再保存一次」旧值就把权威配置悄悄改回去了。
+  useEffect(() => {
+    let alive = true;
+    getGuardianConfigRpc()
+      .then((c) => {
+        if (!alive) return;
+        setPrefs({
+          guardianRunner: c.runner,
+          guardianModel: c.model,
+          autoConsolidate: c.autoConsolidate,
+          digestEnabled: c.digestEnabled,
+        });
+      })
+      .catch(() => {
+        /* daemon 没起：保持 localStorage 兜底值，不报错不打断页面 */
+      });
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 只在挂载时同步一次；setPrefs 是 zustand 稳定引用
+  }, []);
+
   // 当前项目的真实用量。**分母永远取后端给的 limit**（limits.ts 的 MEMORY_CHAR_LIMIT），
   // 上面那个可编辑数字只是工作台侧的提醒阈值 —— 两者不是一回事，别混着显示
   useEffect(() => {
@@ -445,7 +469,17 @@ function MemorySettingsSection() {
         <SettingsRow
           label="每日总结"
           description="每天 1–2 次增量读当天会话 → 写 memory/daily/<日期>.md。同日重跑整份重写（幂等）；失败只记日志，绝不影响日常对话"
-          control={<Toggle on={prefs.digestEnabled} onChange={(v) => setPrefs({ digestEnabled: v })} />}
+          control={
+            <Toggle
+              on={prefs.digestEnabled}
+              onChange={(v) => {
+                setPrefs({ digestEnabled: v });
+                // 写穿到 daemon kv —— 调度器每 tick 动态读，改完即生效，无需重启。
+                // 只存 localStorage 的话这就是个假开关：daemon 根本看不见它。
+                void setGuardianConfigRpc({ digestEnabled: v });
+              }}
+            />
+          }
         />
         <SettingsRow
           label="立即运行（dryRun）"

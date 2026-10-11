@@ -89,7 +89,9 @@ export function TerminalPanel({
 
     const st = useTerminalStore.getState();
     if (!uid || !unit) {
-      if (st.groups.length === 0) st.createTab({ profileId: st.defaultProfileId });
+      // 等 F5 重挂先跑完：不等的话这个默认标签会先落地，重挂守卫 sees 非空直接放弃，
+      // daemon 里活着的终端从此找不回来。reattachDone 在 daemon 不可用时也会置位。
+      if (st.groups.length === 0 && st.reattachDone) st.createTab({ profileId: st.defaultProfileId });
       return;
     }
     const own = st.instances.find((i) => i.unitId === uid);
@@ -99,8 +101,9 @@ export function TerminalPanel({
       st.setActiveInstance(own.id);
       return;
     }
-    // 启动引导期先建的普适标签（bot 列表还没到）：唯一且无标记时换成 bot 专属标签
-    const untagged = st.instances.filter((i) => !i.unitId);
+    // 启动引导期先建的普适标签（bot 列表还没到）：唯一且无标记时换成 bot 专属标签。
+    // 重挂标签不算数 —— 它背后是活进程，换标签不能顺手杀进程。
+    const untagged = st.instances.filter((i) => !i.unitId && !i.reattached);
     const soleGroup = st.groups.length === 1 ? st.groups[0] : undefined;
     if (untagged.length === 1 && soleGroup) {
       st.closeTab(soleGroup.id);
@@ -119,6 +122,15 @@ export function TerminalPanel({
     }
     // 只在切换 bot（或首开）时走一次
   }, [unit?.id, unit, boundExecutor, isCanvas, runtimes]);
+
+  // 上面那个 effect 被 ref 挡住只跑一次；「无 bot 首启 + daemon 里也没活终端」时，
+  // 默认标签要等 reattachDone 翻位后在这里补建，否则首屏永远没有终端。
+  const reattachDone = useTerminalStore((s) => s.reattachDone);
+  useEffect(() => {
+    if (!reattachDone || unit) return;
+    const st = useTerminalStore.getState();
+    if (st.groups.length === 0) st.createTab({ profileId: st.defaultProfileId });
+  }, [reattachDone, unit]);
 
   // 点击外部关闭下拉菜单
   useEffect(() => {

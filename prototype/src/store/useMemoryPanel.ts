@@ -65,6 +65,13 @@ export interface GuardianConfigInfo {
   readonly autoConsolidate: boolean;
   readonly consolidateThresholdRatio: number;
   readonly contentScannerEnabled: boolean;
+  /** 每日总结定时任务开关（kv 权威值；设置页开关写穿到 daemon） */
+  readonly digestEnabled: boolean;
+}
+
+/** 读守护引擎的权威配置（daemon kv）。设置页挂载时用它校准本地显示，防 localStorage 漂移 */
+export async function getGuardianConfigRpc(): Promise<GuardianConfigInfo> {
+  return call<GuardianConfigInfo>("memory.guardian.get", null, READ_TIMEOUT_MS);
 }
 
 export async function setGuardianConfigRpc(patch: Partial<GuardianConfigInfo>): Promise<GuardianConfigInfo> {

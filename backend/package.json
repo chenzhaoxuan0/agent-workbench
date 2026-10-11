@@ -14,7 +14,6 @@
     "smoke:phase3": "tsx scripts/smoke-phase3.ts",
     "smoke:phase4": "tsx scripts/smoke-phase4.ts",
     "smoke:phase5": "tsx scripts/smoke-phase5.ts",
-    "smoke:phase6": "tsx scripts/smoke-phase6.ts",
     "smoke:phase7": "tsx scripts/smoke-phase7.ts",
     "smoke:phase8": "tsx scripts/smoke-phase8.ts",
     "smoke:phase9": "tsx scripts/smoke-phase9.ts",
@@ -42,6 +41,7 @@
     "start": "tsx src/index.ts",
     "typecheck": "tsc --noEmit",
     "smoke:phase5b": "tsx scripts/smoke-phase5b.ts",
+    "smoke:terminal": "tsx scripts/smoke-terminal-reattach.ts",
     "e2e:automation-ui": "tsx scripts/e2e-automation-ui.ts"
   },
   "dependencies": {

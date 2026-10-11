@@ -95,10 +95,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): DaemonConfig {
       ? (rawLevel as LogLevel)
       : "info";
 
-  const homeDir = env["AGENT_WORKBENCH_HOME"]
-    ?? path.join(os.homedir(), ".agent-workbench");
-  // 平迁先于 token 生成/读取——顺序错了会出现"内存 token 与盘上 token 分叉"（实测踩过）
-  migrateLegacyHome(homeDir, legacyDefaultHome);
+  const homeOverride = env["AGENT_WORKBENCH_HOME"];
+  const homeDir = homeOverride !== undefined && homeOverride !== ""
+    ? homeOverride
+    : path.join(os.homedir(), ".agent-workbench");
+  // 平迁只属于「默认家」：显式指定 AGENT_WORKBENCH_HOME（冒烟/隔离环境/第二套安装）时，
+  // legacy .waku 与这个家毫无关系 —— 照搬旧库会把过期的权限规则/自动化/会话整体克隆进去，
+  // 权限闸从此静默自动放行（phase4「无规则应挂起」实测必挂）。
+  if (homeDir === path.join(os.homedir(), ".agent-workbench")) migrateLegacyHome(homeDir, legacyDefaultHome);
   const insecure = env["AGENT_WORKBENCH_INSECURE"] === "1";
   const explicit = env["AGENT_WORKBENCH_TOKEN"];
   let token: string | null;

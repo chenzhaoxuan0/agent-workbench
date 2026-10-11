@@ -132,6 +132,9 @@ memoryScheduler = new MemoryScheduler({
   homeDir: config.homeDir,
   store,
   knownProjects: () => botRegistry.roots(),
+  // 设置页「每日总结」开关的权威值在 kv（memory.guardian.set 写入）。
+  // 每 tick 动态读，改开关不用重启 daemon —— 关掉只停定时跑，设置页的试跑按钮不受影响。
+  digestEnabled: () => getGuardianConfig(store).digestEnabled,
   // 「用户最近一次有对话活动」：取会话行的 started_at / ended_at 与最后一条消息
   // 时间里的最大值。**不能只看 startedAt** —— 会话的开始时间在整个会话期间不变，
   // 早上开的会话到晚上仍报「早间空闲」，curator 的 idle 闸就会在用户正聊着的时候
@@ -286,6 +289,8 @@ async function runAutomation(
       prompt: a.prompt,
       model: a.model === null ? null : asModelId(a.model),
       mode: (a.mode as "plan" | "build" | "edit" | "yolo" | undefined) ?? undefined,
+      // 标明 headless 来源：权限闸据此【完全放行】，否则遇审批请求永远挂起
+      source: "automation",
     });
     // 派发成功只回填 sessionId，status 留在 running —— 终态由 session.ended 回灌；
     // 旧写法 start 后立刻写 done，会话真失败前界面上一直显示「已完成」。

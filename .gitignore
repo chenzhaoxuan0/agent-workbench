@@ -27,3 +27,10 @@ pnpm-debug.log*
 
 # 调试残留。契约自检在 scripts/check-*.ts 里，_ 前缀的只是打印中间值用
 prototype/scripts/_*.ts
+
+# 一次性验收/诊断脚本（同 verify-ui.ts 一族，只在本机有意义）
+backend/scripts/diag-merge-ui.ts
+backend/scripts/verify-merge-ui.ts
+
+# e2e 每次运行重写的留档截图
+backend/scripts/e2e-automation-ui-last.png
