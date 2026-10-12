@@ -181,6 +181,16 @@ export interface WorkUnit {
     readonly procedural: boolean;
   };
   /**
+   * 常驻 bot：后台服务性质（总管 / 心跳 / 用户拖进常驻区的 bot），侧栏独立
+   * 分组置顶展示。合成 bot（steward/heartbeat）天生常驻；普通 bot 由用户
+   * 在侧栏拖拽升降级（写穿 bot.json）。
+   */
+  readonly resident?: boolean;
+  /**
+   * 合成 bot（总管 steward / 心跳 heartbeat）：系统级自建 bot，不可降级或移除常驻。
+   */
+  readonly synthetic?: boolean;
+  /**
    * 外联渠道（docs/08 WP-5）：IM / webhook 绑定。daemon 的渠道网关据此把
    * "消息进来 → 会话 → 回出去"接到具体 bot 上；缺省 = 纯工作台内 bot。
    */

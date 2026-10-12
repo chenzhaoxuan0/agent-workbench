@@ -66,6 +66,8 @@ export function heartbeatBotDefinition(rootPath: string, runtimeId = HEARTBEAT_D
   return {
     id: HEARTBEAT_BOT_ID,
     role: HEARTBEAT_BOT_ID,
+    // 常驻合成 bot：侧栏常驻区的成员（结构性字段，用户不可移除其常驻身份）
+    resident: true,
     // kind / tags 必填：前端合并守卫与渲染直接读它们（steward 踩过的坑，见 stewardDefinition 注释）
     kind: "bot",
     name: "心跳",

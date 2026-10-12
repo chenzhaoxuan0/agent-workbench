@@ -87,6 +87,8 @@ export function stewardDefinition(rootPath: string): Record<string, unknown> {
   return {
     id: STEWARD_ID,
     role: STEWARD_ID,
+    // 常驻合成 bot：侧栏常驻区的成员（结构性字段，用户不可移除其常驻身份）
+    resident: true,
     // **kind 必填**：前端的合并守卫（useWorkbench.ts:726）要求
     // `kind === "bot" || "project"`，缺了就进不了主界面的 bot 列表 ——
     // 症状是「设置页里能看到管家（那里走不过滤的 bot.list），主界面却找不到」。

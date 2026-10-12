@@ -9,6 +9,7 @@ import {
   ImagePlus,
   ListTodo,
   PanelLeftClose,
+  Pin,
   Plus,
   Search,
   Settings,
@@ -67,6 +68,23 @@ const VIEWS: readonly { id: ViewMode; label: string; icon: typeof Bot }[] = [
   { id: "project", label: "项目", icon: FolderGit2 },
 ];
 
+/**
+ * 常驻判定：合成 bot（总管/心跳）天生常驻；普通 bot 由用户拖拽升降级
+ * （resident 字段写穿 bot.json）。steward 的 id/tags 兜底是旧数据兼容。
+ */
+export function isResidentUnit(u?: WorkUnit | null): boolean {
+  if (!u) return false;
+  return u.resident === true || u.id === "steward" || u.id === "heartbeat" || (u.tags ?? []).includes("steward");
+}
+
+/**
+ * 合成 bot（总管 / 心跳）不可取消常驻，亦不应有向普通区降级的拖拽意图。
+ */
+export function isSyntheticUnit(u?: WorkUnit | null): boolean {
+  if (!u) return false;
+  return u.synthetic === true || u.id === "steward" || u.id === "heartbeat";
+}
+
 export function Sidebar() {
   const units = useWorkbench((s) => s.units);
   const view = useWorkbench((s) => s.view);
@@ -78,6 +96,8 @@ export function Sidebar() {
 
   const [unitOrder, setUnitOrder] = useState<string[] | null>(null);
   const [dragUnit, setDragUnit] = useState<string | null>(null);
+  /** 拖拽悬停的分区（常驻/普通）——drop zone 高亮用 */
+  const [zoneHover, setZoneHover] = useState<"resident" | "normal" | null>(null);
   // 「添加 bot」的对话框开关在 useShell —— 标题行的 ＋ 和单元区空态两个入口共用
   const addBotOpen = useShell((s) => s.addBotOpen);
   const importBotOpen = useShell((s) => s.importBotOpen);
@@ -92,19 +112,53 @@ export function Sidebar() {
 
   const allUnits = units;
 
-  const visibleUnits = useMemo(() => {
-    const list = [...allUnits].sort((a, b) => {
-      const aSteward = a.id === "steward" || (a.tags ?? []).includes("steward");
-      const bSteward = b.id === "steward" || (b.tags ?? []).includes("steward");
-      if (aSteward && !bSteward) return -1;
-      if (!aSteward && bSteward) return 1;
-      return 0;
-    });
-    if (!unitOrder) return list;
-    return [...list].sort(
-      (a, b) => (unitOrder.indexOf(a.id) + 1 || 99) - (unitOrder.indexOf(b.id) + 1 || 99),
-    );
+  // 常驻 / 普通两节：常驻节顺序跟定义走（总管最前）；普通节保持既有
+  // steward 置顶习惯（历史 unitOrder 可能引用它）+ 用户拖拽排序
+  const { residentUnits, normalUnits } = useMemo(() => {
+    const residents: WorkUnit[] = [];
+    const normals: WorkUnit[] = [];
+    for (const u of allUnits) (isResidentUnit(u) ? residents : normals).push(u);
+    const stewardFirst = (list: WorkUnit[]): WorkUnit[] =>
+      [...list].sort((a, b) => {
+        const as = a.id === "steward" || (a.tags ?? []).includes("steward");
+        const bs = b.id === "steward" || (b.tags ?? []).includes("steward");
+        return as === bs ? 0 : as ? -1 : 1;
+      });
+    const orderedNormals = unitOrder
+      ? stewardFirst(normals).sort(
+          (a, b) => (unitOrder.indexOf(a.id) + 1 || 99) - (unitOrder.indexOf(b.id) + 1 || 99),
+        )
+      : stewardFirst(normals);
+    return { residentUnits: stewardFirst(residents), normalUnits: orderedNormals };
   }, [allUnits, unitOrder]);
+
+  /** 拖进常驻区：普通 bot 升为常驻（resident 写穿 bot.json，冲突由 updateUnit 回滚并抛） */
+  const makeResident = (u: WorkUnit): void => {
+    void updateUnit({ ...u, resident: true }, guardsOf(u)).catch((err: unknown) =>
+      console.warn("[Sidebar] 拖入常驻失败（盘上已被外部修改？重新进入后再试）", err),
+    );
+  };
+
+  /** 拖回普通区：取消常驻。合成 bot（总管/心跳）是系统常驻，不可降级 */
+  const makeNormal = (u: WorkUnit): void => {
+    if (isSyntheticUnit(u)) return;
+    const { resident: _drop, ...rest } = u;
+    void updateUnit(rest as WorkUnit, guardsOf(u)).catch((err: unknown) =>
+      console.warn("[Sidebar] 取消常驻失败（盘上已被外部修改？重新进入后再试）", err),
+    );
+  };
+
+  const onDropZone = (zone: "resident" | "normal"): void => {
+    const id = dragUnit;
+    setZoneHover(null);
+    setDragUnit(null);
+    if (id === null) return;
+    const u = allUnits.find((x) => x.id === id);
+    if (u === undefined) return;
+    if (zone === "resident" && !isResidentUnit(u)) makeResident(u);
+    if (zone === "normal" && isResidentUnit(u)) makeNormal(u);
+    // 普通 bot 落普通区 = 区内排序，由行级 onDrop 处理，这里不重复
+  };
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-rail">
@@ -178,7 +232,7 @@ export function Sidebar() {
         <div className="flex items-center gap-1 min-w-0">
           <Bot size={13} className="text-teal shrink-0" />
           <span className="text-caption font-medium text-ink truncate">Agent</span>
-          <span className="tnum text-[11px] text-ash shrink-0">({visibleUnits.length})</span>
+          <span className="tnum text-[11px] text-ash shrink-0">({allUnits.length})</span>
         </div>
         <div className="flex items-center gap-1 shrink-0">
           <button
@@ -204,7 +258,7 @@ export function Sidebar() {
 
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-4">
         {/* 空态引导卡 */}
-        {visibleUnits.length === 0 && (
+        {allUnits.length === 0 && (
           <button
             onClick={() => useShell.getState().openAddBot()}
             className="flex w-full flex-col items-center gap-1.5 rounded-input border border-dashed border-line px-3 py-6 text-center hover:bg-line-soft"
@@ -215,47 +269,159 @@ export function Sidebar() {
           </button>
         )}
 
-        {visibleUnits.map((u) => {
-          const active = u.id === activeUnitId;
-          const unitId = u.id as UnitId;
-          return (
-            <div
-              key={u.id}
-              draggable
-              onDragStart={(e) => {
-                if ((e.target as HTMLElement).closest("button, a, input, [data-no-drag]")) {
-                  e.preventDefault();
-                  return;
-                }
-                setDragUnit(u.id);
-              }}
-              onDragOver={(e) => e.preventDefault()}
-              // 拖到列表空白处 / 按 Esc 取消时不会触发 drop：
-              // 没有 onDragEnd 的话 dragUnit 一直留着，那一行会永久停在 opacity-40
-              onDragEnd={() => setDragUnit(null)}
-              onDrop={() => {
-                if (dragUnit && dragUnit !== unitId) {
-                  const order = visibleUnits.map((x) => x.id as string);
-                  const from = order.indexOf(dragUnit);
-                  const to = order.indexOf(unitId);
-                  order.splice(to, 0, ...order.splice(from, 1));
-                  setUnitOrder(order);
-                }
-                setDragUnit(null);
-              }}
-              className={cn("group/u mb-1", dragUnit === unitId && "opacity-40")}
-            >
-              <UnitRow
-                unit={u}
-                active={active}
-                onSelect={() => selectUnit(u.id as UnitId)}
-                onOpenSettings={() => useShell.getState().openUnitSettings(u.id as UnitId)}
-                schedule={u.schedule?.enabled ? u.schedule.description : undefined}
-              />
-            </div>
-          );
-        })}
+        {/* 常驻节：总管/心跳/用户拖入的后台服务型 bot。整节是「升为常驻」的 drop zone */}
+        {residentUnits.length > 0 && (
+          <section
+            aria-label="常驻 Agent"
+            onDragOver={(e) => {
+              e.preventDefault();
+              if (dragUnit !== null) setZoneHover("resident");
+            }}
+            onDragLeave={(e) => {
+              if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+              setZoneHover((z) => (z === "resident" ? null : z));
+            }}
+            onDrop={(e) => {
+              e.preventDefault();
+              onDropZone("resident");
+            }}
+            className={cn(
+              "rounded-input transition-colors",
+              zoneHover === "resident" && dragUnit !== null && "bg-teal-tint/50 ring-1 ring-inset ring-teal/40",
+            )}
+          >
+            <p className="flex items-center gap-1 px-1.5 pb-0.5 pt-1 text-[11px] font-medium text-ash">
+              <Pin size={10} className="shrink-0" />
+              <span>常驻</span>
+              <span className="tnum">({residentUnits.length})</span>
+              {zoneHover === "resident" && dragUnit !== null && (
+                <span className="ml-auto truncate text-[10px] font-normal text-teal">松手设为常驻</span>
+              )}
+            </p>
+            {residentUnits.map((u) => {
+              const active = u.id === activeUnitId;
+              const isSynthetic = isSyntheticUnit(u);
+              return (
+                <div
+                  key={u.id}
+                  draggable={!isSynthetic}
+                  onDragStart={(e) => {
+                    if (isSynthetic || (e.target as HTMLElement).closest("button, a, input, [data-no-drag]")) {
+                      e.preventDefault();
+                      return;
+                    }
+                    setDragUnit(u.id);
+                  }}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDragEnd={() => {
+                    setDragUnit(null);
+                    setZoneHover(null);
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    onDropZone("resident");
+                  }}
+                  className={cn("mb-1", dragUnit === u.id && "opacity-40")}
+                >
+                  <UnitRow
+                    unit={u}
+                    active={active}
+                    onSelect={() => selectUnit(u.id as UnitId)}
+                    onOpenSettings={() => useShell.getState().openUnitSettings(u.id as UnitId)}
+                    schedule={u.schedule?.enabled ? u.schedule.description : undefined}
+                  />
+                </div>
+              );
+            })}
+          </section>
+        )}
 
+        {/* 分割线：常驻与普通 bot 的分界 */}
+        {residentUnits.length > 0 && normalUnits.length > 0 && (
+          <div className="my-2 flex items-center gap-2 px-1" aria-hidden>
+            <span className="h-px flex-1 bg-line" />
+          </div>
+        )}
+
+        {/* 普通节：既是常驻 bot 的「取消常驻」drop zone，区内行间拖拽排序照旧 */}
+        <section
+          aria-label="Agent 列表"
+          onDragOver={(e) => {
+            e.preventDefault();
+            const dragged = allUnits.find((x) => x.id === dragUnit);
+            if (dragUnit !== null && isResidentUnit(dragged) && !isSyntheticUnit(dragged)) {
+              setZoneHover("normal");
+            }
+          }}
+          onDragLeave={(e) => {
+            if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+            setZoneHover((z) => (z === "normal" ? null : z));
+          }}
+          onDrop={(e) => {
+            e.preventDefault();
+            onDropZone("normal");
+          }}
+          className={cn(
+            "min-h-16 rounded-input transition-colors",
+            zoneHover === "normal" && dragUnit !== null && "bg-teal-tint/50 ring-1 ring-inset ring-teal/40",
+          )}
+        >
+          {zoneHover === "normal" && dragUnit !== null && (
+            <p className="px-1.5 pb-0.5 pt-1 text-[10px] text-teal">松手取消常驻</p>
+          )}
+          {normalUnits.map((u) => {
+            const active = u.id === activeUnitId;
+            const unitId = u.id as UnitId;
+            return (
+              <div
+                key={u.id}
+                draggable
+                onDragStart={(e) => {
+                  if ((e.target as HTMLElement).closest("button, a, input, [data-no-drag]")) {
+                    e.preventDefault();
+                    return;
+                  }
+                  setDragUnit(u.id);
+                }}
+                onDragOver={(e) => e.preventDefault()}
+                // 拖到列表空白处 / 按 Esc 取消时不会触发 drop：
+                // 没有 onDragEnd 的话 dragUnit 一直留着，那一行会永久停在 opacity-40
+                onDragEnd={() => {
+                  setDragUnit(null);
+                  setZoneHover(null);
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  if (dragUnit && dragUnit !== unitId) {
+                    const order = normalUnits.map((x) => x.id as string);
+                    const from = order.indexOf(dragUnit);
+                    if (from < 0) {
+                      // 拖的是常驻 bot：落到普通区某行上，降级为普通 bot
+                      onDropZone("normal");
+                      return;
+                    }
+                    const to = order.indexOf(unitId);
+                    order.splice(to, 0, ...order.splice(from, 1));
+                    setUnitOrder(order);
+                  }
+                  setDragUnit(null);
+                  setZoneHover(null);
+                }}
+                className={cn("group/u mb-1", dragUnit === u.id && "opacity-40")}
+              >
+                <UnitRow
+                  unit={u}
+                  active={active}
+                  onSelect={() => selectUnit(u.id as UnitId)}
+                  onOpenSettings={() => useShell.getState().openUnitSettings(u.id as UnitId)}
+                  schedule={u.schedule?.enabled ? u.schedule.description : undefined}
+                />
+              </div>
+            );
+          })}
+        </section>
       </div>
 
       {/* bot 对话框（AGENTS.md 岗位说明书）—— 新建 / 编辑共用一个组件。
@@ -364,7 +530,7 @@ export function Sidebar() {
  * 里改了 AGENTS.md」。两者任一不符 daemon 就拒写，由对话框让用户选谁赢。
  */
 function guardsOf(u: WorkUnit): BotWriteGuards {
-  return { ifRevision: u.revision, ifAgentsMdHash: u.agentsMdMeta?.hash ?? "" };
+  return { ifRevision: u.revision, ifAgentsMdHash: u.agentsMdMeta?.hash };
 }
 
 /* ------------------------------------------------------------- 单元行 */
