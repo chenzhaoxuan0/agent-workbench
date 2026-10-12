@@ -13,9 +13,15 @@
  * - 透明背景：api 方法 = background: transparent（gpt-image 原生参数）
  * - 超时：AbortController（profile.timeout 秒）
  *
+ * 传输层走 daemon 代理（core/imageProxy.ts）：请求构造与响应解析保持原样，
+ * Authorization 由 daemon 按 profileId 注入，密钥不出 daemon、浏览器不直连
+ * 供应商（无 CORS）。apiKey 字段在浏览器侧恒为空串，配没配密钥看 hasKey。
+ *
  * 未移植（原型不需要，接真时再补）：fal.ai 供应商族、自定义 HTTP 服务商映射、
  * 透明背景 local 方法（canvas 抠图后处理）、遮罩编辑。
  */
+
+import { daemonImageFetch, dataUrlParts } from "./imageProxy.ts";
 
 /* ----------------------------------------------------------------- 类型 */
 
@@ -41,7 +47,13 @@ export interface ImageProfile {
   id: string;
   name: string;
   baseUrl: string;
+  /**
+   * 密钥已挪进 daemon（<homeDir>/image-profiles.json），浏览器侧恒为空串。
+   * 仅「设置页编辑时新输入的值」会短暂出现在这里，保存（image.profiles.put）后即清空。
+   */
   apiKey: string;
+  /** daemon 侧已配置密钥（list 下发的脱敏形态；生成前的工作台守卫看它） */
+  hasKey?: boolean;
   model: string;
   /** responses 模式下的专职图像模型（gpt-5.x + image_generation 工具时用） */
   imageGenerationModel?: string;
@@ -100,8 +112,9 @@ function normalizeBase64Image(b64: string, mime: string): string {
 const isHttpUrl = (v: unknown): v is string => typeof v === "string" && /^https?:\/\//i.test(v);
 const isDataUrl = (v: unknown): v is string => typeof v === "string" && /^data:image\//i.test(v);
 
-async function fetchImageUrlAsDataUrl(url: string, mime: string, signal?: AbortSignal): Promise<string> {
-  const res = await fetch(url, { signal, cache: "no-store" });
+/** 供应商图片 url → dataURL：也走 daemon 隧道（浏览器直 fetch 会被 CORS 拦掉 blob） */
+async function fetchImageUrlAsDataUrl(url: string, mime: string, signal?: AbortSignal, profileId?: string): Promise<string> {
+  const res = await daemonImageFetch({ profileId: profileId ?? "", url, method: "GET", signal });
   if (!res.ok) throw new Error(`图片下载失败（HTTP ${res.status}）`);
   const blob = await res.blob();
   return blobToDataUrl(blob, mime);
@@ -114,11 +127,6 @@ function blobToDataUrl(blob: Blob, fallbackMime: string): Promise<string> {
     reader.onerror = () => reject(new Error("图片读取失败"));
     reader.readAsDataURL(blob.type ? blob : new Blob([blob], { type: fallbackMime }));
   });
-}
-
-async function dataUrlToBlob(dataUrl: string): Promise<Blob> {
-  const res = await fetch(dataUrl);
-  return res.blob();
 }
 
 /** 防御式错误提取（getApiErrorMessage 语义） */
@@ -413,10 +421,6 @@ export async function callImageApi(profile: ImageProfile, opts: CallOptions): Pr
   }
 }
 
-function headers(profile: ImageProfile): Record<string, string> {
-  return { Authorization: `Bearer ${profile.apiKey}` };
-}
-
 /* ------------------------------------------------------------ images 模式 */
 
 async function callImagesApi(
@@ -452,41 +456,48 @@ async function callImagesApiSingle(
 
   let response: Response;
   if (isEdit) {
-    const formData = new FormData();
-    const images = opts.inputImageDataUrls ?? [];
-    formData.append("model", profile.model);
-    formData.append("prompt", sizePrompt);
-    if (!profile.codexCli) formData.append("size", opts.params.size);
-    if (!profile.codexCli) formData.append("quality", opts.params.quality);
-    formData.append("output_format", opts.params.output_format);
-    formData.append("moderation", opts.params.moderation);
-    if (opts.params.transparent_output) formData.append("background", "transparent");
+    // edits 走 multipart：字段 + 参考图拆成 base64 信封，daemon 侧重组 FormData
+    // 并注入 Authorization（密钥不出 daemon）
+    const fields: Record<string, string> = {
+      model: profile.model,
+      prompt: sizePrompt,
+      output_format: opts.params.output_format,
+      moderation: opts.params.moderation,
+    };
+    if (!profile.codexCli) fields["size"] = opts.params.size;
+    if (!profile.codexCli) fields["quality"] = opts.params.quality;
+    if (opts.params.transparent_output) fields["background"] = "transparent";
     if (opts.params.output_format !== "png" && opts.params.output_compression != null) {
-      formData.append("output_compression", String(opts.params.output_compression));
+      fields["output_compression"] = String(opts.params.output_compression);
     }
-    if (opts.params.n > 1) formData.append("n", String(opts.params.n));
-    if (profile.responseFormatB64Json) formData.append("response_format", "b64_json");
+    if (opts.params.n > 1) fields["n"] = String(opts.params.n);
+    if (profile.responseFormatB64Json) fields["response_format"] = "b64_json";
     if (profile.streamImages) {
-      formData.append("stream", "true");
-      formData.append("partial_images", String(partialImages));
+      fields["stream"] = "true";
+      fields["partial_images"] = String(partialImages);
     }
-    for (let i = 0; i < images.length; i += 1) {
-      const blob = await dataUrlToBlob(images[i]!);
-      const ext = blob.type.split("/")[1] || "png";
-      formData.append("image[]", blob, `input-${i + 1}.${ext}`);
-    }
-    response = await fetch(`${base}/images/edits`, { method: "POST", headers: headers(profile), cache: "no-store", body: formData, signal });
+    const images = opts.inputImageDataUrls ?? [];
+    const files = images.map((dataUrl, i) => {
+      const { mime: fileMime, b64 } = dataUrlParts(dataUrl);
+      const ext = fileMime.split("/")[1] || "png";
+      return { field: "image[]", filename: `input-${i + 1}.${ext}`, mime: fileMime, b64 };
+    });
+    response = await daemonImageFetch({
+      profileId: profile.id,
+      url: `${base}/images/edits`,
+      form: { fields, files },
+      signal,
+    });
   } else {
     const body = buildGenerationBody(profile.model, sizePrompt, opts.params, profile);
     if (profile.streamImages) {
       body.stream = true;
       body.partial_images = partialImages;
     }
-    response = await fetch(`${base}/images/generations`, {
-      method: "POST",
-      headers: { ...headers(profile), "Content-Type": "application/json" },
-      cache: "no-store",
-      body: JSON.stringify(body),
+    response = await daemonImageFetch({
+      profileId: profile.id,
+      url: `${base}/images/generations`,
+      bodyJson: JSON.stringify(body),
       signal,
     });
   }
@@ -497,9 +508,9 @@ async function callImagesApiSingle(
   }
 
   if (profile.streamImages && (response.headers.get("content-type") ?? "").includes("text/event-stream")) {
-    return parseImagesApiStreamResponse(response, mime, opts.onPartialImage, signal);
+    return parseImagesApiStreamResponse(response, mime, profile.id, opts.onPartialImage, signal);
   }
-  return parseImagesApiResponse(await response.json(), mime, signal);
+  return parseImagesApiResponse(await response.json(), mime, signal, profile.id);
 }
 
 interface ApiImageData {
@@ -509,7 +520,7 @@ interface ApiImageData {
 }
 
 /** parseImagesApiResponse：b64 / url 双路径 */
-async function parseImagesApiResponse(payload: unknown, mime: string, signal?: AbortSignal): Promise<ImageCallResult> {
+async function parseImagesApiResponse(payload: unknown, mime: string, signal?: AbortSignal, profileId?: string): Promise<ImageCallResult> {
   const data = Array.isArray(payload) ? (payload as ApiImageData[]) : ((payload as { data?: unknown })?.data as ApiImageData[] | undefined);
 
   if (!Array.isArray(data) || data.length === 0) {
@@ -530,7 +541,7 @@ async function parseImagesApiResponse(payload: unknown, mime: string, signal?: A
     }
     if (isHttpUrl(item.url)) {
       rawImageUrls.push(item.url);
-      images.push(await fetchImageUrlAsDataUrl(item.url, mime, signal));
+      images.push(await fetchImageUrlAsDataUrl(item.url, mime, signal, profileId));
       revisedPrompts.push(revised);
       continue;
     }
@@ -554,6 +565,7 @@ async function parseImagesApiResponse(payload: unknown, mime: string, signal?: A
 async function parseImagesApiStreamResponse(
   response: Response,
   mime: string,
+  profileId: string,
   onPartialImage?: CallOptions["onPartialImage"],
   signal?: AbortSignal,
 ): Promise<ImageCallResult> {
@@ -589,7 +601,7 @@ async function parseImagesApiStreamResponse(
     { signal, formatErrorMessage: () => STREAMING_FORMAT_HINT },
   );
 
-  if (resultPayload) return parseImagesApiResponse(resultPayload, mime, signal);
+  if (resultPayload) return parseImagesApiResponse(resultPayload, mime, signal, profileId);
   if (!completedItems.length) throw new Error("流式接口未返回最终图片数据");
 
   const images: string[] = [];
@@ -604,7 +616,7 @@ async function parseImagesApiStreamResponse(
     }
     if (isHttpUrl(item.url) || isDataUrl(item.url)) {
       if (isHttpUrl(item.url)) rawImageUrls.push(item.url);
-      images.push(await fetchImageUrlAsDataUrl(item.url!, mime, signal));
+      images.push(await fetchImageUrlAsDataUrl(item.url!, mime, signal, profileId));
       revisedPrompts.push(revised);
     }
   }
@@ -650,11 +662,10 @@ async function callResponsesImageApiSingle(
   if (profile.reasoningEffort) body.reasoning = { effort: profile.reasoningEffort };
   if (profile.streamImages) body.stream = true;
 
-  const response = await fetch(`${base}/responses`, {
-    method: "POST",
-    headers: { ...headers(profile), "Content-Type": "application/json" },
-    cache: "no-store",
-    body: JSON.stringify(body),
+  const response = await daemonImageFetch({
+    profileId: profile.id,
+    url: `${base}/responses`,
+    bodyJson: JSON.stringify(body),
     signal,
   });
 

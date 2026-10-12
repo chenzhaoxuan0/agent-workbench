@@ -7,6 +7,7 @@ import {
   FolderOpen,
   FolderPlus,
   ImagePlus,
+  ListTodo,
   PanelLeftClose,
   Plus,
   Search,
@@ -150,6 +151,11 @@ export function Sidebar() {
               icon={AlarmClock}
               label="自动化"
               onClick={() => useShell.getState().setMainView("automations")}
+            />
+            <IconNavBtn
+              icon={ListTodo}
+              label="待办"
+              onClick={() => useShell.getState().setMainView("backlog")}
             />
             <IconNavBtn
               icon={ImagePlus}

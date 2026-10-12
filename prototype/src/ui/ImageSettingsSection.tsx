@@ -3,6 +3,7 @@ import { ChevronDown, FolderOpen, ImagePlus, Trash2 } from "lucide-react";
 import {
   IMAGE_STUDIO_STORAGE_KEY,
   PRESET_MODELS,
+  initImageStudio,
   useImageStudio,
 } from "../store/useImageStudio.ts";
 import type { ApiMode, ImageProfile, ReasoningEffort } from "../core/imageApi.ts";
@@ -34,6 +35,12 @@ export function ImageSettingsSection() {
   const setActiveProfile = useImageStudio((s) => s.setActiveProfile);
   const addProfile = useImageStudio((s) => s.addProfile);
   const removeProfile = useImageStudio((s) => s.removeProfile);
+  const syncError = useImageStudio((s) => s.profileSyncError);
+
+  // profile 权威在 daemon：挂载即同步（幂等，含旧密钥上缴迁移）
+  useEffect(() => {
+    void initImageStudio();
+  }, []);
 
   const [editingId, setEditingId] = useState<string>(activeProfileId);
   // 新增的 profile 自动成为编辑目标；被删的目标回退到第一个
@@ -52,6 +59,11 @@ export function ImageSettingsSection() {
 
   return (
     <div className="space-y-4">
+      {syncError !== null && (
+        <p className="rounded-input border border-loss/30 bg-loss/5 px-3 py-2 text-caption text-loss">
+          daemon 同步失败：{syncError} —— profile 改动只在本地生效，daemon 恢复后请重新保存
+        </p>
+      )}
       {/* profile 行列表 */}
       <div className="rounded-card border border-line bg-card">
         <div className="flex items-center gap-2 px-4 py-3">
@@ -248,6 +260,36 @@ function SaveDirCard() {
 
 /* ------------------------------------------------------------- 编辑面 */
 
+/**
+ * 密钥输入 —— 草稿态，失焦/回车提交。密钥的唯一存储在 daemon
+ * （<homeDir>/image-profiles.json）：已保存的值不回显（浏览器侧拿不到，
+ * 也不该拿到），已没配 vs 已配置靠 placeholder 区分。
+ */
+function ApiKeyInput({ profile, onChange }: { profile: ImageProfile; onChange: (patch: Partial<ImageProfile>) => void }) {
+  const [draft, setDraft] = useState("");
+  const commit = () => {
+    if (draft.trim() === "") {
+      setDraft("");
+      return;
+    }
+    onChange({ apiKey: draft.trim() });
+    setDraft("");
+  };
+  return (
+    <input
+      type="password"
+      value={draft}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") commit();
+      }}
+      placeholder={profile.hasKey ? "已保存 —— 输入新值可替换（密钥存 daemon）" : "sk-…（存 daemon，不进浏览器）"}
+      className={cn(INPUT_CLS, "font-mono")}
+    />
+  );
+}
+
 function ProfileEditor({
   profile,
   onChange,
@@ -282,13 +324,7 @@ function ProfileEditor({
           />
         </Row>
         <Row label="API Key">
-          <input
-            type="password"
-            value={profile.apiKey}
-            onChange={(e) => onChange({ apiKey: e.target.value })}
-            placeholder="sk-…（仅存本地）"
-            className={cn(INPUT_CLS, "font-mono")}
-          />
+          <ApiKeyInput profile={profile} onChange={onChange} />
         </Row>
         <Row label="接入模式">
           <Segmented

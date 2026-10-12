@@ -74,6 +74,22 @@ export interface HttpRoute {
   readonly handle: (ctx: HttpRouteContext) => unknown | Promise<unknown>;
 }
 
+/**
+ * 裸路由 —— 需要自己读 body / 自己写响应的场景（流式透传、大载荷）。
+ * 鉴权与 CORS 由 route() 统一处理后才进来，handler 只管业务。
+ * 出图代理（/api/image/call）是当前唯一用户：JSON 框架的 1MB body 上限
+ * 和 sendJson 缓冲式回包都装不下图片与 SSE 流。
+ */
+export interface RawHttpRoute {
+  readonly method: "GET" | "POST" | "DELETE";
+  readonly path: string;
+  readonly handle: (
+    req: IncomingMessage,
+    res: ServerResponse,
+    ctx: { readonly url: URL; readonly allowOrigin?: string },
+  ) => void | Promise<void>;
+}
+
 async function readBody(req: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
   let size = 0;
@@ -97,6 +113,7 @@ async function route(
   req: IncomingMessage,
   res: ServerResponse,
   authorize?: (req: IncomingMessage, url: URL) => boolean,
+  rawRoutes: readonly RawHttpRoute[] = [],
 ): Promise<void> {
   const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
   log.debug("http request", { method: req.method, path: url.pathname });
@@ -121,6 +138,13 @@ async function route(
       sendJson(res, 401, { ok: false, error: { code: "unauthorized", message: "missing or bad token" } }, allowOrigin);
       return;
     }
+  }
+
+  const rawHit = rawRoutes.find((r) => r.method === req.method && r.path === url.pathname);
+  if (rawHit !== undefined) {
+    // 鉴权已过（上方统一拦截）；裸路由自己读 body、自己写响应（流式/大载荷）
+    await rawHit.handle(req, res, { url, allowOrigin });
+    return;
   }
 
   const hit = routes.find((r) => r.method === req.method && r.path === url.pathname);
@@ -152,9 +176,10 @@ export function startHttp(
   startedAt: number,
   routes: readonly HttpRoute[] = [],
   authorize?: (req: IncomingMessage, url: URL) => boolean,
+  rawRoutes: readonly RawHttpRoute[] = [],
 ): Promise<HttpHandle> {
   const server = createServer((req, res) => {
-    void route(config, startedAt, routes, req, res, authorize).catch((err: unknown) => {
+    void route(config, startedAt, routes, req, res, authorize, rawRoutes).catch((err: unknown) => {
       const code = err instanceof Error && "code" in err ? String(err.code) : "internal";
       log.error("http handler failed", { error: err instanceof Error ? err.message : String(err) });
       if (!res.headersSent) {

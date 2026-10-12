@@ -48,6 +48,31 @@ interface StatsJson {
 
 const EMPTY_STATS: StatsJson = { messages: 0, toolCalls: 0, inputTokens: 0, outputTokens: 0, costUsd: 0, durationMs: 0 };
 
+/** backlog_items 行的读取形态（心跳引擎与 RPC 层共用） */
+export interface BacklogRow {
+  id: number;
+  title: string;
+  goal: string;
+  prompt: string;
+  unitId: string;
+  unitName: string;
+  rootPath: string;
+  runtimeId: string;
+  model: string | null;
+  mode: string | null;
+  size: string | null;
+  status: string;
+  ignoreCount: number;
+  lastProposedAt: number | null;
+  lastRunAt: number | null;
+  lastError: string | null;
+  reviewNote: string | null;
+  source: string;
+  sortPos: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export class Store {
   private readonly db: DatabaseSync;
 
@@ -105,6 +130,48 @@ export class Store {
         finished_at INTEGER,
         detail TEXT
       );
+      -- 待办 / GTD（ADR-0001：独立建表，不复用 automations —— 待办的状态机
+      -- 多出确认门 / 验收 / 休眠计数，塞同一张表两边都拧巴）。
+      -- 状态机全落 DB：awaiting_confirm / executing 等中间态必须跨重启。
+      CREATE TABLE IF NOT EXISTS backlog_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT NOT NULL,
+        goal TEXT NOT NULL,
+        prompt TEXT NOT NULL,
+        unit_id TEXT NOT NULL,
+        unit_name TEXT NOT NULL,
+        root_path TEXT NOT NULL,
+        runtime_id TEXT NOT NULL DEFAULT '',
+        model TEXT,
+        mode TEXT,
+        size TEXT,
+        status TEXT NOT NULL DEFAULT 'ready',
+        ignore_count INTEGER NOT NULL DEFAULT 0,
+        last_proposed_at INTEGER,
+        last_run_at INTEGER,
+        last_error TEXT,
+        review_note TEXT,
+        source TEXT NOT NULL DEFAULT 'manual',
+        sort_pos REAL NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_backlog_items_status ON backlog_items(status, sort_pos);
+      -- 待办运行记录（复用执行链路、不复用 automation_runs 表：那边 automation_id
+      -- NOT NULL 挂着定时任务行，硬塞会互相污染）
+      CREATE TABLE IF NOT EXISTS backlog_runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        item_id INTEGER NOT NULL,
+        session_id TEXT,
+        runtime_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        trigger TEXT NOT NULL DEFAULT 'gtd',
+        started_at INTEGER NOT NULL,
+        finished_at INTEGER,
+        detail TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_backlog_runs_item ON backlog_runs(item_id, id);
+
       CREATE TABLE IF NOT EXISTS memory (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         pillar TEXT NOT NULL,
@@ -527,6 +594,209 @@ export class Store {
       startedAt: Number(r["started_at"]),
       finishedAt: r["finished_at"] === null ? null : Number(r["finished_at"]),
       detail: r["detail"] === null ? null : String(r["detail"]),
+    }));
+  }
+
+  // ---- 待办 / GTD（backlog）----------------------------------------------------
+
+  private backlogRow(r: Record<string, unknown>): BacklogRow {
+    const nOrNull = (v: unknown): number | null => (v === null || v === undefined ? null : Number(v));
+    return {
+      id: Number(r["id"]),
+      title: String(r["title"]),
+      goal: String(r["goal"]),
+      prompt: String(r["prompt"]),
+      unitId: String(r["unit_id"]),
+      unitName: String(r["unit_name"]),
+      rootPath: String(r["root_path"]),
+      runtimeId: String(r["runtime_id"] ?? ""),
+      model: r["model"] === null || r["model"] === undefined ? null : String(r["model"]),
+      mode: r["mode"] === null || r["mode"] === undefined ? null : String(r["mode"]),
+      size: r["size"] === null || r["size"] === undefined ? null : String(r["size"]),
+      status: String(r["status"]),
+      ignoreCount: Number(r["ignore_count"] ?? 0),
+      lastProposedAt: nOrNull(r["last_proposed_at"]),
+      lastRunAt: nOrNull(r["last_run_at"]),
+      lastError: r["last_error"] === null || r["last_error"] === undefined ? null : String(r["last_error"]),
+      reviewNote: r["review_note"] === null || r["review_note"] === undefined ? null : String(r["review_note"]),
+      source: String(r["source"] ?? "manual"),
+      sortPos: Number(r["sort_pos"] ?? 0),
+      createdAt: Number(r["created_at"]),
+      updatedAt: Number(r["updated_at"]),
+    };
+  }
+
+  createBacklogItem(a: {
+    title: string;
+    goal: string;
+    prompt: string;
+    unitId: string;
+    unitName: string;
+    rootPath: string;
+    runtimeId?: string;
+    model?: string | null;
+    mode?: string | null;
+    size?: string | null;
+    source?: "manual" | "inbox";
+    sortPos?: number;
+  }): number {
+    const now = Date.now();
+    const result = this.db
+      .prepare(
+        `INSERT INTO backlog_items (title, goal, prompt, unit_id, unit_name, root_path, runtime_id, model, mode,
+           size, status, ignore_count, source, sort_pos, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', 0, ?, ?, ?, ?)`,
+      )
+      .run(
+        a.title,
+        a.goal,
+        a.prompt,
+        a.unitId,
+        a.unitName,
+        a.rootPath,
+        a.runtimeId ?? "",
+        a.model ?? null,
+        a.mode ?? null,
+        a.size ?? null,
+        a.source ?? "manual",
+        a.sortPos ?? now,
+        now,
+        now,
+      );
+    return Number(result.lastInsertRowid);
+  }
+
+  listBacklogItems(): BacklogRow[] {
+    // done 的沉底按时间排，活跃的按手动排序位（顺序即优先级）
+    const rows = this.db
+      .prepare(`SELECT * FROM backlog_items ORDER BY status = 'done', sort_pos, id DESC`)
+      .all() as Array<Record<string, unknown>>;
+    return rows.map((r) => this.backlogRow(r));
+  }
+
+  getBacklogItem(id: number): BacklogRow | undefined {
+    const row = this.db.prepare(`SELECT * FROM backlog_items WHERE id = ?`).get(id) as Record<string, unknown> | undefined;
+    return row === undefined ? undefined : this.backlogRow(row);
+  }
+
+  /** 局部更新（undefined = 不动）。状态迁移由调用方负责合法性，store 只管落盘。 */
+  updateBacklogItem(
+    id: number,
+    patch: Partial<{
+      title: string;
+      goal: string;
+      prompt: string;
+      unitId: string;
+      unitName: string;
+      rootPath: string;
+      runtimeId: string;
+      model: string | null;
+      mode: string | null;
+      size: string | null;
+      status: string;
+      ignoreCount: number;
+      lastProposedAt: number | null;
+      lastRunAt: number | null;
+      lastError: string | null;
+      reviewNote: string | null;
+      sortPos: number;
+    }>,
+  ): boolean {
+    const sets: string[] = [];
+    const values: Array<string | number | null> = [];
+    const put = (col: string, v: string | number | null): void => {
+      sets.push(`${col} = ?`);
+      values.push(v);
+    };
+    if (patch.title !== undefined) put("title", patch.title);
+    if (patch.goal !== undefined) put("goal", patch.goal);
+    if (patch.prompt !== undefined) put("prompt", patch.prompt);
+    if (patch.unitId !== undefined) put("unit_id", patch.unitId);
+    if (patch.unitName !== undefined) put("unit_name", patch.unitName);
+    if (patch.rootPath !== undefined) put("root_path", patch.rootPath);
+    if (patch.runtimeId !== undefined) put("runtime_id", patch.runtimeId);
+    if (patch.model !== undefined) put("model", patch.model);
+    if (patch.mode !== undefined) put("mode", patch.mode);
+    if (patch.size !== undefined) put("size", patch.size);
+    if (patch.status !== undefined) put("status", patch.status);
+    if (patch.ignoreCount !== undefined) put("ignore_count", patch.ignoreCount);
+    if (patch.lastProposedAt !== undefined) put("last_proposed_at", patch.lastProposedAt);
+    if (patch.lastRunAt !== undefined) put("last_run_at", patch.lastRunAt);
+    if (patch.lastError !== undefined) put("last_error", patch.lastError);
+    if (patch.reviewNote !== undefined) put("review_note", patch.reviewNote);
+    if (patch.sortPos !== undefined) put("sort_pos", patch.sortPos);
+    if (sets.length === 0) return true;
+    sets.push("updated_at = ?");
+    values.push(Date.now());
+    values.push(id);
+    const result = this.db.prepare(`UPDATE backlog_items SET ${sets.join(", ")} WHERE id = ?`).run(...values);
+    return Number(result.changes) > 0;
+  }
+
+  deleteBacklogItem(id: number): boolean {
+    this.db.prepare(`DELETE FROM backlog_runs WHERE item_id = ?`).run(id);
+    const result = this.db.prepare(`DELETE FROM backlog_items WHERE id = ?`).run(id);
+    return Number(result.changes) > 0;
+  }
+
+  startBacklogRun(itemId: number, sessionId: string | null, runtimeId: string, trigger: "gtd" | "manual" = "gtd"): number {
+    const result = this.db
+      .prepare(`INSERT INTO backlog_runs (item_id, session_id, runtime_id, status, trigger, started_at) VALUES (?, ?, ?, 'running', ?, ?)`)
+      .run(itemId, sessionId, runtimeId, trigger, Date.now());
+    return Number(result.lastInsertRowid);
+  }
+
+  setBacklogRunSession(runId: number, sessionId: string): void {
+    this.db.prepare(`UPDATE backlog_runs SET session_id = ? WHERE id = ?`).run(sessionId, runId);
+  }
+
+  finishBacklogRun(runId: number, status: "done" | "failed", detail: string | null): void {
+    this.db.prepare(`UPDATE backlog_runs SET status = ?, finished_at = ?, detail = ? WHERE id = ?`).run(status, Date.now(), detail, runId);
+  }
+
+  listBacklogRuns(itemId: number, limit = 10): Array<{
+    id: number;
+    itemId: number;
+    sessionId: string | null;
+    runtimeId: string;
+    status: string;
+    trigger: string;
+    startedAt: number;
+    finishedAt: number | null;
+    detail: string | null;
+  }> {
+    const rows = this.db
+      .prepare(`SELECT * FROM backlog_runs WHERE item_id = ? ORDER BY id DESC LIMIT ?`)
+      .all(itemId, limit) as Array<Record<string, unknown>>;
+    return rows.map((r) => ({
+      id: Number(r["id"]),
+      itemId: Number(r["item_id"]),
+      sessionId: r["session_id"] === null || r["session_id"] === undefined ? null : String(r["session_id"]),
+      runtimeId: String(r["runtime_id"]),
+      status: String(r["status"]),
+      trigger: String(r["trigger"] ?? "gtd"),
+      startedAt: Number(r["started_at"]),
+      finishedAt: r["finished_at"] === null || r["finished_at"] === undefined ? null : Number(r["finished_at"]),
+      detail: r["detail"] === null || r["detail"] === undefined ? null : String(r["detail"]),
+    }));
+  }
+
+  /** 最近的运行引用（卡片与执行中判定共用） */
+  latestBacklogRun(itemId: number): ReturnType<Store["listBacklogRuns"]>[number] | undefined {
+    return this.listBacklogRuns(itemId, 1)[0];
+  }
+
+  /** 仍未收口的运行（重启自愈用）：status=running 的全量 */
+  listRunningBacklogRuns(): Array<{ runId: number; itemId: number; sessionId: string | null; runtimeId: string; startedAt: number }> {
+    const rows = this.db
+      .prepare(`SELECT id, item_id, session_id, runtime_id, started_at FROM backlog_runs WHERE status = 'running'`)
+      .all() as Array<Record<string, unknown>>;
+    return rows.map((r) => ({
+      runId: Number(r["id"]),
+      itemId: Number(r["item_id"]),
+      sessionId: r["session_id"] === null || r["session_id"] === undefined ? null : String(r["session_id"]),
+      runtimeId: String(r["runtime_id"]),
+      startedAt: Number(r["started_at"]),
     }));
   }
 

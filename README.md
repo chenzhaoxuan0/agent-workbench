@@ -5,7 +5,8 @@
 ![主界面](docs/images/main-window.png)
 
 内置终端直接驱动各家 CLI（TUI 交互或 headless 驱动均可），每个 bot 绑定自己的
-默认执行器与模型；支持飞书/Telegram 渠道接入、定时自动化、记忆系统与出图工作台。
+默认执行器与模型；支持飞书/Telegram 渠道接入、定时自动化、待办（GTD：空闲心跳
+提议 + 确认门 + 验收闭环）、记忆系统与出图工作台。
 以 [MIT](LICENSE) 协议开源。
 
 ---
@@ -75,6 +76,7 @@ agent-workbench/
 │       ├── channels/        飞书 / Telegram / webhook / MCP 接入
 │       ├── memory/          记忆三柱、守护、每日精炼
 │       ├── automation/      定时任务调度
+│       ├── backlog/         待办（GTD）：总状态/心跳/余量探针/收件箱统合
 │       └── appearance/      外观文件存取（appearance.json + 壁纸）
 └── prototype/               前端（5280：Vite + React 19）
     ├── public/icons/        应用与执行器品牌图标
@@ -111,6 +113,30 @@ agent-workbench/
 
 终端跟随 bot：切换 bot 时自动激活它的专属终端标签（进程保持存活），
 首次进入则以该 bot 绑定的默认执行器 + 工作目录新建 TUI。
+
+---
+
+## 密钥放在哪
+
+原则：**密钥只存 daemon 侧文件，浏览器永不持有**（出图请求也由 daemon 代理转发，
+顺带免了 CORS）。文件就是普通 JSON/文本，agent 可以直接 Read/Write 改。
+
+想**集中管理**：把密钥放进 `<homeDir>/.env`（`KEY=VALUE` 逐行，`#` 注释），
+配置里对应字段写引用 `"env:KEY"`。daemon 每次调用时实时读这个文件——
+**改完立即生效，不用重启**；系统环境变量里有同名项时以系统为准（CI/无头覆盖用）。
+`.env` 里的值**不会**被注入 daemon 进程环境（终端与 CLI 子进程继承不到它）。
+
+| 凭证 | 位置 |
+|---|---|
+| 出图供应商 API Key | `<homeDir>/image-profiles.json`（设置页「出图」编辑，密钥不回显；或 `env:` 引用） |
+| WeKnora（语义记忆检索） | `<homeDir>/state.db` kv（设置页「记忆」配置；或 `env:` 引用） |
+| 飞书 appId/appSecret | 经 lark-cli 进**系统钥匙串**；bot.json 里的旧明文重绑一次即迁移 |
+| Telegram botToken | 各 bot 的 `bot.json`（支持 env 引用） |
+| Webhook secret | 各 bot 的 `bot.json` |
+| Agent CLI 登录态 | 各 CLI 自己管（`codex login` / `claude login`…），本项目不经手 |
+| daemon 访问 token | `<homeDir>/token`（自动生成，本地鉴权用） |
+
+`<homeDir>` 默认 `~/.agent-workbench`，可用 `AGENT_WORKBENCH_HOME` 改。
 
 ---
 

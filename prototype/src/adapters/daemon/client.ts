@@ -22,6 +22,7 @@
 import type { RuntimeCapabilities } from "../../core/adapter.ts";
 import type { RuntimeEvent } from "../../core/events.ts";
 import { ruleFromCron, type Automation, type AutomationRun, type ScheduleRule } from "../../core/automation.ts";
+import type { BacklogConfig, BacklogItem, BacklogProposal, BacklogSignal, BacklogStateSnapshot, QuotaHeadroom } from "../../core/backlog.ts";
 import type { WorkUnit } from "../../core/units.ts";
 
 export interface DaemonModelInfo {
@@ -84,6 +85,11 @@ export function wsUrlOf(endpoint: string): string {
   return `${endpoint.replace(/\/+$/, "").replace(/^http/, "ws")}/ws`;
 }
 
+/** endpoint 的 http 形态（REST 用）：去尾斜杠与 /ws 后缀，ws 前缀还原成 http */
+export function httpUrlOf(endpoint: string): string {
+  return endpoint.replace(/\/+$/, "").replace(/\/ws$/, "").replace(/^ws/, "http");
+}
+
 export interface DaemonTerminalFrame {
   readonly terminalId: string;
   readonly kind: "data" | "exit";
@@ -97,6 +103,7 @@ export class DaemonClient {
   #connecting: Promise<void> | null = null;
   readonly #pending = new Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
   readonly #eventListeners = new Set<(e: RuntimeEvent, seq?: number) => void>();
+  readonly #backlogListeners = new Set<(s: BacklogSignal) => void>();
   readonly #resyncListeners = new Set<() => void>();
   readonly #generationListeners = new Set<() => void>();
   readonly #terminalListeners = new Set<(f: DaemonTerminalFrame) => void>();
@@ -153,7 +160,6 @@ export class DaemonClient {
   async ensureConnected(timeoutMs = 8000): Promise<void> {
     if (this.#ws !== null && this.#ws.readyState === WebSocket.OPEN) return;
     if (this.#connecting !== null) return this.#connecting;
-
     const attempt: Promise<void> = new Promise<void>((resolve, reject) => {
       // 评审 P2：建连体全程 try/catch + attempt 级 settled 标记——此前超时不关 socket、
       // 迟到的 error/open 会 clobber 下一次尝试、WebSocket 构造同步抛会让 Promise 永不 settle
@@ -249,6 +255,13 @@ export class DaemonClient {
       for (const fn of this.#terminalListeners) fn(tf);
       return;
     }
+    if (frame["type"] === "backlog") {
+      const signal = frame["signal"] as BacklogSignal | undefined;
+      // 最小形状校验（与 event 帧同理）：坏帧不进监听器
+      if (signal === undefined || typeof signal !== "object" || typeof signal["kind"] !== "string") return;
+      for (const fn of this.#backlogListeners) fn(signal);
+      return;
+    }
     // rpc 响应
     if (frame["id"] !== undefined && frame["id"] !== null && (frame["ok"] !== undefined || frame["error"] !== undefined)) {
       const key = String(frame["id"]);
@@ -291,9 +304,23 @@ export class DaemonClient {
     );
   }
 
+  /**
+   * REST 面的鉴权 token（x-awb-token）。鉴权关着时为 null —— 此时裸调即可。
+   * 出图代理这类带大载荷/流式的 REST 路由用它显式带头（不能走 rpc 通道）。
+   */
+  authToken(): Promise<string | null> {
+    return this.#ensureToken();
+  }
+
   onEvent(fn: (e: RuntimeEvent, seq?: number) => void): () => void {
     this.#eventListeners.add(fn);
     return () => this.#eventListeners.delete(fn);
+  }
+
+  /** 待办（GTD）信号：提议挂起 / 落定 / 总状态变化 / 清单变化 / 通知 */
+  onBacklogSignal(fn: (s: BacklogSignal) => void): () => void {
+    this.#backlogListeners.add(fn);
+    return () => this.#backlogListeners.delete(fn);
   }
 
   /** 重连（未换代）时触发——适配器按会话游标增量补拉 */
@@ -747,5 +774,148 @@ export async function runAutomationNow(
 ): Promise<{ runId: number; sessionId: string }> {
   const client = DaemonClient.get(endpoint);
   return client.rpc<{ runId: number; sessionId: string }>("automation.runNow", { id }, 30000);
+}
+
+// ---------------------------------------------------------------------------
+// 待办 / GTD（backlog）—— 清单 CRUD / 确认门 / 验收 / 心跳配置 / 余量。
+// daemon 返回的形态与 core/backlog.ts 一致（engine.toItem 直出），直接透传。
+// ---------------------------------------------------------------------------
+
+export interface BacklogListResult {
+  readonly items: readonly BacklogItem[];
+  readonly proposal: BacklogProposal | null;
+  readonly state: BacklogStateSnapshot;
+  readonly config: BacklogConfig;
+  readonly quotas: readonly QuotaHeadroom[];
+}
+
+export interface BacklogWriteInput {
+  readonly title?: string;
+  readonly goal?: string;
+  readonly prompt?: string;
+  readonly unitId?: string;
+  readonly unitName?: string;
+  readonly rootPath?: string;
+  readonly runtimeId?: string;
+  readonly model?: string | null;
+  readonly mode?: string | null;
+  readonly size?: string | null;
+}
+
+export async function fetchBacklog(endpoint: string = defaultDaemonEndpoint()): Promise<BacklogListResult> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<BacklogListResult>("backlog.list", null, 20000);
+}
+
+export async function createBacklogItem(
+  input: BacklogWriteInput,
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<{ id: number; item: BacklogItem | null }> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<{ id: number; item: BacklogItem | null }>("backlog.create", input, 15000);
+}
+
+export async function updateBacklogItem(
+  id: number,
+  patch: BacklogWriteInput,
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<{ item: BacklogItem | null }> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<{ item: BacklogItem | null }>("backlog.update", { id, ...patch }, 15000);
+}
+
+export async function deleteBacklogItem(id: number, endpoint: string = defaultDaemonEndpoint()): Promise<{ deleted: boolean }> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<{ deleted: boolean }>("backlog.delete", { id }, 15000);
+}
+
+export async function reorderBacklog(ids: readonly number[], endpoint: string = defaultDaemonEndpoint()): Promise<{ reordered: number }> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<{ reordered: number }>("backlog.reorder", { ids }, 15000);
+}
+
+export async function wakeBacklogItem(id: number, endpoint: string = defaultDaemonEndpoint()): Promise<{ ok: boolean }> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<{ ok: boolean }>("backlog.wake", { id }, 15000);
+}
+
+export async function sleepBacklogItem(id: number, endpoint: string = defaultDaemonEndpoint()): Promise<{ ok: boolean }> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<{ ok: boolean }>("backlog.sleep", { id }, 15000);
+}
+
+/** 确认门：确认当前提议（执行器可改选，选择记忆回待办） */
+export async function confirmBacklogProposal(
+  params: { runtimeId?: string; model?: string | null },
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<{ runId: number; sessionId: string }> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<{ runId: number; sessionId: string }>("backlog.proposal.confirm", params, 30000);
+}
+
+export async function rejectBacklogProposal(endpoint: string = defaultDaemonEndpoint()): Promise<{ ok: boolean }> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<{ ok: boolean }>("backlog.proposal.reject", null, 15000);
+}
+
+/** 验收：pass=true 关闭；打回 = 回就绪重新排队（可附一句话备注） */
+export async function reviewBacklogItem(
+  params: { id: number; pass: boolean; note?: string },
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<{ ok: boolean }> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<{ ok: boolean }>("backlog.review", params, 15000);
+}
+
+/** 清单上的「立即执行」——按钮即确认动作（与自动化 runNow 同口径） */
+export async function runBacklogNow(
+  params: { id: number; runtimeId?: string; model?: string | null },
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<{ runId: number; sessionId: string }> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<{ runId: number; sessionId: string }>("backlog.runNow", params, 30000);
+}
+
+export async function getBacklogConfigRpc(endpoint: string = defaultDaemonEndpoint()): Promise<BacklogConfig> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<BacklogConfig>("backlog.config.get", null, 15000);
+}
+
+export async function setBacklogConfigRpc(
+  patch: Record<string, unknown>,
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<{ config: BacklogConfig }> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<{ config: BacklogConfig }>("backlog.config.set", { patch }, 15000);
+}
+
+export async function fetchBacklogQuotas(
+  refresh = false,
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<{ quotas: readonly QuotaHeadroom[] }> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<{ quotas: readonly QuotaHeadroom[] }>("backlog.quotas", { refresh }, refresh ? 45000 : 15000);
+}
+
+export async function setForceBusy(on: boolean, endpoint: string = defaultDaemonEndpoint()): Promise<{ ok: boolean; snapshot: BacklogStateSnapshot }> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<{ ok: boolean; snapshot: BacklogStateSnapshot }>("backlog.state.forceBusy", { on }, 15000);
+}
+
+export async function forceHeartbeat(endpoint: string = defaultDaemonEndpoint()): Promise<void> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<void>("backlog.heartbeat.force", null, 30000);
+}
+
+export async function runBacklogConsolidate(
+  force = true,
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<{ scanned: number; created: number; duplicates: number; skipped: number }> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<{ scanned: number; created: number; duplicates: number; skipped: number }>(
+    "backlog.consolidate.run",
+    { force },
+    45000,
+  );
 }
 

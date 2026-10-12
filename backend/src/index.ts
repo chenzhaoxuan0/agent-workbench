@@ -14,8 +14,11 @@ import path from "node:path";
 import { exec, spawn } from "node:child_process";
 import { loadConfig } from "./config.ts";
 import { healthPayload, isLocalOrigin, isLoopbackAddr, startHttp, type HttpRoute } from "./httpd.ts";
+import { ImageProfileStore, type ImageProfileRow } from "./image/profiles.ts";
+import { handleImageCall } from "./image/proxy.ts";
 import { log, setLogLevel } from "./log.ts";
-import { attachWs, broadcastEvent, broadcastTerminal, registerMethod, WIRE_VERSION } from "./wsd.ts";
+import { setSecretsHome } from "./secrets.ts";
+import { attachWs, broadcastBacklog, broadcastEvent, broadcastTerminal, registerMethod, WIRE_VERSION } from "./wsd.ts";
 import { PermissionGate } from "./permissions/gate.ts";
 import { MockPermAdapter } from "./runtime/adapters/mockperm.ts";
 import { ClaudeAdapter } from "./runtime/adapters/claude.ts";
@@ -58,6 +61,11 @@ import { maybeConsolidate } from "./memory/consolidator.ts";
 
 /** 记忆系统的后台调度（每日总结 + curator）。启动时挂上，停止时摘掉。 */
 let memoryScheduler: MemoryScheduler | undefined;
+/** 待办（GTD）引擎：在 wss 就绪后构造（广播要用），这里先声明给 host 回调引用。 */
+let backlogEngine: BacklogEngine | undefined;
+import { BacklogEngine } from "./backlog/heartbeat.ts";
+import { getBacklogConfig, setBacklogConfig } from "./backlog/config.ts";
+import { draftPromptOf, type BacklogConfig, type BacklogSignal } from "../../prototype/src/core/backlog.ts";
 import { BotRegistry } from "./bots/registry.ts";
 import { TelegramGateway } from "./channels/telegram.ts";
 import { FeishuGateway, diagnoseLarkAccount, larkIdentities, larkProfileList, addLarkProfile } from "./channels/feishu.ts";
@@ -66,6 +74,8 @@ import { asModelId, asSessionId, asUnitId } from "../../prototype/src/core/units
 
 const startedAt = Date.now();
 const config = loadConfig();
+// 密钥的 env: 引用可落到 <homeDir>/.env（README「密钥放在哪」）—— 家目录定下来就接上
+setSecretsHome(config.homeDir);
 setLogLevel(config.logLevel);
 
 mkdirSync(config.homeDir, { recursive: true });
@@ -126,6 +136,8 @@ const host = new RuntimeHost((event, seq) => {
       // 会话本身跑挂了也要挂失败徽章 —— 不然调度层看不到，卡片一直显示「已完成」
       if (failed) store.setAutomationError(hit.automationId, `ended: ${event.reason}`, Date.now());
     }
+    // 待办（GTD）执行的终态回灌 —— 引擎内部按 sessionId 映射判归属，与自动化互不干扰
+    backlogEngine?.onSessionEnded(event.sessionId, event.reason);
   }
 }, traceSink, config.homeDir, store, gate, new FileMemoryInjector());
 memoryScheduler = new MemoryScheduler({
@@ -376,8 +388,23 @@ const telegramGateway = new TelegramGateway({
 });
 telegramGateway.start();
 
-// 飞书：每 bot 一个飞书机器人（一个飞书应用 = 一个账号 = 一个 bot 身份）
-const feishuGateway = new FeishuGateway({ registry: botRegistry, host, reconcileMs: 15_000 });
+// 飞书：每 bot 一个飞书机器人（一个飞书应用 = 一个账号 = 一个 bot 身份）。
+// 入站拦截器：配置的确认会话里发「确认/拒绝 <待办id>」直接落到待办引擎（v1 关键词口径），
+// 其余消息照常进 bot 轮次；引擎不在（启动早期）按未消费放行。
+const feishuGateway = new FeishuGateway({
+  registry: botRegistry,
+  host,
+  reconcileMs: 15_000,
+  inboundHook: async (text, chatId) => {
+    const cfg = getBacklogConfig(store);
+    if (!cfg.feishu.enabled || cfg.feishu.receiveId === "" || chatId !== cfg.feishu.receiveId) return false;
+    try {
+      return await (backlogEngine?.handleInboundText(text) ?? false);
+    } catch {
+      return false;
+    }
+  },
+});
 feishuGateway.start();
 
 // ---- 记忆编排（Phase 7）-----------------------------------------------------
@@ -564,8 +591,41 @@ const authorize = (req: IncomingMessage, url: URL): boolean => {
   return typeof provided === "string" && provided === config.token;
 };
 
-const { server, port } = await startHttp(config, startedAt, httpRoutes, authorize);
+// 出图代理（docs 决策：密钥挪进 daemon）：浏览器把请求体交给 daemon，daemon 注入
+// Authorization 后转发并透传响应流。这条路由是流式大载荷，走 httpd 的裸路由通道。
+const imageProfiles = new ImageProfileStore(config.homeDir);
+
+const { server, port } = await startHttp(config, startedAt, httpRoutes, authorize, [
+  { method: "POST", path: "/api/image/call", handle: handleImageCall(imageProfiles) },
+]);
 const wss = attachWs(server, { config, startedAt, authorize });
+
+// ---- 待办 / GTD（backlog）—— 引擎需要 wss 广播，必须在 attachWs 之后构造 ----------
+
+backlogEngine = new BacklogEngine({
+  store,
+  host,
+  homeDir: config.homeDir,
+  getConfig: () => getBacklogConfig(store),
+  broadcast: (signal: BacklogSignal) => broadcastBacklog(wss, signal),
+  notify: async (text) => {
+    const cfg = getBacklogConfig(store);
+    if (!cfg.feishu.enabled || cfg.feishu.receiveId === "") return;
+    try {
+      const r = await feishuGateway.sendTo(cfg.feishu.botId, cfg.feishu.accountId, cfg.feishu.receiveId, text);
+      if (!r.ok) log.warn("backlog feishu notify failed", { detail: r.detail });
+    } catch (err: unknown) {
+      log.warn("backlog feishu notify failed", { error: err instanceof Error ? err.message : String(err) });
+    }
+  },
+  rootsWithUnits: async () => {
+    const bots = await botRegistry.listBots();
+    return bots
+      .filter((b) => typeof b.rootPath === "string" && b.rootPath !== "")
+      .map((b) => ({ rootPath: String(b.rootPath), unitId: String(b.id ?? ""), unitName: String(b.name ?? "") }));
+  },
+});
+backlogEngine.start();
 // dst 启动器已并入 dsh（tuiCommand）：dsh 的 TUI 用 dst shim 拉起
 function tuiCommandFor(executorId: string | undefined): string | undefined {
   if (!executorId) return executorId;
@@ -866,6 +926,179 @@ registerMethod("automation.runNow", (params) => {
   return runAutomation(hit.automation, { trigger: "manual" });
 });
 
+// ---- 待办 / GTD 方法（backlog.*）----------------------------------------------
+//
+// 确认门语义：backlog.proposal.confirm / backlog.runNow 都是**用户动作**（弹窗按钮、
+// 清单按钮）——引擎自身的心跳只会产生提议，永远到不了 dispatch。权限面零新代码：
+// 执行走 source:"automation" 的 headless 链路（权限闸完全放行，deny 规则仍优先）。
+
+const badBacklog = (message: string): Error => Object.assign(new Error(message), { code: "bad_params" });
+
+function requireEngine(): BacklogEngine {
+  if (backlogEngine === undefined) throw Object.assign(new Error("backlog engine 未就绪"), { code: "engine_not_ready" });
+  return backlogEngine;
+}
+
+registerMethod("backlog.list", async () => {
+  const engine = requireEngine();
+  const [quotas] = await Promise.all([engine.quotas(false)]);
+  return {
+    items: engine.listItems(),
+    proposal: engine.proposal(),
+    state: engine.snapshot(),
+    config: getBacklogConfig(store),
+    quotas,
+  };
+});
+
+registerMethod("backlog.create", (params) => {
+  const p = (params ?? {}) as {
+    title?: string; goal?: string; prompt?: string;
+    unitId?: string; unitName?: string; rootPath?: string;
+    runtimeId?: string; model?: string | null; mode?: string | null; size?: string | null;
+  };
+  if (typeof p.goal !== "string" || p.goal.trim() === "") throw badBacklog("goal is required");
+  if (typeof p.unitId !== "string" || typeof p.rootPath !== "string" || p.rootPath === "") {
+    throw badBacklog("unitId and rootPath are required");
+  }
+  const goal = p.goal.trim();
+  const title = typeof p.title === "string" && p.title.trim() !== "" ? p.title.trim() : goal.split(/\r?\n/)[0]!.slice(0, 40);
+  const id = store.createBacklogItem({
+    title,
+    goal,
+    prompt: typeof p.prompt === "string" && p.prompt.trim() !== "" ? p.prompt.trim() : draftPromptOf(goal),
+    unitId: p.unitId,
+    unitName: typeof p.unitName === "string" ? p.unitName : p.unitId,
+    rootPath: p.rootPath,
+    runtimeId: typeof p.runtimeId === "string" ? p.runtimeId : "",
+    model: typeof p.model === "string" && p.model !== "" ? p.model : null,
+    mode: typeof p.mode === "string" && p.mode !== "" ? p.mode : null,
+    size: p.size === "big" || p.size === "small" ? p.size : null,
+    source: "manual",
+  });
+  const item = store.getBacklogItem(id);
+  return { id, item: item === undefined ? null : requireEngine().toItem(item) };
+});
+
+registerMethod("backlog.update", (params) => {
+  const p = (params ?? {}) as {
+    id?: number; title?: string; goal?: string; prompt?: string;
+    unitId?: string; unitName?: string; rootPath?: string;
+    runtimeId?: string; model?: string | null; mode?: string | null; size?: string | null;
+  };
+  if (typeof p.id !== "number") throw badBacklog("id is required");
+  const hit = store.getBacklogItem(p.id);
+  if (hit === undefined) throw Object.assign(new Error(`没有这个待办：${p.id}`), { code: "unknown_item" });
+  if (hit.status === "executing") throw badBacklog("执行中的待办不能编辑 —— 等它跑完或打回后再改");
+  store.updateBacklogItem(p.id, {
+    ...(typeof p.title === "string" && p.title.trim() !== "" ? { title: p.title.trim() } : {}),
+    ...(typeof p.goal === "string" && p.goal.trim() !== "" ? { goal: p.goal.trim() } : {}),
+    ...(typeof p.prompt === "string" && p.prompt.trim() !== "" ? { prompt: p.prompt.trim() } : {}),
+    ...(typeof p.unitId === "string" ? { unitId: p.unitId } : {}),
+    ...(typeof p.unitName === "string" ? { unitName: p.unitName } : {}),
+    ...(typeof p.rootPath === "string" && p.rootPath !== "" ? { rootPath: p.rootPath } : {}),
+    ...(typeof p.runtimeId === "string" ? { runtimeId: p.runtimeId } : {}),
+    ...(p.model !== undefined ? { model: typeof p.model === "string" && p.model !== "" ? p.model : null } : {}),
+    ...(p.mode !== undefined ? { mode: typeof p.mode === "string" && p.mode !== "" ? p.mode : null } : {}),
+    ...(p.size !== undefined ? { size: p.size === "big" || p.size === "small" ? p.size : null } : {}),
+  });
+  const item = store.getBacklogItem(p.id);
+  return { item: item === undefined ? null : requireEngine().toItem(item) };
+});
+
+registerMethod("backlog.delete", (params) => {
+  const p = (params ?? {}) as { id?: number };
+  if (typeof p.id !== "number") throw badBacklog("id is required");
+  const hit = store.getBacklogItem(p.id);
+  if (hit !== undefined && hit.status === "executing") throw badBacklog("执行中的待办不能删除 —— 先等它跑完");
+  return { deleted: store.deleteBacklogItem(p.id) };
+});
+
+/** 手动排序：传全量 id 顺序（顺序即优先级） */
+registerMethod("backlog.reorder", (params) => {
+  const p = (params ?? {}) as { ids?: unknown };
+  if (!Array.isArray(p.ids)) throw badBacklog("ids (number[]) is required");
+  const ids = p.ids.map(Number).filter((n) => Number.isInteger(n));
+  ids.forEach((id, i) => store.updateBacklogItem(id, { sortPos: (i + 1) * 1000 }));
+  return { reordered: ids.length };
+});
+
+registerMethod("backlog.wake", (params) => {
+  const p = (params ?? {}) as { id?: number };
+  if (typeof p.id !== "number") throw badBacklog("id is required");
+  requireEngine().wake(p.id);
+  return { ok: true };
+});
+
+registerMethod("backlog.sleep", (params) => {
+  const p = (params ?? {}) as { id?: number };
+  if (typeof p.id !== "number") throw badBacklog("id is required");
+  requireEngine().sleep(p.id);
+  return { ok: true };
+});
+
+/** 确认门 —— 确认当前提议（执行器可在此时改选，选择记忆回待办） */
+registerMethod("backlog.proposal.confirm", (params) => {
+  const p = (params ?? {}) as { runtimeId?: string; model?: string | null };
+  return requireEngine().confirm({
+    ...(typeof p.runtimeId === "string" && p.runtimeId !== "" ? { runtimeId: p.runtimeId } : {}),
+    ...(p.model !== undefined ? { model: typeof p.model === "string" && p.model !== "" ? p.model : null } : {}),
+  });
+});
+
+registerMethod("backlog.proposal.reject", () => {
+  requireEngine().reject();
+  return { ok: true };
+});
+
+/** 验收：pass=true 关闭；打回 = 回就绪重新排队（可附一句话备注） */
+registerMethod("backlog.review", (params) => {
+  const p = (params ?? {}) as { id?: number; pass?: boolean; note?: string };
+  if (typeof p.id !== "number" || typeof p.pass !== "boolean") throw badBacklog("id and pass are required");
+  requireEngine().review(p.id, p.pass, typeof p.note === "string" && p.note.trim() !== "" ? p.note.trim() : null);
+  return { ok: true };
+});
+
+/** 用户在清单上点「立即执行」——按钮本身即确认动作（与 automation.runNow 同口径） */
+registerMethod("backlog.runNow", (params) => {
+  const p = (params ?? {}) as { id?: number; runtimeId?: string; model?: string | null };
+  if (typeof p.id !== "number") throw badBacklog("id is required");
+  const hit = store.getBacklogItem(p.id);
+  if (hit === undefined) throw Object.assign(new Error(`没有这个待办：${p.id}`), { code: "unknown_item" });
+  if (hit.status === "executing") throw badBacklog("这条待办已在执行中");
+  const runtimeId = typeof p.runtimeId === "string" && p.runtimeId !== "" ? p.runtimeId : hit.runtimeId;
+  if (runtimeId === undefined || runtimeId === "") throw badBacklog("没有配置执行器 —— 先编辑待办选一个，或在弹窗里选");
+  const model = p.model !== undefined ? (typeof p.model === "string" && p.model !== "" ? p.model : null) : hit.model;
+  return requireEngine().dispatch(hit, runtimeId, model, "manual");
+});
+
+registerMethod("backlog.config.get", () => getBacklogConfig(store));
+registerMethod("backlog.config.set", (params) => {
+  const p = (params ?? {}) as { patch?: unknown };
+  const next = setBacklogConfig(store, p.patch);
+  return { config: next };
+});
+
+registerMethod("backlog.quotas", (params) => {
+  const p = (params ?? {}) as { refresh?: boolean };
+  return { quotas: requireEngine().quotas(p.refresh === true) };
+});
+
+registerMethod("backlog.state.forceBusy", (params) => {
+  const p = (params ?? {}) as { on?: boolean };
+  if (typeof p.on !== "boolean") throw badBacklog("on is required");
+  requireEngine().setForceBusy(p.on);
+  return { ok: true, snapshot: requireEngine().snapshot() };
+});
+
+/** 手动触发一跳（测试/演示）：跳过周期与空闲判定，其余护栏（单飞/强制忙碌）照旧 */
+registerMethod("backlog.heartbeat.force", () => requireEngine().forceBeat());
+
+registerMethod("backlog.consolidate.run", (params) => {
+  const p = (params ?? {}) as { force?: boolean };
+  return requireEngine().consolidate(p.force !== false);
+});
+
 
 
 // ---- 记忆方法（docs/10）-----------------------------------------------------
@@ -1106,6 +1339,24 @@ registerMethod("appearance.wallpaper.save", async (params) => {
 registerMethod("appearance.wallpaper.delete", async (params) => {
   const p = (params ?? {}) as { path?: string };
   return { deleted: await deleteWallpaper(config.homeDir, p.path ?? null) };
+});
+// ---- 出图供应商 profile —— <homeDir>/image-profiles.json，密钥永不下发浏览器 ----
+registerMethod("image.profiles.list", () => {
+  return imageProfiles.listMasked();
+});
+registerMethod("image.profiles.put", (params) => {
+  const p = (params ?? {}) as Partial<ImageProfileRow> & { id?: string };
+  if (typeof p.id !== "string" || p.id === "") {
+    throw Object.assign(new Error("id is required"), { code: "bad_params" });
+  }
+  return imageProfiles.put(p as Partial<ImageProfileRow> & { id: string });
+});
+registerMethod("image.profiles.delete", (params) => {
+  const p = (params ?? {}) as { id?: string };
+  if (typeof p.id !== "string" || p.id === "") {
+    throw Object.assign(new Error("id is required"), { code: "bad_params" });
+  }
+  return { deleted: imageProfiles.delete(p.id) };
 });
 // 目录探测（docs/09 §七 P0-B）：纯读，导入对话框三分支全靠它决定
 registerMethod("bot.inspect", (params) => {
@@ -1363,6 +1614,7 @@ async function shutdown(signal: string): Promise<void> {
   shuttingDown = true;
   log.info("shutting down", { signal });
   scheduler.stop();
+  backlogEngine?.stop();
   memoryScheduler?.stop(); // 之前漏了：60s interval 会活到 process.exit，正在跑的日报/curator 被从中间砍断
   telegramGateway.stop();
   // 飞书也停：它有一个 15s reconcile interval 和每账号的长连接/子进程，

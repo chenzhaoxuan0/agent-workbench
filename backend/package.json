@@ -42,7 +42,9 @@
     "typecheck": "tsc --noEmit",
     "smoke:phase5b": "tsx scripts/smoke-phase5b.ts",
     "smoke:terminal": "tsx scripts/smoke-terminal-reattach.ts",
-    "e2e:automation-ui": "tsx scripts/e2e-automation-ui.ts"
+    "e2e:automation-ui": "tsx scripts/e2e-automation-ui.ts",
+    "smoke:backlog": "tsx scripts/smoke-backlog.ts",
+    "smoke:image": "tsx scripts/smoke-image-proxy.ts"
   },
   "dependencies": {
     "node-pty": "^1.1.0",

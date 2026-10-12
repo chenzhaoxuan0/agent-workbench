@@ -7,6 +7,7 @@ import {
   type PartialImageEvent,
 } from "../core/imageApi.ts";
 import { saveImageToFolder, loadSaveFolder } from "../core/imageSave.ts";
+import { DaemonClient, defaultDaemonEndpoint } from "../adapters/daemon/client.ts";
 
 /**
  * 出图工作台 store —— 多供应商 profile 管理 + 生成参数 + 任务历史。
@@ -17,12 +18,18 @@ import { saveImageToFolder, loadSaveFolder } from "../core/imageSave.ts";
  * 供应商的完整编辑面在设置页「出图」分区（SettingsPage），工作台只做
  * 当前 profile 的只读摘要 + 跳转入口。
  *
+ * **profile 的唯一真相在 daemon**（<homeDir>/image-profiles.json，密钥永不下发
+ * 浏览器）：localStorage 只留 UI 偏好（activeProfileId / 历史 / 保存文件夹 /
+ * 自动保存）。首次启动把旧 localStorage 里的密钥一次性上缴 daemon 后剥掉。
+ *
  * 任务历史是本页面的「会话」概念：一次生图 = 一条任务；流式时 partial
- * image 实时写进 pending 任务卡。持久化：profile 永久保存；历史图片是
- * dataURL（单张 1–2MB），配额满按「最旧优先」丢图重试。
+ * image 实时写进 pending 任务卡。历史图片是 dataURL（单张 1–2MB），
+ * 配额满按「最旧优先」丢图重试。
  */
 
 const STORE_KEY = "agent-workbench:image-studio";
+/** 旧密钥已上缴 daemon 的标记（没上缴成功不置位，下次启动继续尝试） */
+const MIGRATED_FLAG = "agent-workbench:image-keys-migrated";
 const MAX_TASKS = 30;
 
 export interface ImageTask {
@@ -51,6 +58,7 @@ export interface ImageTask {
 }
 
 interface PersistedStudio {
+  /** 遗留字段：只在「密钥上缴 daemon」迁移完成前还存在于旧 localStorage 里 */
   profiles?: readonly ImageProfile[];
   activeProfileId?: string;
   history?: readonly ImageTask[];
@@ -108,18 +116,13 @@ function normalizeProfiles(persisted: PersistedStudio): { profiles: ImageProfile
   return { profiles: [first], activeProfileId: first.id };
 }
 
-/** 写历史：配额满则按「最旧优先」丢掉任务的图片重试，图片全丢仍写不下就只保留元信息 */
-function persist(
-  profiles: readonly ImageProfile[],
-  activeProfileId: string,
-  history: readonly ImageTask[],
-  saveDirName: string | null,
-  autoSave: boolean,
-): void {
+/** 写历史与 UI 偏好。**profiles 不再落 localStorage** —— 权威在 daemon，
+ * 本地存密钥正是这次迁移要消灭的事（同源脚本可读、清站点数据即丢）。 */
+function persist(activeProfileId: string, history: readonly ImageTask[], saveDirName: string | null, autoSave: boolean): void {
   if (typeof window === "undefined") return;
   const tryWrite = (tasks: readonly ImageTask[]): boolean => {
     try {
-      window.localStorage.setItem(STORE_KEY, JSON.stringify({ profiles, activeProfileId, history: tasks, saveDirName, autoSave }));
+      window.localStorage.setItem(STORE_KEY, JSON.stringify({ activeProfileId, history: tasks, saveDirName, autoSave }));
       return true;
     } catch {
       return false;
@@ -142,10 +145,112 @@ function persist(
   try {
     window.localStorage.setItem(
       STORE_KEY,
-      JSON.stringify({ profiles, activeProfileId, saveDirName, autoSave, history: tasks.map(({ images: _i, partialImage: _p, ...rest }) => rest) }),
+      JSON.stringify({ activeProfileId, saveDirName, autoSave, history: tasks.map(({ images: _i, partialImage: _p, ...rest }) => rest) }),
     );
   } catch {
     /* 配置也写不下 —— 放弃本轮持久化 */
+  }
+}
+
+/* ------------------------------------------------- daemon profile 同步层 */
+
+async function rpc<T>(method: string, params: unknown, timeoutMs = 15000): Promise<T> {
+  const client = DaemonClient.get(defaultDaemonEndpoint());
+  return client.rpc<T>(method, params, timeoutMs);
+}
+
+/** 编辑防抖：设置页逐键 onChange 不能逐键打 RPC */
+const pendingPatches = new Map<string, Partial<ImageProfile>>();
+let flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+function queueProfileWrite(id: string, patch: Partial<ImageProfile>): void {
+  const prev = pendingPatches.get(id) ?? {};
+  pendingPatches.set(id, { ...prev, ...patch });
+  if (flushTimer !== null) clearTimeout(flushTimer);
+  flushTimer = setTimeout(() => void flushProfileWrites(), 600);
+}
+
+async function flushProfileWrites(): Promise<void> {
+  flushTimer = null;
+  const entries = [...pendingPatches.entries()];
+  pendingPatches.clear();
+  for (const [id, patch] of entries) {
+    try {
+      const saved = await rpc<ImageProfile>("image.profiles.put", { id, ...patch });
+      // 回填脱敏真值（hasKey 变了要让工作台守卫立刻看见）；apiKey 落盘即清，
+      // 输入框是「失焦提交」草稿态，清空不打断正在看的值
+      useImageStudio.setState((st) => ({
+        profiles: st.profiles.map((p) => (p.id === id ? { ...p, ...saved, apiKey: "" } : p)),
+        profileSyncError: null,
+      }));
+    } catch (err) {
+      useImageStudio.setState({ profileSyncError: err instanceof Error ? err.message : String(err) });
+    }
+  }
+}
+
+/** 一次性密钥上缴：旧 localStorage 里的 profiles（含明文 key）推上 daemon，
+ *  成功后剥掉本地副本。daemon 没起就整个跳过，下次启动再试。 */
+async function migrateLegacyKeys(): Promise<void> {
+  if (typeof window === "undefined") return;
+  let raw: string | null = null;
+  try {
+    raw = window.localStorage.getItem(STORE_KEY);
+  } catch {
+    return;
+  }
+  if (raw === null || window.localStorage.getItem(MIGRATED_FLAG) !== null) return;
+  let parsed: PersistedStudio;
+  try {
+    parsed = JSON.parse(raw) as PersistedStudio;
+  } catch {
+    window.localStorage.setItem(MIGRATED_FLAG, "1"); // 坏数据：标记完成，别反复试
+    return;
+  }
+  const legacy = normalizeProfiles(parsed).profiles.filter((p) => p.apiKey.trim() !== "");
+  for (const p of legacy) {
+    await rpc("image.profiles.put", { ...p }, 15000); // daemon 写盘（含密钥）
+  }
+  window.localStorage.setItem(MIGRATED_FLAG, "1");
+  const { profiles: _profiles, ...rest } = parsed;
+  window.localStorage.setItem(STORE_KEY, JSON.stringify(rest));
+}
+
+/** 初始化（幂等，单例）：迁移旧密钥 → 拉脱敏清单。工作台与设置页挂载时都调它。 */
+let initPromise: Promise<void> | null = null;
+export function initImageStudio(): Promise<void> {
+  if (initPromise === null) {
+    initPromise = (async () => {
+      try {
+        await migrateLegacyKeys();
+      } catch {
+        /* daemon 没起：迁移留到下次，继续尝试同步清单 */
+      }
+      await syncProfiles();
+    })();
+  }
+  return initPromise;
+}
+
+async function syncProfiles(): Promise<void> {
+  try {
+    const list = await rpc<ImageProfile[]>("image.profiles.list", null);
+    useImageStudio.setState((st) => {
+      if (list.length === 0) return { profileSyncError: null };
+      // 保留本地正在编辑的草稿（apiKey 输入不脱敏丢字），其余以 daemon 为准
+      const merged = list.map((remote) => {
+        const local = st.profiles.find((p) => p.id === remote.id);
+        return local !== undefined && local.apiKey !== "" ? { ...remote, apiKey: local.apiKey } : remote;
+      });
+      const activeStillThere = merged.some((p) => p.id === st.activeProfileId);
+      return {
+        profiles: merged,
+        activeProfileId: activeStillThere ? st.activeProfileId : merged[0]!.id,
+        profileSyncError: null,
+      };
+    });
+  } catch (err) {
+    useImageStudio.setState({ profileSyncError: err instanceof Error ? err.message : String(err) });
   }
 }
 
@@ -165,6 +270,8 @@ interface ImageStudioState {
   savePermission: "granted" | "prompt" | "denied" | "none";
   /** 生成成功后自动落盘到保存文件夹 */
   autoSave: boolean;
+  /** daemon profile 同步的最近一次错误（没起 / RPC 失败；null = 正常） */
+  profileSyncError: string | null;
 
   /** 当前生效的 profile（便捷选择器） */
   activeProfile: () => ImageProfile;
@@ -196,12 +303,19 @@ interface ImageStudioState {
 
 export const useImageStudio = create<ImageStudioState>((set, get) => {
   const persisted = readPersisted();
-  const { profiles: initProfiles, activeProfileId: initActive } = normalizeProfiles(persisted);
+  // 初始形态：迁移还没跑时的旧 profiles（不含密钥也能撑展示），否则默认占位。
+  // initImageStudio() 挂载后会用 daemon 的脱敏清单覆盖。
+  const initProfiles = persisted.profiles && persisted.profiles.length > 0
+    ? persisted.profiles.map((p) => ({ ...DEFAULT_PROFILE, ...p, apiKey: "" }))
+    : [{ ...DEFAULT_PROFILE }];
+  const initActive = initProfiles.some((p) => p.id === persisted.activeProfileId)
+    ? (persisted.activeProfileId as string)
+    : initProfiles[0]!.id;
   let seq = 1 + (persisted.history?.length ?? 0);
 
   const save = () => {
-    const { profiles, activeProfileId, history, saveDirName, autoSave } = get();
-    persist(profiles, activeProfileId, history, saveDirName, autoSave);
+    const { activeProfileId, history, saveDirName, autoSave } = get();
+    persist(activeProfileId, history, saveDirName, autoSave);
   };
 
   return {
@@ -215,6 +329,7 @@ export const useImageStudio = create<ImageStudioState>((set, get) => {
     saveDirName: persisted.saveDirName ?? null,
     savePermission: "none",
     autoSave: persisted.autoSave ?? false,
+    profileSyncError: null,
 
     activeProfile: () => {
       const { profiles, activeProfileId } = get();
@@ -227,10 +342,10 @@ export const useImageStudio = create<ImageStudioState>((set, get) => {
     addProfile: () => {
       const id = `profile-${Date.now().toString(36)}`;
       set((st) => ({
-        profiles: [...st.profiles, { ...DEFAULT_PROFILE, id, name: `供应商 ${st.profiles.length + 1}`, apiKey: "" }],
+        profiles: [...st.profiles, { ...DEFAULT_PROFILE, id, name: `供应商 ${st.profiles.length + 1}` }],
         activeProfileId: id,
       }));
-      save();
+      queueProfileWrite(id, get().profiles.find((p) => p.id === id)!);
     },
     removeProfile: (id) => {
       set((st) => {
@@ -241,11 +356,14 @@ export const useImageStudio = create<ImageStudioState>((set, get) => {
           activeProfileId: st.activeProfileId === id ? profiles[0]!.id : st.activeProfileId,
         };
       });
-      save();
+      pendingPatches.delete(id);
+      void rpc("image.profiles.delete", { id }).catch((err: unknown) => {
+        set({ profileSyncError: err instanceof Error ? err.message : String(err) });
+      });
     },
     updateProfile: (id, patch) => {
       set((st) => ({ profiles: st.profiles.map((p) => (p.id === id ? { ...p, ...patch } : p)) }));
-      save();
+      queueProfileWrite(id, patch);
     },
 
     setParams: (patch) => set((st) => ({ params: { ...st.params, ...patch } })),
@@ -256,7 +374,8 @@ export const useImageStudio = create<ImageStudioState>((set, get) => {
     generate: async () => {
       const { prompt, params, refImages, busy } = get();
       const profile = get().activeProfile();
-      if (busy || !prompt.trim() || !profile.apiKey.trim()) return;
+      // 密钥在 daemon 侧（浏览器只见 hasKey）——没配就拦住
+      if (busy || !prompt.trim() || profile.hasKey !== true) return;
       const id = seq++;
       const task: ImageTask = {
         id,

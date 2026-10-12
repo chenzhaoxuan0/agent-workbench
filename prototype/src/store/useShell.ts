@@ -21,8 +21,9 @@ import type { UnitId } from "../core/units.ts";
  * - 搜索**也不是主视图**，是 ⌘K 命令中心浮层（CommandCenterDialog）。
  * - image（出图工作台）是本项目的扩展：与自动化同级的独立功能视图
  *   （gpt_image_playground 的移植落点）。
+ * - backlog（待办/GTD）同上：目标维度的任务清单 + 心跳提议，与自动化（过程维度）相对。
  */
-export type MainView = "chat" | "automations" | "image";
+export type MainView = "chat" | "automations" | "image" | "backlog";
 
 /**
  * 会话内视图曾有三态（terminal / chat / trajectory），2026-10 砍掉后两项：

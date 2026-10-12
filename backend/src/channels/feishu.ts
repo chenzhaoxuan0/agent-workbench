@@ -934,7 +934,20 @@ class LarkCliConnection {
     // 全程 best-effort：表情挂了绝不能影响正常回复（runBotTurn / #reply）。
     void this.#ack(messageId, this.#spec.ackEmoji).catch(() => {});
 
-    this.#enqueue({ messageId, chatId, text: stripMentions(content, mentions) });
+    // 入站拦截器：确认/拒绝待办这类 daemon 级指令直接消化（返回 true），
+    // 没消费的消息照常进 bot 轮次。拦截器抛错按「未消费」放行 —— 挂钩故障
+    // 不能顺带把整个 bot 的 IM 通道弄哑。
+    const text = stripMentions(content, mentions);
+    if (this.#inboundHook !== null) {
+      const hook = this.#inboundHook;
+      void hook(text, chatId)
+        .catch(() => false)
+        .then((consumed) => {
+          if (!consumed) this.#enqueue({ messageId, chatId, text });
+        });
+      return;
+    }
+    this.#enqueue({ messageId, chatId, text });
   }
 
   /**
@@ -1066,9 +1079,12 @@ class LarkCliConnection {
   /** 由 gateway 注入——连接不该自己去摸全局单例 */
   #registry!: BotRegistry;
   #host!: RuntimeHost;
-  bind(deps: { registry: BotRegistry; host: RuntimeHost }): void {
+  /** 入站拦截器（可选）：待办确认关键词等 daemon 级指令在这里消化，不进 bot 轮次 */
+  #inboundHook: ((text: string, chatId: string) => Promise<boolean>) | null = null;
+  bind(deps: { registry: BotRegistry; host: RuntimeHost; inboundHook?: (text: string, chatId: string) => Promise<boolean> }): void {
     this.#registry = deps.registry;
     this.#host = deps.host;
+    this.#inboundHook = deps.inboundHook ?? null;
   }
 }
 
@@ -1098,6 +1114,8 @@ export class FeishuGateway {
       registry: BotRegistry;
       host: RuntimeHost;
       reconcileMs?: number;
+      /** 入站拦截器（可选）：见 LarkCliConnection.bind 的注释 */
+      inboundHook?: (text: string, chatId: string) => Promise<boolean>;
     },
   ) {}
 
@@ -1186,7 +1204,7 @@ export class FeishuGateway {
     for (const spec of desired) {
       if (this.#conns.has(spec.key)) continue;
       const conn = new LarkCliConnection(spec);
-      conn.bind({ registry: this.opts.registry, host: this.opts.host });
+      conn.bind({ registry: this.opts.registry, host: this.opts.host, inboundHook: this.opts.inboundHook });
       this.#conns.set(spec.key, conn);
       void conn.start();
     }

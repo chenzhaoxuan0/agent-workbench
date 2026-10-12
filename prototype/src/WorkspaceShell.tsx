@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { Group, Panel, Separator, type PanelImperativeHandle } from "react-resizable-panels";
 import { AutomationsPage } from "./ui/AutomationsPage.tsx";
+import { BacklogPage } from "./ui/BacklogPage.tsx";
+import { ProposalBanner } from "./ui/ProposalBanner.tsx";
 import { ImageStudioPage } from "./ui/ImageStudioPage.tsx";
 import { CommandCenter } from "./ui/CommandCenter.tsx";
 import { DesktopTopOverlay } from "./ui/DesktopTopOverlay.tsx";
@@ -60,6 +62,9 @@ export function WorkspaceShell() {
           <SettingsPage />
         </div>
       )}
+
+      {/* 待办提议横幅 —— 确认门的载体，跨主视图常驻（任何视图下都能确认/拒绝） */}
+      <ProposalBanner />
 
       <CommandCenter />
     </div>
@@ -156,7 +161,7 @@ function ConversationSlot() {
 
   return (
     <Panel minSize="30%" className="min-w-0">
-      {/* 主视图只有 chat / automations / image */}
+      {/* 主视图：chat / automations / image / backlog */}
       {mainView === "automations" ? (
         <main className="h-full min-h-0" aria-label="自动化">
           <AutomationsPage />
@@ -165,6 +170,11 @@ function ConversationSlot() {
         /* 出图工作台（独立主视图） */
         <main className="h-full min-h-0" aria-label="出图">
           <ImageStudioPage />
+        </main>
+      ) : mainView === "backlog" ? (
+        /* 待办清单（独立主视图） */
+        <main className="h-full min-h-0" aria-label="待办">
+          <BacklogPage />
         </main>
       ) : (
         <main className="flex h-full min-h-0 flex-col" aria-label="终端">

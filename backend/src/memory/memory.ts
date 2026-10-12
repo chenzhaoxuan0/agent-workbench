@@ -13,6 +13,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Store } from "../store/db.ts";
 import { log } from "../log.ts";
+import { resolveSecret } from "../secrets.ts";
 
 export type Pillar = "semantic" | "episodic" | "procedural";
 export type MemoryBackendKind = "sqlite" | "weknora";
@@ -41,11 +42,13 @@ function weknoraApi(cfg: WeknoraConfig, p: string): string {
 }
 
 async function weknoraRequest(cfg: WeknoraConfig, p: string, init?: RequestInit): Promise<unknown> {
+  // 密钥支持 env: 引用（不想写盘的场景）—— 用时解析，与出图代理同一约定
+  const apiKey = resolveSecret(cfg.apiKey);
   const res = await fetch(weknoraApi(cfg, p), {
     ...init,
     headers: {
       "Content-Type": "application/json",
-      ...(cfg.apiKey ? { "X-API-Key": cfg.apiKey } : {}),
+      ...(apiKey ? { "X-API-Key": apiKey } : {}),
       ...init?.headers,
     },
     signal: AbortSignal.timeout(8000),

@@ -50,6 +50,17 @@ export interface TerminalFrame {
   readonly exitCode?: number;
 }
 
+/**
+ * 待办（GTD）信号帧 —— 与 terminal 同理独立于 event 流：RuntimeEvent 是
+ * per-session 的（client 侧按 sessionId 过滤），而待办的提议/总状态是
+ * daemon 级广播。signal 的类型见 prototype/src/core/backlog.ts 的 BacklogSignal。
+ */
+export interface BacklogFrame {
+  readonly v: typeof WIRE_VERSION;
+  readonly type: "backlog";
+  readonly signal: unknown;
+}
+
 export type ResponseFrame =
   | { readonly v: typeof WIRE_VERSION; readonly id: string | null; readonly ok: true; readonly result: unknown }
   | {
@@ -135,13 +146,21 @@ export function attachWs(
   return wss;
 }
 
-function send(ws: WebSocket, frame: HelloFrame | EventFrame | TerminalFrame | ResponseFrame): void {
+function send(ws: WebSocket, frame: HelloFrame | EventFrame | TerminalFrame | BacklogFrame | ResponseFrame): void {
   if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame));
 }
 
 /** 向所有在线客户端广播一条终端帧（data 高频，无订阅者就丢弃） */
 export function broadcastTerminal(wss: WebSocketServer, frame: TerminalFrame): void {
   const payload = JSON.stringify(frame);
+  for (const ws of wss.clients) {
+    if (ws.readyState === ws.OPEN) ws.send(payload);
+  }
+}
+
+/** 向所有在线客户端广播一条待办信号（无订阅者就丢弃，历史以 backlog.list 拉取为准） */
+export function broadcastBacklog(wss: WebSocketServer, signal: unknown): void {
+  const payload = JSON.stringify({ v: WIRE_VERSION, type: "backlog", signal } satisfies BacklogFrame);
   for (const ws of wss.clients) {
     if (ws.readyState === ws.OPEN) ws.send(payload);
   }

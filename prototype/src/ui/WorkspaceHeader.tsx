@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Check, FolderOpen } from "lucide-react";
 import { useShell } from "../store/useShell.ts";
 import { useWorkbench, selectActiveUnit } from "../store/useWorkbench.ts";
+import { useBacklog } from "../store/useBacklog.ts";
 import { openFolder } from "../adapters/daemon/client.ts";
 import { cn } from "./cn.ts";
 
@@ -49,11 +50,80 @@ export function WorkspaceHeader() {
         <span className="text-body-sm text-ash">未选择 Agent</span>
       )}
 
-      {/* ---- 右区：后台守护指示器 ---- */}
+      {/* ---- 右区：总状态点 + 后台守护指示器 ---- */}
       <div className="ml-auto flex shrink-0 items-center gap-2">
+        <WorkPhaseBadge />
         <BackgroundGuardianBadge />
       </div>
     </header>
+  );
+}
+
+/**
+ * 全局工作状态点（共识 Q18）：工作中/空闲/心跳中/待确认/执行中/待验收。
+ * 点开看判定依据（为什么忙/为什么闲）、上次心跳结果，以及强制忙碌开关
+ * （一键免打扰，压倒一切自动判定）。
+ */
+function WorkPhaseBadge() {
+  const [open, setOpen] = useState(false);
+  const phase = useBacklog((s) => s.state?.phase ?? null);
+  const reason = useBacklog((s) => s.state?.reason ?? null);
+  const forceBusy = useBacklog((s) => s.state?.forceBusy ?? false);
+  const lastOutcome = useBacklog((s) => s.state?.lastBeatOutcome ?? null);
+  const nextBeat = useBacklog((s) => s.state?.nextBeatAt ?? null);
+  const setForceBusy = useBacklog((s) => s.setForceBusy);
+
+  const meta: Record<string, { cls: string; label: string }> = {
+    busy: { cls: "bg-line-strong", label: "工作中" },
+    idle: { cls: "bg-gain", label: "空闲" },
+    beating: { cls: "bg-teal animate-pulse", label: "心跳中" },
+    awaiting_confirm: { cls: "bg-amber-500 animate-pulse", label: "待确认" },
+    executing: { cls: "bg-blue-500 animate-pulse", label: "长任务执行中" },
+    awaiting_review: { cls: "bg-violet-500", label: "待验收" },
+  };
+  const m = phase !== null ? (meta[phase] ?? meta["busy"]!) : { cls: "bg-line", label: "连接中" };
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        aria-label={`工作状态：${m.label}，点击查看详情`}
+        title={`工作状态：${m.label}`}
+        className="flex h-6 items-center gap-1.5 rounded-btn px-1.5 transition hover:bg-line-soft"
+      >
+        <span className={cn("h-2 w-2 rounded-full", m.cls)} />
+        <span className="text-caption text-graphite">{m.label}</span>
+      </button>
+
+      {open && (
+        <>
+          <span className="fixed inset-0 z-30" onClick={() => setOpen(false)} aria-hidden />
+          <div className="absolute right-0 top-full z-40 mt-1.5 w-72 rounded-card border border-line bg-canvas p-3 shadow-subtle text-caption leading-relaxed">
+            <div className="flex items-center gap-1.5 border-b border-line-soft pb-1.5 text-body-sm font-medium text-ink">
+              <span className={cn("h-2 w-2 rounded-full", m.cls)} />
+              {m.label}
+            </div>
+            <div className="mt-2 space-y-1.5 text-graphite">
+              {reason !== null && <p>{reason}</p>}
+              {nextBeat !== null && <p className="text-ash">下次心跳：{new Date(nextBeat).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</p>}
+              {lastOutcome !== null && <p className="text-ash">上次心跳：{lastOutcome}</p>}
+            </div>
+            <button
+              onClick={() => void setForceBusy(!forceBusy)}
+              className={cn(
+                "mt-2.5 w-full rounded-btn px-2 py-1.5 text-caption transition",
+                forceBusy ? "bg-amber-500/15 text-amber-600" : "bg-line-soft text-graphite hover:text-ink",
+              )}
+            >
+              {forceBusy ? "解除强制忙碌" : "强制忙碌（心跳免打扰）"}
+            </button>
+            <p className="mt-2 border-t border-line-soft pt-1.5 text-[10px] text-ash">
+              空闲心跳会在系统空闲且有余量时提议启动待办长任务 —— 任何启动都要经你确认。
+            </p>
+          </div>
+        </>
+      )}
+    </div>
   );
 }
 

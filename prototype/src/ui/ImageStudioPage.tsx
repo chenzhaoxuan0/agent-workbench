@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import {
   FORMAT_OPTIONS,
+  initImageStudio,
   qualityOptionsFor,
   sizeOptionsFor,
   useImageStudio,
@@ -37,6 +38,10 @@ export function ImageStudioPage() {
   useEffect(() => {
     void restoreSaveDir();
   }, [restoreSaveDir]);
+  // profile 从 daemon 同步（含旧密钥一次性上缴迁移）——幂等，设置页挂载也会调
+  useEffect(() => {
+    void initImageStudio();
+  }, []);
   return (
     <div className="h-full min-h-0 overflow-y-auto">
       {/* 面包屑顶带 —— 统一在侧边栏返回工作台 */}
@@ -76,7 +81,8 @@ function Composer() {
 
   const fileRef = useRef<HTMLInputElement>(null);
 
-  const missing = !profile.apiKey.trim();
+  // 密钥在 daemon（hasKey 是脱敏布尔）——没配就是「缺密钥」
+  const missing = profile.hasKey !== true;
   const isGptImage = profile.model.toLowerCase().includes("gpt-image");
   const canGenerate = !busy && prompt.trim().length > 0 && !missing;
 
