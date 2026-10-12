@@ -65,6 +65,13 @@ let memoryScheduler: MemoryScheduler | undefined;
 let backlogEngine: BacklogEngine | undefined;
 import { BacklogEngine } from "./backlog/heartbeat.ts";
 import { getBacklogConfig, setBacklogConfig } from "./backlog/config.ts";
+import {
+  ensureHeartbeatBot,
+  heartbeatBotDefinition,
+  heartbeatBotShape,
+  HEARTBEAT_BOT_ID,
+  HEARTBEAT_DEFAULT_RUNTIME_ID,
+} from "./backlog/heartbeatBot.ts";
 import { draftPromptOf, type BacklogConfig, type BacklogSignal } from "../../prototype/src/core/backlog.ts";
 import { BotRegistry } from "./bots/registry.ts";
 import { TelegramGateway } from "./channels/telegram.ts";
@@ -212,6 +219,39 @@ void ensureSteward(config.homeDir)
   })
   .then((r) => log.info("steward bot ready", { id: r.id, revision: r.revision, unchanged: r.unchanged }))
   .catch((err: unknown) => log.warn("steward bot init failed", { error: err instanceof Error ? err.message : String(err) }));
+
+// 心跳 bot（常驻合成 bot，对齐 steward 模式）：待办心跳会话的宿主身份。
+// AGENTS.md 岗位说明书（决策依据/输出契约/红线）随目录播种 —— zcode 等执行器
+// 在 cwd 原生读它，心跳 agent 的角色设定不靠 prompt 拼接。失败不阻断启动。
+void ensureHeartbeatBot(config.homeDir)
+  .then(({ rootPath }) => {
+    botRegistry.addRoot(rootPath);
+    // 幂等 + 用户数据不覆盖：与 steward 同一套口径（结构补齐，name/bindings/
+    // avatar/channels/memory/identity.role/persona 归用户）
+    return botRegistry.getBot(HEARTBEAT_BOT_ID).then(async (existing) => {
+      const want = heartbeatBotDefinition(rootPath, HEARTBEAT_DEFAULT_RUNTIME_ID);
+      const prev = (existing ?? {}) as Record<string, unknown>;
+      const userOwned: Record<string, unknown> = {};
+      for (const k of ["name", "bindings", "avatar", "channels", "memory", "tags"] as const) {
+        if (prev[k] !== undefined) userOwned[k] = prev[k];
+      }
+      const prevIdentity = (prev.identity ?? {}) as Record<string, unknown>;
+      const wantIdentity = (want.identity ?? {}) as Record<string, unknown>;
+      userOwned.identity = {
+        ...wantIdentity,
+        ...(prevIdentity.role !== undefined ? { role: prevIdentity.role } : {}),
+        ...(prevIdentity.persona !== undefined ? { persona: prevIdentity.persona } : {}),
+      };
+      const merged = { ...want, ...userOwned };
+      if (existing !== undefined && heartbeatBotShape(existing) === heartbeatBotShape(merged)) {
+        return { unchanged: true as const };
+      }
+      await botRegistry.putBot(merged);
+      return { unchanged: false as const };
+    });
+  })
+  .then((r) => log.info("heartbeat bot ready", { id: HEARTBEAT_BOT_ID, unchanged: r.unchanged }))
+  .catch((err: unknown) => log.warn("heartbeat bot init failed", { error: err instanceof Error ? err.message : String(err) }));
 
 /**
  * 管家定义的**规范形状**，用于幂等比较。
@@ -623,6 +663,17 @@ backlogEngine = new BacklogEngine({
     return bots
       .filter((b) => typeof b.rootPath === "string" && b.rootPath !== "")
       .map((b) => ({ rootPath: String(b.rootPath), unitId: String(b.id ?? ""), unitName: String(b.name ?? "") }));
+  },
+  // 心跳 bot 的主绑定（bot 设置页改执行器/模型即生效；backlog 配置显式指定时优先）
+  heartbeatBinding: async () => {
+    const bot = await botRegistry.getBot(HEARTBEAT_BOT_ID);
+    if (bot === undefined) return null;
+    const bindings = Array.isArray(bot.bindings) ? (bot.bindings as Array<Record<string, unknown>>) : [];
+    const primary = bindings.find((b) => b["primary"] === true) ?? bindings[0];
+    if (primary === undefined) return null;
+    const runtimeId = String(primary["runtimeId"] ?? "").replace(/^daemon:/, "");
+    const modelHint = typeof primary["modelHint"] === "string" ? String(primary["modelHint"]) : null;
+    return runtimeId === "" ? null : { runtimeId, model: modelHint };
   },
 });
 backlogEngine.start();

@@ -187,6 +187,12 @@ async function main(): Promise<void> {
     check("initial phase is busy or idle", ["busy", "idle"].includes(emptyResult.state.phase), emptyResult.state);
     check("heartbeat disabled by default", emptyResult.state.heartbeatEnabled === false);
 
+    // 1b. 心跳常驻 bot 已注册（对齐 steward 的合成 bot 模式）
+    const bots = await rpc(ws, "bot.list", null, 20000);
+    const botList = (bots["result"] as Array<{ id?: string; bindings?: unknown[] }>);
+    const hbBot = botList.find((b) => b.id === "heartbeat");
+    check("heartbeat bot registered with primary binding", hbBot !== undefined && Array.isArray(hbBot.bindings) && hbBot.bindings.length > 0, hbBot);
+
     // 2. 创建 → 就绪
     const created = await rpc(ws, "backlog.create", {
       goal: "冒烟：验证待办全链路",
@@ -200,15 +206,16 @@ async function main(): Promise<void> {
     check("backlog.create → ready", createdItem.status === "ready", createdItem);
     const itemId = createdItem.id;
 
-    // 3. 心跳护栏：未配执行器 → force 一跳记 failed；强制忙碌拦截
-    const beat = await rpc(ws, "backlog.heartbeat.force", null);
-    check("heartbeat.force without runtime acks", beat["ok"] === true);
-    const after = await rpc(ws, "backlog.list", null);
-    check("beat outcome recorded (failed:未配置)", (after["result"] as { state: { lastBeatOutcome: string | null } }).state.lastBeatOutcome?.startsWith("failed") === true);
+    // 3. 心跳护栏：强制忙碌压倒一切。心跳 bot 常驻后默认绑定兜底（不再有
+    // 「未配置执行器」态），这里只验 forceBusy 拦截 —— 不真跑心跳会话（不烧额度）
     await rpc(ws, "backlog.state.forceBusy", { on: true });
     await rpc(ws, "backlog.heartbeat.force", null);
+    await sleep(800); // force 受理即返，beat 的落账是异步的
     const busyBeat = await rpc(ws, "backlog.list", null);
-    check("forceBusy blocks heartbeat", (busyBeat["result"] as { state: { lastBeatOutcome: string | null } }).state.lastBeatOutcome?.startsWith("skipped") === true);
+    check(
+      "forceBusy blocks heartbeat",
+      (busyBeat["result"] as { state: { lastBeatOutcome: string | null } }).state.lastBeatOutcome === "skipped:forceBusy",
+    );
     await rpc(ws, "backlog.state.forceBusy", { on: false });
 
     // 4. runNow（用户动作=确认门）→ mockperm 快答 → 终态回灌 → 待验收

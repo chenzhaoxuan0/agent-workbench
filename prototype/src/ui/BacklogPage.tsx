@@ -547,7 +547,7 @@ function BacklogSettings({ onClose }: { onClose: () => void }): ReactElement {
                 >
                   {hbRuntimes.map((id) => (
                     <option key={id} value={id}>
-                      {id === "" ? "（未配置 —— 心跳不跑）" : id}
+                      {id === "" ? "（跟随心跳 bot 的主绑定）" : id}
                     </option>
                   ))}
                 </select>

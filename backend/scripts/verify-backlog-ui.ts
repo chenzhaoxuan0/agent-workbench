@@ -55,14 +55,14 @@ async function main(): Promise<void> {
     const errors: string[] = [];
     const ws = new WebSocket(pageWsUrl);
     await new Promise<void>((resolve, reject) => {
-      ws.addEventListener("open", () => resolve());
-      ws.addEventListener("error", () => reject(new Error("cdp ws failed")));
+      ws.once("open", () => resolve());
+      ws.once("error", () => reject(new Error("cdp ws failed")));
     });
     let seq = 0;
     const pendingCdp = new Map<number, { resolve: (r: Record<string, unknown>) => void; reject: (e: Error) => void }>();
     const eventWaiters: Array<{ method: string; resolve: (r: Record<string, unknown>) => void }> = [];
-    ws.addEventListener("message", (ev: MessageEvent) => {
-      const msg = JSON.parse(String(ev.data)) as { id?: number; result?: Record<string, unknown>; error?: unknown; method?: string; params?: Record<string, unknown> };
+    ws.on("message", (data: unknown) => {
+      const msg = JSON.parse(String(data)) as { id?: number; result?: Record<string, unknown>; error?: unknown; method?: string; params?: Record<string, unknown> };
       if (msg.id !== undefined && pendingCdp.has(msg.id)) {
         const p = pendingCdp.get(msg.id)!;
         pendingCdp.delete(msg.id);

@@ -58,6 +58,8 @@ export interface BacklogEngineDeps {
   readonly notify: (text: string) => Promise<void>;
   /** 收件箱统合要的 root → unit 映射 */
   readonly rootsWithUnits: () => Promise<Array<{ rootPath: string; unitId: string; unitName: string }>>;
+  /** 心跳 bot 的主绑定（常驻 bot 的用户可改执行器/模型）——配置未显式指定时的兜底 */
+  readonly heartbeatBinding?: () => Promise<{ runtimeId: string; model: string | null } | null>;
 }
 
 export class BacklogEngine {
@@ -232,6 +234,23 @@ export class BacklogEngine {
     return this.beat(true);
   }
 
+  /**
+   * 心跳会话跑在哪：backlog 配置显式指定（设置面板）优先，
+   * 没指定就读常驻心跳 bot 的主绑定（bot 设置页改绑定即生效）。
+   */
+  private async resolveHeartbeatRuntime(cfg: BacklogConfig): Promise<{ runtimeId: string; model: string | null }> {
+    if (cfg.heartbeat.runtimeId !== "") {
+      return { runtimeId: cfg.heartbeat.runtimeId, model: cfg.heartbeat.model };
+    }
+    try {
+      const binding = (await this.deps.heartbeatBinding?.()) ?? null;
+      if (binding !== null && binding.runtimeId !== "") return binding;
+    } catch {
+      /* bot 注册表暂不可达（启动早期）按未配置处理 */
+    }
+    return { runtimeId: "", model: null };
+  }
+
   private async beat(force = false): Promise<void> {
     if (this.beating) return; // 单飞
     // 硬过滤（ADR-0003）：规则层一分钱不花。
@@ -244,8 +263,9 @@ export class BacklogEngine {
       return;
     }
     const cfg = this.deps.getConfig();
-    if (cfg.heartbeat.runtimeId === "") {
-      this.saveLedger({ lastBeatAt: Date.now(), lastBeatOutcome: "failed:未配置心跳执行器" });
+    const { runtimeId, model } = await this.resolveHeartbeatRuntime(cfg);
+    if (runtimeId === "") {
+      this.saveLedger({ lastBeatAt: Date.now(), lastBeatOutcome: "failed:未配置心跳执行器（设置面板或心跳 bot 绑定其一）" });
       this.pushState();
       return;
     }
@@ -267,7 +287,7 @@ export class BacklogEngine {
         return;
       }
       const quotas = await this.probe.readAll(cfg.runtimes);
-      const answer = await this.runHeartbeatSession(cfg, ready, quotas);
+      const answer = await this.runHeartbeatSession(cfg, ready, quotas, runtimeId, model);
       if (answer === null) {
         this.saveLedger({ lastBeatOutcome: "silence" });
         return;
@@ -303,6 +323,8 @@ export class BacklogEngine {
     cfg: BacklogConfig,
     ready: BacklogRow[],
     quotas: QuotaHeadroom[],
+    runtimeId: string,
+    model: string | null,
   ): Promise<Record<string, unknown> | null> {
     const quotaLines = quotas.map((q) => `- ${q.runtimeId}：${q.percent !== null ? `剩余 ${q.percent}%` : "余量未知"}${q.resetsAt !== null ? `（${new Date(q.resetsAt).toLocaleString("zh-CN")} 重置）` : ""}${q.summary !== null ? ` — ${q.summary}` : ""}`);
     const itemLines = ready.map(
@@ -332,12 +354,12 @@ export class BacklogEngine {
     // 所以用对象壳子持有退订函数 —— 直接 let 会被控制流分析收窄成 null/never
     const unsubRef: { fn: (() => void) | null } = { fn: null };
     const session = await this.deps.host.startSession({
-      runtimeId: cfg.heartbeat.runtimeId,
+      runtimeId,
       unitId: asUnitId(HEARTBEAT_UNIT),
       unitName: "心跳",
       rootPath: path.join(this.deps.homeDir, HEARTBEAT_UNIT),
       prompt,
-      model: cfg.heartbeat.model === null ? null : asModelId(cfg.heartbeat.model),
+      model: model === null || model === "" ? null : asModelId(model),
       source: "automation",
       onSessionReady: (id) => {
         unsubRef.fn = this.deps.host.onSessionEvent(id, "message.completed", (e) => {

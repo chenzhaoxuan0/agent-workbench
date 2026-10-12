@@ -110,6 +110,13 @@ async function main(): Promise<void> {
   check("backlog.list on live daemon", Array.isArray(list0.items), list0);
   check("state snapshot present", typeof list0.state.phase === "string", list0.state);
 
+  // 1b. 心跳常驻 bot 已注册（含主绑定）+ AGENTS.md 岗位说明书已播种
+  const bots = (await rpc("bot.list", null, 30000))["result"] as Array<{ id?: string; bindings?: unknown[] }>;
+  const hbBot = bots.find((b) => b.id === "heartbeat");
+  check("heartbeat bot registered with binding", hbBot !== undefined && Array.isArray(hbBot.bindings) && hbBot.bindings.length > 0, hbBot);
+  const agentsMd = await (await import("node:fs/promises")).readFile(`${boot.home}/heartbeat/AGENTS.md`, "utf8").catch(() => "");
+  check("heartbeat AGENTS.md seeded (role contract)", agentsMd.includes("只提议") || agentsMd.includes("输出契约"), agentsMd.slice(0, 80));
+
   // 2. 真实配额探针（refresh 强制真跑命令）
   const quotas = ((await rpc("backlog.quotas", { refresh: true }, 60000))["result"] as { quotas: Array<{ runtimeId: string; percent: number | null; source: string; summary: string | null; resetsAt: number | null }> }).quotas;
   console.log("  quotas |", JSON.stringify(quotas));
@@ -131,17 +138,28 @@ async function main(): Promise<void> {
   const item = (created["result"] as { item: ItemShape }).item;
   check("create test item", item.status === "ready", item);
 
-  // 4. 启用心跳（zcode 真决策），forceBeat，等真实提议信号
-  await rpc("backlog.config.set", { patch: { heartbeat: { enabled: true, runtimeId: "zcode", intervalMinutes: 30 } } });
+  // 4. 启用心跳：显式 runtimeId 留空 —— 验证心跳 bot 主绑定的兜底解析路径。
+  // LLM 决策 propose/silence 皆合法（沉默零代价是设计共识），断言以落账为准。
+  const beforeOutcome = ((await rpc("backlog.list", null, 30000))["result"] as { state: { lastBeatOutcome: string | null } }).state.lastBeatOutcome;
+  await rpc("backlog.config.set", { patch: { heartbeat: { enabled: true, runtimeId: "", intervalMinutes: 30 } } });
   const beat = await rpc("backlog.heartbeat.force", null, 15000);
   check("forceBeat acked", beat["ok"] === true, beat);
-  console.log("  ...等待 zcode 心跳决策（最多 4 分钟）");
-  const proposalSignal = await waitSignal((s) => s["kind"] === "proposal", 240_000);
-  check("real heartbeat proposal arrived", proposalSignal !== null, proposalSignal);
-  if (proposalSignal !== null) {
-    const proposal = (proposalSignal as { proposal: { itemId: number; message: string; suggestedRuntimeId: string | null; quotas: unknown[] } }).proposal;
-    console.log("  proposal |", JSON.stringify({ itemId: proposal.itemId, message: proposal.message, suggested: proposal.suggestedRuntimeId, quotas: proposal.quotas.length }));
-    check("proposal targets a ready item", proposal.itemId === item.id, proposal);
+  console.log("  ...等心跳落账（最多 5 分钟，心跳会话真实跑）");
+  let outcome: string | null = beforeOutcome;
+  for (let waited = 0; waited < 300_000; waited += 3000) {
+    await sleep(3000);
+    outcome = ((await rpc("backlog.list", null, 30000))["result"] as { state: { lastBeatOutcome: string | null } }).state.lastBeatOutcome;
+    if (outcome !== null && outcome !== beforeOutcome) break;
+  }
+  check(
+    "heartbeat settled via bot binding (proposed or silence)",
+    outcome !== null && outcome !== beforeOutcome && /^(proposed|silence)/.test(outcome),
+    outcome,
+  );
+  const liveProposal = ((await rpc("backlog.list", null, 30000))["result"] as { proposal: { itemId: number; message: string } | null }).proposal;
+  if (liveProposal !== null) {
+    console.log("  proposal |", JSON.stringify(liveProposal));
+    check("proposal targets the ready item", liveProposal.itemId === item.id, liveProposal);
 
     // 5. 确认（改选 mockperm 执行器——不烧真实额度）→ 执行 → 待验收。
     // settled 信号先挂等待者再发 confirm —— 广播发生在 confirm 处理中，晚了就错过
@@ -151,9 +169,9 @@ async function main(): Promise<void> {
     const settled = await settledPromise;
     check("settled signal broadcast (cross-channel dismiss)", settled !== null && (settled as { decision: string }).decision === "confirmed", settled);
   } else {
-    // 没等到提议也试直接跑通执行链（决策沉默是合法结果）
+    // 心跳沉默是合法结果 —— 改走 runNow 验证执行链
     await rpc("backlog.runNow", { id: item.id }, 60000);
-    console.log("  ...心跳沉默，改走 runNow 验证执行链");
+    console.log(`  ...心跳本轮沉默（${outcome}），改走 runNow 验证执行链`);
   }
   const reviewing = await waitStatus(item.id, "awaiting_review", 60000);
   check("execution ends in awaiting_review", reviewing !== null, reviewing);
@@ -164,9 +182,10 @@ async function main(): Promise<void> {
   await rpc("backlog.delete", { id: item.id });
   const after = (await items());
   check("test item cleaned up", after.every((i) => before.has(i.id) || !i.title.includes("自动清理")), after.map((i) => i.title));
+  // 心跳恢复关闭；runtimeId 留空 = 跟随心跳 bot 的主绑定（一键开启即用 bot 配置）
   await rpc("backlog.config.set", { patch: { heartbeat: { enabled: false } } });
   const cfgEnd = (await rpc("backlog.config.get", null))["result"] as { heartbeat: { runtimeId: string } };
-  check("heartbeat runtime kept for one-click enable", cfgEnd.heartbeat.runtimeId === "zcode", cfgEnd);
+  check("heartbeat runtime follows bot binding", cfgEnd.heartbeat.runtimeId === "", cfgEnd);
 
   ws.close();
   if (failures > 0) {
