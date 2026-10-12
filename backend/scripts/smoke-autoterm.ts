@@ -205,6 +205,34 @@ try {
     blItem,
   );
 
+  // 3c. 单元历史：unit.history 合并自动化/待办/会话时间轴；session.messages
+  //     对历史会话走 store 兜底（host 只认活会话）
+  const hist = await call<{ entries: Array<{ key: string; kind: string; title: string; launchMode: string; status: string; startedAt: number; sessionId: string | null }> }>("unit.history", { unitId: "u-tui" });
+  const autoEntry = hist.entries.find((e) => e.key === `automation-${now.runId}`);
+  check(
+    "unit.history lists terminal automation run (no sessionId)",
+    autoEntry !== undefined && autoEntry.launchMode === "terminal" && autoEntry.sessionId === null && autoEntry.status === "failed",
+    autoEntry,
+  );
+  const blEntry = hist.entries.find((e) => e.kind === "backlog" && e.title.includes("待办"));
+  check("unit.history lists backlog run", blEntry !== undefined && blEntry.launchMode === "terminal", blEntry);
+  check("unit.history sorted desc by time", hist.entries.every((e, i) => i === 0 || hist.entries[i - 1]!.startedAt >= e.startedAt), hist.entries.map((e) => e.key));
+
+  const { DatabaseSync: DB } = await import("node:sqlite");
+  const histDb = new DB(path.join(home, "state.db"));
+  histDb.prepare(
+    `INSERT INTO sessions (id, unit_id, runtime_id, title, status, started_at, ended_at, stats_json)
+     VALUES ('sess-hist-fake', 'u-tui', 'git', '历史会话兜底', 'done', ?, ?, '{}')`,
+  ).run(Date.now() - 120_000, Date.now() - 60_000);
+  histDb.prepare(`INSERT INTO messages (session_id, at, role, text) VALUES ('sess-hist-fake', ?, 'user', '历史提问')`).run(Date.now() - 120_000);
+  histDb.prepare(`INSERT INTO messages (session_id, at, role, text) VALUES ('sess-hist-fake', ?, 'assistant', '历史回答')`).run(Date.now() - 60_000);
+  histDb.close();
+  const msgs = await call<Array<{ role: string; text: string }>>("session.messages", { sessionId: "sess-hist-fake" });
+  check("session.messages falls back to store for history", msgs.length === 2 && msgs[0]?.text === "历史提问" && msgs[1]?.text === "历史回答", msgs);
+  const hist2 = await call<{ entries: Array<{ key: string; kind: string; sessionId: string | null }> }>("unit.history", { unitId: "u-tui" });
+  const sessEntry = hist2.entries.find((e) => e.key === "session-sess-hist-fake");
+  check("unclaimed session appears as session entry with sessionId", sessEntry !== undefined && sessEntry.sessionId === "sess-hist-fake", sessEntry);
+
   // 4. 重启自愈：塞一条挂 autoterm_ 的 running 记录 → 重启后按终端关闭收口
   //    （真实场景是 daemon 重启杀掉 PTY；这里直接造行验证 heal 分支）
   const { DatabaseSync } = await import("node:sqlite");

@@ -777,6 +777,44 @@ export async function fetchAutomationRuns(
   return client.rpc<DaemonAutomationRun[]>("automation.runs", { id, limit }, 15000);
 }
 
+// ---- 单元历史（unit.history）---------------------------------------------------
+
+/** 单元历史条目：自动化 / 待办 / 会话统一时间轴（见后端 unit.history 注释） */
+export interface UnitHistoryEntry {
+  readonly key: string;
+  readonly kind: "automation" | "backlog" | "session";
+  readonly title: string;
+  readonly subtitle: string | null;
+  readonly runtimeId: string;
+  readonly launchMode: "terminal" | "headless";
+  readonly status: string;
+  readonly trigger: string | null;
+  readonly startedAt: number;
+  readonly endedAt: number | null;
+  readonly detail: string | null;
+  /** headless 会话 id（可查 session.messages 下钻对话）；TUI 运行为 null */
+  readonly sessionId: string | null;
+}
+
+export async function fetchUnitHistory(
+  unitId: string,
+  limit = 100,
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<UnitHistoryEntry[]> {
+  const client = DaemonClient.get(endpoint);
+  const r = await client.rpc<{ entries: UnitHistoryEntry[] }>("unit.history", { unitId, limit }, 15000);
+  return r.entries;
+}
+
+/** 会话消息（host 活会话优先，历史会话由 daemon 从 store 兜底读） */
+export async function fetchSessionMessages(
+  sessionId: string,
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<Array<{ at: number; role: string; text: string }>> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<Array<{ at: number; role: string; text: string }>>("session.messages", { sessionId }, 15000);
+}
+
 /** 立即运行：手动触发一次（不消耗定时次数口径） */
 export async function runAutomationNow(
   id: number,

@@ -1080,6 +1080,104 @@ registerMethod("automation.runNow", (params) => {
   return runAutomation(hit.automation, { trigger: "manual" });
 });
 
+// ---- 单元历史（unit.history）---------------------------------------------------
+//
+// 每个 bot 一条统一时间轴：自动化任务、待办任务、心跳会话、手动/IM 会话。
+// 视角是「跑过什么任务」而不是裸会话表：已被运行记录引用的会话归入对应任务
+// 条目（不再重复出现），没被引用的会话才按会话条目列出（headless 才有 sessionId，
+// 可下钻 session.messages 看对话；TUI 条目只有运行结果摘要）。
+
+interface UnitHistoryEntry {
+  key: string;
+  kind: "automation" | "backlog" | "session";
+  title: string;
+  subtitle: string | null;
+  runtimeId: string;
+  launchMode: "terminal" | "headless";
+  status: string;
+  trigger: string | null;
+  startedAt: number;
+  endedAt: number | null;
+  detail: string | null;
+  /** headless 会话的 id（可查 session.messages 下钻）；TUI 运行为 null */
+  sessionId: string | null;
+}
+
+registerMethod("unit.history", (params) => {
+  const p = (params ?? {}) as { unitId?: string; limit?: number };
+  if (typeof p.unitId !== "string" || p.unitId === "") throw badAutomation("unitId is required");
+  const limit = Math.min(Math.max(typeof p.limit === "number" && Number.isFinite(p.limit) ? Math.round(p.limit) : 100, 1), 500);
+
+  const entries: UnitHistoryEntry[] = [];
+  /** 已被运行记录认领的会话 id：会话条目去重用 */
+  const claimedSessionIds = new Set<string>();
+
+  for (const a of store.listAutomations()) {
+    if (a.unitId !== p.unitId) continue;
+    for (const r of store.listAutomationRuns(a.id, limit)) {
+      if (r.sessionId !== null && !r.sessionId.startsWith("autoterm_")) claimedSessionIds.add(r.sessionId);
+      entries.push({
+        key: `automation-${r.id}`,
+        kind: "automation",
+        title: a.name,
+        subtitle: a.prompt.length > 80 ? `${a.prompt.slice(0, 80)}…` : a.prompt,
+        runtimeId: a.runtimeId,
+        launchMode: a.launchMode,
+        status: r.status,
+        trigger: r.trigger,
+        startedAt: r.startedAt,
+        endedAt: r.finishedAt,
+        detail: r.detail,
+        sessionId: r.sessionId !== null && !r.sessionId.startsWith("autoterm_") ? r.sessionId : null,
+      });
+    }
+  }
+
+  for (const item of store.listBacklogItems()) {
+    if (item.unitId !== p.unitId) continue;
+    for (const r of store.listBacklogRuns(item.id, limit)) {
+      const isTerminal = r.sessionId !== null && r.sessionId.startsWith("autoterm_");
+      if (r.sessionId !== null && !isTerminal) claimedSessionIds.add(r.sessionId);
+      entries.push({
+        key: `backlog-${r.id}`,
+        kind: "backlog",
+        title: item.title,
+        subtitle: item.goal.length > 80 ? `${item.goal.slice(0, 80)}…` : item.goal,
+        runtimeId: r.runtimeId,
+        launchMode: isTerminal ? "terminal" : "headless",
+        status: r.status,
+        trigger: r.trigger,
+        startedAt: r.startedAt,
+        endedAt: r.finishedAt,
+        detail: r.detail,
+        sessionId: r.sessionId !== null && !isTerminal ? r.sessionId : null,
+      });
+    }
+  }
+
+  for (const s of store.listSessions()) {
+    if (s.unitId !== p.unitId || claimedSessionIds.has(s.id)) continue;
+    entries.push({
+      key: `session-${s.id}`,
+      kind: "session",
+      title: s.title === "" ? "（无标题会话）" : s.title,
+      subtitle: null,
+      runtimeId: s.runtimeId,
+      launchMode: "headless",
+      status: s.status,
+      trigger: null,
+      startedAt: s.startedAt,
+      endedAt: s.endedAt,
+      detail: null,
+      sessionId: s.id,
+    });
+  }
+
+  entries.sort((a, b) => b.startedAt - a.startedAt);
+  return { entries: entries.slice(0, limit) };
+});
+
+
 // ---- 待办 / GTD 方法（backlog.*）----------------------------------------------
 //
 // 确认门语义：backlog.proposal.confirm / backlog.runNow 都是**用户动作**（弹窗按钮、
@@ -1695,7 +1793,17 @@ registerMethod("session.resume", (params) => {
 registerMethod("session.messages", (params) => {
   const p = (params ?? {}) as { sessionId?: string };
   if (typeof p.sessionId !== "string") throw Object.assign(new Error("sessionId is required"), { code: "bad_params" });
-  return host.sessionMessages(asSessionId(p.sessionId));
+  // host 只认活会话 —— 历史会话（daemon 重启后/已结束落盘）从 store 兜底读，
+  // 否则单元历史里点开任何旧会话都是 unknown_session。
+  try {
+    return host.sessionMessages(asSessionId(p.sessionId));
+  } catch {
+    const rows = store.listMessages(p.sessionId);
+    if (store.getSession(p.sessionId) === undefined && rows.length === 0) {
+      throw Object.assign(new Error(`no such session: ${p.sessionId}`), { code: "unknown_session" });
+    }
+    return rows;
+  }
 });
 // exportTrace 的线上形态（WP-3）：以落盘账本为准 —— 跨日期 TraceRecord NDJSON，
 // 事件环（上限 500）只是热缓存。afterSeq 可选：断线补拉游标（WP-2 复用）。

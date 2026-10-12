@@ -1,9 +1,10 @@
 import { useState } from "react";
-import { Check, FolderOpen, Radio } from "lucide-react";
+import { Check, FolderOpen, History, Radio } from "lucide-react";
 import { useShell } from "../store/useShell.ts";
 import { useWorkbench, selectActiveUnit } from "../store/useWorkbench.ts";
 import { useBacklog } from "../store/useBacklog.ts";
 import { openFolder } from "../adapters/daemon/client.ts";
+import { HistoryDialog } from "./HistoryDialog.tsx";
 import { cn } from "./cn.ts";
 
 /** 图标按钮的统一规格：28px 命中区（ZCode 的 icon-md），14px 图标 */
@@ -12,6 +13,7 @@ const iconBtn =
 
 export function WorkspaceHeader() {
   const sidebarCollapsed = useShell((s) => s.sidebarCollapsed);
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   const unit = useWorkbench(selectActiveUnit);
   const isSteward = unit?.id === "steward";
@@ -54,8 +56,22 @@ export function WorkspaceHeader() {
       <div className="ml-auto flex shrink-0 items-center gap-2">
         <WorkPhaseBadge />
         <div className="h-3.5 w-px bg-line/80" aria-hidden />
+        {unit !== undefined && (
+          <button
+            onClick={() => setHistoryOpen(true)}
+            aria-label={`查看 ${unit.name} 的历史会话`}
+            title={`查看 ${unit.name} 的历史会话：自动化任务、待办任务、心跳与手动会话的时间轴`}
+            className={cn(iconBtn, historyOpen && "bg-line-soft text-ink")}
+          >
+            <History size={14} />
+          </button>
+        )}
         <BackgroundGuardianBadge />
       </div>
+
+      {historyOpen && unit !== undefined && (
+        <HistoryDialog unitId={unit.id} unitName={unit.name} onClose={() => setHistoryOpen(false)} />
+      )}
     </header>
   );
 }
