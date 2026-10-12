@@ -165,7 +165,11 @@ export async function inspectDirectory(
       hasAgentsMd,
       hasBotJson,
       derived,
-      suggestedId: suggestId(derived?.name ?? path.basename(root)),
+      suggestedId: suggestId(
+        derived?.name ?? path.basename(root),
+        root,
+        ctx.knownBots.map((b) => b.id).filter((id): id is string => typeof id === "string" && id !== ""),
+      ),
       assets: await inspectAssets(root, entries),
       conflicts: {
         alreadyRegistered:
@@ -261,15 +265,42 @@ export function deriveIdentity(md: string): { name: string; role: string } {
  * 空 id 等于导入表单开天窗。非 ASCII 走内容哈希，稳定且可辨识——
  * 同一个文件夹每次探测都得到同一个 id，不会「重开一次就换了名字」。
  */
-export function suggestId(raw: string): string {
-  const slug = raw
+export function suggestId(raw: string, fallbackDir?: string, existingIds?: readonly string[]): string {
+  // 剥离常见的 AGENTS.md 前缀（避免以「# AGENTS.md — 中文描述」开头的不同仓库全部撞车到 bot-agents-md）
+  const stripped = raw.replace(/^agents(\.md)?[\s—\-_:]*/i, "").trim();
+  const candidateRaw = stripped !== "" ? stripped : (fallbackDir ? path.basename(fallbackDir) : raw);
+
+  let slug = candidateRaw
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 48);
-  if (slug !== "") return `bot-${slug}`;
-  const h = createHash("sha256").update(raw, "utf8").digest("hex").slice(0, 8);
-  return `bot-${h}`;
+
+  // 如果 slug 依然是泛化的 agents-md 或 agents，优先尝试使用目录名
+  if ((slug === "agents-md" || slug === "agents") && fallbackDir) {
+    const dirSlug = path.basename(fallbackDir)
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 48);
+    if (dirSlug !== "" && dirSlug !== "agents-md" && dirSlug !== "agents") {
+      slug = dirSlug;
+    }
+  }
+
+  let baseId = slug !== "" && slug !== "agents-md" && slug !== "agents"
+    ? `bot-${slug}`
+    : `bot-${createHash("sha256").update(candidateRaw, "utf8").digest("hex").slice(0, 8)}`;
+
+  // 保证不与已有 id 重复
+  if (existingIds && existingIds.includes(baseId)) {
+    let suffix = 2;
+    while (existingIds.includes(`${baseId}-${suffix}`)) {
+      suffix++;
+    }
+    baseId = `${baseId}-${suffix}`;
+  }
+  return baseId;
 }
 
 async function countSiblingBots(parent: string, exclude: string): Promise<number> {

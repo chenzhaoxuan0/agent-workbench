@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Check, FolderOpen } from "lucide-react";
+import { Check, FolderOpen, Radio } from "lucide-react";
 import { useShell } from "../store/useShell.ts";
 import { useWorkbench, selectActiveUnit } from "../store/useWorkbench.ts";
 import { useBacklog } from "../store/useBacklog.ts";
@@ -50,9 +50,10 @@ export function WorkspaceHeader() {
         <span className="text-body-sm text-ash">未选择 Agent</span>
       )}
 
-      {/* ---- 右区：总状态点 + 后台守护指示器 ---- */}
+      {/* ---- 右区：工作状态 + 区分割线 + 后台守护通道 ---- */}
       <div className="ml-auto flex shrink-0 items-center gap-2">
         <WorkPhaseBadge />
+        <div className="h-3.5 w-px bg-line/80" aria-hidden />
         <BackgroundGuardianBadge />
       </div>
     </header>
@@ -81,18 +82,32 @@ function WorkPhaseBadge() {
     executing: { cls: "bg-blue-500 animate-pulse", label: "长任务执行中" },
     awaiting_review: { cls: "bg-violet-500", label: "待验收" },
   };
-  const m = phase !== null ? (meta[phase] ?? meta["busy"]!) : { cls: "bg-line", label: "连接中" };
+  const m = forceBusy
+    ? { cls: "bg-amber-500", label: "强制忙碌" }
+    : phase !== null
+      ? (meta[phase] ?? meta["busy"]!)
+      : { cls: "bg-line", label: "连接中" };
 
   return (
     <div className="relative">
       <button
         onClick={() => setOpen((o) => !o)}
         aria-label={`工作状态：${m.label}，点击查看详情`}
-        title={`工作状态：${m.label}`}
-        className="flex h-6 items-center gap-1.5 rounded-btn px-1.5 transition hover:bg-line-soft"
+        title={forceBusy ? "工作状态：强制忙碌（心跳免打扰模式生效中）" : `工作状态：${m.label}`}
+        className={cn(
+          "flex h-6 items-center gap-1.5 rounded-btn px-2 transition hover:bg-line-soft",
+          forceBusy && "bg-amber-500/10 hover:bg-amber-500/20",
+        )}
       >
         <span className={cn("h-2 w-2 rounded-full", m.cls)} />
-        <span className="text-caption text-graphite">{m.label}</span>
+        <span
+          className={cn(
+            "text-caption",
+            forceBusy ? "font-medium text-amber-700" : "text-graphite",
+          )}
+        >
+          {m.label}
+        </span>
       </button>
 
       {open && (
@@ -101,7 +116,7 @@ function WorkPhaseBadge() {
           <div className="absolute right-0 top-full z-40 mt-1.5 w-72 rounded-card border border-line bg-canvas p-3 shadow-subtle text-caption leading-relaxed">
             <div className="flex items-center gap-1.5 border-b border-line-soft pb-1.5 text-body-sm font-medium text-ink">
               <span className={cn("h-2 w-2 rounded-full", m.cls)} />
-              {m.label}
+              {forceBusy ? "强制忙碌（免打扰模式生效中）" : m.label}
             </div>
             <div className="mt-2 space-y-1.5 text-graphite">
               {reason !== null && <p>{reason}</p>}
@@ -127,7 +142,7 @@ function WorkPhaseBadge() {
   );
 }
 
-/** 后台守护状态指示（飞书 / Telegram / Cron）—— 一颗呼吸绿点，详情点开看 */
+/** 后台守护状态指示（飞书 / Telegram / Cron）—— 静态绿点 + 渠道图标，详情点开看 */
 function BackgroundGuardianBadge() {
   const [open, setOpen] = useState(false);
 
@@ -135,12 +150,12 @@ function BackgroundGuardianBadge() {
     <div className="relative">
       <button
         onClick={() => setOpen((o) => !o)}
-        aria-label="后台守护运行中，点击查看详情"
-        title="后台守护运行中（飞书 / Telegram / Cron）
-点击查看详情"
-        className="flex h-6 w-6 items-center justify-center rounded-btn transition hover:bg-line-soft"
+        aria-label="后台守护通道（飞书 / Telegram / Cron 在线），点击查看详情"
+        title="后台守护通道（飞书 / Telegram / Cron 在线）&#10;点击查看详情"
+        className="group flex h-6 items-center gap-1.5 rounded-btn px-1.5 text-caption text-graphite transition hover:bg-line-soft hover:text-ink"
       >
-        <span className="h-2 w-2 rounded-full bg-gain animate-pulse" />
+        <Radio size={12} className="text-ash transition group-hover:text-ink" />
+        <span className="h-1.5 w-1.5 rounded-full bg-gain" />
       </button>
 
       {open && (

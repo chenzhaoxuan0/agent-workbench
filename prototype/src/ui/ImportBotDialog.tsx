@@ -183,8 +183,17 @@ export function ImportBotDialog({
         setError(`这个目录已经被「${report.conflicts.alreadyRegistered.name}」占用了`);
         return;
       }
+      const existingUnits = useWorkbench.getState().units;
+      let finalId = report.suggestedId === "" ? `bot-${Date.now().toString(36)}` : report.suggestedId;
+      if (existingUnits.some((u) => u.id === finalId)) {
+        let suffix = 2;
+        while (existingUnits.some((u) => u.id === `${finalId}-${suffix}`)) {
+          suffix++;
+        }
+        finalId = `${finalId}-${suffix}`;
+      }
       const unit: WorkUnit = {
-        id: asUnitId(report.suggestedId === "" ? `bot-${Date.now().toString(36)}` : report.suggestedId),
+        id: asUnitId(finalId),
         rootPath: report.rootPath,
         name: name.trim() === "" ? folderNameOf(report.rootPath) : name.trim(),
         kind: "bot",

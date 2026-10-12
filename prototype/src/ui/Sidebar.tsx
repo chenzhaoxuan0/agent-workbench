@@ -127,11 +127,9 @@ export function Sidebar() {
     );
   };
 
-  /** 拖回普通区：取消常驻。合成 bot（总管/心跳）是系统常驻，不可降级 */
+  /** 移出常驻区：取消常驻（resident: false 写穿 bot.json） */
   const makeNormal = (u: WorkUnit): void => {
-    if (isSyntheticUnit(u)) return;
-    const { resident: _drop, ...rest } = u;
-    void updateUnit(rest as WorkUnit, guardsOf(u)).catch((err: unknown) =>
+    void updateUnit({ ...u, resident: false }, guardsOf(u)).catch((err: unknown) =>
       console.warn("[Sidebar] 取消常驻失败（盘上已被外部修改？重新进入后再试）", err),
     );
   };
@@ -287,9 +285,9 @@ export function Sidebar() {
               return (
                 <div
                   key={u.id}
-                  draggable={!isSynthetic}
+                  draggable
                   onDragStart={(e) => {
-                    if (isSynthetic || (e.target as HTMLElement).closest("button, a, input, [data-no-drag]")) {
+                    if ((e.target as HTMLElement).closest("button, a, input, [data-no-drag]")) {
                       e.preventDefault();
                       return;
                     }
@@ -433,7 +431,7 @@ export function Sidebar() {
                   ...editingUnit,
                   name: draft.name,
                   rootPath: draft.rootPath,
-                  resident: isSyntheticUnit(editingUnit) ? true : draft.resident,
+                  resident: draft.resident,
                   identity: {
                     ...editingUnit.identity,
                     role: draft.role,
@@ -681,38 +679,31 @@ function UnitRow({
         <button
           type="button"
           draggable={false}
-          disabled={isSynthetic}
           onMouseDown={(e) => e.stopPropagation()}
           onClick={(e) => {
             e.stopPropagation();
-            if (!isSynthetic && onToggleResident) onToggleResident();
+            if (onToggleResident) onToggleResident();
           }}
           aria-label={
-            isSynthetic
-              ? "系统常驻，不可取消"
-              : isResident
-                ? `取消 ${unit.name} 常驻`
-                : `设为 ${unit.name} 常驻`
+            isResident
+              ? `取消 ${unit.name} 常驻`
+              : `设为 ${unit.name} 常驻`
           }
           title={
-            isSynthetic
-              ? "系统核心常驻（不可取消）"
-              : isResident
-                ? "取消常驻（移回下方列表）"
-                : "设为常驻（固定在顶部）"
+            isResident
+              ? "取消常驻（移回下方列表）"
+              : "设为常驻（固定在顶部）"
           }
           className={cn(
-            "rounded-btn p-1 transition",
-            isSynthetic
-              ? "cursor-not-allowed opacity-35 text-ash"
-              : isResident
-                ? "cursor-pointer text-teal hover:bg-teal-tint/60 active:scale-90"
-                : "cursor-pointer text-ash hover:bg-line-soft hover:text-ink active:scale-90",
+            "rounded-btn p-1 transition cursor-pointer active:scale-90",
+            isResident
+              ? "text-teal hover:bg-teal-tint/60"
+              : "text-ash hover:bg-line-soft hover:text-ink",
           )}
         >
           <Pin
             size={12}
-            className={cn(isResident && !isSynthetic && "fill-teal text-teal rotate-45")}
+            className={cn(isResident && "fill-teal text-teal rotate-45")}
           />
         </button>
         <button

@@ -205,7 +205,9 @@ export interface WorkUnit {
  */
 export function isResidentUnit(u?: WorkUnit | null): boolean {
   if (!u) return false;
-  return u.resident === true || u.id === "steward" || u.id === "heartbeat" || (u.tags ?? []).includes("steward");
+  if (u.resident === false) return false;
+  if (u.resident === true) return true;
+  return u.id === "steward" || u.id === "heartbeat" || (u.tags ?? []).includes("steward");
 }
 
 /**

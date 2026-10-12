@@ -500,22 +500,14 @@ export function AddBotDialog({
                     </div>
                     <button
                       type="button"
-                      disabled={initial ? isSyntheticUnit(initial) : false}
                       onClick={() => setResident(!resident)}
                       className={cn(
                         "relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-hidden",
                         resident ? "bg-teal" : "bg-line",
-                        initial && isSyntheticUnit(initial) && "cursor-not-allowed opacity-50",
                       )}
                       role="switch"
                       aria-checked={resident}
-                      title={
-                        initial && isSyntheticUnit(initial)
-                          ? "系统核心常驻，不可取消"
-                          : resident
-                            ? "取消常驻"
-                            : "设为常驻"
-                      }
+                      title={resident ? "取消常驻" : "设为常驻"}
                     >
                       <span
                         className={cn(
