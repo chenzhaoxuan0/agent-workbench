@@ -1079,9 +1079,9 @@ registerMethod("backlog.config.set", (params) => {
   return { config: next };
 });
 
-registerMethod("backlog.quotas", (params) => {
+registerMethod("backlog.quotas", async (params) => {
   const p = (params ?? {}) as { refresh?: boolean };
-  return { quotas: requireEngine().quotas(p.refresh === true) };
+  return { quotas: await requireEngine().quotas(p.refresh === true) };
 });
 
 registerMethod("backlog.state.forceBusy", (params) => {
@@ -1091,8 +1091,12 @@ registerMethod("backlog.state.forceBusy", (params) => {
   return { ok: true, snapshot: requireEngine().snapshot() };
 });
 
-/** 手动触发一跳（测试/演示）：跳过周期与空闲判定，其余护栏（单飞/强制忙碌）照旧 */
-registerMethod("backlog.heartbeat.force", () => requireEngine().forceBeat());
+/** 手动触发一跳（测试/演示）：跳过周期与空闲判定，其余护栏（单飞/强制忙碌）照旧。
+ * 受理即返 —— 跳动本身要跑一个心跳会话（几十秒），结果从 state/items 信号帧观察。 */
+registerMethod("backlog.heartbeat.force", () => {
+  void requireEngine().forceBeat();
+  return { started: true };
+});
 
 registerMethod("backlog.consolidate.run", (params) => {
   const p = (params ?? {}) as { force?: boolean };

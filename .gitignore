@@ -34,3 +34,5 @@ backend/scripts/verify-merge-ui.ts
 
 # e2e 每次运行重写的留档截图
 backend/scripts/e2e-automation-ui-last.png
+
+backend/scripts/.tmp/
