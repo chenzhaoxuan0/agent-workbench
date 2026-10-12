@@ -313,7 +313,9 @@ export function TerminalPanel({
                 <span>交互式 Agent CLI (TUI)</span>
               </div>
               {executorOptions.map((r) => {
-                const isAgy = r.id === "agy" || r.id === "antigravity";
+                const bareId = r.id.replace(/^daemon:/, "").toLowerCase();
+                const isAgy = bareId === "agy" || bareId === "antigravity";
+                const baseName = r.presentation.displayName.replace(/ · daemon$/, "");
                 return (
                   <div key={r.id} className="space-y-0.5">
                     <button
@@ -335,7 +337,7 @@ export function TerminalPanel({
                     </button>
                     {isAgy && (
                       <button
-                        onClick={() => handleLaunchExecutor("agy:yolo", `${r.presentation.displayName} (YOLO)`)}
+                        onClick={() => handleLaunchExecutor("agy:yolo", `${baseName} (YOLO)`)}
                         className="flex w-full items-center gap-2.5 rounded px-2.5 py-1.5 text-left text-body-sm text-ink hover:bg-amber-500/10 hover:text-amber-500 transition group"
                         title="以 --dangerously-skip-permissions 启动，跳过全部工具审批"
                       >
@@ -343,7 +345,7 @@ export function TerminalPanel({
                         <div className="flex flex-col flex-1 min-w-0">
                           <div className="flex items-center gap-1.5">
                             <span className="text-caption font-mono font-medium truncate">
-                              {r.presentation.displayName} (YOLO)
+                              {baseName} (YOLO)
                             </span>
                             <span className="rounded bg-amber-500/15 px-1 py-0.2 text-[9px] font-semibold text-amber-500 uppercase tracking-wider">
                               YOLO

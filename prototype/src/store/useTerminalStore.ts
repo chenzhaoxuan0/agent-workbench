@@ -244,8 +244,9 @@ export const useTerminalStore = create<TerminalStoreState>((set, get) => ({
     let finalTitle = opts.title;
 
     // 当用户未显式指定 yolo 且全局偏好配置了 agy 默认走 yolo 时，直启 agy:yolo
+    const bareExec = finalExecutorId ? finalExecutorId.replace(/^daemon:/, "").toLowerCase() : "";
     if (
-      (finalExecutorId === "agy" || finalExecutorId === "antigravity") &&
+      (bareExec === "agy" || bareExec === "antigravity") &&
       get().agyDefaultYolo
     ) {
       finalExecutorId = "agy:yolo";

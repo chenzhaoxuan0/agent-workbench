@@ -323,8 +323,9 @@ function InstanceEditor({
   const setAgyDefaultYolo = useTerminalStore((s) => s.setAgyDefaultYolo);
 
   if (!runtime) return null;
+  const bareRuntimeId = runtimeId.replace(/^daemon:/, "").toLowerCase();
   const name = pref.displayName ?? runtime.presentation.displayName;
-  const guide = CLI_GUIDES[runtimeId] ?? {
+  const guide = CLI_GUIDES[bareRuntimeId] ?? {
     desc: `${name} 终端执行器。`,
     tips: "工作台直接调度本地安装的命令行进程。",
   };
@@ -437,7 +438,7 @@ function InstanceEditor({
       </section>
 
       {/* Antigravity 专属：终端默认 YOLO 免审批开关 */}
-      {(runtimeId === "agy" || runtimeId === "antigravity") && (
+      {(bareRuntimeId === "agy" || bareRuntimeId === "antigravity") && (
         <section className="rounded-card border border-amber-500/30 bg-amber-500/5 p-4 space-y-2">
           <div className="flex items-center justify-between gap-4">
             <div className="space-y-0.5">
