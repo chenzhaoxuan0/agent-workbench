@@ -24,7 +24,11 @@ import {
   asUnitId,
   type UnitId,
   type WorkUnit,
+  isResidentUnit,
+  isSyntheticUnit,
 } from "../core/units.ts";
+
+export { isResidentUnit, isSyntheticUnit };
 import { AddBotDialog, type AddBotDraft } from "./AddBotDialog.tsx";
 import { ImportBotDialog } from "./ImportBotDialog.tsx";
 import { ChannelMark, channelIdentityLabel } from "./ChannelMark.tsx";
@@ -68,22 +72,6 @@ const VIEWS: readonly { id: ViewMode; label: string; icon: typeof Bot }[] = [
   { id: "project", label: "项目", icon: FolderGit2 },
 ];
 
-/**
- * 常驻判定：合成 bot（总管/心跳）天生常驻；普通 bot 由用户拖拽升降级
- * （resident 字段写穿 bot.json）。steward 的 id/tags 兜底是旧数据兼容。
- */
-export function isResidentUnit(u?: WorkUnit | null): boolean {
-  if (!u) return false;
-  return u.resident === true || u.id === "steward" || u.id === "heartbeat" || (u.tags ?? []).includes("steward");
-}
-
-/**
- * 合成 bot（总管 / 心跳）不可取消常驻，亦不应有向普通区降级的拖拽意图。
- */
-export function isSyntheticUnit(u?: WorkUnit | null): boolean {
-  if (!u) return false;
-  return u.synthetic === true || u.id === "steward" || u.id === "heartbeat";
-}
 
 export function Sidebar() {
   const units = useWorkbench((s) => s.units);
@@ -290,14 +278,9 @@ export function Sidebar() {
               zoneHover === "resident" && dragUnit !== null && "bg-teal-tint/50 ring-1 ring-inset ring-teal/40",
             )}
           >
-            <p className="flex items-center gap-1 px-1.5 pb-0.5 pt-1 text-[11px] font-medium text-ash">
-              <Pin size={10} className="shrink-0" />
-              <span>常驻</span>
-              <span className="tnum">({residentUnits.length})</span>
-              {zoneHover === "resident" && dragUnit !== null && (
-                <span className="ml-auto truncate text-[10px] font-normal text-teal">松手设为常驻</span>
-              )}
-            </p>
+            {zoneHover === "resident" && dragUnit !== null && (
+              <p className="px-1.5 pb-0.5 pt-1 text-[10px] text-teal">松手设为常驻</p>
+            )}
             {residentUnits.map((u) => {
               const active = u.id === activeUnitId;
               const isSynthetic = isSyntheticUnit(u);
@@ -329,6 +312,8 @@ export function Sidebar() {
                     active={active}
                     onSelect={() => selectUnit(u.id as UnitId)}
                     onOpenSettings={() => useShell.getState().openUnitSettings(u.id as UnitId)}
+                    onToggleResident={() => makeNormal(u)}
+                    isResident={true}
                     schedule={u.schedule?.enabled ? u.schedule.description : undefined}
                   />
                 </div>
@@ -416,6 +401,8 @@ export function Sidebar() {
                   active={active}
                   onSelect={() => selectUnit(u.id as UnitId)}
                   onOpenSettings={() => useShell.getState().openUnitSettings(u.id as UnitId)}
+                  onToggleResident={() => makeResident(u)}
+                  isResident={false}
                   schedule={u.schedule?.enabled ? u.schedule.description : undefined}
                 />
               </div>
@@ -446,6 +433,7 @@ export function Sidebar() {
                   ...editingUnit,
                   name: draft.name,
                   rootPath: draft.rootPath,
+                  resident: isSyntheticUnit(editingUnit) ? true : draft.resident,
                   identity: {
                     ...editingUnit.identity,
                     role: draft.role,
@@ -479,6 +467,7 @@ export function Sidebar() {
                 rootPath: draft.rootPath,
                 name: draft.name,
                 kind: "bot",
+                resident: draft.resident ?? false,
                 identity: {
                   role: draft.role,
                   persona: draft.persona || undefined,
@@ -555,14 +544,19 @@ function UnitRow({
   active,
   onSelect,
   onOpenSettings,
+  onToggleResident,
+  isResident,
   schedule,
 }: {
   unit: WorkUnit;
   active: boolean;
   onSelect: () => void;
   onOpenSettings: () => void;
+  onToggleResident?: () => void;
+  isResident?: boolean;
   schedule?: string;
 }) {
+  const isSynthetic = isSyntheticUnit(unit);
   // ZCode: unavailableLocalDirectory —— 路径不可用要显式说出来，不能当成正常单元
   // **兜底 ?? []**：bot.json 是手可编辑的（见 useWorkbench 的合并守卫注释），
   // 一个字段缺失不该让整个界面白屏。管家 bot 一度就因为没写 tags 把整页搞崩了。
@@ -684,6 +678,43 @@ function UnitRow({
         onDragStart={(e) => e.preventDefault()}
         className="absolute right-1.5 top-1.5 z-10 flex items-center gap-0.5 rounded-btn bg-canvas/95 p-0.5 shadow-xs opacity-0 backdrop-blur-xs transition hover:opacity-100 focus-within:opacity-100 group-hover/row:opacity-100 cursor-default"
       >
+        <button
+          type="button"
+          draggable={false}
+          disabled={isSynthetic}
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            if (!isSynthetic && onToggleResident) onToggleResident();
+          }}
+          aria-label={
+            isSynthetic
+              ? "系统常驻，不可取消"
+              : isResident
+                ? `取消 ${unit.name} 常驻`
+                : `设为 ${unit.name} 常驻`
+          }
+          title={
+            isSynthetic
+              ? "系统核心常驻（不可取消）"
+              : isResident
+                ? "取消常驻（移回下方列表）"
+                : "设为常驻（固定在顶部）"
+          }
+          className={cn(
+            "rounded-btn p-1 transition",
+            isSynthetic
+              ? "cursor-not-allowed opacity-35 text-ash"
+              : isResident
+                ? "cursor-pointer text-teal hover:bg-teal-tint/60 active:scale-90"
+                : "cursor-pointer text-ash hover:bg-line-soft hover:text-ink active:scale-90",
+          )}
+        >
+          <Pin
+            size={12}
+            className={cn(isResident && !isSynthetic && "fill-teal text-teal rotate-45")}
+          />
+        </button>
         <button
           type="button"
           draggable={false}

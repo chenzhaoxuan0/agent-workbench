@@ -5,6 +5,7 @@ import {
   FileText,
   FolderOpen,
   ImagePlus,
+  Pin,
   Plus,
   RefreshCw,
   Wand2,
@@ -13,7 +14,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { useWorkbench, selectVisibleModels, BOT_CONFLICT, type BotWriteGuards } from "../store/useWorkbench.ts";
-import type { WorkUnit, BotChannel } from "../core/units.ts";
+import { type WorkUnit, type BotChannel, isSyntheticUnit } from "../core/units.ts";
 import { openFolder } from "../adapters/daemon/client.ts";
 import { ChannelSection } from "./ChannelSection.tsx";
 import { cn } from "./cn.ts";
@@ -51,6 +52,7 @@ export interface AddBotDraft {
   readonly memory: BotMemoryPolicy;
   readonly agentsMd: string;
   readonly channels: readonly BotChannel[];
+  readonly resident?: boolean;
 }
 
 type Section = "identity" | "persona" | "memory" | "agentsmd" | "channels";
@@ -126,6 +128,7 @@ export function AddBotDialog({
   const [runtimeId, setRuntimeId] = useState<string>("");
   const [modelHint, setModelHint] = useState<string | null>(null);
   const [avatar, setAvatar] = useState<string | null>(null);
+  const [resident, setResident] = useState(false);
   /** 打开这一刻盘上的真值，保存时当乐观锁基线传回 daemon */
   const [baseGuards, setBaseGuards] = useState<BotWriteGuards>({});
   /** 盘上已被改过、未写入。等用户选：覆盖 / 重新加载 / 取消 */
@@ -160,6 +163,7 @@ export function AddBotDialog({
     setRuntimeId(rid);
     setModelHint(binding?.modelHint ?? runtimes.find((r) => r.id === rid)?.defaultModel ?? null);
     setAvatar(b.avatar ?? null);
+    setResident(Boolean(b.resident));
     setChannels(b.channels ?? []);
     setAgentsMdMeta(b.agentsMdMeta);
     setBaseGuards({
@@ -197,6 +201,7 @@ export function AddBotDialog({
         st.runtimes.find((r) => r.id === st.activeRuntimeId)?.defaultModel ?? null,
       );
       setAvatar(null);
+      setResident(false);
       setChannels([]);
       setAgentsMdMeta(undefined);
       setBaseGuards({});
@@ -259,6 +264,7 @@ export function AddBotDialog({
     memory,
     agentsMd,
     channels,
+    resident,
   });
 
   const submit = async (overwrite = false) => {
@@ -485,6 +491,40 @@ export function AddBotDialog({
                       ))}
                     </select>
                   )}
+                </Field>
+                <Field label="常驻设置" hint="固定在侧栏顶部，不受普通列表拖拽排序影响">
+                  <div className="flex items-center justify-between rounded-input border border-line bg-canvas/40 px-3 py-2">
+                    <div className="flex items-center gap-2">
+                      <Pin size={13} className={resident ? "text-teal fill-teal/20" : "text-ash"} />
+                      <span className="text-body-sm font-medium text-ink">固定在侧栏顶部常驻区</span>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={initial ? isSyntheticUnit(initial) : false}
+                      onClick={() => setResident(!resident)}
+                      className={cn(
+                        "relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-hidden",
+                        resident ? "bg-teal" : "bg-line",
+                        initial && isSyntheticUnit(initial) && "cursor-not-allowed opacity-50",
+                      )}
+                      role="switch"
+                      aria-checked={resident}
+                      title={
+                        initial && isSyntheticUnit(initial)
+                          ? "系统核心常驻，不可取消"
+                          : resident
+                            ? "取消常驻"
+                            : "设为常驻"
+                      }
+                    >
+                      <span
+                        className={cn(
+                          "pointer-events-none inline-block h-4 w-4 transform rounded-full bg-canvas shadow-xs ring-0 transition duration-200 ease-in-out",
+                          resident ? "translate-x-4" : "translate-x-0",
+                        )}
+                      />
+                    </button>
+                  </div>
                 </Field>
               </div>
             )}

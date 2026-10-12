@@ -199,6 +199,23 @@ export interface WorkUnit {
   readonly tags: readonly string[];
 }
 
+/**
+ * 常驻判定：合成 bot（总管/心跳）天生常驻；普通 bot 由用户在侧栏/设置中升降级
+ * （resident 字段写穿 bot.json）。steward 的 id/tags 兜底是旧数据兼容。
+ */
+export function isResidentUnit(u?: WorkUnit | null): boolean {
+  if (!u) return false;
+  return u.resident === true || u.id === "steward" || u.id === "heartbeat" || (u.tags ?? []).includes("steward");
+}
+
+/**
+ * 合成 bot（总管 / 心跳）不可取消常驻，亦不应有向普通区降级的意图。
+ */
+export function isSyntheticUnit(u?: WorkUnit | null): boolean {
+  if (!u) return false;
+  return u.synthetic === true || u.id === "steward" || u.id === "heartbeat";
+}
+
 // ---------------------------------------------------------------------------
 // 会话
 // ---------------------------------------------------------------------------
