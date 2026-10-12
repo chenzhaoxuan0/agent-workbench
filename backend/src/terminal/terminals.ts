@@ -28,6 +28,7 @@ export interface CreateOptions {
   readonly command?: string;
   readonly args?: readonly string[];
   readonly executorId?: string;
+  readonly unitId?: string;
   readonly cols?: number;
   readonly rows?: number;
   readonly env?: Readonly<Record<string, string>>;
@@ -36,10 +37,11 @@ export interface CreateOptions {
 interface TerminalSession {
   readonly terminalId: string;
   readonly pty: pty.IPty;
-  /** create 时的 shell / cwd / 前台执行器 —— 重挂（F5）时前端靠它们还原标签 */
+  /** create 时的 shell / cwd / 前台执行器 / unitId —— 重挂（F5）时前端靠它们无缝认领还原标签 */
   readonly shell: string;
   readonly cwd: string;
   readonly executor: string;
+  readonly unitId?: string;
   /**
    * 输出滚动环 buffer（按字节截断的最近输出）。只为「浏览器刷新后重挂」服务：
    * 刷新即丢 xterm 的全部画布，没有它用户面对的是一块不知道进程还活着的安全黑屏。
@@ -226,6 +228,7 @@ export class TerminalManager {
       shell,
       cwd,
       executor: targetCmd ?? "shell",
+      unitId: opts.unitId,
       scrollback: [],
       scrollbackBytes: 0,
     };
@@ -250,6 +253,7 @@ export class TerminalManager {
       terminalId,
       shell,
       executor: targetCmd ?? "shell",
+      unitId: opts.unitId,
       cwd: path.basename(cwd),
       pid: shellProcess.pid,
     });
@@ -273,13 +277,14 @@ export class TerminalManager {
     session.pty.kill();
   }
 
-  list(): Array<{ terminalId: string; shell: string; pid: number; cwd: string; executor: string; scrollback: string }> {
+  list(): Array<{ terminalId: string; shell: string; pid: number; cwd: string; executor: string; unitId?: string; scrollback: string }> {
     return [...this.sessions.values()].map((s) => ({
       terminalId: s.terminalId,
       shell: s.pty.process,
       pid: s.pty.pid,
       cwd: s.cwd,
       executor: s.executor,
+      unitId: s.unitId,
       // 拼好整段回放：前端刷新后没有别的途径找回这段输出
       scrollback: s.scrollback.join(""),
     }));

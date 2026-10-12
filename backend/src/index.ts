@@ -695,6 +695,7 @@ registerMethod("terminal.create", (params) => {
     command?: string;
     args?: readonly string[];
     executorId?: string;
+    unitId?: string;
     cols?: number;
     rows?: number;
     env?: Record<string, string>;
@@ -706,6 +707,7 @@ registerMethod("terminal.create", (params) => {
     command: p.command,
     args: p.args,
     executorId: tuiCommandFor(p.executorId),
+    unitId: typeof p.unitId === "string" && p.unitId !== "" ? p.unitId : undefined,
     cols: p.cols,
     rows: p.rows,
     env: p.env,

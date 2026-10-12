@@ -464,10 +464,11 @@ export const useTerminalStore = create<TerminalStoreState>((set, get) => ({
       set({ reattachDone: true });
       return;
     }
-    let list: Array<{ terminalId: string; shell: string; cwd: string; executor: string; scrollback?: string }>;
+    let list: Array<{ terminalId: string; shell: string; cwd: string; executor: string; unitId?: string; scrollback?: string }>;
+    let client: { rpc: <T = unknown>(method: string, params?: unknown, timeoutMs?: number) => Promise<T> } | null = null;
     try {
       const { DaemonClient, defaultDaemonEndpoint } = await import("../adapters/daemon/client.ts");
-      const client = DaemonClient.get(defaultDaemonEndpoint());
+      client = DaemonClient.get(defaultDaemonEndpoint());
       list = await client.rpc<typeof list>("terminal.list", null, 10000);
     } catch {
       set({ reattachDone: true }); // daemon 没起：放行空态自动建标签
@@ -482,6 +483,9 @@ export const useTerminalStore = create<TerminalStoreState>((set, get) => ({
       return;
     }
 
+    const { useWorkbench } = await import("./useWorkbench.ts");
+    const units = useWorkbench.getState().units;
+
     const shellToProfile = (shell: string): string => {
       const s = shell.toLowerCase();
       if (s.includes("pwsh")) return "pwsh";
@@ -494,18 +498,49 @@ export const useTerminalStore = create<TerminalStoreState>((set, get) => ({
 
     const instances: TerminalInstanceItem[] = [];
     const groups: TerminalTabGroup[] = [];
+    const seenUnitIds = new Set<string>();
+
     for (const t of list) {
+      // 匹配 Bot：优先用终端记录的 unitId，兜底用工作目录匹配
+      let targetUnitId = t.unitId;
+      if (!targetUnitId && t.cwd) {
+        const matched = units.find((u) => u.rootPath && u.rootPath === t.cwd);
+        if (matched) targetUnitId = matched.id;
+      }
+
+      // 同一个 Bot 仅保留一个主终端；多余的孤儿旧进程在后台直接清理，杜绝重复累积
+      if (targetUnitId) {
+        if (seenUnitIds.has(targetUnitId)) {
+          void client.rpc("terminal.kill", { terminalId: t.terminalId }).catch(() => {});
+          continue;
+        }
+        seenUnitIds.add(targetUnitId);
+      }
+
       const isShell = t.executor === "shell" || t.executor === undefined || t.executor === "";
       const profileId = shellToProfile(t.shell);
       const profile = SUPPORTED_TERMINAL_PROFILES.find((p) => p.id === profileId);
+
+      const bot = targetUnitId ? units.find((u) => u.id === targetUnitId) : undefined;
+      let title: string;
+      if (bot) {
+        const execName = t.executor && t.executor !== "shell" ? t.executor : "终端";
+        title = `${bot.name} · ${execName} (TUI)`;
+      } else if (isShell) {
+        title = profile?.name ?? "终端";
+      } else {
+        title = t.executor ?? "终端";
+      }
+
       instances.push({
         id: t.terminalId,
-        title: isShell ? `${profile?.name ?? "终端"}（重挂）` : `${t.executor}（重挂）`,
+        title,
         shell: t.shell,
         profileId,
         icon: isShell ? (profile?.icon ?? "pwsh") : t.executor,
         cwd: t.cwd,
         executorId: isShell ? undefined : t.executor,
+        unitId: targetUnitId,
         createdAt: Date.now(),
         attachScrollback: t.scrollback,
         reattached: true,
@@ -515,11 +550,20 @@ export const useTerminalStore = create<TerminalStoreState>((set, get) => ({
         rootLayout: { type: "leaf", instanceId: t.terminalId },
       });
     }
+
+    const activeUnitId = useWorkbench.getState().activeUnitId;
+    const initialActiveInst = activeUnitId
+      ? instances.find((i) => i.unitId === activeUnitId) ?? instances[0]
+      : instances[0];
+    const initialActiveGroup = initialActiveInst
+      ? groups.find((g) => collectLeafIds(g.rootLayout).includes(initialActiveInst.id)) ?? groups[0]
+      : groups[0];
+
     set({
       instances,
       groups,
-      activeGroupId: groups[0]?.id ?? null,
-      activeInstanceId: instances[0]?.id ?? null,
+      activeGroupId: initialActiveGroup?.id ?? null,
+      activeInstanceId: initialActiveInst?.id ?? null,
       reattachDone: true,
     });
   },

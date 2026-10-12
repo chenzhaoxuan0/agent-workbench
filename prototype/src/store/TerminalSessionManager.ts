@@ -15,6 +15,7 @@ export interface TerminalSessionCreateOptions {
   shell: string;
   cwd: string;
   executorId?: string;
+  unitId?: string;
   onExit?: (code: number) => void;
   /**
    * 重挂模式：PTY 已在 daemon 里活着（F5 刷新后 terminal.list 找回来的），
@@ -207,6 +208,7 @@ export class TerminalSession {
   shell: string;
   cwd: string;
   executorId?: string;
+  unitId?: string;
 
   /** 首帧输出到达前是否还可写入回放（避免与实时帧交叠） */
   private disposed = false;
@@ -223,6 +225,7 @@ export class TerminalSession {
     this.shell = opts.shell;
     this.cwd = opts.cwd;
     this.executorId = opts.executorId;
+    this.unitId = opts.unitId;
     this.onExitCallback = opts.onExit;
     this.attachScrollback = opts.attachScrollback;
 
@@ -302,7 +305,6 @@ export class TerminalSession {
     // 等它 = 空白屏）。订阅之后的实时帧自然接在快照后面，顺序正确。
     if (this.attachScrollback !== undefined && this.attachScrollback !== "") {
       this.term.write(this.attachScrollback);
-      this.term.write("\r\n\x1b[2m[页面已刷新，重挂到原进程 —— 以上是最近输出]\x1b[0m\r\n");
     }
 
     // 高频输入批次缓冲（对齐 VS Code 流式调度）：
@@ -411,6 +413,7 @@ export class TerminalSession {
         cols,
         rows,
         executorId: this.executorId,
+        unitId: this.unitId,
         env: {
           COLORFGBG: isDark ? "15;0" : "0;15",
         },

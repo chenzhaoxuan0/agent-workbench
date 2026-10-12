@@ -94,8 +94,16 @@ export function TerminalPanel({
       if (st.groups.length === 0 && st.reattachDone) st.createTab({ profileId: st.defaultProfileId });
       return;
     }
-    const own = st.instances.find((i) => i.unitId === uid);
+    const execName = runtimes.find((r) => r.id === boundExecutor)?.presentation.displayName ?? boundExecutor;
+    // 优先匹配已有的 bot 专属终端（无感复用重挂存活终端，或同工作目录/执行器的存活会话）
+    const own = st.instances.find(
+      (i) => i.unitId === uid || (i.cwd && i.cwd === unit.rootPath && i.executorId === boundExecutor),
+    );
     if (own) {
+      if (!own.unitId) {
+        own.unitId = uid;
+        own.title = `${unit.name} · ${execName} (TUI)`;
+      }
       const group = st.groups.find((g) => collectLeafIds(g.rootLayout).includes(own.id));
       if (group) st.setActiveGroup(group.id);
       st.setActiveInstance(own.id);
@@ -108,7 +116,6 @@ export function TerminalPanel({
     if (untagged.length === 1 && soleGroup) {
       st.closeTab(soleGroup.id);
     }
-    const execName = runtimes.find((r) => r.id === boundExecutor)?.presentation.displayName ?? boundExecutor;
     if (isCanvas && boundExecutor) {
       st.createTab({
         profileId: "pwsh",

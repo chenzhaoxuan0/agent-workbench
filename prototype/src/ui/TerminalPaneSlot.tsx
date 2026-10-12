@@ -92,6 +92,7 @@ export const TerminalPaneSlot = memo(function TerminalPaneSlot({
       shell: inst.shell,
       cwd: inst.cwd,
       executorId: inst.executorId,
+      unitId: inst.unitId,
       // 重挂标签带回的输出快照：只在会话首次创建时消费一次
       attachScrollback: inst.attachScrollback,
     });
@@ -104,7 +105,7 @@ export const TerminalPaneSlot = memo(function TerminalPaneSlot({
     return () => {
       session.detach();
     };
-  }, [inst.id, inst.shell, inst.cwd, inst.executorId, isActive]);
+  }, [inst.id, inst.shell, inst.cwd, inst.executorId, inst.unitId, isActive]);
 
   // 当处于活跃状态时聚焦
   useEffect(() => {
