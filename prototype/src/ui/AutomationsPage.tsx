@@ -350,6 +350,16 @@ function AutomationCard({ a, unitName, onEdit }: { a: Automation; unitName: stri
 
       <div className="mt-auto flex items-center gap-2 border-t border-line-soft pt-2.5">
         <span className="font-mono text-caption text-ash">{a.runtimeId}</span>
+        {/* 执行方式标记：TUI = 到点在前端拉终端；后台 = headless 会话（不弹终端） */}
+        <span
+          className={cn(
+            "rounded-chip px-1.5 py-px text-caption",
+            a.launchMode === "headless" ? "bg-line-soft text-ash" : "bg-teal-tint text-teal",
+          )}
+          title={a.launchMode === "headless" ? "纯后台 headless 会话执行" : "到点在前端拉起执行器 TUI（免审批）"}
+        >
+          {a.launchMode === "headless" ? "后台" : "TUI"}
+        </span>
         <button
           onClick={() => void runNow(a.id)}
           className="flex items-center gap-1 rounded-btn px-1.5 py-1 text-caption text-graphite hover:bg-line-soft hover:text-ink"

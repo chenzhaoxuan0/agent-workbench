@@ -7,7 +7,7 @@
 
 import { existsSync, mkdirSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import path from "node:path";
@@ -309,16 +309,38 @@ registerMethod("driver.catalog", () => [
   { id: "antigravity", installed: false, registered: false, hint: "未安装" },
 ]);
 
-// ---- 终端（Phase 2）--------------------------------------------------------
-
-const terminals = new TerminalManager((frame) =>
-  broadcastTerminal(wss, { v: WIRE_VERSION, type: "terminal", ...frame }),
-);
-
 // ---- 自动化调度（Phase 5 v2）-------------------------------------------------
 
 /** sessionId → { runId, automationId }：会话结束态回灌运行记录与失败徽章 */
 const automationRunBySession = new Map<string, { runId: number; automationId: number }>();
+/** terminalId → { runId, automationId }：TUI 模式（无 host 会话）的运行记录靠 exit 帧结算 */
+const automationRunByTerminal = new Map<string, { runId: number; automationId: number }>();
+
+// 终端必须在 runAutomation 之前构造（TUI 派发要用）。exit 帧在这里顺带结算
+// TUI 模式的运行记录 —— 放进 TerminalManager 的 emit 回调，是唯一的全局出口。
+const terminals = new TerminalManager((frame) => {
+  if (frame.kind === "exit") {
+    const hit = automationRunByTerminal.get(frame.terminalId);
+    if (hit !== undefined) {
+      automationRunByTerminal.delete(frame.terminalId);
+      const ok = (frame.exitCode ?? 0) === 0;
+      store.finishAutomationRun(hit.runId, ok ? "done" : "failed", `terminal exit ${frame.exitCode ?? "?"}`);
+      if (!ok) store.setAutomationError(hit.automationId, `terminal exit ${frame.exitCode ?? "?"}`, Date.now());
+      else store.setAutomationError(hit.automationId, null, null);
+      log.info("automation terminal run settled", { runId: hit.runId, exitCode: frame.exitCode ?? "?" });
+    }
+  }
+  broadcastTerminal(wss, { v: WIRE_VERSION, type: "terminal", ...frame });
+});
+
+/**
+ * TUI 模式的 prompt 注入形态：括号粘贴序列包住全文再回车。
+ * raw 写入的多行文本会被 ink 系 TUI 逐行当提交，括号粘贴让整块按一次粘贴
+ * 处理（换行保留、不提前发车），随后的 \r 才是真正的提交键。
+ */
+function bracketedPaste(prompt: string): string {
+  return `\x1b[200~${prompt}\x1b[201~`;
+}
 
 async function runAutomation(
   a: {
@@ -330,9 +352,42 @@ async function runAutomation(
     prompt: string;
     model: string | null;
     mode: string | null;
+    launchMode: "terminal" | "headless";
   },
   opts: { trigger: "schedule" | "manual" },
 ): Promise<{ runId: number; sessionId: string }> {
+  // TUI 模式：到点在前端 PTY 里拉起执行器本尊的终端界面（yolo 免审批），
+  // 人可看、可插手、可补充信息。不走 host —— 没有会话台账与事件流，
+  // 运行记录的终态由终端 exit 帧回灌（autoExit：CLI 退 → shell 退 → exit 帧）。
+  if (a.launchMode === "terminal") {
+    const runId = store.startAutomationRun(a.id, null, opts.trigger);
+    try {
+      const terminalId = `autoterm_${randomUUID()}`;
+      terminals.create({
+        terminalId,
+        cwd: a.rootPath,
+        // :yolo 后缀 → TerminalManager 按执行器补免审批 flag（实测口径见其注释）
+        executorId: tuiCommandFor(`${a.runtimeId}:yolo`),
+        unitId: a.unitId,
+        autoExit: true,
+      });
+      store.setAutomationRunSession(runId, terminalId);
+      automationRunByTerminal.set(terminalId, { runId, automationId: a.id });
+      store.setAutomationError(a.id, null, null);
+      // TUI 起稳后把提示词「敲」进去 —— 失败不回滚派发（终端已开，人可以自己输入）
+      void terminals.writeWhenQuiet(terminalId, bracketedPaste(a.prompt) + "\r").then(() => {
+        log.info("automation prompt injected to terminal", { automationId: a.id, runId, terminalId });
+      });
+      log.info("automation terminal launched", { automationId: a.id, runId, terminalId, trigger: opts.trigger });
+      return { runId, sessionId: terminalId };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      store.finishAutomationRun(runId, "failed", message);
+      store.setAutomationError(a.id, message, Date.now());
+      throw err;
+    }
+  }
+
   const runId = store.startAutomationRun(a.id, null, opts.trigger);
   try {
     const session = await host.startSession({
@@ -389,6 +444,13 @@ function healAutomationRuns(): void {
       if (r.sessionId === null) {
         // 派发在 startSession 完成前中断：会话从未存在
         store.finishAutomationRun(r.id, "failed", "daemon 重启前未完成派发");
+        settled++;
+        continue;
+      }
+      // TUI 模式：sessionId 列存的是 autoterm_ 前缀的终端 id。PTY 随 daemon 进程
+      // 一起死了（ConPTY 是子进程），重启后不可能还活着 —— 直接按中断收口。
+      if (r.sessionId.startsWith("autoterm_")) {
+        store.finishAutomationRun(r.id, "failed", "daemon 重启，终端已随进程关闭");
         settled++;
         continue;
       }
@@ -824,10 +886,14 @@ registerMethod("automation.create", (params) => {
     prompt?: string; model?: string; mode?: string;
     cron?: string; scheduleRule?: unknown; delayMinutes?: number;
     recurring?: boolean; maxRuns?: number;
+    launchMode?: string;
   };
   if (typeof p.unitId !== "string" || typeof p.runtimeId !== "string" ||
       typeof p.rootPath !== "string" || typeof p.prompt !== "string") {
     throw badAutomation("unitId, runtimeId, rootPath, prompt are required");
+  }
+  if (p.launchMode !== undefined && p.launchMode !== "terminal" && p.launchMode !== "headless") {
+    throw badAutomation("launchMode 只能是 terminal 或 headless");
   }
   if (typeof p.delayMinutes === "number" && p.recurring === true) {
     throw badAutomation("delayMinutes 是一次性任务，不能配 recurring=true");
@@ -859,6 +925,7 @@ registerMethod("automation.create", (params) => {
     recurring,
     maxRuns,
     nextRunAt,
+    launchMode: p.launchMode === "headless" ? "headless" : "terminal",
   });
   return { id, nextRunAt };
 });
@@ -869,14 +936,19 @@ registerMethod("automation.update", (params) => {
     unitId?: string; unitName?: string; runtimeId?: string; rootPath?: string;
     cron?: string; scheduleRule?: unknown; delayMinutes?: number;
     recurring?: boolean; maxRuns?: number | null;
+    launchMode?: string;
   };
   if (typeof p.id !== "number") throw badAutomation("id is required");
+  if (p.launchMode !== undefined && p.launchMode !== "terminal" && p.launchMode !== "headless") {
+    throw badAutomation("launchMode 只能是 terminal 或 headless");
+  }
   const hit = store.getAutomation(p.id);
   if (hit === undefined) throw Object.assign(new Error(`no such automation: ${p.id}`), { code: "unknown_automation" });
   const prev = hit.automation;
 
   const patch: Partial<Parameters<Store["updateAutomation"]>[1]> = {};
   if (typeof p.name === "string") patch.name = p.name;
+  if (p.launchMode === "terminal" || p.launchMode === "headless") patch.launchMode = p.launchMode;
   if (typeof p.prompt === "string") patch.prompt = p.prompt;
   if (p.model !== undefined) patch.model = typeof p.model === "string" ? p.model : null;
   if (p.mode !== undefined) patch.mode = typeof p.mode === "string" ? p.mode : null;
@@ -1683,6 +1755,8 @@ async function shutdown(signal: string): Promise<void> {
   // 漏掉它就会在 host.shutdown() 关掉 store 之后还能起新活（评审 P1 同类）
   feishuGateway.stop();
   terminals.shutdown();
+  // pty 自退后的 ConPTY 句柄收尾窗口：抢跑 process.exit 会撞 libuv 断言（见其注释）
+  await terminals.waitPtyDrain();
   const force = setTimeout(() => process.exit(0), 2000).unref(); // 挂起写兜底：2s 强制退
   try {
     await host.shutdown();
@@ -1694,8 +1768,7 @@ async function shutdown(signal: string): Promise<void> {
   server.close();
   clearTimeout(force);
   log.info("bye");
-  process.exit(0);
-}
+  process.exit(0);}
 
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));

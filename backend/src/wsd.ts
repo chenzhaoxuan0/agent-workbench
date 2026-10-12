@@ -45,9 +45,14 @@ export interface TerminalFrame {
   readonly v: typeof WIRE_VERSION;
   readonly type: "terminal";
   readonly terminalId: string;
-  readonly kind: "data" | "exit";
+  readonly kind: "data" | "exit" | "created";
   readonly data?: string;
   readonly exitCode?: number;
+  /** kind=created 的档案字段：前端推送认领开标签用 */
+  readonly executor?: string;
+  readonly unitId?: string;
+  readonly cwd?: string;
+  readonly shell?: string;
 }
 
 /**

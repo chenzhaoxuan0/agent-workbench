@@ -233,6 +233,9 @@ export class Store {
       `ALTER TABLE automations ADD COLUMN last_error TEXT`,
       `ALTER TABLE automations ADD COLUMN last_error_at INTEGER`,
       `ALTER TABLE automation_runs ADD COLUMN trigger TEXT`,
+      // 执行方式：terminal = 到点在前端 PTY 里拉起执行器 TUI（人可看可插手），
+      // headless = 原有 host 会话。旧行 NULL 按 terminal 读（新默认）。
+      `ALTER TABLE automations ADD COLUMN launch_mode TEXT`,
     ]) {
       try {
         this.db.exec(stmt);
@@ -389,6 +392,7 @@ export class Store {
       lastRunAt: r["last_run_at"] === null || r["last_run_at"] === undefined ? null : Number(r["last_run_at"]),
       lastError: r["last_error"] === null || r["last_error"] === undefined ? null : String(r["last_error"]),
       lastErrorAt: r["last_error_at"] === null || r["last_error_at"] === undefined ? null : Number(r["last_error_at"]),
+      launchMode: r["launch_mode"] === "headless" ? "headless" : "terminal",
       createdAt: Number(r["created_at"]),
     };
   }
@@ -407,12 +411,13 @@ export class Store {
     recurring: boolean;
     maxRuns: number | null;
     nextRunAt: number | null;
+    launchMode: "terminal" | "headless";
   }): number {
     const result = this.db
       .prepare(
         `INSERT INTO automations (unit_id, unit_name, name, runtime_id, root_path, prompt, model, mode, cron,
-           schedule_rule, recurring, max_runs, run_count, next_run_at, enabled, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 1, ?)`,
+           schedule_rule, recurring, max_runs, run_count, next_run_at, enabled, created_at, launch_mode)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 1, ?, ?)`,
       )
       .run(
         a.unitId,
@@ -429,6 +434,7 @@ export class Store {
         a.maxRuns,
         a.nextRunAt,
         Date.now(),
+        a.launchMode,
       );
     return Number(result.lastInsertRowid);
   }
@@ -453,6 +459,7 @@ export class Store {
     lastRunAt: number | null;
     lastError: string | null;
     lastErrorAt: number | null;
+    launchMode: "terminal" | "headless";
     createdAt: number;
   }> {
     const rows = this.db.prepare(`SELECT * FROM automations ORDER BY id DESC`).all() as Array<Record<string, unknown>>;
@@ -486,6 +493,7 @@ export class Store {
       enabled: boolean;
       nextRunAt: number | null;
       lastRunAt: number | null;
+      launchMode: "terminal" | "headless";
     }>,
   ): boolean {
     const sets: string[] = [];
@@ -510,6 +518,7 @@ export class Store {
     if (patch.enabled !== undefined) put("enabled", patch.enabled);
     if (patch.nextRunAt !== undefined) put("next_run_at", patch.nextRunAt);
     if (patch.lastRunAt !== undefined) put("last_run_at", patch.lastRunAt);
+    if (patch.launchMode !== undefined) put("launch_mode", patch.launchMode);
     if (sets.length === 0) return true;
     values.push(id);
     const result = this.db.prepare(`UPDATE automations SET ${sets.join(", ")} WHERE id = ?`).run(...values);

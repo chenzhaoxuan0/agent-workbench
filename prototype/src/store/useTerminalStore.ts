@@ -133,6 +133,8 @@ interface TerminalStoreState {
   defaultProfileId: string;
   /** 首载重挂是否已尝试过（无论找没找到）—— 空态自动建标签必须等它，否则抢占重挂 */
   reattachDone: boolean;
+  /** created 帧推送认领是否已装（幂等闸，防止重复订阅） */
+  claimInstalled: boolean;
   /** 终端启动 Antigravity 时是否默认携带 --dangerously-skip-permissions 免审批 */
   agyDefaultYolo: boolean;
   setAgyDefaultYolo: (val: boolean) => void;
@@ -189,6 +191,12 @@ interface TerminalStoreState {
    */
   reattachFromDaemon: () => Promise<void>;
 
+  /**
+   * created 帧推送认领：daemon 侧新建的终端（定时任务 TUI 派发）主动推帧过来，
+   * 前端收到即开标签并切过去 —— 不等 F5、不轮询。装一次，全局生效。
+   */
+  installTerminalCreatedClaim: () => void;
+
   // 兼容别名
   createInstance: (opts?: { profileId?: string; cwd?: string; executorId?: string; title?: string }) => string;
   closeInstance: (id: string) => void;
@@ -219,6 +227,69 @@ function persistTerminalPrefs(prefs: { agyDefaultYolo: boolean }): void {
 
 const initialTerminalPrefs = readTerminalPrefs();
 
+/** daemon terminal.list 的行形态（重挂与推送认领共用） */
+interface DaemonTermRow {
+  terminalId: string;
+  shell: string;
+  cwd: string;
+  executor: string;
+  unitId?: string;
+  scrollback?: string;
+}
+
+function shellToProfileId(shell: string): string {
+  const s = shell.toLowerCase();
+  if (s.includes("pwsh")) return "pwsh";
+  if (s.includes("powershell")) return "powershell";
+  if (s.includes("cmd")) return "cmd";
+  if (s.includes("wsl")) return "wsl";
+  if (s.includes("bash")) return "bash";
+  return "pwsh";
+}
+
+/** daemon 终端行 → 标签实例 + 独立标签组（重挂、created 推送认领共用一套还原逻辑） */
+function adoptTermRow(
+  t: DaemonTermRow,
+  units: ReadonlyArray<{ id: string; name: string; rootPath?: string }>,
+): { instance: TerminalInstanceItem; group: TerminalTabGroup } {
+  // 匹配 Bot：优先用终端记录的 unitId，兜底用工作目录匹配
+  let targetUnitId = t.unitId;
+  if (!targetUnitId && t.cwd) {
+    const matched = units.find((u) => u.rootPath && u.rootPath === t.cwd);
+    if (matched) targetUnitId = matched.id;
+  }
+
+  const isShell = t.executor === "shell" || t.executor === undefined || t.executor === "";
+  const profileId = shellToProfileId(t.shell);
+  const profile = SUPPORTED_TERMINAL_PROFILES.find((p) => p.id === profileId);
+
+  const bot = targetUnitId ? units.find((u) => u.id === targetUnitId) : undefined;
+  let title: string;
+  if (bot) {
+    const execName = t.executor && t.executor !== "shell" ? t.executor : "终端";
+    title = `${bot.name} · ${execName} (TUI)`;
+  } else if (isShell) {
+    title = profile?.name ?? "终端";
+  } else {
+    title = t.executor ?? "终端";
+  }
+
+  const instance: TerminalInstanceItem = {
+    id: t.terminalId,
+    title,
+    shell: t.shell,
+    profileId,
+    icon: isShell ? (profile?.icon ?? "pwsh") : t.executor,
+    cwd: t.cwd,
+    executorId: isShell ? undefined : t.executor,
+    unitId: targetUnitId,
+    createdAt: Date.now(),
+    attachScrollback: t.scrollback,
+    reattached: true,
+  };
+  return { instance, group: { id: `group_${t.terminalId}`, rootLayout: { type: "leaf", instanceId: t.terminalId } } };
+}
+
 export const useTerminalStore = create<TerminalStoreState>((set, get) => ({
   instances: [],
   groups: [],
@@ -227,6 +298,7 @@ export const useTerminalStore = create<TerminalStoreState>((set, get) => ({
   maximizedInstanceId: null,
   defaultProfileId: "pwsh",
   reattachDone: false,
+  claimInstalled: false,
   agyDefaultYolo: initialTerminalPrefs.agyDefaultYolo,
 
   setAgyDefaultYolo: (val: boolean) => {
@@ -512,12 +584,12 @@ export const useTerminalStore = create<TerminalStoreState>((set, get) => ({
       set({ reattachDone: true });
       return;
     }
-    let list: Array<{ terminalId: string; shell: string; cwd: string; executor: string; unitId?: string; scrollback?: string }>;
+    let list: DaemonTermRow[];
     let client: { rpc: <T = unknown>(method: string, params?: unknown, timeoutMs?: number) => Promise<T> } | null = null;
     try {
       const { DaemonClient, defaultDaemonEndpoint } = await import("../adapters/daemon/client.ts");
       client = DaemonClient.get(defaultDaemonEndpoint());
-      list = await client.rpc<typeof list>("terminal.list", null, 10000);
+      list = await client.rpc<DaemonTermRow[]>("terminal.list", null, 10000);
     } catch {
       set({ reattachDone: true }); // daemon 没起：放行空态自动建标签
       return;
@@ -534,86 +606,67 @@ export const useTerminalStore = create<TerminalStoreState>((set, get) => ({
     const { useWorkbench } = await import("./useWorkbench.ts");
     const units = useWorkbench.getState().units;
 
-    const shellToProfile = (shell: string): string => {
-      const s = shell.toLowerCase();
-      if (s.includes("pwsh")) return "pwsh";
-      if (s.includes("powershell")) return "powershell";
-      if (s.includes("cmd")) return "cmd";
-      if (s.includes("wsl")) return "wsl";
-      if (s.includes("bash")) return "bash";
-      return "pwsh";
-    };
-
-    const instances: TerminalInstanceItem[] = [];
-    const groups: TerminalTabGroup[] = [];
-    const seenUnitIds = new Set<string>();
-
-    for (const t of list) {
-      // 匹配 Bot：优先用终端记录的 unitId，兜底用工作目录匹配
-      let targetUnitId = t.unitId;
-      if (!targetUnitId && t.cwd) {
-        const matched = units.find((u) => u.rootPath && u.rootPath === t.cwd);
-        if (matched) targetUnitId = matched.id;
-      }
-
-      // 同一个 Bot 仅保留一个主终端；多余的孤儿旧进程在后台直接清理，杜绝重复累积
-      if (targetUnitId) {
-        if (seenUnitIds.has(targetUnitId)) {
-          void client.rpc("terminal.kill", { terminalId: t.terminalId }).catch(() => {});
-          continue;
-        }
-        seenUnitIds.add(targetUnitId);
-      }
-
-      const isShell = t.executor === "shell" || t.executor === undefined || t.executor === "";
-      const profileId = shellToProfile(t.shell);
-      const profile = SUPPORTED_TERMINAL_PROFILES.find((p) => p.id === profileId);
-
-      const bot = targetUnitId ? units.find((u) => u.id === targetUnitId) : undefined;
-      let title: string;
-      if (bot) {
-        const execName = t.executor && t.executor !== "shell" ? t.executor : "终端";
-        title = `${bot.name} · ${execName} (TUI)`;
-      } else if (isShell) {
-        title = profile?.name ?? "终端";
-      } else {
-        title = t.executor ?? "终端";
-      }
-
-      instances.push({
-        id: t.terminalId,
-        title,
-        shell: t.shell,
-        profileId,
-        icon: isShell ? (profile?.icon ?? "pwsh") : t.executor,
-        cwd: t.cwd,
-        executorId: isShell ? undefined : t.executor,
-        unitId: targetUnitId,
-        createdAt: Date.now(),
-        attachScrollback: t.scrollback,
-        reattached: true,
-      });
-      groups.push({
-        id: `group_${t.terminalId}`,
-        rootLayout: { type: "leaf", instanceId: t.terminalId },
-      });
-    }
+    // 全面放开：每个存活的 PTY 都还原成标签 —— 同一 Bot 的多终端
+    // （手动一个 + 定时任务 TUI 一个）是合法并存，不在这里替用户清理。
+    const adopted = list.map((t) => adoptTermRow(t, units));
 
     const activeUnitId = useWorkbench.getState().activeUnitId;
     const initialActiveInst = activeUnitId
-      ? instances.find((i) => i.unitId === activeUnitId) ?? instances[0]
-      : instances[0];
+      ? (adopted.find((a) => a.instance.unitId === activeUnitId)?.instance ?? adopted[0]?.instance)
+      : adopted[0]?.instance;
     const initialActiveGroup = initialActiveInst
-      ? groups.find((g) => collectLeafIds(g.rootLayout).includes(initialActiveInst.id)) ?? groups[0]
-      : groups[0];
+      ? (adopted.find((a) => a.instance === initialActiveInst)?.group ?? adopted[0]?.group)
+      : undefined;
 
     set({
-      instances,
-      groups,
+      instances: adopted.map((a) => a.instance),
+      groups: adopted.map((a) => a.group),
       activeGroupId: initialActiveGroup?.id ?? null,
       activeInstanceId: initialActiveInst?.id ?? null,
       reattachDone: true,
     });
+  },
+
+  installTerminalCreatedClaim: () => {
+    if (get().claimInstalled) return;
+    set({ claimInstalled: true });
+    void (async () => {
+      const { DaemonClient, defaultDaemonEndpoint } = await import("../adapters/daemon/client.ts");
+      const client = DaemonClient.get(defaultDaemonEndpoint());
+      // WS 是懒连接（首个 rpc 才拨）：不主动 ensureConnected 的话，
+      // 静默的前端永远收不到 created 帧 —— 认领必须先把管道撑开
+      await client.ensureConnected().catch(() => {
+        // daemon 未起：订阅仍在，将来任何 rpc 触发重连后帧自然恢复
+      });
+      client.onTerminalFrame((f) => {
+        if (f.kind !== "created") return;
+        if (get().instances.some((i) => i.id === f.terminalId)) return;
+        void (async () => {
+          try {
+            // created 帧只带档案字段；补拉一次 list 拿 scrollback —— 认领前的
+            // 输出（TUI 启动横幅）只有它有，认领后的实时帧由订阅自然接管
+            const list = await client.rpc<DaemonTermRow[]>("terminal.list", null, 10000);
+            const row = list.find((t) => t.terminalId === f.terminalId);
+            if (row === undefined) return; // 创建即秒退的终端：不建占位标签
+            const { useWorkbench } = await import("./useWorkbench.ts");
+            const { useShell } = await import("./useShell.ts");
+            const { instance, group } = adoptTermRow(row, useWorkbench.getState().units);
+            if (get().instances.some((i) => i.id === f.terminalId)) return; // 双帧竞态兜底
+            set((s) => ({
+              instances: [...s.instances, instance],
+              groups: [...s.groups, group],
+              activeGroupId: group.id,
+              activeInstanceId: instance.id,
+              maximizedInstanceId: null,
+            }));
+            // 定时任务到点的意义就是「让我看到」：主视图不在工作区就切回来
+            if (useShell.getState().mainView !== "chat") useShell.getState().setMainView("chat");
+          } catch {
+            // daemon 断连等瞬时失败：放弃这一次，F5 重挂是兜底
+          }
+        })();
+      });
+    })();
   },
 
   createInstance: (opts) => get().createTab(opts),

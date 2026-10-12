@@ -154,6 +154,7 @@ async function main(): Promise<void> {
       rootPath: home,
       prompt: "规则冒烟",
       scheduleRule: { frequency: "daily", hour: 9, minute: 0, weekdays: [], dayOfMonth: 1 },
+      launchMode: "headless",
     });
     const dailyRow = await listOne(daily.id);
     check("rule persisted", dailyRow.scheduleRule?.frequency === "daily" && dailyRow.scheduleRule?.hour === 9, dailyRow.scheduleRule);
@@ -189,6 +190,7 @@ async function main(): Promise<void> {
       rootPath: home,
       prompt: "一次性冒烟",
       delayMinutes: 2,
+      launchMode: "headless",
     });
     const shotRow0 = await listOne(oneShot.id);
     check("one-shot defaults recurring=false maxRuns=1", shotRow0.recurring === false && shotRow0.maxRuns === 1, shotRow0);
@@ -228,6 +230,7 @@ async function main(): Promise<void> {
       rootPath: home,
       prompt: "misfire 冒烟",
       scheduleRule: { frequency: "daily", hour: 23, minute: 50, weekdays: [], dayOfMonth: 1 },
+      launchMode: "headless",
     });
     const rawDb = new DatabaseSync(path.join(home, "state.db"));
     for (let i = 0; i < 5; i++) {
@@ -261,6 +264,7 @@ async function main(): Promise<void> {
       rootPath: home,
       prompt: "失败徽章冒烟",
       cron: "0 0 1 1 *",
+      launchMode: "headless",
     });
     await call("automation.update", { id: doomed.id, runtimeId: "no-such-runtime" });
     let runNowFailed = false;
@@ -291,6 +295,7 @@ async function main(): Promise<void> {
       rootPath: home,
       prompt: "转换冒烟",
       scheduleRule: { frequency: "daily", hour: 9, minute: 0, weekdays: [], dayOfMonth: 1 },
+      launchMode: "headless",
     });
     const convUpd = await call<{ automation: AutoRow }>("automation.update", { id: conv.id, delayMinutes: 5 });
     check(
@@ -320,6 +325,7 @@ async function main(): Promise<void> {
       rootPath: home,
       prompt: "heal 冒烟",
       cron: "0 0 1 1 *",
+      launchMode: "headless",
     });
     const healDb = new DatabaseSync(path.join(home, "state.db"));
     const endedSession = "sess-heal-ended";

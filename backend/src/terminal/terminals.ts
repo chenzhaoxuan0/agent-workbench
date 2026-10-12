@@ -16,9 +16,14 @@ import { log } from "../log.ts";
 
 export interface TerminalFrameInput {
   readonly terminalId: string;
-  readonly kind: "data" | "exit";
+  readonly kind: "data" | "exit" | "created";
   readonly data?: string;
   readonly exitCode?: number;
+  /** kind=created 时随帧带的档案：前端据此直接开标签认领（不必再等 terminal.list 轮询） */
+  readonly executor?: string;
+  readonly unitId?: string;
+  readonly cwd?: string;
+  readonly shell?: string;
 }
 
 export interface CreateOptions {
@@ -32,6 +37,11 @@ export interface CreateOptions {
   readonly cols?: number;
   readonly rows?: number;
   readonly env?: Readonly<Record<string, string>>;
+  /**
+   * CLI 退出即收口（自动化终端用）：不带 -NoExit / /k —— TUI 一退，shell 跟着退，
+   * exit 帧随即到达，派发方据此结算运行记录。手动终端保持默认（留在 shell 里看结果）。
+   */
+  readonly autoExit?: boolean;
 }
 
 interface TerminalSession {
@@ -49,10 +59,19 @@ interface TerminalSession {
    */
   readonly scrollback: string[];
   scrollbackBytes: number;
+  /** 最近一帧输出的到达时间 —— writeWhenQuiet 的静默判据 */
+  lastDataAt: number;
 }
 
 /** 每终端滚动回放上限。128KB ≈ 千行级输出，够看清「刚才跑到哪了」，内存也可承受 */
 const SCROLLBACK_CAP_BYTES = 128 * 1024;
+
+/**
+ * pty 自退后的排空窗口。ConPTY 在进程退出后还需要几秒收尾句柄，实测 ~5s；
+ * 在这个窗口里 process.exit 会触发 node-pty 的 libuv 断言（UV_HANDLE_CLOSING）
+ * 把 daemon 以崩溃码干掉。shutdown 前先等这个窗口过去。
+ */
+const PTY_DRAIN_MS = 6_000;
 
 const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
@@ -151,6 +170,8 @@ function resolveShell(requested?: string): string {
 
 export class TerminalManager {
   private readonly sessions = new Map<string, TerminalSession>();
+  /** 最近一次 pty 自退的时间（0 = 从未）—— shutdown 排空判据 */
+  private lastSelfExitAt = 0;
 
   constructor(private readonly emit: (frame: TerminalFrameInput) => void) {}
 
@@ -188,7 +209,15 @@ export class TerminalManager {
     if (targetCmd !== undefined && targetCmd.trim() !== "") {
       const extraArgsList = [...(opts.args ?? [])];
       if (isYolo) {
-        if (targetCmd === "agy" && !extraArgsList.includes("--dangerously-skip-permissions")) {
+        // 各家 TUI 的免审批 flag 口径不一，只加实测过的：
+        // zcode --mode yolo / claude·agy --dangerously-skip-permissions /
+        // kimi --yolo / codex --dangerously-bypass-approvals-and-sandbox。
+        // 没把握的裸起 —— 终端模式人就在屏幕前，TUI 弹权限确认当场可点。
+        if (targetCmd === "zcode" && !extraArgsList.includes("--mode")) {
+          extraArgsList.push("--mode", "yolo");
+        } else if (targetCmd === "codex" && !extraArgsList.includes("--dangerously-bypass-approvals-and-sandbox")) {
+          extraArgsList.push("--dangerously-bypass-approvals-and-sandbox");
+        } else if (targetCmd === "agy" && !extraArgsList.includes("--dangerously-skip-permissions")) {
           extraArgsList.push("--dangerously-skip-permissions");
         } else if (targetCmd === "claude" && !extraArgsList.includes("--dangerously-skip-permissions")) {
           extraArgsList.push("--dangerously-skip-permissions");
@@ -199,15 +228,16 @@ export class TerminalManager {
       const extraArgs = extraArgsList.join(" ");
       if (isPwsh) {
         // PowerShell 7 / 5.1：-NoLogo -NoExit，启动即交互运行对应 CLI。
-        // 若 CLI 退出或 Ctrl+C，保留在当前工作目录的 shell，不直接销毁终端。
+        // autoExit 时去掉 -NoExit —— CLI 退出即终端收口（自动化运行记录要这个信号），
+        // Ctrl+C 打断同理；手动终端保持留在工作目录的 shell 里。
         const callExpr = extraArgs ? `& '${targetCmd}' ${extraArgs}` : `& '${targetCmd}'`;
-        shellArgs = ["-NoLogo", "-NoExit", "-Command", callExpr];
+        shellArgs = ["-NoLogo", ...(opts.autoExit === true ? [] : ["-NoExit"]), "-Command", callExpr];
       } else if (isCmd) {
         const full = extraArgs ? `${targetCmd} ${extraArgs}` : targetCmd;
-        shellArgs = ["/k", full];
+        shellArgs = [opts.autoExit === true ? "/c" : "/k", full];
       } else {
         const full = extraArgs ? `${targetCmd} ${extraArgs}` : targetCmd;
-        shellArgs = ["-c", `${full} || exec ${shell}`];
+        shellArgs = ["-c", opts.autoExit === true ? full : `${full} || exec ${shell}`];
       }
     } else {
       // 纯 Shell 交互
@@ -247,9 +277,11 @@ export class TerminalManager {
       unitId: opts.unitId,
       scrollback: [],
       scrollbackBytes: 0,
+      lastDataAt: Date.now(),
     };
 
     shellProcess.onData((data) => {
+      session.lastDataAt = Date.now();
       session.scrollback.push(data);
       session.scrollbackBytes += Buffer.byteLength(data);
       while (session.scrollbackBytes > SCROLLBACK_CAP_BYTES && session.scrollback.length > 1) {
@@ -260,6 +292,7 @@ export class TerminalManager {
     });
     shellProcess.onExit(({ exitCode }) => {
       this.sessions.delete(terminalId);
+      this.lastSelfExitAt = Date.now();
       log.info("terminal exited", { terminalId, exitCode });
       this.emit({ terminalId, kind: "exit", exitCode });
     });
@@ -274,7 +307,50 @@ export class TerminalManager {
       cwd: path.basename(cwd),
       pid: shellProcess.pid,
     });
+    // created 帧：后端侧（自动化派发）新建的终端靠它推送认领 —— 前端不轮询
+    // terminal.list，收到帧即开标签；手动路径的帧无害（前端已有该终端则忽略）。
+    this.emit({ terminalId, kind: "created", executor: recordedExec, unitId: opts.unitId, cwd, shell });
     return { terminalId, shell, executor: recordedExec };
+  }
+
+  /**
+   * 等 TUI 启动稳定后再写入（自动化 prompt 注入用）：raw write 抢在 TUI 画完
+   * 之前会把字符喂给 shell 或被吞掉。判据 = 距最近一帧输出已静默 quietMs，
+   * 且至少等了 minDelay；maxWait 封顶（慢启动也必须送达，宁可早不可丢）。
+   */
+  writeWhenQuiet(
+    terminalId: string,
+    data: string,
+    opts: { minDelayMs?: number; quietMs?: number; maxWaitMs?: number } = {},
+  ): Promise<void> {
+    const session = this.get(terminalId);
+    const minDelay = opts.minDelayMs ?? 2_000;
+    const quiet = opts.quietMs ?? 900;
+    const maxWait = opts.maxWaitMs ?? 15_000;
+    const bornAt = Date.now();
+    return new Promise((resolve) => {
+      const timer = setInterval(() => {
+        const s = this.sessions.get(terminalId);
+        if (s === undefined) {
+          // 终端已退（TUI 秒崩）：写入无处可去，正常收场
+          clearInterval(timer);
+          resolve();
+          return;
+        }
+        const now = Date.now();
+        const quietEnough = now - s.lastDataAt >= quiet;
+        if ((now - bornAt >= minDelay && quietEnough) || now - bornAt >= maxWait) {
+          clearInterval(timer);
+          try {
+            s.pty.write(data);
+          } catch (err: unknown) {
+            log.warn("terminal writeWhenQuiet failed", { terminalId, error: err instanceof Error ? err.message : String(err) });
+          }
+          resolve();
+        }
+      }, 150);
+      timer.unref();
+    });
   }
 
   write(terminalId: string, data: string): void {
@@ -311,6 +387,19 @@ export class TerminalManager {
     const s = this.sessions.get(terminalId);
     if (s === undefined) throw Object.assign(new Error(`no such terminal: ${terminalId}`), { code: "unknown_terminal" });
     return s;
+  }
+
+  /**
+   * shutdown 排空：距最近一次 pty 自退不足 PTY_DRAIN_MS 就等到窗口过去。
+   * ConPTY 的句柄收尾在进程退出后仍持续几秒，抢跑 process.exit 会撞上
+   * node-pty 的 libuv 断言（UV_HANDLE_CLOSING）把退出码变成崩溃。
+   * 从未自退 / 窗口已过 → 立即返回。只等一次、封顶 6s。
+   */
+  async waitPtyDrain(): Promise<void> {
+    const remain = this.lastSelfExitAt === 0 ? 0 : this.lastSelfExitAt + PTY_DRAIN_MS - Date.now();
+    if (remain <= 0) return;
+    log.info("terminal: waiting for ConPTY drain before exit", { ms: remain });
+    await new Promise((resolve) => setTimeout(resolve, remain));
   }
 
   shutdown(): void {

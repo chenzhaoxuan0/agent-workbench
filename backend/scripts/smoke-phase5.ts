@@ -150,7 +150,7 @@ async function main(): Promise<void> {
     });
     check("pre-allow rule created", ruleRes.ok);
 
-    // 3. runNow：立即起一次会话，运行记录落盘
+    // 3. runNow：立即起一次会话，运行记录落盘（冒烟测 headless 管线，显式指定）
     const created = await call<{ id: number }>("automation.create", {
       unitId: "smoke-auto",
       unitName: "Phase 5 冒烟",
@@ -159,6 +159,7 @@ async function main(): Promise<void> {
       prompt: "自动化任务",
       model: "mock-1",
       cron: "0 0 1 1 *", // 永不到点，只测 runNow
+      launchMode: "headless",
     });
     const now = await call<{ runId: number; sessionId: string }>("automation.runNow", { id: created.id });
     check("runNow launches session", now.sessionId.startsWith("sess_"), now);
@@ -187,6 +188,7 @@ async function main(): Promise<void> {
       prompt: "每分钟一次",
       model: "mock-1",
       cron: "* * * * *",
+      launchMode: "headless",
     });
     const sessionsBefore = eventLog.filter((e) => e["type"] === "session.started").length;
     console.log("         waiting up to 70s for cron tick...");

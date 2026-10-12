@@ -92,9 +92,14 @@ export function httpUrlOf(endpoint: string): string {
 
 export interface DaemonTerminalFrame {
   readonly terminalId: string;
-  readonly kind: "data" | "exit";
+  readonly kind: "data" | "exit" | "created";
   readonly data?: string;
   readonly exitCode?: number;
+  /** kind=created 的档案：后端侧（自动化派发）新建终端的推送认领依据 */
+  readonly executor?: string;
+  readonly unitId?: string;
+  readonly cwd?: string;
+  readonly shell?: string;
 }
 
 export class DaemonClient {
@@ -655,6 +660,8 @@ export interface DaemonAutomation {
   readonly lastRunAt: number | null;
   readonly lastError: string | null;
   readonly lastErrorAt: number | null;
+  /** terminal = 到点在前端拉执行器 TUI；headless = 原 host 会话。旧行缺省按 terminal 读 */
+  readonly launchMode?: "terminal" | "headless";
   readonly createdAt: number;
   readonly runs: readonly DaemonAutomationRun[];
 }
@@ -675,6 +682,8 @@ export interface AutomationWriteInput {
   readonly scheduleRule?: ScheduleRule;
   readonly cron?: string;
   readonly delayMinutes?: number;
+  /** 执行方式：缺省 = terminal（前端可见 TUI） */
+  readonly launchMode?: "terminal" | "headless";
 }
 
 function mapAutomationRun(r: DaemonAutomationRun): AutomationRun {
@@ -713,6 +722,7 @@ export function daemonAutomationToAutomation(a: DaemonAutomation): Automation {
     mode: a.mode,
     cron: a.cron,
     scheduleSource: a.scheduleRule === null ? "cron" : "rule",
+    launchMode: a.launchMode === "headless" ? "headless" : "terminal",
     nextRunAt: a.nextRunAt ?? undefined,
     lastFailure: a.lastError === null ? undefined : { at: a.lastErrorAt ?? a.createdAt, reason: a.lastError },
   };

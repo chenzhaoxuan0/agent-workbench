@@ -39,6 +39,8 @@ export function WorkspaceShell() {
   // 不找回的话那些 PTY 就是界面再也关不掉的孤儿进程。
   useEffect(() => {
     void useTerminalStore.getState().reattachFromDaemon();
+    // created 帧推送认领：定时任务的 TUI 派发一到点就自动弹标签，不等刷新
+    useTerminalStore.getState().installTerminalCreatedClaim();
   }, []);
 
   return (

@@ -60,6 +60,11 @@ const MODE_OPTIONS: readonly { id: string; label: string }[] = [
   { id: "yolo", label: "yolo（免审批）" },
 ];
 
+const LAUNCH_MODE_OPTIONS: readonly { id: "terminal" | "headless"; label: string; hint: string }[] = [
+  { id: "terminal", label: "终端 TUI（默认）", hint: "到点在前端拉起执行器终端界面，可看可插手（自动配免审批）" },
+  { id: "headless", label: "纯后台", hint: "原 headless 会话：不弹终端、走会话台账，适合例行任务" },
+];
+
 /** 表单里的调度草稿（tab + 各 tab 的字段） */
 interface BuilderDraft {
   readonly freq: FreqTab;
@@ -142,6 +147,7 @@ export function AutomationDialog({
   const [prompt, setPrompt] = useState(initial?.description ?? prefill?.prompt ?? "");
   const [model, setModel] = useState(initial?.model ?? "");
   const [mode, setMode] = useState(initial?.mode ?? "");
+  const [launchMode, setLaunchMode] = useState<"terminal" | "headless">(initial?.launchMode === "headless" ? "headless" : "terminal");
   const [draft, setDraft] = useState<BuilderDraft>(() =>
     initial !== null
       ? draftOf(initial)
@@ -262,6 +268,7 @@ export function AutomationDialog({
       // delay 分支不发 maxRuns：delayMinutes 本身就定性一次性（跑一次收口），
       // 后端 create 明确拒绝「delayMinutes + maxRuns」组合，带上就是必报错
       maxRuns: draft.freq === "delay" ? undefined : (draft.recurring ? null : Math.max(1, Math.round(draft.maxRuns))),
+      launchMode,
       ...(touched && draft.freq === "delay" ? { delayMinutes: Math.max(1, Math.round(draft.delayMinutes)) } : {}),
       ...(scheduleRule !== null ? { scheduleRule } : {}),
       ...(cronPassthrough !== undefined ? { cron: cronPassthrough } : {}),
@@ -332,6 +339,20 @@ export function AutomationDialog({
                 </option>
               ))}
               {runtimes.length === 0 && <option value={runtimeBare}>{runtimeBare || "（无可用执行器）"}</option>}
+            </select>
+          </Field>
+
+          <Field label="执行方式" hint={LAUNCH_MODE_OPTIONS.find((m) => m.id === launchMode)?.hint}>
+            <select
+              value={launchMode}
+              onChange={(e) => setLaunchMode(e.target.value === "headless" ? "headless" : "terminal")}
+              className={inputCls}
+            >
+              {LAUNCH_MODE_OPTIONS.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.label}
+                </option>
+              ))}
             </select>
           </Field>
 
@@ -486,7 +507,7 @@ export function AutomationDialog({
           </Field>
 
           <div className="grid grid-cols-2 gap-3">
-            <Field label="模型" hint="可选，缺省跟随执行器默认">
+            <Field label="模型" hint={launchMode === "terminal" ? "仅纯后台模式生效（TUI 里可自行切换）" : "可选，缺省跟随执行器默认"}>
               <select value={model} onChange={(e) => setModel(e.target.value)} className={inputCls}>
                 <option value="">跟随默认</option>
                 {models.map((m) => (
@@ -496,7 +517,7 @@ export function AutomationDialog({
                 ))}
               </select>
             </Field>
-            <Field label="权限模式" hint="到点的会话以此模式起">
+            <Field label="权限模式" hint={launchMode === "terminal" ? "仅纯后台模式生效（TUI 默认免审批）" : "到点的会话以此模式起"}>
               <select value={mode} onChange={(e) => setMode(e.target.value)} className={inputCls}>
                 {MODE_OPTIONS.map((m) => (
                   <option key={m.id} value={m.id}>

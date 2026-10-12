@@ -67,6 +67,8 @@ export interface Automation {
   readonly mode?: string | null;
   /** daemon 权威行上的 cron 原文（兼容展示；scheduleSource="cron" 时编辑未动调度要原样回传） */
   readonly cron?: string;
+  /** 执行方式：terminal = 到点在前端拉执行器 TUI（缺省）；headless = 纯后台 host 会话 */
+  readonly launchMode?: "terminal" | "headless";
   /** 调度权威来源：rule = scheduleRule；cron = 纯 cron 行（表单的规则还原能力有限，不能拿来改写它） */
   readonly scheduleSource?: "rule" | "cron";
   /**
