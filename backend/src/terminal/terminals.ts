@@ -170,8 +170,14 @@ export class TerminalManager {
         ? opts.executorId
         : undefined);
 
-    const stripped = rawTarget ? rawTarget.replace(/^daemon:/, "").trim() : undefined;
-    const targetCmd = stripped && stripped !== "mockperm" ? stripped : undefined;
+    let isYolo = false;
+    let stripped = rawTarget ? rawTarget.replace(/^daemon:/, "").trim() : undefined;
+    if (stripped?.endsWith(":yolo")) {
+      isYolo = true;
+      stripped = stripped.slice(0, -5).trim();
+    }
+    const mapped = stripped === "antigravity" ? "agy" : stripped;
+    const targetCmd = mapped && mapped !== "mockperm" ? mapped : undefined;
 
     let shellArgs: string[] = [];
     const isPwsh =
@@ -180,7 +186,17 @@ export class TerminalManager {
     const isWsl = shell.toLowerCase().includes("wsl");
 
     if (targetCmd !== undefined && targetCmd.trim() !== "") {
-      const extraArgs = (opts.args ?? []).join(" ");
+      const extraArgsList = [...(opts.args ?? [])];
+      if (isYolo) {
+        if (targetCmd === "agy" && !extraArgsList.includes("--dangerously-skip-permissions")) {
+          extraArgsList.push("--dangerously-skip-permissions");
+        } else if (targetCmd === "claude" && !extraArgsList.includes("--dangerously-skip-permissions")) {
+          extraArgsList.push("--dangerously-skip-permissions");
+        } else if (targetCmd === "kimi" && !extraArgsList.includes("--yolo")) {
+          extraArgsList.push("--yolo");
+        }
+      }
+      const extraArgs = extraArgsList.join(" ");
       if (isPwsh) {
         // PowerShell 7 / 5.1：-NoLogo -NoExit，启动即交互运行对应 CLI。
         // 若 CLI 退出或 Ctrl+C，保留在当前工作目录的 shell，不直接销毁终端。
@@ -227,7 +243,7 @@ export class TerminalManager {
       pty: shellProcess,
       shell,
       cwd,
-      executor: targetCmd ?? "shell",
+      executor: targetCmd ? (isYolo ? `${targetCmd}:yolo` : targetCmd) : "shell",
       unitId: opts.unitId,
       scrollback: [],
       scrollbackBytes: 0,
@@ -249,15 +265,16 @@ export class TerminalManager {
     });
 
     this.sessions.set(terminalId, session);
+    const recordedExec = targetCmd ? (isYolo ? `${targetCmd}:yolo` : targetCmd) : "shell";
     log.info("terminal created", {
       terminalId,
       shell,
-      executor: targetCmd ?? "shell",
+      executor: recordedExec,
       unitId: opts.unitId,
       cwd: path.basename(cwd),
       pid: shellProcess.pid,
     });
-    return { terminalId, shell, executor: targetCmd ?? "shell" };
+    return { terminalId, shell, executor: recordedExec };
   }
 
   write(terminalId: string, data: string): void {

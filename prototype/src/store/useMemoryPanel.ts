@@ -58,7 +58,7 @@ export async function runDigestDryRun(): Promise<DigestResult> {
 }
 
 export interface GuardianConfigInfo {
-  readonly runner: "zcode" | "claude" | "codex" | "pi" | "mcode" | "custom";
+  readonly runner: "zcode" | "claude" | "codex" | "pi" | "mcode" | "agy" | "custom";
   readonly customCommand?: string;
   readonly model: string;
   readonly timeoutMs: number;

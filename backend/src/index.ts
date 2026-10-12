@@ -32,6 +32,7 @@ import { DshAdapter } from "./runtime/adapters/dsh.ts";
 import { OpencodeAdapter } from "./runtime/adapters/opencode.ts";
 import { HermesAdapter } from "./runtime/adapters/hermes.ts";
 import { KimiAdapter } from "./runtime/adapters/kimi.ts";
+import { AgyAdapter } from "./runtime/adapters/agy.ts";
 import { TerminalManager } from "./terminal/terminals.ts";
 import { Store } from "./store/db.ts";
 import { AutomationScheduler } from "./automation/scheduler.ts";
@@ -176,6 +177,7 @@ host.register(new DshAdapter());
 host.register(new OpencodeAdapter());
 host.register(new HermesAdapter());
 host.register(new KimiAdapter());
+host.register(new AgyAdapter());
 host.register(new MockPermAdapter());
 host.loadPersisted();
 memoryScheduler?.start();
@@ -680,8 +682,11 @@ backlogEngine.start();
 // dst 启动器已并入 dsh（tuiCommand）：dsh 的 TUI 用 dst shim 拉起
 function tuiCommandFor(executorId: string | undefined): string | undefined {
   if (!executorId) return executorId;
+  const isYolo = executorId.endsWith(":yolo");
+  const baseId = isYolo ? executorId.slice(0, -5) : executorId;
   try {
-    return host.getAdapter(executorId).tuiCommand ?? executorId;
+    const tui = host.getAdapter(baseId).tuiCommand ?? baseId;
+    return isYolo ? `${tui}:yolo` : tui;
   } catch {
     return executorId; // 未注册的 executorId 原样传，由 terminals 兜底
   }

@@ -339,6 +339,11 @@ export class RuntimeHost {
     const bare = runtimeId.startsWith(FRONTEND_NS_PREFIX) ? runtimeId.slice(FRONTEND_NS_PREFIX.length) : "";
     const viaNs = bare === "" ? undefined : this.adapters.get(bare);
     if (viaNs !== undefined) return viaNs;
+    // 兼容 antigravity / agy 别名
+    if (runtimeId === "antigravity" || bare === "antigravity") {
+      const agy = this.adapters.get("agy");
+      if (agy !== undefined) return agy;
+    }
     // 报可用清单：只说「no such executor: daemon:mcode」等于把人逼去翻代码
     const available = [...this.adapters.keys()].sort().join(", ");
     throw adapterError(

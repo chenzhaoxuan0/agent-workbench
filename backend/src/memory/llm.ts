@@ -64,6 +64,18 @@ function resolveCliInvocation(opts: AskModelOptions): { bin: string; args: (prom
         bin: "mcode",
         args: (prompt) => ["-p", prompt, ...(model ? ["--model", model] : [])],
       };
+    case "agy":
+      return {
+        bin: "agy",
+        args: (prompt) => [
+          "--output-format",
+          "stream-json",
+          "--dangerously-skip-permissions",
+          "--print",
+          prompt,
+          ...(model ? ["--model", model] : []),
+        ],
+      };
     case "zcode":
     default:
       return {

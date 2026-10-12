@@ -9,9 +9,11 @@ import {
   RefreshCw,
   SlidersHorizontal,
   Terminal,
+  Zap,
 } from "lucide-react";
 import { prefsOf, resolveVisibleModels } from "../core/modelPrefs.ts";
 import { useWorkbench } from "../store/useWorkbench.ts";
+import { useTerminalStore } from "../store/useTerminalStore.ts";
 import { executorIconSrc } from "./executorIcon.ts";
 import { ProviderModelPanel } from "./ModelSettings.tsx";
 import { cn } from "./cn.ts";
@@ -65,6 +67,12 @@ const CLI_GUIDES: Record<string, CliGuide> = {
   mcode: {
     desc: "MCode 研发套件与私有化模型调度执行器。",
     tips: "自动适配本地工作空间与内网环境，保持稳定开箱即用状态。",
+  },
+  agy: {
+    desc: "Google 官方 Antigravity Agent 执行器，提供强大的全功能代码与多模态模型调度。",
+    authCmd: "agy",
+    configPath: "~/.gemini/",
+    tips: "支持 Gemini 3.8 / 3.7 / 3.1 等系列模型，具备深度思考、工具调用与多模态能力。",
   },
   mockperm: {
     desc: "工作台权限闸（Permission Gate）端到端自动化验收测试夹具。",
@@ -311,6 +319,8 @@ function InstanceEditor({
   const pref = useWorkbench((s) => s.runtimePrefs[runtimeId]) ?? { enabled: true };
   const setPref = useWorkbench((s) => s.setRuntimePref);
   const [editingName, setEditingName] = useState(false);
+  const agyDefaultYolo = useTerminalStore((s) => s.agyDefaultYolo);
+  const setAgyDefaultYolo = useTerminalStore((s) => s.setAgyDefaultYolo);
 
   if (!runtime) return null;
   const name = pref.displayName ?? runtime.presentation.displayName;
@@ -425,6 +435,31 @@ function InstanceEditor({
         </div>
         <ProviderModelPanel runtimeId={runtimeId} displayName={name} />
       </section>
+
+      {/* Antigravity 专属：终端默认 YOLO 免审批开关 */}
+      {(runtimeId === "agy" || runtimeId === "antigravity") && (
+        <section className="rounded-card border border-amber-500/30 bg-amber-500/5 p-4 space-y-2">
+          <div className="flex items-center justify-between gap-4">
+            <div className="space-y-0.5">
+              <div className="flex items-center gap-2 text-body-sm font-medium text-ink">
+                <Zap size={14} className="text-amber-500" />
+                <span>终端默认启用 YOLO 免审批模式</span>
+                <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-amber-500 font-mono">
+                  --dangerously-skip-permissions
+                </span>
+              </div>
+              <p className="text-caption text-ash leading-relaxed">
+                开启后，在工作台启动 Antigravity 终端时将自动注入免审批参数，自动放行所有终端命令与文件读写，无需每步手动确认。
+              </p>
+            </div>
+            <InstanceSwitch
+              checked={agyDefaultYolo}
+              onChange={setAgyDefaultYolo}
+              label="终端默认启用 YOLO 免审批模式"
+            />
+          </div>
+        </section>
+      )}
 
       {/* 底部卡片：终端凭据与配置指南（真实指导） */}
       <section className="rounded-card border border-line bg-card p-4 space-y-2.5">

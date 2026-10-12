@@ -9,7 +9,7 @@
 
 import type { Store } from "../store/db.ts";
 
-export type GuardianRunner = "zcode" | "claude" | "codex" | "pi" | "mcode" | "custom";
+export type GuardianRunner = "zcode" | "claude" | "codex" | "pi" | "mcode" | "agy" | "custom";
 
 export interface MemoryGuardianConfig {
   /** 调度哪家 CLI 执行后台轻量任务，默认 "zcode" */

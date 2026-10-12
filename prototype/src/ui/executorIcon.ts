@@ -16,10 +16,12 @@ const EXECUTOR_ICONS: Record<string, string> = {
   hermes: "/icons/executors/hermes.png",
   kimi: "/icons/executors/kimi.svg",
   pi: "/icons/executors/pi.svg",
+  agy: "/icons/executors/agy.svg",
+  antigravity: "/icons/executors/antigravity.svg",
 };
 
 /** runtimeId 兼容裸 id（mcode）与注册表命名空间（daemon:mcode）两种形态 */
 export function executorIconSrc(runtimeId: string): string | null {
-  const bare = runtimeId.replace(/^daemon:/, "").toLowerCase();
+  const bare = runtimeId.replace(/^daemon:/, "").replace(/:yolo$/, "").toLowerCase();
   return EXECUTOR_ICONS[bare] ?? null;
 }

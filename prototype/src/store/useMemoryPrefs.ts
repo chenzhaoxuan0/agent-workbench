@@ -27,7 +27,7 @@ export interface MemoryPrefs {
   /** 每日总结任务开关（写 memory/daily/，按天分片不注入） */
   digestEnabled: boolean;
   /** 后台守护执行器 CLI */
-  guardianRunner: "zcode" | "claude" | "codex" | "pi" | "mcode" | "custom";
+  guardianRunner: "zcode" | "claude" | "codex" | "pi" | "mcode" | "agy" | "custom";
   /** 后台守护轻量小模型名称 */
   guardianModel: string;
   /** 是否开启超额自动合并压缩 */

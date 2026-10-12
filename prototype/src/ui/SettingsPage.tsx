@@ -415,7 +415,7 @@ function MemorySettingsSection() {
             <select
               value={prefs.guardianRunner}
               onChange={(e) => {
-                const runner = e.target.value as "zcode" | "claude" | "codex" | "pi" | "mcode" | "custom";
+                const runner = e.target.value as "zcode" | "claude" | "codex" | "pi" | "mcode" | "agy" | "custom";
                 setPrefs({ guardianRunner: runner });
                 void setGuardianConfigRpc({ runner });
               }}
@@ -426,6 +426,7 @@ function MemorySettingsSection() {
               <option value="codex">codex</option>
               <option value="pi">pi</option>
               <option value="mcode">mcode</option>
+              <option value="agy">agy</option>
               <option value="custom">custom</option>
             </select>
           }

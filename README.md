@@ -42,7 +42,7 @@ pnpm smoke        # daemon 冒烟
 ## 接入的 Agent CLI
 
 `zcode` · Claude Code · OpenAI Codex CLI · `pi` · MiniMax Code（`mcode`）·
-DeepSeek Harness（`dsh`）· OpenCode · Hermes · Kimi Code（`kimi`）
+DeepSeek Harness（`dsh`）· OpenCode · Hermes · Kimi Code（`kimi`）· Antigravity（`agy`）
 
 三种接入形态：一次性进程（每轮 spawn CLI 翻 JSONL）、ACP 常驻 stdio 子进程
 （带真权限审批流）、常驻 HTTP server + SSE（真 patch diff）。详见 `docs/03` §3.3.1。
@@ -70,7 +70,7 @@ agent-workbench/
 ├── electron/                Electron 壳（主进程 / preload / 应用图标）
 ├── backend/                 daemon（5281：WS + HTTP）
 │   └── src/
-│       ├── runtime/         执行器适配器（zcode / codex / claude / mcode / dsh …）
+│       ├── runtime/         执行器适配器（zcode / codex / claude / agy / mcode …）
 │       ├── terminal/        终端 PTY 会话（node-pty，多窗格）
 │       ├── bots/            bot.json 注册表与目录扫描
 │       ├── channels/        飞书 / Telegram / webhook / MCP 接入

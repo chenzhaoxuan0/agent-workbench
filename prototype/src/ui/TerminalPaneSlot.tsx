@@ -35,7 +35,7 @@ export function ShellOrAgentIcon({
   if (brandSrc) {
     return <img src={brandSrc} alt="" className={cn("h-3.5 w-3.5 shrink-0 object-contain", className)} aria-hidden />;
   }
-  switch (icon) {
+  switch (icon.replace(/:yolo$/, "")) {
     case "zcode":
       return <Zap className={cn("text-teal", className)} size={12} />;
     case "claude":
@@ -46,6 +46,9 @@ export function ShellOrAgentIcon({
       return <Feather className={cn("text-violet-400", className)} size={12} />;
     case "kimi":
       return <MoonStar className={cn("text-cyan-400", className)} size={12} />;
+    case "agy":
+    case "antigravity":
+      return <Wand2 className={cn("text-indigo-400", className)} size={12} />;
     case "pwsh":
       return <Terminal className={cn("text-teal", className)} size={12} />;
     case "powershell":

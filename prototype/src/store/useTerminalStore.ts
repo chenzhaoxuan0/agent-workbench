@@ -133,6 +133,9 @@ interface TerminalStoreState {
   defaultProfileId: string;
   /** 首载重挂是否已尝试过（无论找没找到）—— 空态自动建标签必须等它，否则抢占重挂 */
   reattachDone: boolean;
+  /** 终端启动 Antigravity 时是否默认携带 --dangerously-skip-permissions 免审批 */
+  agyDefaultYolo: boolean;
+  setAgyDefaultYolo: (val: boolean) => void;
 
   /** 新建独立标签页 */
   createTab: (opts?: {
@@ -192,6 +195,30 @@ interface TerminalStoreState {
   splitWithNew: (profileId?: string) => string;
 }
 
+const TERMINAL_PREFS_KEY = "agent-workbench:terminal-prefs";
+
+function readTerminalPrefs(): { agyDefaultYolo: boolean } {
+  if (typeof window === "undefined") return { agyDefaultYolo: false };
+  try {
+    const raw = window.localStorage.getItem(TERMINAL_PREFS_KEY);
+    if (!raw) return { agyDefaultYolo: false };
+    const parsed = JSON.parse(raw);
+    return { agyDefaultYolo: Boolean(parsed.agyDefaultYolo) };
+  } catch {
+    return { agyDefaultYolo: false };
+  }
+}
+
+function persistTerminalPrefs(prefs: { agyDefaultYolo: boolean }): void {
+  try {
+    window.localStorage.setItem(TERMINAL_PREFS_KEY, JSON.stringify(prefs));
+  } catch {
+    /* ignore */
+  }
+}
+
+const initialTerminalPrefs = readTerminalPrefs();
+
 export const useTerminalStore = create<TerminalStoreState>((set, get) => ({
   instances: [],
   groups: [],
@@ -200,6 +227,12 @@ export const useTerminalStore = create<TerminalStoreState>((set, get) => ({
   maximizedInstanceId: null,
   defaultProfileId: "pwsh",
   reattachDone: false,
+  agyDefaultYolo: initialTerminalPrefs.agyDefaultYolo,
+
+  setAgyDefaultYolo: (val: boolean) => {
+    set({ agyDefaultYolo: val });
+    persistTerminalPrefs({ agyDefaultYolo: val });
+  },
 
   createTab: (opts = {}) => {
     const profileId = opts.profileId ?? get().defaultProfileId;
@@ -207,12 +240,26 @@ export const useTerminalStore = create<TerminalStoreState>((set, get) => ({
     const profile: TerminalProfile =
       SUPPORTED_TERMINAL_PROFILES.find((p) => p.id === profileId) ?? fallbackProfile;
 
+    let finalExecutorId = opts.executorId;
+    let finalTitle = opts.title;
+
+    // 当用户未显式指定 yolo 且全局偏好配置了 agy 默认走 yolo 时，直启 agy:yolo
+    if (
+      (finalExecutorId === "agy" || finalExecutorId === "antigravity") &&
+      get().agyDefaultYolo
+    ) {
+      finalExecutorId = "agy:yolo";
+      if (!finalTitle) finalTitle = "Antigravity (YOLO)";
+    }
+
     const id = `term_${Math.random().toString(36).slice(2, 9)}_${Date.now().toString(36)}`;
     const count = get().instances.filter((i) => i.profileId === profile.id).length + 1;
     const title =
-      opts.title ??
-      (opts.executorId
-        ? `${opts.executorId} (pwsh)`
+      finalTitle ??
+      (finalExecutorId
+        ? finalExecutorId.endsWith(":yolo")
+          ? `${finalExecutorId.replace(/:yolo$/, "")} (YOLO)`
+          : `${finalExecutorId} (pwsh)`
         : `${profile.name} #${count}`);
 
     const newInst: TerminalInstanceItem = {
@@ -220,9 +267,9 @@ export const useTerminalStore = create<TerminalStoreState>((set, get) => ({
       title,
       shell: profile.shell,
       profileId: profile.id,
-      icon: opts.executorId ? opts.executorId : profile.icon,
+      icon: finalExecutorId ? finalExecutorId : profile.icon,
       cwd: opts.cwd ?? "",
-      executorId: opts.executorId,
+      executorId: finalExecutorId,
       unitId: opts.unitId,
       createdAt: Date.now(),
     };
