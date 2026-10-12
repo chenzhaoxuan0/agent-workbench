@@ -178,6 +178,33 @@ try {
   check("run settled after executor exit (non-zero → failed)", runRow?.status === "failed" && String(runRow?.detail ?? "").includes("terminal exit"), runRow);
   check("exit frame observed", terminalFrames.some((f) => f.terminalId === now.sessionId && f.kind === "exit"), terminalFrames.filter((f) => f.terminalId === now.sessionId));
 
+  // 3b. 待办 TUI 派发：launchMode=terminal（缺省）的待办 runNow → autoterm_ 终端，
+  //     exit 帧回灌运行记录 + 状态机收口（failed → 回就绪挂 lastError）
+  const bl = await call<{ item: { id: number; launchMode?: string } }>("backlog.create", {
+    goal: "冒烟：待办 TUI 派发",
+    unitId: "u-tui",
+    unitName: "TUI 冒烟",
+    rootPath: home,
+    runtimeId: "git",
+    prompt: "echo backlog",
+  });
+  check("backlog launchMode defaults to terminal", bl.item.launchMode === "terminal", bl.item);
+  const blRun = await call<{ runId: number; sessionId: string }>("backlog.runNow", { id: bl.item.id });
+  check("backlog runNow launches autoterm terminal", blRun.sessionId.startsWith("autoterm_"), blRun);
+  const blDeadline = Date.now() + 15000;
+  let blItem: { status?: string; lastError?: string | null } | undefined;
+  while (Date.now() < blDeadline) {
+    const list = await call<{ items: Array<{ id: number; status: string; lastError: string | null }> }>("backlog.list", null);
+    blItem = list.items.find((i) => i.id === bl.item.id);
+    if (blItem !== undefined && blItem.status !== "executing") break;
+    await sleep(300);
+  }
+  check(
+    "backlog item settles to ready with terminal exit error",
+    blItem?.status === "ready" && String(blItem?.lastError ?? "").includes("terminal exit"),
+    blItem,
+  );
+
   // 4. 重启自愈：塞一条挂 autoterm_ 的 running 记录 → 重启后按终端关闭收口
   //    （真实场景是 daemon 重启杀掉 PTY；这里直接造行验证 heal 分支）
   const { DatabaseSync } = await import("node:sqlite");
@@ -186,6 +213,12 @@ try {
     `INSERT INTO automation_runs (automation_id, session_id, status, trigger, started_at)
      VALUES (?, 'autoterm_faked', 'running', 'schedule', ?)`,
   ).run(defaulted.id, Date.now() - 60_000);
+  db.prepare(
+    `INSERT INTO backlog_runs (item_id, session_id, runtime_id, status, trigger, started_at)
+     VALUES (?, 'autoterm_faked_bl', 'git', 'running', 'gtd', ?)`,
+  ).run(bl.item.id, Date.now() - 60_000);
+  // heal 只收口 executing 状态的条目 —— 伪造行时把状态一并摆成执行中
+  db.prepare(`UPDATE backlog_items SET status = 'executing' WHERE id = ?`).run(bl.item.id);
   db.close();
 
   await call("daemon.stop", null, 15000).catch(() => {});
@@ -198,6 +231,13 @@ try {
   const healed = await call<Array<{ sessionId?: string | null; status?: string; detail?: string | null }>>("automation.runs", { id: defaulted.id });
   const h = healed.find((r) => r.sessionId === "autoterm_faked");
   check("autoterm running row healed as failed on restart", h?.status === "failed" && String(h?.detail ?? "").includes("终端已随进程关闭"), h);
+  const blHealed = await call<{ items: Array<{ id: number; status: string; lastError: string | null }> }>("backlog.list", null);
+  const blH = blHealed.items.find((i) => i.id === bl.item.id);
+  check(
+    "backlog autoterm run healed on restart (item back to ready)",
+    blH?.status === "ready" && String(blH?.lastError ?? "").includes("终端已随进程关闭"),
+    blH,
+  );
 
   await call("daemon.stop", null, 15000).catch(() => {});
   const code = await stopDaemon();

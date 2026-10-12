@@ -193,7 +193,7 @@ async function main(): Promise<void> {
     const hbBot = botList.find((b) => b.id === "heartbeat");
     check("heartbeat bot registered with primary binding", hbBot !== undefined && Array.isArray(hbBot.bindings) && hbBot.bindings.length > 0, hbBot);
 
-    // 2. 创建 → 就绪
+    // 2. 创建 → 就绪（冒烟走 headless 管线验证确认门与验收状态机）
     const created = await rpc(ws, "backlog.create", {
       goal: "冒烟：验证待办全链路",
       unitId: "smoke-unit",
@@ -201,6 +201,7 @@ async function main(): Promise<void> {
       rootPath: unitRoot,
       runtimeId: "mockperm",
       prompt: "请回复「冒烟完成」并结束。",
+      launchMode: "headless",
     });
     const createdItem = ((created["result"] as { item: ItemShape }).item);
     check("backlog.create → ready", createdItem.status === "ready", createdItem);

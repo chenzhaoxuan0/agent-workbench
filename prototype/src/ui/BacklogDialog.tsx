@@ -40,6 +40,7 @@ export function BacklogDialog({ initial, onClose }: { initial: BacklogItem | nul
   const [model, setModel] = useState(initial?.model ?? "");
   const [mode, setMode] = useState(initial?.mode ?? "");
   const [size, setSize] = useState<string>(initial?.size ?? "");
+  const [launchMode, setLaunchMode] = useState<"terminal" | "headless">(initial?.launchMode === "headless" ? "headless" : "terminal");
   const [err, setErr] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -79,6 +80,7 @@ export function BacklogDialog({ initial, onClose }: { initial: BacklogItem | nul
             model: model === "" ? null : model,
             mode: mode === "" ? null : mode,
             size: size === "" ? null : size,
+            launchMode,
           })
         : await updateItem(initial.id, {
             title: title.trim(),
@@ -91,6 +93,7 @@ export function BacklogDialog({ initial, onClose }: { initial: BacklogItem | nul
             model: model === "" ? null : model,
             mode: mode === "" ? null : mode,
             size: size === "" ? null : size,
+            launchMode,
           });
     setSubmitting(false);
     if (ok) onClose();
@@ -193,6 +196,20 @@ export function BacklogDialog({ initial, onClose }: { initial: BacklogItem | nul
               </select>
             </Field>
           </div>
+
+          <Field
+            label="执行方式"
+            hint={launchMode === "terminal" ? "确认后在前端拉执行器 TUI（免审批，可看可插手）" : "纯后台执行：不弹终端，走会话台账"}
+          >
+            <select
+              value={launchMode}
+              onChange={(e) => setLaunchMode(e.target.value === "headless" ? "headless" : "terminal")}
+              className={inputCls}
+            >
+              <option value="terminal">终端 TUI（默认）</option>
+              <option value="headless">纯后台</option>
+            </select>
+          </Field>
 
           <Field label="启动 prompt" hint="确认后原样发给执行器 —— 由目标模板生成，可手改">
             <textarea

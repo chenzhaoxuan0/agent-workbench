@@ -329,6 +329,8 @@ const terminals = new TerminalManager((frame) => {
       else store.setAutomationError(hit.automationId, null, null);
       log.info("automation terminal run settled", { runId: hit.runId, exitCode: frame.exitCode ?? "?" });
     }
+    // 待办 TUI 模式的运行记录与状态机收口（engine 内部按 terminalId 判归属）
+    backlogEngine?.onTerminalExited(frame.terminalId, frame.exitCode ?? 0);
   }
   broadcastTerminal(wss, { v: WIRE_VERSION, type: "terminal", ...frame });
 });
@@ -340,6 +342,33 @@ const terminals = new TerminalManager((frame) => {
  */
 function bracketedPaste(prompt: string): string {
   return `\x1b[200~${prompt}\x1b[201~`;
+}
+
+/**
+ * 共享的 TUI 派发（automations 与 backlog 都走这里）：在 PTY 里以 yolo 免审批
+ * 拉起执行器 TUI 并注入提示词，返回 autoterm_ 前缀的终端 id。
+ * 终态不经 host —— 派发方各自挂 terminalId 映射，由上面的 exit 帧回调结算。
+ */
+async function launchExecutorTerminal(opts: {
+  runtimeId: string;
+  unitId: string;
+  rootPath: string;
+  prompt: string;
+}): Promise<string> {
+  const terminalId = `autoterm_${randomUUID()}`;
+  terminals.create({
+    terminalId,
+    cwd: opts.rootPath,
+    // :yolo 后缀 → TerminalManager 按执行器补免审批 flag（实测口径见其注释）
+    executorId: tuiCommandFor(`${opts.runtimeId}:yolo`),
+    unitId: opts.unitId,
+    autoExit: true,
+  });
+  // TUI 起稳后把提示词「敲」进去 —— 失败不回滚派发（终端已开，人可以自己输入）
+  void terminals.writeWhenQuiet(terminalId, bracketedPaste(opts.prompt) + "\r").then(() => {
+    log.info("prompt injected to terminal", { terminalId, runtimeId: opts.runtimeId });
+  });
+  return terminalId;
 }
 
 async function runAutomation(
@@ -362,22 +391,15 @@ async function runAutomation(
   if (a.launchMode === "terminal") {
     const runId = store.startAutomationRun(a.id, null, opts.trigger);
     try {
-      const terminalId = `autoterm_${randomUUID()}`;
-      terminals.create({
-        terminalId,
-        cwd: a.rootPath,
-        // :yolo 后缀 → TerminalManager 按执行器补免审批 flag（实测口径见其注释）
-        executorId: tuiCommandFor(`${a.runtimeId}:yolo`),
+      const terminalId = await launchExecutorTerminal({
+        runtimeId: a.runtimeId,
         unitId: a.unitId,
-        autoExit: true,
+        rootPath: a.rootPath,
+        prompt: a.prompt,
       });
       store.setAutomationRunSession(runId, terminalId);
       automationRunByTerminal.set(terminalId, { runId, automationId: a.id });
       store.setAutomationError(a.id, null, null);
-      // TUI 起稳后把提示词「敲」进去 —— 失败不回滚派发（终端已开，人可以自己输入）
-      void terminals.writeWhenQuiet(terminalId, bracketedPaste(a.prompt) + "\r").then(() => {
-        log.info("automation prompt injected to terminal", { automationId: a.id, runId, terminalId });
-      });
       log.info("automation terminal launched", { automationId: a.id, runId, terminalId, trigger: opts.trigger });
       return { runId, sessionId: terminalId };
     } catch (err: unknown) {
@@ -712,6 +734,8 @@ backlogEngine = new BacklogEngine({
   homeDir: config.homeDir,
   getConfig: () => getBacklogConfig(store),
   broadcast: (signal: BacklogSignal) => broadcastBacklog(wss, signal),
+  // 待办 launchMode=terminal 的 TUI 派发（与自动化共用 launchExecutorTerminal）
+  launchTerminal: (o) => launchExecutorTerminal(o),
   notify: async (text) => {
     const cfg = getBacklogConfig(store);
     if (!cfg.feishu.enabled || cfg.feishu.receiveId === "") return;
@@ -1086,10 +1110,14 @@ registerMethod("backlog.create", (params) => {
     title?: string; goal?: string; prompt?: string;
     unitId?: string; unitName?: string; rootPath?: string;
     runtimeId?: string; model?: string | null; mode?: string | null; size?: string | null;
+    launchMode?: string;
   };
   if (typeof p.goal !== "string" || p.goal.trim() === "") throw badBacklog("goal is required");
   if (typeof p.unitId !== "string" || typeof p.rootPath !== "string" || p.rootPath === "") {
     throw badBacklog("unitId and rootPath are required");
+  }
+  if (p.launchMode !== undefined && p.launchMode !== "terminal" && p.launchMode !== "headless") {
+    throw badBacklog("launchMode 只能是 terminal 或 headless");
   }
   const goal = p.goal.trim();
   const title = typeof p.title === "string" && p.title.trim() !== "" ? p.title.trim() : goal.split(/\r?\n/)[0]!.slice(0, 40);
@@ -1104,6 +1132,7 @@ registerMethod("backlog.create", (params) => {
     model: typeof p.model === "string" && p.model !== "" ? p.model : null,
     mode: typeof p.mode === "string" && p.mode !== "" ? p.mode : null,
     size: p.size === "big" || p.size === "small" ? p.size : null,
+    launchMode: p.launchMode === "headless" ? "headless" : "terminal",
     source: "manual",
   });
   const item = store.getBacklogItem(id);
@@ -1115,8 +1144,12 @@ registerMethod("backlog.update", (params) => {
     id?: number; title?: string; goal?: string; prompt?: string;
     unitId?: string; unitName?: string; rootPath?: string;
     runtimeId?: string; model?: string | null; mode?: string | null; size?: string | null;
+    launchMode?: string;
   };
   if (typeof p.id !== "number") throw badBacklog("id is required");
+  if (p.launchMode !== undefined && p.launchMode !== "terminal" && p.launchMode !== "headless") {
+    throw badBacklog("launchMode 只能是 terminal 或 headless");
+  }
   const hit = store.getBacklogItem(p.id);
   if (hit === undefined) throw Object.assign(new Error(`没有这个待办：${p.id}`), { code: "unknown_item" });
   if (hit.status === "executing") throw badBacklog("执行中的待办不能编辑 —— 等它跑完或打回后再改");
@@ -1131,6 +1164,7 @@ registerMethod("backlog.update", (params) => {
     ...(p.model !== undefined ? { model: typeof p.model === "string" && p.model !== "" ? p.model : null } : {}),
     ...(p.mode !== undefined ? { mode: typeof p.mode === "string" && p.mode !== "" ? p.mode : null } : {}),
     ...(p.size !== undefined ? { size: p.size === "big" || p.size === "small" ? p.size : null } : {}),
+    ...(p.launchMode === "terminal" || p.launchMode === "headless" ? { launchMode: p.launchMode } : {}),
   });
   const item = store.getBacklogItem(p.id);
   return { item: item === undefined ? null : requireEngine().toItem(item) };

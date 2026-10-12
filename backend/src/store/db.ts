@@ -61,6 +61,8 @@ export interface BacklogRow {
   model: string | null;
   mode: string | null;
   size: string | null;
+  /** 执行方式：terminal = 前端 TUI（缺省）；headless = 纯后台 host 会话 */
+  launchMode: "terminal" | "headless";
   status: string;
   ignoreCount: number;
   lastProposedAt: number | null;
@@ -236,6 +238,8 @@ export class Store {
       // 执行方式：terminal = 到点在前端 PTY 里拉起执行器 TUI（人可看可插手），
       // headless = 原有 host 会话。旧行 NULL 按 terminal 读（新默认）。
       `ALTER TABLE automations ADD COLUMN launch_mode TEXT`,
+      // 待办同款：terminal = 前端 TUI（缺省）；headless = 纯后台
+      `ALTER TABLE backlog_items ADD COLUMN launch_mode TEXT`,
     ]) {
       try {
         this.db.exec(stmt);
@@ -622,6 +626,7 @@ export class Store {
       model: r["model"] === null || r["model"] === undefined ? null : String(r["model"]),
       mode: r["mode"] === null || r["mode"] === undefined ? null : String(r["mode"]),
       size: r["size"] === null || r["size"] === undefined ? null : String(r["size"]),
+      launchMode: r["launch_mode"] === "headless" ? "headless" : "terminal",
       status: String(r["status"]),
       ignoreCount: Number(r["ignore_count"] ?? 0),
       lastProposedAt: nOrNull(r["last_proposed_at"]),
@@ -646,6 +651,7 @@ export class Store {
     model?: string | null;
     mode?: string | null;
     size?: string | null;
+    launchMode?: "terminal" | "headless";
     source?: "manual" | "inbox";
     sortPos?: number;
   }): number {
@@ -653,8 +659,8 @@ export class Store {
     const result = this.db
       .prepare(
         `INSERT INTO backlog_items (title, goal, prompt, unit_id, unit_name, root_path, runtime_id, model, mode,
-           size, status, ignore_count, source, sort_pos, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', 0, ?, ?, ?, ?)`,
+           size, launch_mode, status, ignore_count, source, sort_pos, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', 0, ?, ?, ?, ?)`,
       )
       .run(
         a.title,
@@ -667,6 +673,7 @@ export class Store {
         a.model ?? null,
         a.mode ?? null,
         a.size ?? null,
+        a.launchMode ?? "terminal",
         a.source ?? "manual",
         a.sortPos ?? now,
         now,
@@ -702,6 +709,7 @@ export class Store {
       model: string | null;
       mode: string | null;
       size: string | null;
+      launchMode: "terminal" | "headless";
       status: string;
       ignoreCount: number;
       lastProposedAt: number | null;
@@ -727,6 +735,7 @@ export class Store {
     if (patch.model !== undefined) put("model", patch.model);
     if (patch.mode !== undefined) put("mode", patch.mode);
     if (patch.size !== undefined) put("size", patch.size);
+    if (patch.launchMode !== undefined) put("launch_mode", patch.launchMode);
     if (patch.status !== undefined) put("status", patch.status);
     if (patch.ignoreCount !== undefined) put("ignore_count", patch.ignoreCount);
     if (patch.lastProposedAt !== undefined) put("last_proposed_at", patch.lastProposedAt);

@@ -60,6 +60,12 @@ export interface BacklogEngineDeps {
   readonly rootsWithUnits: () => Promise<Array<{ rootPath: string; unitId: string; unitName: string }>>;
   /** 心跳 bot 的主绑定（常驻 bot 的用户可改执行器/模型）——配置未显式指定时的兜底 */
   readonly heartbeatBinding?: () => Promise<{ runtimeId: string; model: string | null } | null>;
+  /**
+   * TUI 派发（待办 launchMode=terminal）：在前端 PTY 里以 yolo 拉起执行器 TUI
+   * 并注入提示词，返回 autoterm_ 前缀的终端 id。终态不经 host —— 由 index.ts 的
+   * 终端 exit 帧回调调 onTerminalExited() 回灌。未提供时 terminal 模式降级 headless。
+   */
+  readonly launchTerminal?: (opts: { runtimeId: string; unitId: string; rootPath: string; prompt: string }) => Promise<string>;
 }
 
 export class BacklogEngine {
@@ -71,6 +77,8 @@ export class BacklogEngine {
   private proposalTimer: NodeJS.Timeout | null = null;
   /** sessionId → { runId, itemId }：执行终态回灌（内存映射 + DB 收口，对齐 automation 模式） */
   private readonly runBySession = new Map<string, { runId: number; itemId: number }>();
+  /** terminalId → { runId, itemId }：TUI 模式（无 host 会话）的运行记录靠 exit 帧结算 */
+  private readonly runByTerminal = new Map<string, { runId: number; itemId: number }>();
   private lastSnapshot: BacklogStateSnapshot | null = null;
   private lastLedger: HeartbeatLedger = { lastBeatAt: null, lastBeatOutcome: null };
 
@@ -564,8 +572,34 @@ export class BacklogEngine {
 
   // ---- 执行派发与终态回灌 ----------------------------------------------------
 
-  /** 派发一条待办（headless，复用 automation 的会话语义：source=automation → 权限全放行，deny 仍优先） */
+  /** 派发一条待办。terminal 模式：前端 PTY 拉执行器 TUI（yolo 免审批，人可看可插手），
+   *  终态由终端 exit 帧回灌；headless：复用 automation 的会话语义（source=automation →
+   *  权限全放行，deny 仍优先）。 */
   async dispatch(item: BacklogRow, runtimeId: string, model: string | null, trigger: "gtd" | "manual" = "gtd"): Promise<{ runId: number; sessionId: string }> {
+    if (item.launchMode === "terminal" && this.deps.launchTerminal !== undefined) {
+      const runId = this.deps.store.startBacklogRun(item.id, null, runtimeId, trigger);
+      this.deps.store.updateBacklogItem(item.id, { status: "executing", runtimeId, model, lastError: null, lastRunAt: Date.now() });
+      this.deps.broadcast({ kind: "items" });
+      try {
+        const terminalId = await this.deps.launchTerminal({
+          runtimeId,
+          unitId: item.unitId,
+          rootPath: item.rootPath,
+          prompt: item.prompt,
+        });
+        this.deps.store.setBacklogRunSession(runId, terminalId);
+        this.runByTerminal.set(terminalId, { runId, itemId: item.id });
+        log.info("backlog item dispatched to terminal", { itemId: item.id, runId, terminalId, runtimeId });
+        return { runId, sessionId: terminalId };
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        this.deps.store.finishBacklogRun(runId, "failed", message);
+        this.deps.store.updateBacklogItem(item.id, { status: "ready", lastError: message });
+        this.deps.broadcast({ kind: "items" });
+        throw err;
+      }
+    }
+
     const runId = this.deps.store.startBacklogRun(item.id, null, runtimeId, trigger);
     this.deps.store.updateBacklogItem(item.id, { status: "executing", runtimeId, model, lastError: null, lastRunAt: Date.now() });
     this.deps.broadcast({ kind: "items" });
@@ -630,6 +664,16 @@ export class BacklogEngine {
     this.settleExecution(hit.itemId, failed ? "failed" : "done", `ended: ${reason}`);
   }
 
+  /** index.ts 的终端 exit 帧回调调这里：TUI 模式运行记录与待办状态机收口 */
+  onTerminalExited(terminalId: string, exitCode: number): void {
+    const hit = this.runByTerminal.get(terminalId);
+    if (hit === undefined) return;
+    this.runByTerminal.delete(terminalId);
+    const ok = exitCode === 0;
+    this.deps.store.finishBacklogRun(hit.runId, ok ? "done" : "failed", `terminal exit ${exitCode}`);
+    this.settleExecution(hit.itemId, ok ? "done" : "failed", `terminal exit ${exitCode}`);
+  }
+
   /** 重启自愈：running 的运行记录按会话台账收口；awaiting_confirm 无提议的行回就绪 */
   private heal(): void {
     let settled = 0;
@@ -640,6 +684,17 @@ export class BacklogEngine {
         const it = this.deps.store.getBacklogItem(r.itemId);
         if (it !== undefined && it.status === "executing") {
           this.deps.store.updateBacklogItem(r.itemId, { status: "ready", lastError: "daemon 重启中断了派发" });
+        }
+        settled++;
+        continue;
+      }
+      // TUI 模式：session_id 列存的是 autoterm_ 前缀的终端 id。PTY 随 daemon 进程
+      // 一起死了，重启后不可能还活着 —— 按中断收口、待办回就绪。
+      if (r.sessionId.startsWith("autoterm_")) {
+        this.deps.store.finishBacklogRun(r.runId, "failed", "daemon 重启，终端已随进程关闭");
+        const it = this.deps.store.getBacklogItem(r.itemId);
+        if (it !== undefined && it.status === "executing") {
+          this.deps.store.updateBacklogItem(r.itemId, { status: "ready", lastError: "daemon 重启，终端已随进程关闭" });
         }
         settled++;
         continue;
@@ -772,6 +827,7 @@ export class BacklogEngine {
       runtimeId: row.runtimeId,
       model: row.model,
       mode: row.mode,
+      launchMode: row.launchMode,
       size: row.size === "big" || row.size === "small" ? row.size : null,
       status: row.status as BacklogItem["status"],
       ignoreCount: row.ignoreCount,

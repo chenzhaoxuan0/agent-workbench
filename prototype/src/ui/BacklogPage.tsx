@@ -313,7 +313,18 @@ function BacklogCard({
         </div>
         <div className="min-w-0">
           <dt className="text-ash">执行器</dt>
-          <dd className="truncate font-mono text-graphite">{item.runtimeId === "" ? "—" : item.runtimeId}</dd>
+          <dd className="flex min-w-0 items-center gap-1.5">
+            <span className="truncate font-mono text-graphite">{item.runtimeId === "" ? "—" : item.runtimeId}</span>
+            <span
+              className={cn(
+                "shrink-0 rounded-chip px-1.5 py-px text-caption",
+                item.launchMode === "headless" ? "bg-line-soft text-ash" : "bg-teal-tint text-teal",
+              )}
+              title={item.launchMode === "headless" ? "纯后台 headless 会话执行" : "确认后在前端拉起执行器 TUI（免审批）"}
+            >
+              {item.launchMode === "headless" ? "后台" : "TUI"}
+            </span>
+          </dd>
         </div>
         <div className="min-w-0">
           <dt className="text-ash">最近运行</dt>

@@ -810,6 +810,8 @@ export interface BacklogWriteInput {
   readonly model?: string | null;
   readonly mode?: string | null;
   readonly size?: string | null;
+  /** 执行方式：缺省 = terminal（前端可见 TUI） */
+  readonly launchMode?: "terminal" | "headless";
 }
 
 export async function fetchBacklog(endpoint: string = defaultDaemonEndpoint()): Promise<BacklogListResult> {
