@@ -356,6 +356,10 @@ export class BacklogEngine {
 
   /** 等心跳轮落定：session.ended（一次性执行器）或 status idle/failed（ACP agent-loop），加总超时兜底 */
   private awaitTurnEnd(sessionId: SessionId, timeoutMs: number): Promise<void> {
+    // 前置检查：快执行器可能在订阅前就已 ended（订阅晚一步就永远等不到事件），
+    // 已终态直接返回，不烧满整个预算
+    const persisted = this.deps.store.getSession(sessionId);
+    if (persisted !== undefined && persisted.endedAt !== null) return Promise.resolve();
     return new Promise((resolve) => {
       let done = false;
       const finish = (): void => {
