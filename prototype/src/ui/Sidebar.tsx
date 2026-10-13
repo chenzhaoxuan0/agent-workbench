@@ -1,12 +1,13 @@
-import { useMemo, useState, type ReactElement } from "react";
+import { useEffect, useMemo, useState, type ReactElement } from "react";
 import {
   AlarmClock,
   Bot,
+  ChevronDown,
   ChevronLeft,
+  ChevronRight,
   FolderGit2,
   FolderOpen,
   FolderPlus,
-  History,
   ImagePlus,
   ListTodo,
   PanelLeftClose,
@@ -83,6 +84,8 @@ export function Sidebar() {
   const activeUnitId = useWorkbench((s) => s.activeUnitId);
   const setView = useWorkbench((s) => s.setView);
   const selectUnit = useWorkbench((s) => s.selectUnit);
+  /** 历史子列表的手风琴态：整个 bot 行可点，一次只展开一个（null = 全收起） */
+  const [historyUnitId, setHistoryUnitId] = useState<string | null>(null);
   const addUnit = useWorkbench((s) => s.addUnit);
   const mainView = useShell((s) => s.mainView);
 
@@ -317,6 +320,8 @@ export function Sidebar() {
                     onToggleResident={() => makeNormal(u)}
                     isResident={true}
                     schedule={u.schedule?.enabled ? u.schedule.description : undefined}
+                    historyOpen={historyUnitId === u.id}
+                    onToggleHistory={() => setHistoryUnitId(historyUnitId === u.id ? null : u.id)}
                   />
                 </div>
               );
@@ -406,6 +411,8 @@ export function Sidebar() {
                   onToggleResident={() => makeResident(u)}
                   isResident={false}
                   schedule={u.schedule?.enabled ? u.schedule.description : undefined}
+                  historyOpen={historyUnitId === u.id}
+                  onToggleHistory={() => setHistoryUnitId(historyUnitId === u.id ? null : u.id)}
                 />
               </div>
             );
@@ -549,6 +556,8 @@ function UnitRow({
   onToggleResident,
   isResident,
   schedule,
+  historyOpen,
+  onToggleHistory,
 }: {
   unit: WorkUnit;
   active: boolean;
@@ -557,26 +566,34 @@ function UnitRow({
   onToggleResident?: () => void;
   isResident?: boolean;
   schedule?: string;
+  /** 行下历史子列表是否展开（手风琴：Sidebar 持有，一次只开一个） */
+  historyOpen: boolean;
+  onToggleHistory: () => void;
 }) {
   const isSynthetic = isSyntheticUnit(unit);
   /** 历史详情弹窗（子列表条目点开看对话用；focusKey 预展开点进来的那条） */
-  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyDialogOpen, setHistoryDialogOpen] = useState(false);
   const [historyFocus, setHistoryFocus] = useState<string | undefined>(undefined);
-  /** bot 行下的历史子列表（折叠面板）：展开时拉最近记录，收起不占地方 */
-  const [histListOpen, setHistListOpen] = useState(false);
   const [histEntries, setHistEntries] = useState<readonly UnitHistoryEntry[] | null>(null);
   const [histErr, setHistErr] = useState<string | null>(null);
 
-  const toggleHistoryList = (): void => {
-    const next = !histListOpen;
-    setHistListOpen(next);
-    if (!next) return;
+  // 展开时拉最近执行记录；收起不丢缓存，重开刷新
+  useEffect(() => {
+    if (!historyOpen) return;
     setHistErr(null);
     setHistEntries(null);
+    let alive = true;
     void fetchUnitHistory(unit.id, 20)
-      .then((list) => setHistEntries(list))
-      .catch((e: unknown) => setHistErr(e instanceof Error ? e.message : String(e)));
-  };
+      .then((list) => {
+        if (alive) setHistEntries(list);
+      })
+      .catch((e: unknown) => {
+        if (alive) setHistErr(e instanceof Error ? e.message : String(e));
+      });
+    return () => {
+      alive = false;
+    };
+  }, [historyOpen, unit.id]);
   // ZCode: unavailableLocalDirectory —— 路径不可用要显式说出来，不能当成正常单元
   // **兜底 ?? []**：bot.json 是手可编辑的（见 useWorkbench 的合并守卫注释），
   // 一个字段缺失不该让整个界面白屏。管家 bot 一度就因为没写 tags 把整页搞崩了。
@@ -608,14 +625,23 @@ function UnitRow({
     // 绝对定位的兄弟节点，和时间戳抢同一个位置、hover 时交叉淡入淡出。
     <div className="group/row relative">
       <button
-        onClick={onSelect}
+        onClick={() => {
+          onSelect();
+          onToggleHistory();
+        }}
         aria-current={active}
+        aria-expanded={historyOpen}
+        title={`${unit.name} —— 点击选中并${historyOpen ? "收起" : "展开"}历史会话`}
         className={cn(
           "flex w-full items-start gap-2 rounded-input px-2 py-1.5 text-left",
           active ? "bg-teal-tint" : "hover:bg-line-soft",
           unavailable && "opacity-60",
         )}
       >
+        {/* 折叠指示箭头：整行可点，箭头只负责说明状态 */}
+        <span aria-hidden className="flex h-8 w-3 shrink-0 items-center justify-center self-center text-ash/60">
+          {historyOpen ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+        </span>
         {isBot ? (
           /* 自定义头像优先；缺省是彩色底 + 双眼（GrokBot 式吉祥物形态），右下角日程角标 */
           <span
@@ -691,7 +717,7 @@ function UnitRow({
       </button>
 
       {/* 历史子列表：bot 行下的可折叠执行时间轴（最近若干条，点条目进对话详情） */}
-      {histListOpen && (
+      {historyOpen && (
         <div data-no-drag draggable={false} onMouseDown={(e) => e.stopPropagation()} className="ml-9 space-y-px border-l border-line-soft py-1 pl-2">
           {histErr !== null && <p className="px-1.5 py-1 text-[10px] text-loss">读取失败：{histErr}</p>}
           {histEntries === null && histErr === null && <p className="px-1.5 py-1 text-[10px] text-ash">加载中…</p>}
@@ -704,7 +730,7 @@ function UnitRow({
               entry={e}
               onOpenDetail={() => {
                 setHistoryFocus(e.key);
-                setHistoryOpen(true);
+                setHistoryDialogOpen(true);
               }}
             />
           ))}
@@ -715,7 +741,7 @@ function UnitRow({
               draggable={false}
               onClick={() => {
                 setHistoryFocus(undefined);
-                setHistoryOpen(true);
+                setHistoryDialogOpen(true);
               }}
               className="w-full cursor-pointer rounded-btn px-1.5 py-1 text-left text-[10px] text-ash hover:bg-line-soft hover:text-graphite"
             >
@@ -725,17 +751,13 @@ function UnitRow({
         </div>
       )}
 
-      {/* 悬浮快捷操作：历史（切换行下子列表）、设置（打开目录统一走头部的工作区路径弹层） */}
+      {/* 悬浮快捷操作：常驻 / 设置（历史切换整行可点，不占这里；打开目录统一走头部的工作区路径弹层） */}
       <div
         data-no-drag
         draggable={false}
         onMouseDown={(e) => e.stopPropagation()}
         onDragStart={(e) => e.preventDefault()}
-        className={cn(
-          "absolute right-1.5 top-1.5 z-10 flex items-center gap-0.5 rounded-btn bg-canvas/95 p-0.5 shadow-xs backdrop-blur-xs transition hover:opacity-100 focus-within:opacity-100 group-hover/row:opacity-100 cursor-default",
-          // 子列表开着就常驻显示 —— 折叠把手不能随 hover 消失
-          histListOpen ? "opacity-100" : "opacity-0",
-        )}
+        className="absolute right-1.5 top-1.5 z-10 flex items-center gap-0.5 rounded-btn bg-canvas/95 p-0.5 shadow-xs opacity-0 backdrop-blur-xs transition hover:opacity-100 focus-within:opacity-100 group-hover/row:opacity-100 cursor-default"
       >
         <button
           type="button"
@@ -773,24 +795,6 @@ function UnitRow({
           onMouseDown={(e) => e.stopPropagation()}
           onClick={(e) => {
             e.stopPropagation();
-            toggleHistoryList();
-          }}
-          aria-label={histListOpen ? `收起 ${unit.name} 的历史会话` : `展开 ${unit.name} 的历史会话`}
-          aria-expanded={histListOpen}
-          title={histListOpen ? "收起历史会话" : "展开历史会话 —— 自动化 / 待办 / 手动的执行时间轴"}
-          className={cn(
-            "cursor-pointer rounded-btn p-1 transition active:scale-90",
-            histListOpen ? "bg-teal-tint text-teal" : "text-ash hover:bg-line-soft hover:text-ink",
-          )}
-        >
-          <History size={12} />
-        </button>
-        <button
-          type="button"
-          draggable={false}
-          onMouseDown={(e) => e.stopPropagation()}
-          onClick={(e) => {
-            e.stopPropagation();
             onOpenSettings();
           }}
           aria-label={`${unit.name} 设置`}
@@ -801,8 +805,8 @@ function UnitRow({
         </button>
       </div>
 
-      {historyOpen && (
-        <HistoryDialog unitId={unit.id} unitName={unit.name} focusKey={historyFocus} onClose={() => setHistoryOpen(false)} />
+      {historyDialogOpen && (
+        <HistoryDialog unitId={unit.id} unitName={unit.name} focusKey={historyFocus} onClose={() => setHistoryDialogOpen(false)} />
       )}
     </div>
   );
