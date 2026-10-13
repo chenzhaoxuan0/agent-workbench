@@ -1,24 +1,28 @@
 /**
- * Codex 执行器适配器 —— 走 `codex exec --json`（JSONL 事件流）+ `exec resume` 多轮。
+ * Codex 执行器适配器 —— 走 `codex app-server`（常驻 JSON-RPC 2.0 over stdio，
+ * docs/13 Phase 4 Tier 1 升级，原 `codex exec --json` 每轮一进程形态退役）。
  *
- * 协议事实（codex-cli 0.156.1 实测）：
- * - stdout 逐行 JSON 事件：thread.started{thread_id} / turn.started /
- *   item.started{item} / item.completed{item} / turn.completed{usage} / turn.failed
- * - item.type：agent_message{text} / command_execution{command,aggregated_output,exit_code,status}
- *   / reasoning{text} / error{message} / file_change{changes[{path,kind}]}
- * - usage：{input_tokens, cached_input_tokens, cache_write_input_tokens, output_tokens,
- *   reasoning_output_tokens} —— 计费口径按契约（对齐 dsh）：
- *   billedInput = uncached + cacheRead + cacheWrite = input_tokens + cache_write_input_tokens
- * - 多轮：`codex exec resume <thread_id> --json …`（会话事实源在 CLI 侧落盘）
- * - 审批在 exec 模式恒为 never；沙箱用 -s 控制（映射 StartRequest.mode）
- * - 认证走 ~/.codex（本机 provider=custom，模型 gpt-6-astra 实测可用）
+ * 协议事实（codex-cli 0.162.1 本机实测，2026-10-14）：
+ * - 握手：initialize {clientInfo{name,title,version}} → {userAgent,codexHome,…}
+ * - 会话：thread/start {cwd} → thread.id；续接 thread/resume {threadId}
+ * - 一轮：turn/start {threadId, input:[{type:"text",text}], options{model,effort,
+ *   sandboxPolicy,approvalPolicy}} → turn.id（input 必须是数组，字符串会被 32600 拒）
+ * - 事件：item/started|completed（userMessage/agentMessage/commandExecution/reasoning/
+ *   fileChange…）、item/agentMessage/delta（真流式）、item/commandExecution/outputDelta、
+ *   thread/tokenUsage/updated（total/last 两口径）、thread/status/changed、
+ *   turn/completed、turn/failed、error
+ * - 审批：server→client 请求（item/commandExecution/requestApproval 等）→ 回
+ *   {decision:"approved"|"denied"}；译成 permission.requested 走统一权限闸
+ * - usage 口径（对齐契约）：billedInput = inputTokens + cacheWriteInputTokens
+ * - 会话事实源：app-server 同样落 ~/.codex/sessions rollout（Phase 1 reader 直读）
  *
- * 与 zcode -p 路径同为「每轮一个进程」，但这家有真工具事件与多 item 流——
- * 契约泛化性的第二块试金石（新增执行器 = 本文件 + host 注册一行，core 不改）。
+ * 一个 adapter 共享一个 app-server 子进程（codex 自己的 daemon 设计），
+ * 进程死掉下一次请求自动重连 + 重初始化（thread 幂等 resume）。
  */
 
 import { randomUUID } from "node:crypto";
-import type { ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
+import { createInterface } from "node:readline";
 import {
   type AdapterSession,
   type AdapterSink,
@@ -33,66 +37,168 @@ import type {
   RuntimeEvent,
   SessionId,
 } from "../../contract.ts";
-import { execLines, resolveCommand, spawnLines } from "../exec.ts";
+import { execLines, resolveCommand } from "../exec.ts";
 import { log } from "../../log.ts";
 
-// ---- CLI JSONL 事件（宽松类型） ---------------------------------------------
+// ---- 线协议（宽松类型）--------------------------------------------------------
 
-interface CliItem {
-  id?: string;
+interface AppItem {
   type?: string;
+  id?: string;
   text?: string;
-  message?: string;
   command?: string;
-  aggregated_output?: string;
-  exit_code?: number;
+  aggregatedOutput?: string;
+  exitCode?: number | null;
   status?: string;
+  phase?: string;
   changes?: readonly { path?: string; kind?: string }[];
 }
 
-interface CliEvent {
-  type?: string;
-  thread_id?: string;
-  item?: CliItem;
-  usage?: {
-    input_tokens?: number;
-    cached_input_tokens?: number;
-    cache_write_input_tokens?: number;
-    output_tokens?: number;
-    reasoning_output_tokens?: number;
-  };
-  error?: { message?: string };
+interface TokenUsage {
+  inputTokens?: number;
+  cachedInputTokens?: number;
+  cacheWriteInputTokens?: number;
+  outputTokens?: number;
+  reasoningOutputTokens?: number;
 }
 
+interface Frame {
+  jsonrpc?: string;
+  id?: number | string;
+  method?: string;
+  params?: Record<string, unknown>;
+  result?: unknown;
+  error?: { code?: number; message?: string };
+}
+
+// ---- 会话状态 ---------------------------------------------------------------
+
 interface SessionState {
-  /** daemon 发的稳定 id（对外唯一事实） */
   readonly sessionId: SessionId;
   readonly rootPath: string;
-  /** CLI thread id（exec resume 用），首轮才有 */
+  /** codex thread id（rollout 同 id；daemon 重启 reattach 用） */
   threadId: string | null;
   sink: AdapterSink | null;
-  running: boolean;
-  cancelled: boolean;
-  child: ChildProcess | null;
-  /** 本轮已收到的 message 数（turn.completed 时补 message.completed 用） */
-  turnTexts: string[];
-  /** 本轮 loop 参数（reasoning），send 时可覆盖 */
-  loop: { reasoningLevel?: string };
-  /**
-   * 权限档（plan / build / edit / yolo）→ 决定每轮 `-s` 沙箱档。
-   * 必须记在会话上：它是会话级承诺（plan = 只读），不是单轮参数。
-   */
+  /** 本会话当前是否有进行中的 turn（send 据此决定 turn/start 还是 turn/steer） */
+  turnActive: boolean;
+  /** 流式 assistant 消息的 itemId → 是否已发过 delta（completed 时收尾） */
+  streamed: Set<string>;
+  /** 每轮 loop 参数（模型/推理力度），turn/start options 透传 */
+  loop: { model?: string | null; reasoningLevel?: string };
+  /** 会话级权限档：决定 sandboxPolicy + approvalPolicy */
   mode: StartRequest["mode"];
-  /** usage 幂等键计数（WP-10） */
+  /** 最近一次 tokenUsage（turn/completed 时出 usage 事件） */
+  lastUsage: TokenUsage | undefined;
   usageCount: number;
 }
 
-/** 一轮的终态聚合器：行内事件即时 sink，usage/failed 由终局行回填、exit 后收尾用 */
-interface CodexTurnAcc {
-  sawAny: boolean;
-  turnUsage?: CliEvent["usage"];
-  failed: string | null;
+/** mode → codex 沙箱/审批档。plan 只读，yolo 全开不问，其余 workspace-write + 按需问。 */
+function policyFor(mode: StartRequest["mode"]): { sandboxPolicy: { type: string }; approvalPolicy: string } {
+  if (mode === "plan") return { sandboxPolicy: { type: "read-only" }, approvalPolicy: "untrusted" };
+  if (mode === "yolo") return { sandboxPolicy: { type: "danger-full-access" }, approvalPolicy: "never" };
+  return { sandboxPolicy: { type: "workspace-write" }, approvalPolicy: "on-request" };
 }
+
+// ---- 常驻 app-server 连接 -----------------------------------------------------
+
+class AppServerConnection {
+  private child: ChildProcess | null = null;
+  private nextId = 0;
+  private readonly pending = new Map<number, { resolve: (f: Frame) => void; timer: NodeJS.Timeout }>();
+  /** server→client 请求（审批等）的处理器；params 原样、回执走 reply */
+  approvalHandler: ((frame: Frame) => void) | null = null;
+  /** 通知事件处理器（item/*、turn/*、thread/*） */
+  eventHandler: ((method: string, params: Record<string, unknown>) => void) | null = null;
+
+  private async ensure(): Promise<void> {
+    if (this.child !== null && this.child.exitCode === null && !this.child.killed) return;
+    const cmd = await resolveCommand("codex");
+    const child = spawn(cmd.file, [...cmd.prefixArgs, "app-server"], {
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    this.child = child;
+    this.pending.clear();
+    createInterface({ input: child.stdout }).on("line", (line) => this.onLine(line));
+    child.stderr?.on("data", (d: Buffer) => {
+      const s = d.toString().trim();
+      if (s !== "") log.debug("codex app-server stderr", { line: s.slice(0, 200) });
+    });
+    child.once("exit", (code) => {
+      log.info("codex app-server exited", { code });
+      for (const [, p] of this.pending) {
+        clearTimeout(p.timer);
+        p.resolve({ error: { code: -1, message: `app-server exited (${code})` } });
+      }
+      this.pending.clear();
+      this.child = null;
+    });
+    await this.request("initialize", {
+      clientInfo: { name: "agent-workbench", title: "Agent Workbench", version: "0.1.0" },
+    });
+  }
+
+  private onLine(line: string): void {
+    const s = line.trim();
+    if (s === "") return;
+    let f: Frame;
+    try {
+      f = JSON.parse(s) as Frame;
+    } catch {
+      return;
+    }
+    // server→client 请求（审批 / 交互）
+    if (f.method !== undefined && f.id !== undefined) {
+      this.approvalHandler?.(f);
+      return;
+    }
+    // 响应
+    if (f.id !== undefined) {
+      const p = this.pending.get(Number(f.id));
+      if (p !== undefined) {
+        this.pending.delete(Number(f.id));
+        clearTimeout(p.timer);
+        p.resolve(f);
+      }
+      return;
+    }
+    // 通知
+    if (f.method !== undefined) this.eventHandler?.(f.method, f.params ?? {});
+  }
+
+  request(method: string, params: Record<string, unknown>, timeoutMs = 120_000): Promise<Frame> {
+    return this.ensure().then(
+      () =>
+        new Promise<Frame>((resolve) => {
+          const child = this.child;
+          if (child === null || child.stdin === null) {
+            resolve({ error: { code: -1, message: "app-server not running" } });
+            return;
+          }
+          const id = ++this.nextId;
+          const timer = setTimeout(() => {
+            this.pending.delete(id);
+            resolve({ error: { code: -1, message: `${method} timeout` } });
+          }, timeoutMs);
+          this.pending.set(id, { resolve, timer });
+          child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
+        }),
+    );
+  }
+
+  /** 回 server→client 请求（审批决定） */
+  reply(id: number | string, result: unknown): void {
+    this.child?.stdin?.write(JSON.stringify({ jsonrpc: "2.0", id, result }) + "\n");
+  }
+
+  async kill(): Promise<void> {
+    const child = this.child;
+    this.child = null;
+    child?.kill();
+  }
+}
+
+// ---- 适配器 -------------------------------------------------------------------
 
 const DEFAULT_CODEX_MODELS: readonly ExecutorModelInfo[] = [
   {
@@ -142,7 +248,6 @@ export class CodexAdapter implements ExecutorAdapter {
           slug?: string;
           display_name?: string;
           context_window?: number;
-          max_context_window?: number;
           default_reasoning_level?: string;
           supported_reasoning_levels?: Array<string | { effort?: string }>;
           input_modalities?: string[];
@@ -160,7 +265,6 @@ export class CodexAdapter implements ExecutorAdapter {
             return {
               id: m.slug as ModelId,
               displayName: m.display_name ?? m.slug,
-              // 默认采用标准上下文窗口（通常为 272K；长窗口 872K+ 通常需要付双倍价格）
               contextWindow: m.context_window ?? 272000,
               reasoningLevels,
               defaultReasoningLevel: m.default_reasoning_level,
@@ -179,23 +283,31 @@ export class CodexAdapter implements ExecutorAdapter {
     }
     return this._models;
   }
+
   readonly capabilities: RuntimeCapabilities = {
     resumeSession: true,
-    fileDiff: false, // file_change 有 path+kind 无 patch，先不给 diff 能力
+    // turn/diff/updated 出 turn 级聚合 unified diff，按文件拆分后发 file.diff
+    fileDiff: true,
     terminal: false,
-    permissions: false, // exec 模式审批恒为 never
+    // app-server 双向 RPC：requestApproval 反向请求 → 统一权限闸
+    permissions: true,
     subagents: false,
-    worktrees: true, // 原生 --worktree
-    sandbox: true, // 原生 -s read-only / workspace-write / danger-full-access
+    worktrees: true,
+    sandbox: true,
     mcp: true,
     usage: true,
     multimodal: true,
-    // WP-1 已兑现：JSONL 逐行内联翻译，行到即 sink（文本粒度受协议限制为 item 级）
-    streaming: "realtime",
-    steering: "turn-end",
+    streaming: "realtime", // item/agentMessage/delta 真 token 流
+    steering: "mid-turn", // turn 进行中可 turn/steer
   };
 
+  private readonly conn = new AppServerConnection();
   private readonly sessions = new Map<string, SessionState>();
+
+  constructor() {
+    this.conn.eventHandler = (method, params) => this.onNotify(method, params);
+    this.conn.approvalHandler = (frame) => this.onServerCall(frame);
+  }
 
   async probe(): Promise<ProbeResult> {
     const t0 = Date.now();
@@ -222,32 +334,23 @@ export class CodexAdapter implements ExecutorAdapter {
       rootPath: req.rootPath,
       threadId: null,
       sink,
-      running: false,
-      cancelled: false,
-      child: null,
-      turnTexts: [],
-      loop: { reasoningLevel: req.reasoningLevel },
+      turnActive: false,
+      streamed: new Set(),
+      loop: { model: req.model ?? null, reasoningLevel: req.reasoningLevel },
       mode: req.mode,
+      lastUsage: undefined,
       usageCount: 0,
     };
     this.sessions.set(state.sessionId, state);
 
-    const impl: AdapterSession = {
-      id: state.sessionId,
-      send: async (text: string, loop?: { reasoningLevel?: string }) => {
-        if (loop?.reasoningLevel !== undefined) state.loop.reasoningLevel = loop.reasoningLevel;
-        await this.spawnTurn(state, text);
-      },
-      cancel: async () => {
-        state.cancelled = true;
-        state.child?.kill();
-      },
-      resolvePermission: async () => {
-        log.warn("resolvePermission called on codex exec session (approvals are never)");
-      },
-      externalRef: () => state.threadId,
-    };
-    return impl;
+    const r = await this.conn.request("thread/start", { cwd: req.rootPath });
+    if (r.error !== undefined) {
+      throw Object.assign(new Error(`codex thread/start 失败：${r.error.message ?? "unknown"}`), { code: "start_failed" });
+    }
+    const thread = (r.result as { thread?: { id?: string } } | undefined)?.thread;
+    if (thread?.id !== undefined) state.threadId = thread.id;
+
+    return this.sessionImpl(state);
   }
 
   reattach(sessionId: SessionId, ref: string, rootPath: string, sink: AdapterSink): AdapterSession {
@@ -256,112 +359,111 @@ export class CodexAdapter implements ExecutorAdapter {
       rootPath,
       threadId: ref,
       sink,
-      running: false,
-      cancelled: false,
-      child: null,
-      turnTexts: [],
+      turnActive: false,
+      streamed: new Set(),
       loop: {},
-      // 续接时 daemon 不重发 mode（SPI 的 reattach 没有这个参数）→ 取 build：
-      // 与旧行为（写死 workspace-write）一致，不会因为这次修复突然收紧已续接的会话。
+      // reattach 无 mode 参数：与原 exec 路径一致取 build（workspace-write + on-request）
       mode: "build",
+      lastUsage: undefined,
       usageCount: 0,
     };
     this.sessions.set(sessionId, state);
+    // 幂等恢复：thread/resume 失败不致命（thread/start 后续按 id 仍可续）
+    void this.conn
+      .request("thread/resume", { threadId: ref }, 20000)
+      .then((r) => {
+        if (r.error !== undefined) log.debug("codex thread/resume 回落（turn 首轮会重试）", { ref, err: r.error.message });
+      })
+      .catch(() => undefined);
+    return this.sessionImpl(state);
+  }
+
+  private sessionImpl(state: SessionState): AdapterSession {
     return {
-      id: sessionId,
-      send: async (text: string) => {
-        await this.spawnTurn(state, text);
+      id: state.sessionId,
+      send: async (text: string, loop?: { reasoningLevel?: string }) => {
+        if (loop?.reasoningLevel !== undefined) state.loop.reasoningLevel = loop.reasoningLevel;
+        await this.sendTurn(state, text);
       },
       cancel: async () => {
-        state.cancelled = true;
-        state.child?.kill();
+        if (state.threadId === null) return;
+        const r = await this.conn.request("turn/interrupt", { threadId: state.threadId }, 15000);
+        if (r.error !== undefined) {
+          log.debug("codex turn/interrupt 被拒", { err: r.error.message });
+          state.sink?.({ type: "session.status", sessionId: state.sessionId, status: "idle" });
+        }
       },
-      resolvePermission: async () => {
-        log.warn("resolvePermission called on codex exec session (approvals are never)");
+      resolvePermission: async (requestId: string, decision: "allow" | "deny" | "always") => {
+        // requestId 形如 `codex:<jsonRpcId>:<callId>`——reply 需要原始 JSON-RPC id
+        const raw = requestId.split(":")[1] ?? "";
+        const rpcId = /^-?\d+$/.test(raw) ? Number(raw) : raw;
+        this.conn.reply(rpcId, { decision: decision === "deny" ? "denied" : "approved" });
+        state.sink?.({
+          type: "permission.resolved",
+          sessionId: state.sessionId,
+          requestId,
+          decision: decision === "always" ? "allow" : decision,
+        });
       },
       externalRef: () => state.threadId,
     };
   }
 
   async disconnect(): Promise<void> {
-    for (const st of this.sessions.values()) st.child?.kill();
+    await this.conn.kill();
     this.sessions.clear();
   }
 
-  // ---- turn 执行 ----
+  // ---- turn ----
 
-  /** mode → codex 沙箱档。yolo 给 workspace-write（agent 要能动工作区），plan 只读。 */
-  private sandboxFor(mode: StartRequest["mode"]): "read-only" | "workspace-write" {
-    return mode === "plan" ? "read-only" : "workspace-write";
-  }
-
-  private async spawnTurn(state: SessionState, prompt: string): Promise<void> {
-    // 评审 P1：cancelled 只描述"cancel 杀掉的那一轮"；不复位会把后续轮的失败误判为 idle
-    state.cancelled = false;
-    const cmd = await resolveCommand("codex");
-    // ⚠ 这里必须传 state.mode，不能写死 "yolo"：写死等于用户选了「只读规划」
-    // 也照样拿到 workspace-write —— plan 档承诺的是「写入与命令一律不执行」。
-    const args = ["exec", "--json", "--skip-git-repo-check", "-s", this.sandboxFor(state.mode), "--cd", state.rootPath];
-    const loop = state.loop;
-    if (loop.reasoningLevel !== undefined) {
-      // zcode 的 max 档映射到 codex 的 high；未知值原样透传（codex 会警告并忽略）
-      const effort = loop.reasoningLevel === "max" ? "high" : loop.reasoningLevel;
-      args.push("-c", `model_reasoning_effort="${effort}"`);
-    }
-    if (state.threadId !== null) args.push("resume", state.threadId);
-    args.push(prompt);
-
-    // WP-1 真流式：逐行内联翻译——thread/item/工具事件行到即 sink，不等进程退出；
-    // usage 与 turn 结局在 exit 后收尾（agent loop 语义：失败 ≠ 会话结束）。
-    const acc: CodexTurnAcc = { sawAny: false, turnUsage: undefined, failed: null };
-    const child = spawnLines(cmd, args, {
-      cwd: state.rootPath,
-      onLine: (line) => this.handleLine(state, acc, line),
-      onStderrLine: (line) => log.debug("codex exec stderr", { line: line.slice(0, 200) }),
-    });
-    state.child = child;
-    state.running = true;
-    state.turnTexts = [];
-
-    // 评审 P2：'exit' 可先于 stdio 排空——'close' 在流全部结束之后触发
-    const exitCode = await new Promise<number | null>((resolve) => child.once("close", (code) => resolve(code)));
-    state.child = null;
-    state.running = false;
-
-    if (!acc.sawAny) {
-      if (!state.cancelled) {
-        state.sink?.({ type: "error", sessionId: state.sessionId, message: `codex exec produced no events (exit ${exitCode})`, recoverable: false });
-      }
-      // agent loop 语义：会话线程仍在（exec resume 可续），不发 ended
-      state.sink?.({ type: "session.status", sessionId: state.sessionId, status: state.cancelled ? "idle" : "failed" });
+  private async sendTurn(state: SessionState, text: string): Promise<void> {
+    if (state.threadId === null) {
+      state.sink?.({ type: "error", sessionId: state.sessionId, message: "codex thread 未建立", recoverable: false });
       return;
     }
-    // 评审 P2：有行但既无 usage 又无 failed、退出码还非 0 —— 凭据/配置横幅类启动失败，
-    // 如实报 failed 而不是 idle（否则用户端零反馈）
-    this.finalizeTurn(state, acc, exitCode);
+    const policy = policyFor(state.mode);
+    const options: Record<string, unknown> = {
+      ...policy,
+      ...(state.loop.model ? { model: state.loop.model } : {}),
+      ...(state.loop.reasoningLevel ? { effort: state.loop.reasoningLevel === "max" ? "high" : state.loop.reasoningLevel } : {}),
+    };
+    const params: Record<string, unknown> = {
+      threadId: state.threadId,
+      input: [{ type: "text", text }],
+      options,
+    };
+    // turn 进行中 → steer（插话语义）；空闲 → 新 turn
+    const method = state.turnActive ? "turn/steer" : "turn/start";
+    const r = await this.conn.request(method, params);
+    if (r.error !== undefined) {
+      state.sink?.({ type: "error", sessionId: state.sessionId, message: `codex ${method} 失败：${r.error.message ?? "unknown"}`, recoverable: false });
+      state.sink?.({ type: "session.status", sessionId: state.sessionId, status: "failed" });
+      return;
+    }
+    state.turnActive = true;
+    state.lastUsage = undefined;
   }
 
-  // ---- JSONL → RuntimeEvent（逐行）----
+  // ---- 事件翻译 -------------------------------------------------------------
 
-  private handleLine(state: SessionState, acc: CodexTurnAcc, line: string): void {
+  private stateOfThread(threadId: unknown): SessionState | undefined {
+    if (typeof threadId !== "string") return undefined;
+    for (const s of this.sessions.values()) if (s.threadId === threadId) return s;
+    return undefined;
+  }
+
+  private onNotify(method: string, p: Record<string, unknown>): void {
+    if (method.startsWith("mcpServer") || method === "configWarning" || method === "warning" || method.startsWith("account/")) return;
+    const state = this.stateOfThread(p["threadId"]);
+    if (state === undefined) return;
     const sink = state.sink;
     if (sink === null) return;
-    let ev: CliEvent;
-    try {
-      ev = JSON.parse(line) as CliEvent;
-    } catch {
-      return; // 非 JSON 横幅不算有效轮（sawAny 在 parse 成功后才置位——与 claude 对齐）
-    }
-    acc.sawAny = true;
     const sessionId = state.sessionId;
-    switch (ev.type) {
-      case "thread.started": {
-        if (ev.thread_id !== undefined) state.threadId = ev.thread_id;
-        break;
-      }
-      case "item.started": {
-        const item = ev.item ?? {};
-        if (item.type === "command_execution") {
+
+    switch (method) {
+      case "item/started": {
+        const item = (p["item"] ?? {}) as AppItem;
+        if (item.type === "commandExecution") {
           sink({
             type: "tool.started",
             sessionId,
@@ -373,85 +475,169 @@ export class CodexAdapter implements ExecutorAdapter {
         }
         break;
       }
-      case "item.completed": {
-        const item = ev.item ?? {};
-        if (item.type === "agent_message") {
-          const text = item.text ?? "";
-          if (text !== "") {
-            const messageId = item.id ?? `msg_${Date.now()}`;
-            sink({ type: "message.delta", sessionId, messageId, role: "assistant", text });
-            sink({ type: "message.completed", sessionId, messageId, text });
-            state.turnTexts.push(text);
-          }
-        } else if (item.type === "command_execution") {
-          sink({
-            type: "tool.completed",
-            sessionId,
-            callId: item.id ?? `call_${Date.now()}`,
-            ok: item.exit_code === 0 || item.status === "completed",
-            output: item.aggregated_output ?? item.status ?? "",
-          });
-        } else if (item.type === "reasoning") {
-          const text = item.text ?? "";
-          if (text !== "") {
-            sink({ type: "reasoning.delta", sessionId, messageId: item.id ?? `r_${Date.now()}`, text });
-          }
-        } else if (item.type === "file_change") {
-          for (const ch of item.changes ?? []) {
-            if (ch.path === undefined) continue;
-            const change = ch.kind === "add" ? "created" : ch.kind === "delete" ? "deleted" : "modified";
-            sink({ type: "file.changed", sessionId, path: ch.path, change });
-          }
-        } else if (item.type === "error") {
-          // 配置告警之类也走 error item；recoverable 由 turn 结局决定，先给 true
-          sink({ type: "error", sessionId, message: item.message ?? "item error", recoverable: true });
+      case "item/agentMessage/delta": {
+        const itemId = typeof p["itemId"] === "string" ? p["itemId"] : `msg_${Date.now()}`;
+        const delta = typeof p["delta"] === "string" ? p["delta"] : "";
+        if (delta !== "") {
+          sink({ type: "message.delta", sessionId, messageId: itemId, role: "assistant", text: delta });
+          state.streamed.add(itemId);
         }
         break;
       }
-      case "turn.completed": {
-        acc.turnUsage = ev.usage;
+      case "item/commandExecution/outputDelta": {
+        // 实时输出：契约没有 tool.delta，累计到 item.completed 一次性给（避免噪音事件海）
         break;
       }
-      case "turn.failed": {
-        acc.failed = ev.error?.message ?? "turn failed";
+      case "item/completed": {
+        const item = (p["item"] ?? {}) as AppItem;
+        this.onItemCompleted(state, item);
+        break;
+      }
+      case "thread/tokenUsage/updated": {
+        const tu = p["tokenUsage"] as { last?: TokenUsage } | undefined;
+        if (tu?.last !== undefined) state.lastUsage = tu.last;
+        break;
+      }
+      case "turn/completed": {
+        state.turnActive = false;
+        const usage = state.lastUsage;
+        if (usage !== undefined) {
+          const billedInput = (usage.inputTokens ?? 0) + (usage.cacheWriteInputTokens ?? 0);
+          sink({
+            type: "usage",
+            sessionId,
+            inputTokens: billedInput,
+            outputTokens: (usage.outputTokens ?? 0) + (usage.reasoningOutputTokens ?? 0),
+            cacheReadTokens: usage.cachedInputTokens,
+            cacheWriteTokens: usage.cacheWriteInputTokens,
+            costUsd: 0,
+            model: String(state.loop.model ?? "codex-default"),
+            requestId: `codex:${state.threadId ?? sessionId}:p${process.pid}:${++state.usageCount}`,
+          });
+        }
+        sink({ type: "session.status", sessionId, status: "idle" });
+        break;
+      }
+      case "turn/failed":
+      case "error": {
+        state.turnActive = false;
+        const msg =
+          typeof p["message"] === "string"
+            ? p["message"]
+            : ((p["turn"] as { error?: { message?: string } } | undefined)?.error?.message ?? `${method} 事件`);
+        sink({ type: "error", sessionId, message: msg, recoverable: true });
+        sink({ type: "session.status", sessionId, status: "failed" });
+        break;
+      }
+      case "turn/diff/updated": {
+        const diff = typeof p["diff"] === "string" ? p["diff"] : "";
+        if (diff !== "") this.emitFileDiffs(state, diff);
         break;
       }
       default:
-        break;
+        break; // thread/started、thread/status/changed 等生命周期噪音，host 侧状态机不依赖
     }
   }
 
-  private finalizeTurn(state: SessionState, acc: CodexTurnAcc, exitCode: number | null): void {
+  private onItemCompleted(state: SessionState, item: AppItem): void {
     const sink = state.sink;
     if (sink === null) return;
     const sessionId = state.sessionId;
-
-    if (acc.failed === null && acc.turnUsage === undefined && exitCode !== 0 && !state.cancelled) {
-      acc.failed = `codex exec exited ${exitCode} without turn events`;
-    }
-
-    if (acc.turnUsage !== undefined) {
-      const billedInput = (acc.turnUsage.input_tokens ?? 0) + (acc.turnUsage.cache_write_input_tokens ?? 0);
+    if (item.type === "agentMessage") {
+      const text = item.text ?? "";
+      const id = item.id ?? `msg_${Date.now()}`;
+      if (state.streamed.has(id)) {
+        // delta 已流过，只补完成信号
+        sink({ type: "message.completed", sessionId, messageId: id, text });
+      } else if (text !== "") {
+        sink({ type: "message.delta", sessionId, messageId: id, role: "assistant", text });
+        sink({ type: "message.completed", sessionId, messageId: id, text });
+      }
+      state.streamed.delete(id);
+    } else if (item.type === "commandExecution") {
       sink({
-        type: "usage",
+        type: "tool.completed",
         sessionId,
-        inputTokens: billedInput,
-        outputTokens: acc.turnUsage.output_tokens ?? 0,
-        cacheReadTokens: acc.turnUsage.cached_input_tokens,
-        cacheWriteTokens: acc.turnUsage.cache_write_input_tokens,
-        costUsd: 0, // 美元由 Phase 6 价目表统一估算
-        model: "codex-default",
-        decodeMs: undefined,
-        requestId: `codex:${state.threadId ?? state.sessionId}:p${process.pid}:${++state.usageCount}`,
+        callId: item.id ?? `call_${Date.now()}`,
+        ok: item.exitCode === 0 || item.status === "completed",
+        output: item.aggregatedOutput ?? item.status ?? "",
       });
+    } else if (item.type === "reasoning") {
+      const text = item.text ?? "";
+      if (text !== "") sink({ type: "reasoning.delta", sessionId, messageId: item.id ?? `r_${Date.now()}`, text });
+    } else if (item.type === "fileChange") {
+      for (const ch of item.changes ?? []) {
+        if (ch.path === undefined) continue;
+        const change = ch.kind === "add" ? "created" : ch.kind === "delete" ? "deleted" : "modified";
+        sink({ type: "file.changed", sessionId, path: ch.path, change });
+      }
+    } else if (item.type === "error") {
+      sink({ type: "error", sessionId, message: item.text ?? "item error", recoverable: true });
     }
+  }
 
-    if (acc.failed !== null) {
-      sink({ type: "error", sessionId, message: acc.failed, recoverable: false });
-      // agent loop 语义：turn 失败 ≠ 会话结束（exec resume 可续聊）
-      sink({ type: "session.status", sessionId, status: "failed" });
-    } else {
-      sink({ type: "session.status", sessionId, status: "idle" });
+  /** turn 级聚合 unified diff → 按文件拆 file.diff（additions/deletions 计数） */
+  private emitFileDiffs(state: SessionState, unified: string): void {
+    const sink = state.sink;
+    if (sink === null) return;
+    const lines = unified.split(/\r?\n/);
+    let file: string | null = null;
+    let add = 0;
+    let del = 0;
+    const flush = (): void => {
+      if (file !== null && (add > 0 || del > 0)) {
+        sink({ type: "file.diff", sessionId: state.sessionId, path: file, additions: add, deletions: del });
+      }
+      file = null;
+      add = 0;
+      del = 0;
+    };
+    for (const l of lines) {
+      if (l.startsWith("+++ ") || l.startsWith("--- ")) {
+        if (l.startsWith("+++ ")) {
+          flush();
+          file = l.slice(4).replace(/^b\//, "").trim();
+        }
+        continue;
+      }
+      if (file === null) continue;
+      if (l.startsWith("+")) add++;
+      else if (l.startsWith("-")) del++;
     }
+    flush();
+  }
+
+  /** server→client 请求：审批类 → permission.requested；其余自动婉拒并留痕 */
+  private onServerCall(frame: Frame): void {
+    const method = frame.method ?? "";
+    const p = frame.params ?? {};
+    const threadId = p["threadId"];
+    const state = this.stateOfThread(threadId);
+    const id = frame.id ?? 0;
+
+    if (method.includes("requestApproval")) {
+      if (state === undefined) {
+        this.conn.reply(id, { decision: "denied" });
+        return;
+      }
+      const callId = typeof p["callId"] === "string" ? p["callId"] : `appr_${id}`;
+      const isFile = method.includes("fileChange");
+      const detail =
+        (isFile ? (p["changes"] ?? p["paths"]) : (p["command"] ?? p["title"])) instanceof Object
+          ? JSON.stringify(isFile ? (p["changes"] ?? p["paths"]) : (p["command"] ?? p["title"])).slice(0, 300)
+          : String(isFile ? (p["changes"] ?? p["paths"] ?? "") : (p["command"] ?? p["title"] ?? "")).slice(0, 300);
+      state.sink?.({
+        type: "permission.requested",
+        sessionId: state.sessionId,
+        requestId: `codex:${id}:${callId}`,
+        kind: isFile ? "file_write" : "shell",
+        detail,
+        risk: "medium",
+      });
+      return;
+    }
+    // 未知反向请求：婉拒 + 留痕（协议演进时日志里能看到原始形状）
+    log.info("codex app-server 未处理的反向请求已婉拒", { method, params: JSON.stringify(p).slice(0, 300) });
+    this.conn.reply(id, { decision: "denied" });
   }
 }
