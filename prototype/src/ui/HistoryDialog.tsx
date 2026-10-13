@@ -11,14 +11,20 @@ import {
   ListTodo,
   MessageSquare,
   RotateCcw,
+  Sparkles,
   Terminal,
+  Wrench,
   X,
 } from "lucide-react";
 import {
   dispatchTerminal,
+  fetchNativeSessionDetail,
+  fetchNativeSessions,
   fetchSessionMessages,
   fetchTerminalTranscript,
   fetchUnitHistory,
+  type NativeSessionDetail,
+  type NativeSessionSummary,
   type UnitHistoryEntry,
 } from "../adapters/daemon/client.ts";
 import { useWorkbench } from "../store/useWorkbench.ts";
@@ -126,6 +132,12 @@ export function HistoryDialog({
   const [expanded, setExpanded] = useState<string | null>(focusKey ?? null);
   const [resumeBusy, setResumeBusy] = useState<string | null>(null);
 
+  /** 页签：运行记录（daemon 台账）| 原生会话（各 CLI 自己的存储，docs/13 Phase 1） */
+  const [tab, setTab] = useState<"runs" | "native">("runs");
+  const [nativeList, setNativeList] = useState<readonly NativeSessionSummary[] | null>(null);
+  const [nativeErr, setNativeErr] = useState<string | null>(null);
+  const [nativeExpanded, setNativeExpanded] = useState<string | null>(null);
+
   /**
    * 在 TUI 中恢复：按条目执行器派发终端，带各家 resume 口径的参数（见 RESUME_ARGS）。
    * 依据是 cli_ref（执行器原生会话 id），不是我们的内部 id —— 记录侧只存 id，
@@ -183,6 +195,44 @@ export function HistoryDialog({
     setExpanded(focusKey ?? null);
   }, [focusKey]);
 
+  // 原生会话列表：切到该页签时拉一次（不轮询——磁盘事实源，弹窗期间基本不变）
+  useEffect(() => {
+    if (tab !== "native" || nativeList !== null) return;
+    let alive = true;
+    setNativeErr(null);
+    void fetchNativeSessions(unitId, 60)
+      .then((rows) => {
+        if (alive) setNativeList(rows);
+      })
+      .catch((e: unknown) => {
+        if (alive) setNativeErr(e instanceof Error ? e.message : String(e));
+      });
+    return () => {
+      alive = false;
+    };
+  }, [tab, unitId, nativeList]);
+
+  /** 原生会话的 TUI 恢复：sessionId 即各家原生 id（与 RESUME_ARGS 口径一致） */
+  const handleNativeResume = (s: NativeSessionSummary): void => {
+    const u = units.find((x) => x.id === unitId);
+    const args = resumeArgsFor(s.executorId, s.sessionId);
+    if (u === undefined || args === null) return;
+    setResumeBusy(`native-${s.executorId}-${s.sessionId}`);
+    void dispatchTerminal({
+      unitId,
+      unitName: u.name,
+      rootPath: u.rootPath,
+      runtimeId: s.executorId,
+      args,
+    })
+      .then(() => {
+        useWorkbench.getState().selectUnit(asUnitId(unitId));
+        onClose();
+      })
+      .catch((err2: unknown) => console.error("[HistoryDialog] 原生会话 TUI 恢复失败:", err2))
+      .finally(() => setResumeBusy(null));
+  };
+
   const hideFailedInDialog = useHistoryPrefs((s) => s.prefs.hideFailedInDialog);
   const setPrefs = useHistoryPrefs((s) => s.setPrefs);
 
@@ -208,8 +258,34 @@ export function HistoryDialog({
       >
         <div className="flex h-12 shrink-0 items-center gap-2 border-b border-line px-4">
           <History size={14} className="text-graphite" />
-          <p className="flex-1 text-body-sm font-medium text-ink">{unitName} · 历史会话</p>
-          {failedCount > 0 && (
+          <p className="text-body-sm font-medium text-ink">{unitName} · 历史会话</p>
+
+          {/* 页签切换：daemon 运行台账 | 各 CLI 原生存储 */}
+          <div className="ml-2 flex items-center rounded-btn bg-line-soft/80 p-0.5">
+            <button
+              type="button"
+              onClick={() => setTab("runs")}
+              className={cn(
+                "rounded-btn px-2 py-0.5 text-caption font-medium transition",
+                tab === "runs" ? "bg-card text-teal font-semibold shadow-xs" : "text-graphite hover:text-ink",
+              )}
+            >
+              运行记录
+            </button>
+            <button
+              type="button"
+              onClick={() => setTab("native")}
+              title="各 CLI 自己的会话存储（TUI 里聊的、任何入口产生的都来自磁盘事实源）"
+              className={cn(
+                "rounded-btn px-2 py-0.5 text-caption font-medium transition",
+                tab === "native" ? "bg-card text-teal font-semibold shadow-xs" : "text-graphite hover:text-ink",
+              )}
+            >
+              原生会话
+            </button>
+          </div>
+
+          {tab === "runs" && failedCount > 0 && (
             <button
               type="button"
               onClick={() => setPrefs({ hideFailedInDialog: !hideFailedInDialog })}
@@ -225,18 +301,44 @@ export function HistoryDialog({
               <span>{hideFailedInDialog ? `已隐藏 ${failedCount} 条失败（点击查看）` : `已显示失败（点击隐藏）`}</span>
             </button>
           )}
-          <span className="text-caption text-ash">
-            {entries === null
-              ? "加载中…"
-              : hideFailedInDialog && failedCount > 0
-                ? `${displayedEntries?.length ?? 0} / ${entries.length} 条`
-                : `${entries.length} 条`}
+          <span className="ml-auto text-caption text-ash">
+            {tab === "native"
+              ? nativeList === null
+                ? "加载中…"
+                : `${nativeList.length} 条`
+              : entries === null
+                ? "加载中…"
+                : hideFailedInDialog && failedCount > 0
+                  ? `${displayedEntries?.length ?? 0} / ${entries.length} 条`
+                  : `${entries.length} 条`}
           </span>
           <button onClick={onClose} aria-label="关闭" className="rounded-btn p-1 text-ash hover:bg-line-soft hover:text-ink">
             <X size={13} />
           </button>
         </div>
 
+        {tab === "native" ? (
+          <div className="min-h-0 flex-1 overflow-y-auto p-3">
+            {nativeErr !== null && <p className="rounded-btn bg-loss/5 px-2.5 py-2 text-caption text-loss">{nativeErr}</p>}
+            {nativeList !== null && nativeList.length === 0 && (
+              <p className="px-1 py-6 text-center text-caption text-ash">
+                这个工作目录下还没找到各 CLI 的原生会话 —— 在 TUI 里跑过之后会出现在这里
+              </p>
+            )}
+            {nativeList?.map((s) => (
+              <NativeRow
+                key={`${s.executorId}-${s.sessionId}`}
+                summary={s}
+                expanded={nativeExpanded === `${s.executorId}-${s.sessionId}`}
+                resumeBusy={resumeBusy === `native-${s.executorId}-${s.sessionId}`}
+                onToggle={() =>
+                  setNativeExpanded(nativeExpanded === `${s.executorId}-${s.sessionId}` ? null : `${s.executorId}-${s.sessionId}`)
+                }
+                onResume={() => handleNativeResume(s)}
+              />
+            ))}
+          </div>
+        ) : (
         <div className="min-h-0 flex-1 overflow-y-auto p-3">
           {err !== null && <p className="rounded-btn bg-loss/5 px-2.5 py-2 text-caption text-loss">{err}</p>}
           {entries !== null && entries.length === 0 && (
@@ -268,7 +370,151 @@ export function HistoryDialog({
             />
           ))}
         </div>
+        )}
       </div>
+    </div>
+  );
+}
+
+/** 原生会话行：执行器徽标 + 标题 + 时间，展开富转录，可 TUI 恢复 */
+function NativeRow({
+  summary,
+  expanded,
+  resumeBusy,
+  onToggle,
+  onResume,
+}: {
+  summary: NativeSessionSummary;
+  expanded: boolean;
+  resumeBusy: boolean;
+  onToggle: () => void;
+  onResume: () => void;
+}): ReactElement {
+  const resumable = resumeArgsFor(summary.executorId, summary.sessionId) !== null;
+  return (
+    <div className="border-b border-line-soft last:border-b-0">
+      <button onClick={onToggle} className="flex w-full items-start gap-2 rounded-btn px-2 py-2 text-left transition hover:bg-line-soft">
+        <span className="mt-0.5 shrink-0 rounded-chip bg-teal-tint px-1.5 py-0.5 font-mono text-[10px] text-teal">
+          {summary.executorId}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="flex items-center gap-2">
+            <span className="min-w-0 flex-1 truncate text-body-sm text-ink">{summary.title}</span>
+            <span className="shrink-0 text-caption text-ash">{summary.messageCount} 条</span>
+            <span className="shrink-0 text-caption text-ash">{formatWhen(summary.updatedAt)}</span>
+            {resumable && (
+              <span
+                role="button"
+                tabIndex={0}
+                onClick={(ev) => {
+                  ev.stopPropagation();
+                  onResume();
+                }}
+                onKeyDown={(ev) => {
+                  if (ev.key === "Enter" || ev.key === " ") {
+                    ev.stopPropagation();
+                    onResume();
+                  }
+                }}
+                title={`在终端以 TUI 重开这段原生会话（${summary.executorId} resume）`}
+                className={cn(
+                  "flex shrink-0 cursor-pointer items-center gap-0.5 rounded-chip bg-teal-tint px-1.5 py-px text-[10px] text-teal transition hover:bg-teal hover:text-canvas",
+                  resumeBusy && "opacity-50",
+                )}
+              >
+                <RotateCcw size={9} />
+                {resumeBusy ? "恢复中" : "TUI 恢复"}
+              </span>
+            )}
+            {expanded ? <ChevronDown size={13} className="shrink-0 text-ash" /> : <ChevronRight size={13} className="shrink-0 text-ash" />}
+          </span>
+          {summary.rootPath !== null && (
+            <span className="mt-0.5 block truncate font-mono text-caption text-ash/70">{summary.rootPath}</span>
+          )}
+        </span>
+      </button>
+      {expanded && <NativeTranscript executorId={summary.executorId} sessionId={summary.sessionId} />}
+    </div>
+  );
+}
+
+/** 原生会话富转录：user/assistant 对话 + 工具行 + 思考折叠 */
+function NativeTranscript({ executorId, sessionId }: { executorId: string; sessionId: string }): ReactElement {
+  const [detail, setDetail] = useState<NativeSessionDetail | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    setDetail(null);
+    setErr(null);
+    void fetchNativeSessionDetail(executorId, sessionId)
+      .then((d) => {
+        if (alive) setDetail(d);
+      })
+      .catch((e: unknown) => {
+        if (alive) setErr(e instanceof Error ? e.message : String(e));
+      });
+    return () => {
+      alive = false;
+    };
+  }, [executorId, sessionId]);
+
+  if (err !== null) return <p className="px-4 pb-2 text-caption text-loss">转录读取失败：{err}</p>;
+  if (detail === null) return <p className="px-4 pb-2 text-caption text-ash">读取转录…</p>;
+  if (detail.transcript.length === 0) return <p className="px-4 pb-2 text-caption text-ash">这条会话没有可展示的对话内容</p>;
+
+  return (
+    <div className="mx-2 mb-2 max-h-80 space-y-1.5 overflow-y-auto rounded-btn bg-rail p-2.5">
+      {detail.transcript.map((e, i) => {
+        if (e.kind === "tool") {
+          return (
+            <div key={i} className="flex items-start gap-2">
+              <span className="flex w-14 shrink-0 items-center justify-end gap-0.5 text-right text-caption text-ash/70">
+                <Wrench size={9} />
+                工具
+              </span>
+              <p className="min-w-0 flex-1 whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-graphite/80">
+                {e.toolName !== undefined ? `[${e.toolName}] ` : ""}
+                {e.text === "" ? "（无参数/输出）" : e.text}
+              </p>
+            </div>
+          );
+        }
+        if (e.kind === "thinking") {
+          return (
+            <details key={i} className="flex items-start gap-2 group">
+              <summary className="flex w-14 shrink-0 cursor-pointer items-center justify-end gap-0.5 text-right text-caption text-ash/70 list-none">
+                <Sparkles size={9} />
+                思考
+              </summary>
+              <p className="min-w-0 flex-1 whitespace-pre-wrap break-words text-caption leading-relaxed text-ash group-open:text-graphite/80">
+                {e.text}
+              </p>
+            </details>
+          );
+        }
+        const label = e.kind === "user" ? "用户" : e.kind === "assistant" ? "助手" : e.kind === "compaction" ? "压缩" : "系统";
+        return (
+          <div key={i} className="flex items-start gap-2">
+            <span
+              className={cn(
+                "w-14 shrink-0 text-right text-caption",
+                e.kind === "user" ? "text-teal" : e.kind === "assistant" ? "text-graphite" : "text-ash/60",
+              )}
+            >
+              {label}
+            </span>
+            <p
+              className={cn(
+                "min-w-0 flex-1 whitespace-pre-wrap break-words text-caption leading-relaxed",
+                e.kind === "user" ? "text-ink" : e.kind === "assistant" ? "text-graphite" : "text-ash/70",
+              )}
+            >
+              {e.text === "" ? "（空）" : e.text}
+            </p>
+          </div>
+        );
+      })}
     </div>
   );
 }

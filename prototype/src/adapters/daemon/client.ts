@@ -839,6 +839,59 @@ export async function fetchTerminalTranscript(
   return r.text;
 }
 
+/** 原生会话摘要（docs/13 Phase 1 会话事实源层：直接读各 CLI 自己的存储） */
+export interface NativeSessionSummary {
+  readonly executorId: string;
+  readonly sessionId: string;
+  readonly rootPath: string | null;
+  readonly title: string;
+  readonly startedAt: number;
+  readonly updatedAt: number;
+  readonly messageCount: number;
+}
+
+/** 原生会话转录条目 */
+export interface NativeTranscriptEntry {
+  readonly kind: "user" | "assistant" | "tool" | "thinking" | "system" | "compaction";
+  readonly text: string;
+  readonly toolName?: string;
+  readonly at?: number;
+}
+
+export interface NativeSessionDetail extends NativeSessionSummary {
+  readonly transcript: readonly NativeTranscriptEntry[];
+}
+
+/** 列出各 CLI 的原生会话（TUI 里聊的也在）；unitId 提供时按该 bot 的 rootPath 过滤 */
+export async function fetchNativeSessions(
+  unitId: string | null,
+  limit = 50,
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<readonly NativeSessionSummary[]> {
+  const client = DaemonClient.get(endpoint);
+  const r = await client.rpc<{ sessions: readonly NativeSessionSummary[] }>(
+    "history.native.list",
+    { unitId: unitId ?? undefined, limit },
+    20000,
+  );
+  return r.sessions;
+}
+
+/** 单条原生会话的富转录下钻 */
+export async function fetchNativeSessionDetail(
+  executorId: string,
+  sessionId: string,
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<NativeSessionDetail> {
+  const client = DaemonClient.get(endpoint);
+  const r = await client.rpc<{ detail: NativeSessionDetail }>(
+    "history.native.detail",
+    { executorId, sessionId },
+    20000,
+  );
+  return r.detail;
+}
+
 /**
  * 手动派发终端：经派发系统打开前台 TUI（登记运行记录 → 进该 bot 的历史，
  * 终端标签带「派发」徽章；与终端面板手动开的裸 TUI 相区别）。不带 prompt。

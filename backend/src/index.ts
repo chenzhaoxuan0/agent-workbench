@@ -40,6 +40,7 @@ import { CursorAdapter } from "./runtime/adapters/cursor.ts";
 import { OpenclawAdapter } from "./runtime/adapters/openclaw.ts";
 import { TerminalManager } from "./terminal/terminals.ts";
 import { Store } from "./store/db.ts";
+import { listNativeSessions, readNativeSession } from "./history/index.ts";
 import { AutomationScheduler } from "./automation/scheduler.ts";
 import { cronNextAt, parseCron } from "./automation/cron.ts";
 import {
@@ -1425,6 +1426,38 @@ registerMethod("unit.history", async (params) => {
 
   entries.sort((a, b) => b.startedAt - a.startedAt);
   return { entries: entries.slice(0, limit) };
+});
+
+// ---- 原生会话历史（history.native.*，docs/13 Phase 1）-------------------------
+//
+// 会话事实源层：直接读各 CLI 自己的会话存储（~/.pi / ~/.claude / ~/.codex / ~/.grok /
+// ~/.minimax / ~/.kimi-code / $DSH_HOME / ~/.zcode / ~/.hermes），只读浏览零进程成本。
+// TUI 里聊的、任何入口产生的会话都可见——这是「聊天视图不再形同虚设」的事实源。
+// 协议型来源（opencode/openclaw）随 Phase 4 对应 tier 的适配器升级接入。
+
+registerMethod("history.native.list", async (params) => {
+  const p = (params ?? {}) as { unitId?: string; executorIds?: unknown; limit?: number };
+  const limit = Math.min(Math.max(typeof p.limit === "number" && Number.isFinite(p.limit) ? Math.round(p.limit) : 50, 1), 200);
+  const executorIds = Array.isArray(p.executorIds) ? p.executorIds.filter((x): x is string => typeof x === "string") : [];
+  // unitId → rootPath 过滤（不传 = 全量跨 bot）
+  let rootPath: string | null = null;
+  if (typeof p.unitId === "string" && p.unitId.trim() !== "") {
+    const bots = await botRegistry.listBots().catch(() => [] as { unitId: string; rootPath?: unknown }[]);
+    const bot = bots.find((b) => b.unitId === p.unitId);
+    rootPath = bot !== undefined && typeof bot.rootPath === "string" && bot.rootPath !== "" ? bot.rootPath : null;
+  }
+  const sessions = await listNativeSessions(rootPath, executorIds, limit);
+  return { sessions };
+});
+
+registerMethod("history.native.detail", async (params) => {
+  const p = (params ?? {}) as { executorId?: string; sessionId?: string };
+  if (typeof p.executorId !== "string" || typeof p.sessionId !== "string" || p.executorId === "" || p.sessionId === "") {
+    throw Object.assign(new Error("executorId 与 sessionId 必填"), { code: "bad_params" });
+  }
+  const detail = await readNativeSession(p.executorId, p.sessionId);
+  if (detail === null) throw Object.assign(new Error("会话不存在或读取失败"), { code: "not_found" });
+  return { detail };
 });
 
 
