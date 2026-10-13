@@ -577,21 +577,52 @@ function UnitRow({
   const [histEntries, setHistEntries] = useState<readonly UnitHistoryEntry[] | null>(null);
   const [histErr, setHistErr] = useState<string | null>(null);
 
-  // 展开时拉最近执行记录；收起不丢缓存，重开刷新
+  // 展开时拉最近执行记录，且**开着期间保持实时**：派发终端的 created/exit 帧、
+  // 会话起止事件都会改写历史（新条目出现 / 状态收口），命中即去抖重拉；
+  // 30s 轮询兜底覆盖其余路径（如待办状态迁移、别处触发的派发）。
   useEffect(() => {
     if (!historyOpen) return;
-    setHistErr(null);
-    setHistEntries(null);
     let alive = true;
-    void fetchUnitHistory(unit.id, 20)
-      .then((list) => {
-        if (alive) setHistEntries(list);
-      })
-      .catch((e: unknown) => {
-        if (alive) setHistErr(e instanceof Error ? e.message : String(e));
+    const load = (): void => {
+      if (!alive) return;
+      setHistErr(null);
+      void fetchUnitHistory(unit.id, 20)
+        .then((list) => {
+          if (alive) setHistEntries(list);
+        })
+        .catch((e: unknown) => {
+          if (alive) setHistErr(e instanceof Error ? e.message : String(e));
+        });
+    };
+    load();
+    let debounce: ReturnType<typeof setTimeout> | null = null;
+    const scheduleLoad = (): void => {
+      if (!alive) return;
+      if (debounce !== null) clearTimeout(debounce);
+      debounce = setTimeout(load, 300);
+    };
+    const poll = setInterval(load, 30_000);
+    const cleanupFns: Array<() => void> = [];
+    void (async () => {
+      const { DaemonClient, defaultDaemonEndpoint } = await import("../adapters/daemon/client.ts");
+      if (!alive) return;
+      const client = DaemonClient.get(defaultDaemonEndpoint());
+      const unsubFrame = client.onTerminalFrame((f) => {
+        if (f.kind === "created" || f.kind === "exit") scheduleLoad();
       });
+      const unsubEvent = client.onEvent((e) => {
+        if (e.type === "session.started" || e.type === "session.ended") scheduleLoad();
+      });
+      cleanupFns.push(() => {
+        unsubFrame();
+        unsubEvent();
+      });
+    })();
     return () => {
       alive = false;
+      clearInterval(poll);
+      if (debounce !== null) clearTimeout(debounce);
+      for (const fn of cleanupFns) fn();
     };
   }, [historyOpen, unit.id]);
   // ZCode: unavailableLocalDirectory —— 路径不可用要显式说出来，不能当成正常单元

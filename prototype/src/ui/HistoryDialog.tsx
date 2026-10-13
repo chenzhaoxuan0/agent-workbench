@@ -79,18 +79,25 @@ export function HistoryDialog({
     let alive = true;
     setEntries(null);
     setErr(null);
-    setExpanded(null);
-    void fetchUnitHistory(unitId, 200)
-      .then((list) => {
-        if (alive) setEntries(list);
-      })
-      .catch((e: unknown) => {
-        if (alive) setErr(e instanceof Error ? e.message : String(e));
-      });
+    setExpanded(focusKey ?? null);
+    const load = (): void => {
+      if (!alive) return;
+      void fetchUnitHistory(unitId, 200)
+        .then((list) => {
+          if (alive) setEntries(list);
+        })
+        .catch((e: unknown) => {
+          if (alive) setErr(e instanceof Error ? e.message : String(e));
+        });
+    };
+    load();
+    // 打开期间保持新鲜：20s 轮询（运行中的条目状态会推进）
+    const poll = setInterval(load, 20_000);
     return () => {
       alive = false;
+      clearInterval(poll);
     };
-  }, [unitId]);
+  }, [unitId, focusKey]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-6" onClick={onClose}>
