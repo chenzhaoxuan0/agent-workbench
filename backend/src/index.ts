@@ -1150,6 +1150,8 @@ registerMethod("automation.runNow", (params) => {
 interface UnitHistoryEntry {
   key: string;
   kind: "automation" | "backlog" | "session" | "manual";
+  unitId?: string;
+  unitName?: string;
   title: string;
   subtitle: string | null;
   runtimeId: string;
@@ -1166,6 +1168,8 @@ interface UnitHistoryEntry {
    * zcode=原生 id、ACP 系=ref）。TUI 恢复按各家 resume 口径用它，不用我们的内部 id。
    */
   resumeRef: string | null;
+  /** 终端运行 id（用于检索终端纯文本日志/transcript） */
+  terminalId?: string | null;
 }
 
 /**
@@ -1269,23 +1273,29 @@ function resolveNativeTerminalSession(
 
 registerMethod("unit.history", async (params) => {
   const p = (params ?? {}) as { unitId?: string; limit?: number };
-  if (typeof p.unitId !== "string" || p.unitId === "") throw badAutomation("unitId is required");
+  const targetUnitId = typeof p.unitId === "string" && p.unitId.trim() !== "" ? p.unitId.trim() : null;
   const limit = Math.min(Math.max(typeof p.limit === "number" && Number.isFinite(p.limit) ? Math.round(p.limit) : 100, 1), 500);
 
   const entries: UnitHistoryEntry[] = [];
   /** 已被运行记录认领的会话 id（全量，不受单次 limit 影响）：会话条目去重用 */
   const claimedSessionIds = store.getClaimedSessionIds();
-  const bot = (await botRegistry.getBot(p.unitId)) ?? null;
-  const botRootPath = bot?.rootPath ? String(bot.rootPath) : "";
+
+  // 预载全部 bot 映射，支持单 bot 历史或跨 bot 全局历史
+  const allBots = await botRegistry.listBots().catch(() => []);
+  const botMap = new Map(allBots.map((b) => [b.unitId, b]));
+  const defaultBotRootPath = targetUnitId ? (botMap.get(targetUnitId)?.rootPath ? String(botMap.get(targetUnitId)?.rootPath) : "") : "";
 
   for (const a of store.listAutomations()) {
-    if (a.unitId !== p.unitId) continue;
+    if (targetUnitId !== null && a.unitId !== targetUnitId) continue;
+    const uName = botMap.get(a.unitId)?.name ?? a.unitId;
     for (const r of store.listAutomationRuns(a.id, limit)) {
       const isTerminal = r.sessionId !== null && r.sessionId.startsWith("autoterm_");
       const launchMode: "terminal" | "headless" = isTerminal ? "terminal" : (r.sessionId !== null ? "headless" : a.launchMode);
       entries.push({
         key: `automation-${r.id}`,
         kind: "automation",
+        unitId: a.unitId,
+        unitName: uName,
         title: a.name,
         subtitle: a.prompt.length > 80 ? `${a.prompt.slice(0, 80)}…` : a.prompt,
         runtimeId: a.runtimeId,
@@ -1299,18 +1309,22 @@ registerMethod("unit.history", async (params) => {
         resumeRef: !isTerminal && r.sessionId !== null
           ? (store.getSession(r.sessionId)?.cliRef ?? null)
           : null,
+        terminalId: isTerminal ? r.sessionId : null,
       });
     }
   }
 
   for (const item of store.listBacklogItems()) {
-    if (item.unitId !== p.unitId) continue;
+    if (targetUnitId !== null && item.unitId !== targetUnitId) continue;
+    const uName = botMap.get(item.unitId)?.name ?? item.unitName ?? item.unitId;
     for (const r of store.listBacklogRuns(item.id, limit)) {
       const isTerminal = r.sessionId !== null && r.sessionId.startsWith("autoterm_");
       if (r.sessionId !== null && !isTerminal) claimedSessionIds.add(r.sessionId);
       entries.push({
         key: `backlog-${r.id}`,
         kind: "backlog",
+        unitId: item.unitId,
+        unitName: uName,
         title: item.title,
         subtitle: item.goal.length > 80 ? `${item.goal.slice(0, 80)}…` : item.goal,
         runtimeId: r.runtimeId,
@@ -1322,13 +1336,15 @@ registerMethod("unit.history", async (params) => {
         detail: r.detail,
         sessionId: r.sessionId !== null && !isTerminal ? r.sessionId : null,
         resumeRef: r.sessionId !== null && !isTerminal ? (store.getSession(r.sessionId)?.cliRef ?? null) : null,
+        terminalId: isTerminal ? r.sessionId : null,
       });
     }
   }
 
-  for (const r of store.listTerminalRuns(p.unitId, limit)) {
+  for (const r of store.listTerminalRuns(targetUnitId ?? undefined, limit)) {
     let title = r.title;
     let resumeRef = r.resumeRef;
+    const botRootPath = (botMap.get(r.unitId)?.rootPath ? String(botMap.get(r.unitId)?.rootPath) : "") || defaultBotRootPath;
     if (!title || title === "" || title === "交互式会话") {
       const resolved = resolveNativeTerminalSession(r.runtimeId, botRootPath, r.startedAt, r.finishedAt);
       if (resolved) {
@@ -1340,6 +1356,8 @@ registerMethod("unit.history", async (params) => {
     entries.push({
       key: `manual-${r.id}`,
       kind: "manual",
+      unitId: r.unitId,
+      unitName: botMap.get(r.unitId)?.name ?? r.unitName,
       title: title && title !== "" ? title : "交互式会话",
       subtitle: null,
       runtimeId: r.runtimeId,
@@ -1351,11 +1369,12 @@ registerMethod("unit.history", async (params) => {
       detail: r.detail,
       sessionId: null,
       resumeRef: resumeRef ?? null,
+      terminalId: r.terminalId,
     });
   }
 
   for (const s of store.listSessions()) {
-    if (s.unitId !== p.unitId || claimedSessionIds.has(s.id)) continue;
+    if ((targetUnitId !== null && s.unitId !== targetUnitId) || claimedSessionIds.has(s.id)) continue;
     let title = s.title.trim();
     if (title === "" || title === "（无标题会话）") {
       const firstMsg = store.listMessages(s.id, 1)[0];
@@ -1369,6 +1388,8 @@ registerMethod("unit.history", async (params) => {
     entries.push({
       key: `session-${s.id}`,
       kind: "session",
+      unitId: s.unitId,
+      unitName: botMap.get(s.unitId)?.name ?? s.unitId,
       title: title === "" ? "（无标题会话）" : title,
       subtitle: null,
       runtimeId: s.runtimeId,
@@ -1380,6 +1401,7 @@ registerMethod("unit.history", async (params) => {
       detail: null,
       sessionId: s.id,
       resumeRef: s.cliRef,
+      terminalId: null,
     });
   }
 

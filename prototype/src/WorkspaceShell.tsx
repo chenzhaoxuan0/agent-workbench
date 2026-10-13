@@ -13,6 +13,7 @@ import { Sidebar } from "./ui/Sidebar.tsx";
 import { TerminalPanel } from "./ui/TerminalPanel.tsx";
 import { WorkspaceHeader } from "./ui/WorkspaceHeader.tsx";
 import { bindShellShortcuts, useShell } from "./store/useShell.ts";
+import { HistoryDialog } from "./ui/HistoryDialog.tsx";
 
 /**
  * 工作台外壳 —— 布局结构对齐 ZCode 的 WorkspaceShellLayout。
@@ -33,6 +34,8 @@ import { bindShellShortcuts, useShell } from "./store/useShell.ts";
  */
 export function WorkspaceShell() {
   const settingsOpen = useShell((s) => s.settingsOpen);
+  const historyModal = useShell((s) => s.historyModal);
+  const closeHistoryModal = useShell((s) => s.closeHistoryModal);
   useEffect(() => bindShellShortcuts(), []);
 
   // 首载重挂：F5 后把 daemon 里还活着的终端进程找回成标签（带最近输出回放）。
@@ -69,6 +72,15 @@ export function WorkspaceShell() {
       <ProposalBanner />
 
       <CommandCenter />
+
+      {historyModal && (
+        <HistoryDialog
+          unitId={historyModal.unitId}
+          unitName={historyModal.unitName}
+          focusKey={historyModal.focusKey}
+          onClose={closeHistoryModal}
+        />
+      )}
     </div>
   );
 }

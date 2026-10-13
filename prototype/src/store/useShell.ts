@@ -159,6 +159,10 @@ interface ShellState {
   closeImportBot: () => void;
   openUnitSettings: (id: UnitId) => void;
   closeUnitSettings: () => void;
+  /** 全局历史对话弹窗：从搜索中心或别处点击某条历史会话时唤起 */
+  historyModal: { unitId: string; unitName: string; focusKey?: string } | null;
+  openHistoryModal: (target: { unitId: string; unitName: string; focusKey?: string }) => void;
+  closeHistoryModal: () => void;
 }
 
 export const useShell = create<ShellState>((set, get) => ({
@@ -172,6 +176,7 @@ export const useShell = create<ShellState>((set, get) => ({
   addBotOpen: false,
   editUnitId: null,
   importBotOpen: false,
+  historyModal: null,
 
   setMainView: (mainView) => set({ mainView }),
 
@@ -199,6 +204,8 @@ export const useShell = create<ShellState>((set, get) => ({
   closeImportBot: () => set({ importBotOpen: false }),
   openUnitSettings: (editUnitId) => set({ editUnitId, addBotOpen: false, importBotOpen: false }),
   closeUnitSettings: () => set({ editUnitId: null }),
+  openHistoryModal: (historyModal) => set({ historyModal }),
+  closeHistoryModal: () => set({ historyModal: null }),
 }));
 
 // ---------------------------------------------------------------------------

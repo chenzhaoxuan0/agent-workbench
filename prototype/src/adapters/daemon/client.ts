@@ -783,6 +783,8 @@ export async function fetchAutomationRuns(
 export interface UnitHistoryEntry {
   readonly key: string;
   readonly kind: "automation" | "backlog" | "manual" | "session";
+  readonly unitId?: string;
+  readonly unitName?: string;
   readonly title: string;
   readonly subtitle: string | null;
   readonly runtimeId: string;
@@ -796,15 +798,21 @@ export interface UnitHistoryEntry {
   readonly sessionId: string | null;
   /** 执行器原生会话引用（cli_ref）—— TUI 恢复按各家 resume 口径用它 */
   readonly resumeRef: string | null;
+  /** 终端运行 id（用于检索终端纯文本日志/transcript） */
+  readonly terminalId?: string | null;
 }
 
 export async function fetchUnitHistory(
-  unitId: string,
+  unitId?: string,
   limit = 100,
   endpoint: string = defaultDaemonEndpoint(),
 ): Promise<UnitHistoryEntry[]> {
   const client = DaemonClient.get(endpoint);
-  const r = await client.rpc<{ entries: UnitHistoryEntry[] }>("unit.history", { unitId, limit }, 15000);
+  const r = await client.rpc<{ entries: UnitHistoryEntry[] }>(
+    "unit.history",
+    unitId ? { unitId, limit } : { limit },
+    15000,
+  );
   return r.entries;
 }
 

@@ -3,6 +3,7 @@ import {
   AlarmClock,
   Bot,
   FolderGit2,
+  History,
   Layers,
   Rocket,
   Search,
@@ -11,6 +12,10 @@ import {
 } from "lucide-react";
 import { useWorkbench } from "../store/useWorkbench.ts";
 import { SETTINGS_GROUPS, SETTINGS_SECTIONS, useShell } from "../store/useShell.ts";
+import { fetchUnitHistory, type UnitHistoryEntry } from "../adapters/daemon/client.ts";
+import { useHistoryPrefs } from "../store/useHistoryPrefs.ts";
+import { formatRelative } from "../core/automation.ts";
+import { asUnitId } from "../core/units.ts";
 import { cn } from "./cn.ts";
 
 /**
@@ -25,13 +30,14 @@ import { cn } from "./cn.ts";
  *   分组结果列表（↑↓ 移动 · Enter 打开 · Esc 关闭）
  */
 
-type Scope = "all" | "commands" | "units" | "automations";
+type Scope = "all" | "commands" | "units" | "automations" | "sessions";
 
 const SCOPES: readonly { id: Scope; label: string; icon: typeof Rocket }[] = [
   { id: "all", label: "全部", icon: Layers },
   { id: "commands", label: "命令", icon: Rocket },
   { id: "units", label: "Agent", icon: Bot },
   { id: "automations", label: "自动化", icon: AlarmClock },
+  { id: "sessions", label: "会话", icon: History },
 ];
 
 interface Item {
@@ -57,9 +63,25 @@ export function CommandCenter() {
   const commands = useCommands();
   const units = useWorkbench((s) => s.units);
   const automations = useWorkbench((s) => s.automations);
+  const hideFailedInDialog = useHistoryPrefs((s) => s.prefs.hideFailedInDialog);
+  const [historyEntries, setHistoryEntries] = useState<readonly UnitHistoryEntry[]>([]);
 
-  // 搜索域数据（ZCode 的结果三类：命令/会话/文件；本项目无文件索引，
-  // 以工作单元与自动化补位 —— 与 SearchPanel 时代的口径一致）
+  useEffect(() => {
+    if (!open) return;
+    let alive = true;
+    void fetchUnitHistory(undefined, 200)
+      .then((res) => {
+        if (alive) setHistoryEntries(res);
+      })
+      .catch((err: unknown) => {
+        console.warn("[CommandCenter] fetchUnitHistory failed:", err);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [open]);
+
+  // 搜索域数据（命令 / 工作单元 / 自动化 / 跨 Bot 历史会话）
   const items = useMemo<readonly Item[]>(() => {
     const out: Item[] = commands.map((c) => ({
       id: c.id,
@@ -93,8 +115,40 @@ export function CommandCenter() {
         run: () => useShell.getState().setMainView("automations"),
       });
     }
+    for (const h of historyEntries) {
+      if (hideFailedInDialog && h.status === "failed") continue;
+      const uName = h.unitName || units.find((u) => u.id === h.unitId)?.name || "Agent";
+      const uId = h.unitId || "";
+      const statusLabel =
+        h.status === "done"
+          ? "完成"
+          : h.status === "failed"
+            ? "失败"
+            : h.status === "running"
+              ? "运行中"
+              : h.status;
+      out.push({
+        id: `history-${h.key}`,
+        scope: "sessions",
+        group: "历史会话",
+        icon: History,
+        label: h.title,
+        hint: `${uName} · ${h.runtimeId} · ${statusLabel} · ${formatRelative(h.startedAt)}`,
+        meta: h.launchMode === "terminal" ? "TUI" : "后台",
+        run: () => {
+          if (uId) {
+            useWorkbench.getState().selectUnit(asUnitId(uId));
+            useShell.getState().openHistoryModal({
+              unitId: uId,
+              unitName: uName,
+              focusKey: h.key,
+            });
+          }
+        },
+      });
+    }
     return out;
-  }, [commands, units, automations]);
+  }, [commands, units, automations, historyEntries, hideFailedInDialog]);
 
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();

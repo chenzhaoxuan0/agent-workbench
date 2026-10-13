@@ -885,7 +885,7 @@ export class Store {
       .run(status, Date.now(), detail, terminalId);
   }
 
-  listTerminalRuns(unitId: string, limit = 50): Array<{
+  listTerminalRuns(unitId?: string, limit = 50): Array<{
     id: number;
     terminalId: string;
     unitId: string;
@@ -898,9 +898,9 @@ export class Store {
     title: string | null;
     resumeRef: string | null;
   }> {
-    const rows = this.db
-      .prepare(`SELECT * FROM terminal_runs WHERE unit_id = ? ORDER BY id DESC LIMIT ?`)
-      .all(unitId, limit) as Array<Record<string, unknown>>;
+    const rows = (unitId
+      ? this.db.prepare(`SELECT * FROM terminal_runs WHERE unit_id = ? ORDER BY id DESC LIMIT ?`).all(unitId, limit)
+      : this.db.prepare(`SELECT * FROM terminal_runs ORDER BY id DESC LIMIT ?`).all(limit)) as Array<Record<string, unknown>>;
     return rows.map((r) => ({
       id: Number(r["id"]),
       terminalId: String(r["terminal_id"]),
