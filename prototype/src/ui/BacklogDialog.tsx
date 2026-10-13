@@ -176,7 +176,7 @@ export function BacklogDialog({ initial, onClose }: { initial: BacklogItem | nul
           </div>
 
           <div className="grid grid-cols-2 gap-3">
-            <Field label="模型" hint="可选，缺省跟随执行器默认">
+            <Field label="模型" hint={launchMode === "terminal" ? "仅纯后台模式生效（TUI 里可自行切换）" : "可选，缺省跟随执行器默认"}>
               <select value={model} onChange={(e) => setModel(e.target.value)} className={inputCls}>
                 <option value="">跟随默认</option>
                 {models.map((m) => (
@@ -186,7 +186,7 @@ export function BacklogDialog({ initial, onClose }: { initial: BacklogItem | nul
                 ))}
               </select>
             </Field>
-            <Field label="权限模式" hint="headless 执行本就自动放行（deny 规则仍生效）">
+            <Field label="权限模式" hint={launchMode === "terminal" ? "仅纯后台模式生效（TUI 默认免审批）" : "执行时自动放行（deny 规则仍生效）"}>
               <select value={mode} onChange={(e) => setMode(e.target.value)} className={inputCls}>
                 {MODE_OPTIONS.map((m) => (
                   <option key={m.id} value={m.id}>
@@ -252,11 +252,13 @@ const inputCls =
   "w-full rounded-input border border-transparent bg-rail px-2.5 py-1.5 text-body-sm text-ink outline-none placeholder:text-ash focus:border-teal";
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }): ReactElement {
+  // 标签与提示分行：此前同一行 baseline 排布，提示长一点就在双列格子里换行挤压，
+  // 与下方控件糊在一起 —— 宁可多占两行也要每行只装一件事。
   return (
     <div className="space-y-1.5">
-      <div className="flex items-baseline gap-2">
+      <div className="flex flex-col gap-0.5">
         <span className="text-body-sm font-medium text-ink">{label}</span>
-        {hint !== undefined && <span className="text-caption text-ash">{hint}</span>}
+        {hint !== undefined && <span className="text-caption leading-snug text-ash">{hint}</span>}
       </div>
       {children}
     </div>

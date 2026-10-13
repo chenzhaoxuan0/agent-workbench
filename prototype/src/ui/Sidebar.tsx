@@ -6,6 +6,7 @@ import {
   FolderGit2,
   FolderOpen,
   FolderPlus,
+  History,
   ImagePlus,
   ListTodo,
   PanelLeftClose,
@@ -32,6 +33,7 @@ export { isResidentUnit, isSyntheticUnit };
 import { AddBotDialog, type AddBotDraft } from "./AddBotDialog.tsx";
 import { ImportBotDialog } from "./ImportBotDialog.tsx";
 import { ChannelMark, channelIdentityLabel } from "./ChannelMark.tsx";
+import { HistoryDialog } from "./HistoryDialog.tsx";
 import { cn } from "./cn.ts";
 
 /**
@@ -555,6 +557,7 @@ function UnitRow({
   schedule?: string;
 }) {
   const isSynthetic = isSyntheticUnit(unit);
+  const [historyOpen, setHistoryOpen] = useState(false);
   // ZCode: unavailableLocalDirectory —— 路径不可用要显式说出来，不能当成正常单元
   // **兜底 ?? []**：bot.json 是手可编辑的（见 useWorkbench 的合并守卫注释），
   // 一个字段缺失不该让整个界面白屏。管家 bot 一度就因为没写 tags 把整页搞崩了。
@@ -712,6 +715,20 @@ function UnitRow({
           onMouseDown={(e) => e.stopPropagation()}
           onClick={(e) => {
             e.stopPropagation();
+            setHistoryOpen(true);
+          }}
+          aria-label={`查看 ${unit.name} 的历史会话`}
+          title={`历史会话 —— ${unit.name} 跑过的自动化 / 待办 / 手动会话时间轴`}
+          className="cursor-pointer rounded-btn p-1 text-ash hover:bg-line-soft hover:text-ink active:scale-90 transition"
+        >
+          <History size={12} />
+        </button>
+        <button
+          type="button"
+          draggable={false}
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
             onOpenSettings();
           }}
           aria-label={`${unit.name} 设置`}
@@ -721,6 +738,8 @@ function UnitRow({
           <Settings size={12} />
         </button>
       </div>
+
+      {historyOpen && <HistoryDialog unitId={unit.id} unitName={unit.name} onClose={() => setHistoryOpen(false)} />}
     </div>
   );
 }

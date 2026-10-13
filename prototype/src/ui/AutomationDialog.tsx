@@ -559,11 +559,13 @@ const inputCls =
   "w-full rounded-input border border-transparent bg-rail px-2.5 py-1.5 text-body-sm text-ink outline-none placeholder:text-ash focus:border-teal";
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }): ReactElement {
+  // 标签与提示分行：此前同一行 baseline 排布，提示长一点就在双列格子里换行挤压，
+  // 与下方控件糊在一起 —— 宁可多占两行也要每行只装一件事。
   return (
     <div className="space-y-1.5">
-      <div className="flex items-baseline gap-2">
+      <div className="flex flex-col gap-0.5">
         <span className="text-body-sm font-medium text-ink">{label}</span>
-        {hint !== undefined && <span className="text-caption text-ash">{hint}</span>}
+        {hint !== undefined && <span className="text-caption leading-snug text-ash">{hint}</span>}
       </div>
       {children}
     </div>
