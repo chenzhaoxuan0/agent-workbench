@@ -31,6 +31,7 @@ import { getGuardianConfigRpc, readProjectMemory, runDigestDryRun, setGuardianCo
 import { ProviderInstancesPanel } from "./ProviderInstancesPanel.tsx";
 import { ImageSettingsSection } from "./ImageSettingsSection.tsx";
 import { AppearanceSettingsSection } from "./AppearanceSettingsSection.tsx";
+import { useHistoryPrefs } from "../store/useHistoryPrefs.ts";
 import { cn } from "./cn.ts";
 
 const ICONS: Record<string, typeof Settings2> = {
@@ -224,6 +225,8 @@ function SectionBody({ section }: { section: SettingsSectionDef }) {
       );
     case "shortcuts":
       return <ShortcutsSection />;
+    case "history":
+      return <HistorySettingsSection />;
     case "memory":
       return <MemorySettingsSection />;
     case "image":
@@ -599,6 +602,45 @@ function ShortcutsSection() {
         />
       ))}
     </GroupCard>
+  );
+}
+
+function HistorySettingsSection() {
+  const prefs = useHistoryPrefs((s) => s.prefs);
+  const setPrefs = useHistoryPrefs((s) => s.setPrefs);
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h3 className="text-body-sm font-semibold text-ink">历史会话展示偏好</h3>
+        <p className="mt-1 text-caption text-ash">
+          标为红色或执行失败的会话通常无法重现或继续交互。默认隐藏失败会话以保持界面整洁，可在需要排查故障或复盘时随时重新开启。
+        </p>
+      </div>
+
+      <GroupCard>
+        <SettingsRow
+          label="在左侧栏中隐藏失败会话"
+          description="侧边栏 Bot 展开的历史时间轴中隐藏标红或执行失败的会话，避免占据侧栏有限空间。"
+          control={
+            <Toggle
+              on={prefs.hideFailedInSidebar}
+              onChange={(v) => setPrefs({ hideFailedInSidebar: v })}
+            />
+          }
+        />
+        <SettingsRow
+          label="在历史会话弹窗中隐藏失败会话"
+          description="点击进入完整历史会话弹窗时默认隐藏失败会话；在弹窗顶部也可快捷临时切换查看。"
+          control={
+            <Toggle
+              on={prefs.hideFailedInDialog}
+              onChange={(v) => setPrefs({ hideFailedInDialog: v })}
+            />
+          }
+        />
+      </GroupCard>
+    </div>
   );
 }
 

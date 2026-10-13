@@ -36,6 +36,7 @@ import { ImportBotDialog } from "./ImportBotDialog.tsx";
 import { ChannelMark, channelIdentityLabel } from "./ChannelMark.tsx";
 import { HistoryDialog, resumeArgsFor } from "./HistoryDialog.tsx";
 import { executorIconSrc } from "./executorIcon.ts";
+import { useHistoryPrefs } from "../store/useHistoryPrefs.ts";
 import { RotateCcw } from "lucide-react";
 import { cn } from "./cn.ts";
 
@@ -580,6 +581,7 @@ function UnitRow({
 }) {
   const isSynthetic = isSyntheticUnit(unit);
   const units = useWorkbench((s) => s.units);
+  const hideFailedInSidebar = useHistoryPrefs((s) => s.prefs.hideFailedInSidebar);
   /** 历史详情弹窗（子列表条目点开看对话用；focusKey 预展开点进来的那条） */
   const [historyDialogOpen, setHistoryDialogOpen] = useState(false);
   const [historyFocus, setHistoryFocus] = useState<string | undefined>(undefined);
@@ -587,6 +589,21 @@ function UnitRow({
   const [histErr, setHistErr] = useState<string | null>(null);
   /** 历史列表分页：每轮显示 6 条，超过 6 条折叠成「更多」 */
   const [visibleCount, setVisibleCount] = useState(6);
+
+  const { filteredEntries, hiddenFailedCount } = useMemo(() => {
+    if (!histEntries) return { filteredEntries: null, hiddenFailedCount: 0 };
+    if (!hideFailedInSidebar) return { filteredEntries: histEntries, hiddenFailedCount: 0 };
+    const filtered: UnitHistoryEntry[] = [];
+    let hidden = 0;
+    for (const e of histEntries) {
+      if (e.status === "failed") {
+        hidden++;
+      } else {
+        filtered.push(e);
+      }
+    }
+    return { filteredEntries: filtered, hiddenFailedCount: hidden };
+  }, [histEntries, hideFailedInSidebar]);
 
   useEffect(() => {
     if (!historyOpen) setVisibleCount(6);
@@ -766,7 +783,22 @@ function UnitRow({
           {histEntries !== null && histEntries.length === 0 && (
             <p className="px-1.5 py-1 text-[10px] text-ash">还没有执行记录 —— 自动化、待办或会话跑过之后出现在这里</p>
           )}
-          {histEntries?.slice(0, visibleCount).map((e) => {
+          {histEntries !== null && histEntries.length > 0 && filteredEntries !== null && filteredEntries.length === 0 && (
+            <button
+              type="button"
+              data-no-drag
+              draggable={false}
+              onClick={(e) => {
+                e.stopPropagation();
+                setHistoryFocus(undefined);
+                setHistoryDialogOpen(true);
+              }}
+              className="w-full cursor-pointer rounded-btn px-1.5 py-1 text-left text-[10px] text-ash hover:bg-line-soft hover:text-graphite"
+            >
+              已隐藏 {hiddenFailedCount} 条失败会话（点击打开详情）
+            </button>
+          )}
+          {filteredEntries?.slice(0, visibleCount).map((e) => {
             const args = resumeArgsFor(e.runtimeId, e.resumeRef);
             const self = units.find((u) => u.id === unit.id);
             return (
@@ -794,7 +826,7 @@ function UnitRow({
               />
             );
           })}
-          {histEntries !== null && histEntries.length > visibleCount && (
+          {filteredEntries !== null && filteredEntries.length > visibleCount && (
             <button
               type="button"
               data-no-drag
@@ -805,11 +837,16 @@ function UnitRow({
               }}
               className="flex w-full cursor-pointer items-center justify-between rounded-btn px-1.5 py-1 text-left text-[10px] text-ash transition hover:bg-line-soft hover:text-graphite"
             >
-              <span>更多（展开后 {Math.min(6, histEntries.length - visibleCount)} 条…）</span>
-              <span className="text-[9px] text-ash/70">剩余 {histEntries.length - visibleCount} 条</span>
+              <span>更多（展开后 {Math.min(6, filteredEntries.length - visibleCount)} 条…）</span>
+              <span className="text-[9px] text-ash/70">剩余 {filteredEntries.length - visibleCount} 条</span>
             </button>
           )}
-          {histEntries !== null && histEntries.length > 6 && histEntries.length <= visibleCount && (
+          {filteredEntries !== null && filteredEntries.length > 0 && hiddenFailedCount > 0 && (
+            <div className="flex items-center justify-between px-1.5 py-0.5 text-[9px] text-ash/60">
+              <span>已根据设置隐藏 {hiddenFailedCount} 条失败记录</span>
+            </div>
+          )}
+          {filteredEntries !== null && filteredEntries.length > 6 && filteredEntries.length <= visibleCount && (
             <button
               type="button"
               data-no-drag

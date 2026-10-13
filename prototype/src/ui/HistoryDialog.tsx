@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { dispatchTerminal, fetchSessionMessages, fetchUnitHistory, type UnitHistoryEntry } from "../adapters/daemon/client.ts";
 import { useWorkbench } from "../store/useWorkbench.ts";
+import { useHistoryPrefs } from "../store/useHistoryPrefs.ts";
 import { asUnitId } from "../core/units.ts";
 import { cn } from "./cn.ts";
 
@@ -171,6 +172,20 @@ export function HistoryDialog({
     setExpanded(focusKey ?? null);
   }, [focusKey]);
 
+  const hideFailedInDialog = useHistoryPrefs((s) => s.prefs.hideFailedInDialog);
+  const setPrefs = useHistoryPrefs((s) => s.setPrefs);
+
+  const failedCount = useMemo(() => {
+    if (!entries) return 0;
+    return entries.filter((e) => e.status === "failed").length;
+  }, [entries]);
+
+  const displayedEntries = useMemo(() => {
+    if (!entries) return null;
+    if (!hideFailedInDialog) return entries;
+    return entries.filter((e) => e.status !== "failed" || e.key === focusKey);
+  }, [entries, hideFailedInDialog, focusKey]);
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-6" onClick={onClose}>
       <div
@@ -183,7 +198,29 @@ export function HistoryDialog({
         <div className="flex h-12 shrink-0 items-center gap-2 border-b border-line px-4">
           <History size={14} className="text-graphite" />
           <p className="flex-1 text-body-sm font-medium text-ink">{unitName} · 历史会话</p>
-          <span className="text-caption text-ash">{entries === null ? "加载中…" : `${entries.length} 条`}</span>
+          {failedCount > 0 && (
+            <button
+              type="button"
+              onClick={() => setPrefs({ hideFailedInDialog: !hideFailedInDialog })}
+              title={hideFailedInDialog ? "点击显示包含失败在内的全部会话" : "点击隐藏失败会话"}
+              className={cn(
+                "flex items-center gap-1.5 rounded-chip px-2 py-0.5 text-caption font-medium transition cursor-pointer",
+                hideFailedInDialog
+                  ? "bg-loss/10 text-loss hover:bg-loss/15"
+                  : "bg-line-soft text-graphite hover:bg-line",
+              )}
+            >
+              <CircleAlert size={11} className={hideFailedInDialog ? "text-loss" : "text-ash"} />
+              <span>{hideFailedInDialog ? `已隐藏 ${failedCount} 条失败（点击查看）` : `已显示失败（点击隐藏）`}</span>
+            </button>
+          )}
+          <span className="text-caption text-ash">
+            {entries === null
+              ? "加载中…"
+              : hideFailedInDialog && failedCount > 0
+                ? `${displayedEntries?.length ?? 0} / ${entries.length} 条`
+                : `${entries.length} 条`}
+          </span>
           <button onClick={onClose} aria-label="关闭" className="rounded-btn p-1 text-ash hover:bg-line-soft hover:text-ink">
             <X size={13} />
           </button>
@@ -194,7 +231,21 @@ export function HistoryDialog({
           {entries !== null && entries.length === 0 && (
             <p className="px-1 py-6 text-center text-caption text-ash">还没有执行记录 —— 自动化、待办或手动会话跑过之后会出现在这里</p>
           )}
-          {entries !== null && entries.map((e) => (
+          {entries !== null && entries.length > 0 && displayedEntries !== null && displayedEntries.length === 0 && (
+            <div className="flex flex-col items-center justify-center py-10 text-center">
+              <p className="text-caption text-ash">
+                此 Bot 当前共有 {failedCount} 条记录，全部为失败会话，已根据设置隐藏。
+              </p>
+              <button
+                type="button"
+                onClick={() => setPrefs({ hideFailedInDialog: false })}
+                className="mt-2.5 rounded-btn bg-line-soft px-3 py-1 text-caption font-medium text-graphite transition hover:bg-line hover:text-ink cursor-pointer"
+              >
+                显示全部 {failedCount} 条失败记录
+              </button>
+            </div>
+          )}
+          {displayedEntries !== null && displayedEntries.map((e) => (
             <HistoryRow
               key={e.key}
               entry={e}
