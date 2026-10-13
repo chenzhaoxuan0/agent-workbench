@@ -18,6 +18,10 @@ const EXECUTOR_ICONS: Record<string, string> = {
   pi: "/icons/executors/pi.svg",
   agy: "/icons/executors/agy.svg",
   antigravity: "/icons/executors/antigravity.svg",
+  grok: "/icons/executors/grok.svg",
+  cursor: "/icons/executors/cursor.svg",
+  "cursor-agent": "/icons/executors/cursor.svg",
+  openclaw: "/icons/executors/openclaw.svg",
 };
 
 /** runtimeId 兼容裸 id（mcode）与注册表命名空间（daemon:mcode）两种形态 */

@@ -46,7 +46,7 @@ export function createDaemonFactory(info: DaemonExecutorInfo, endpoint: string):
   return {
     id: runtimeId,
     presentation: {
-      displayName: `${info.displayName} · daemon`,
+      displayName: info.displayName,
       vendor: "daemon",
       accent: accentFor(`daemon:${info.id}`),
       glyph: info.glyph,
@@ -107,7 +107,7 @@ class DaemonRuntimeAdapter implements RuntimeAdapter {
   constructor(id: RuntimeId, info: DaemonExecutorInfo, client: DaemonClient) {
     this.id = id;
     this.presentation = {
-      displayName: `${info.displayName} · daemon`,
+      displayName: info.displayName,
       vendor: "daemon",
       accent: accentFor(id),
       glyph: info.glyph,

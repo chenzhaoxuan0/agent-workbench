@@ -27,7 +27,7 @@ import readline from "node:readline";
 import { log } from "../log.ts";
 import { redact } from "./redact.ts";
 
-export type CliKind = "claude" | "codex" | "pi" | "mcode" | "zcode" | "dsh" | "opencode";
+export type CliKind = "claude" | "codex" | "pi" | "mcode" | "zcode" | "dsh" | "opencode" | "grok" | "cursor" | "openclaw";
 
 /** 块的语义类别 —— 日报提炼时可据此筛掉 thinking/tool 噪声。 */
 export type BlockKind = "text" | "thinking" | "tool";
@@ -55,7 +55,7 @@ export interface ScanSource {
 
 /**
  * 各 CLI 执行器的根目录。**可被配置覆盖**（家目录不标准、portable 模式等）。
- * 覆盖当前工作台支持的全部执行器（claude, codex, pi, mcode, zcode, dsh, opencode）。
+ * 覆盖当前工作台支持的全部执行器。
  */
 export function defaultSources(homeDir = os.homedir()): ScanSource[] {
   return [
@@ -66,6 +66,9 @@ export function defaultSources(homeDir = os.homedir()): ScanSource[] {
     { cli: "zcode", root: path.join(homeDir, ".zcode", "v2", "sessions"), maxFieldChars: 2000 },
     { cli: "dsh", root: path.join(homeDir, ".dsh", "sessions"), maxFieldChars: 2000 },
     { cli: "opencode", root: path.join(homeDir, ".local", "share", "opencode"), maxFieldChars: 2000 },
+    { cli: "grok", root: path.join(homeDir, ".grok", "sessions"), maxFieldChars: 2000 },
+    { cli: "cursor", root: path.join(homeDir, ".cursor", "sessions"), maxFieldChars: 2000 },
+    { cli: "openclaw", root: path.join(homeDir, ".openclaw", "agents", "main", "sessions"), maxFieldChars: 2000 },
   ];
 }
 

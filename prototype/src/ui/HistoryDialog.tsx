@@ -95,6 +95,10 @@ const RESUME_ARGS: Record<string, (ref: string) => string[]> = {
   agy: (ref) => ["--conversation", ref],
   antigravity: (ref) => ["--conversation", ref],
   pi: (ref) => ["--session-id", ref],
+  grok: (ref) => ["--resume", ref],
+  cursor: (ref) => ["--resume", ref],
+  "cursor-agent": (ref) => ["--resume", ref],
+  openclaw: (ref) => ["agent", "--session-id", ref],
 };
 
 /** 可恢复判定（侧栏子列表与详情弹窗共用） */

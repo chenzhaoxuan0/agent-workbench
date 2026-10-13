@@ -49,6 +49,13 @@ export function ShellOrAgentIcon({
     case "agy":
     case "antigravity":
       return <Wand2 className={cn("text-indigo-400", className)} size={12} />;
+    case "grok":
+      return <Sparkles className={cn("text-sky-300", className)} size={12} />;
+    case "cursor":
+    case "cursor-agent":
+      return <Bot className={cn("text-blue-400", className)} size={12} />;
+    case "openclaw":
+      return <Zap className={cn("text-rose-400", className)} size={12} />;
     case "pwsh":
       return <Terminal className={cn("text-teal", className)} size={12} />;
     case "powershell":

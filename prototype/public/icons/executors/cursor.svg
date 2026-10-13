@@ -1,0 +1,21 @@
+<svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="cursor-top" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#e0e0e0"/>
+    </linearGradient>
+    <linearGradient id="cursor-left" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#8e8e93"/>
+      <stop offset="100%" stop-color="#636366"/>
+    </linearGradient>
+    <linearGradient id="cursor-right" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#b0b0b5"/>
+      <stop offset="100%" stop-color="#8e8e93"/>
+    </linearGradient>
+  </defs>
+  <!-- Isometric Cube / Cursor Logo Shape -->
+  <path d="M50 12 L84 32 L50 52 L16 32 Z" fill="url(#cursor-top)"/>
+  <path d="M16 32 L50 52 L50 88 L16 68 Z" fill="url(#cursor-left)"/>
+  <path d="M50 52 L84 32 L84 68 L50 88 Z" fill="url(#cursor-right)"/>
+  <path d="M50 52 L16 68 L50 88 L84 68 Z" fill="#000000" fill-opacity="0.08"/>
+</svg>

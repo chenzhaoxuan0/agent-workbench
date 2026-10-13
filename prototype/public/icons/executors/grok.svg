@@ -1,0 +1,12 @@
+<svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="grok-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#c0c0c0"/>
+    </linearGradient>
+  </defs>
+  <!-- Stylized SpaceXAI / Grok polygon symbol -->
+  <path d="M22 80 L52 20 L78 20 L48 80 Z" fill="url(#grok-grad)"/>
+  <path d="M46 38 L62 20 L78 20 L58 43 Z" fill="#ffffff" fill-opacity="0.9"/>
+  <path d="M36 58 L22 80 L38 80 L50 63 Z" fill="#909090"/>
+</svg>

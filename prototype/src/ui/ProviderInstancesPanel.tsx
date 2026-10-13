@@ -1,8 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  AlertCircle,
   Check,
   CheckCircle2,
   ChevronRight,
+  Copy,
+  Download,
+  ExternalLink,
   Info,
   KeyRound,
   Pencil,
@@ -14,6 +18,8 @@ import {
 import { prefsOf, resolveVisibleModels } from "../core/modelPrefs.ts";
 import { useWorkbench } from "../store/useWorkbench.ts";
 import { useTerminalStore } from "../store/useTerminalStore.ts";
+import { useShell } from "../store/useShell.ts";
+import { DaemonClient, defaultDaemonEndpoint } from "../adapters/daemon/client.ts";
 import { executorIconSrc } from "./executorIcon.ts";
 import { ProviderModelPanel } from "./ModelSettings.tsx";
 import { cn } from "./cn.ts";
@@ -80,11 +86,319 @@ const CLI_GUIDES: Record<string, CliGuide> = {
     configPath: "~/.gemini/",
     tips: "支持 Gemini 3.8 / 3.7 / 3.1 等系列模型，具备深度思考、工具调用与多模态能力。",
   },
+  grok: {
+    desc: "SpaceXAI 官方终端 Agent 执行器，深度适配代码感知与多步复杂自动化任务。",
+    authCmd: "grok login",
+    configPath: "~/.grok/config.toml",
+    tips: "支持 xAI 官方账户登录，工作台通过 streaming-messages-json 协议流式直连 Grok Build 执行器。",
+  },
+  cursor: {
+    desc: "Cursor 官方 CLI 模式 Agent 执行器（cursor-agent），支持跨模型路由、推理与工具调用。",
+    authCmd: "cursor-agent login",
+    configPath: "~/.cursor/",
+    tips: "可使用 Cursor 账号或 CURSOR_API_KEY 环境变量登录，工作台通过 stream-json 协议保持双向交互与模型同步。",
+  },
+  "cursor-agent": {
+    desc: "Cursor 官方 CLI 模式 Agent 执行器（cursor-agent），支持跨模型路由、推理与工具调用。",
+    authCmd: "cursor-agent login",
+    configPath: "~/.cursor/",
+    tips: "可使用 Cursor 账号或 CURSOR_API_KEY 环境变量登录，工作台通过 stream-json 协议保持双向交互与模型同步。",
+  },
+  openclaw: {
+    desc: "OpenClaw 统一 Agent 与多渠道消息网关执行器，支持多 Agent 隔离与本地/网关调度。",
+    authCmd: "openclaw onboard",
+    configPath: "~/.openclaw/openclaw.json",
+    tips: "支持通过本地终端配置多模型凭据与网关，工作台动态对接模型目录并支持单轮与多轮会话调度。",
+  },
   mockperm: {
     desc: "工作台权限闸（Permission Gate）端到端自动化验收测试夹具。",
     tips: "每轮对话均会触发真实的模拟权限审批挂起，专门用于测试与验收工作台的人机交互闸门。",
   },
 };
+
+export interface ProviderInstallGuide {
+  readonly title: string;
+  readonly commandWindows: string;
+  readonly commandPosix?: string;
+  readonly altCommand?: string;
+  readonly altCommandLabel?: string;
+  readonly docUrl?: string;
+  readonly tips: string;
+}
+
+export const PROVIDER_INSTALL_GUIDES: Record<string, ProviderInstallGuide> = {
+  grok: {
+    title: "Grok Build CLI",
+    commandWindows: "irm https://x.ai/cli/install.ps1 | iex",
+    commandPosix: "curl -fsSL https://x.ai/cli/install.sh | bash",
+    altCommand: "cargo build -p xai-grok-pager-bin --release",
+    altCommandLabel: "本地源码编译 (grok-build)",
+    docUrl: "https://x.ai/cli",
+    tips: "SpaceXAI 官方安装脚本会自动下载预编译二进制至 ~/.grok/bin 并写入环境变量。若使用本地 grok-build 源码，也可在源码根目录运行 cargo build 编译。",
+  },
+  cursor: {
+    title: "Cursor Agent CLI (cursor-agent)",
+    commandWindows: "npm install -g cursor-agent",
+    commandPosix: "npm install -g cursor-agent",
+    altCommand: "irm https://cursor.com/install.ps1 | iex",
+    altCommandLabel: "官方安装脚本",
+    docUrl: "https://cursor.com/cli",
+    tips: "Cursor 官方 CLI 模式（cursor-agent）。安装后在终端运行 cursor-agent login 即可完成认证。",
+  },
+  "cursor-agent": {
+    title: "Cursor Agent CLI (cursor-agent)",
+    commandWindows: "npm install -g cursor-agent",
+    commandPosix: "npm install -g cursor-agent",
+    altCommand: "irm https://cursor.com/install.ps1 | iex",
+    altCommandLabel: "官方安装脚本",
+    docUrl: "https://cursor.com/cli",
+    tips: "Cursor 官方 CLI 模式（cursor-agent）。安装后在终端运行 cursor-agent login 即可完成认证。",
+  },
+  openclaw: {
+    title: "OpenClaw CLI",
+    commandWindows: "npm install -g openclaw",
+    commandPosix: "npm install -g openclaw",
+    altCommand: "openclaw onboard",
+    altCommandLabel: "初始化向导",
+    docUrl: "https://openclaw.ai",
+    tips: "OpenClaw 全局 npm 包安装后，在终端执行 openclaw onboard 即可完成初始化网关配置与模型接入。",
+  },
+  codex: {
+    title: "OpenAI Codex CLI",
+    commandWindows: "irm https://chatgpt.com/codex/install.ps1 | iex",
+    commandPosix: "curl -fsSL https://chatgpt.com/codex/install.sh | sh",
+    altCommand: "npm i -g @openai/codex",
+    altCommandLabel: "npm 全局安装",
+    docUrl: "https://developers.openai.com/codex/cli",
+    tips: "OpenAI 官方 Codex CLI。安装后运行 codex login 进行账号登录或绑定 API 密钥。",
+  },
+  claude: {
+    title: "Claude Code CLI",
+    commandWindows: "irm https://claude.ai/install.ps1 | iex",
+    commandPosix: "curl -fsSL https://claude.ai/install.sh | bash",
+    altCommand: "npm i -g @anthropic-ai/claude-code",
+    altCommandLabel: "npm 全局安装",
+    docUrl: "https://claude.com/product/claude-code",
+    tips: "Anthropic 官方 Claude Code 终端执行器。安装后运行 claude login 登录账号。",
+  },
+  opencode: {
+    title: "OpenCode CLI",
+    commandWindows: "npm i -g opencode-ai",
+    commandPosix: "npm i -g opencode-ai",
+    docUrl: "https://opencode.ai",
+    tips: "开源多模型终端 Agent 执行器。安装后运行 opencode auth login 配置各厂商模型密钥。",
+  },
+  pi: {
+    title: "Pi Agent CLI",
+    commandWindows: "npm i -g @earendil-works/pi-coding-agent",
+    commandPosix: "npm i -g @earendil-works/pi-coding-agent",
+    tips: "轻量全栈 Agent 工具。安装后运行 pi login 配置模型路由。",
+  },
+  mcode: {
+    title: "MiniMax MCode CLI",
+    commandWindows: "npm i -g @minimax/mcode",
+    commandPosix: "npm i -g @minimax/mcode",
+    tips: "MiniMax Code 研发套件，支持私有化模型调度。",
+  },
+  hermes: {
+    title: "Hermes Agent CLI",
+    commandWindows: "pip install hermes-agent",
+    commandPosix: "pipx install hermes-agent",
+    altCommand: "pipx install hermes-agent",
+    altCommandLabel: "pipx 隔离安装",
+    tips: "通过 Python pip 或 pipx 安装 hermes-agent。",
+  },
+  kimi: {
+    title: "Kimi Code CLI",
+    commandWindows: "npm i -g @moonshot-ai/kimi-code",
+    commandPosix: "npm i -g @moonshot-ai/kimi-code",
+    tips: "Moonshot Kimi Code 终端执行器，安装后在终端进行认证。",
+  },
+  dsh: {
+    title: "DeepSeek Harness CLI",
+    commandWindows: "npm i -g @deepseek-ai/dsh",
+    commandPosix: "npm i -g @deepseek-ai/dsh",
+    tips: "DeepSeek Harness 官方 CLI，安装后运行 dsh login 或配置 DEEPSEEK_API_KEY。",
+  },
+  agy: {
+    title: "Google Antigravity CLI",
+    commandWindows: "agy",
+    docUrl: "https://antigravity.google",
+    tips: "Google 官方 Antigravity 执行器，已集成在本地环境。",
+  },
+  antigravity: {
+    title: "Google Antigravity CLI",
+    commandWindows: "agy",
+    docUrl: "https://antigravity.google",
+    tips: "Google 官方 Antigravity 执行器，已集成在本地环境。",
+  },
+};
+
+function InstallGuideCard({
+  runtimeId,
+  displayName,
+  hint,
+  status,
+  onRecheck,
+}: {
+  runtimeId: string;
+  displayName: string;
+  hint?: string;
+  status: string;
+  onRecheck?: () => void;
+}) {
+  const bareId = runtimeId.replace(/^daemon:/, "").toLowerCase();
+  const guide = PROVIDER_INSTALL_GUIDES[bareId];
+  const [copiedMain, setCopiedMain] = useState(false);
+  const [copiedAlt, setCopiedAlt] = useState(false);
+  const [runningInTerminal, setRunningInTerminal] = useState(false);
+  const [checking, setChecking] = useState(false);
+
+  if (!guide && !hint) return null;
+
+  const isWindows = typeof navigator !== "undefined" ? navigator.userAgent.includes("Windows") : true;
+  const mainCmd = (isWindows ? guide?.commandWindows : (guide?.commandPosix ?? guide?.commandWindows)) ?? "";
+
+  const handleCopy = (cmd: string, isAlt: boolean) => {
+    if (!cmd) return;
+    void navigator.clipboard.writeText(cmd);
+    if (isAlt) {
+      setCopiedAlt(true);
+      setTimeout(() => setCopiedAlt(false), 2000);
+    } else {
+      setCopiedMain(true);
+      setTimeout(() => setCopiedMain(false), 2000);
+    }
+  };
+
+  const handleRunInTerminal = (cmdToRun: string) => {
+    if (!cmdToRun) return;
+    setRunningInTerminal(true);
+    // 复制到剪贴板兜底
+    void navigator.clipboard.writeText(cmdToRun);
+
+    // 在工作台终端新建标签
+    const termId = useTerminalStore.getState().createTab({
+      profileId: "pwsh",
+      title: `安装 ${displayName}`,
+    });
+
+    // 关闭设置页切到终端让用户直接观看安装
+    useShell.getState().closeSettings();
+
+    // 稍等 PTY 初始化完成后注入命令并回车执行
+    setTimeout(() => {
+      try {
+        const client = DaemonClient.get(defaultDaemonEndpoint());
+        void client.rpc("terminal.input", { terminalId: termId, data: `${cmdToRun}\r` }).catch(() => {});
+      } catch {
+        /* ignore */
+      }
+      setRunningInTerminal(false);
+    }, 800);
+  };
+
+  const handleRecheck = async () => {
+    setChecking(true);
+    try {
+      if (onRecheck) {
+        await onRecheck();
+      }
+    } finally {
+      setTimeout(() => setChecking(false), 600);
+    }
+  };
+
+  return (
+    <section className="rounded-card border border-amber-500/30 bg-amber-500/5 p-4 space-y-3">
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex items-start gap-3">
+          <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-amber-500/15 text-amber-500">
+            <Download size={15} />
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <h4 className="text-body-sm font-semibold text-ink">未检测到该执行器 CLI</h4>
+              <span className="rounded-chip bg-amber-500/15 px-2 py-0.5 text-[11px] font-medium text-amber-500">
+                需要安装
+              </span>
+            </div>
+            <p className="mt-1 text-caption text-graphite leading-relaxed">
+              {hint ?? guide?.tips ?? "检测到本机未安装或 PATH 中尚未包含该执行器可执行文件。可通过下方官方命令一键安装。"}
+            </p>
+          </div>
+        </div>
+
+        {/* 重新探测按钮 */}
+        <button
+          onClick={handleRecheck}
+          disabled={checking}
+          title="重新检测该执行器安装状态"
+          className="shrink-0 flex items-center gap-1.5 rounded-btn border border-line bg-card px-2.5 py-1 text-caption font-medium text-graphite hover:border-teal hover:text-ink hover:bg-line-soft transition"
+        >
+          <RefreshCw size={12} className={cn(checking && "animate-spin text-teal")} />
+          <span>重新检测</span>
+        </button>
+      </div>
+
+      {mainCmd && (
+        <div className="rounded-card border border-line bg-canvas p-3 space-y-2">
+          <div className="flex items-center justify-between text-caption text-ash">
+            <span className="font-sans font-medium">推荐安装命令（Windows PowerShell / 终端）：</span>
+            {guide?.docUrl && (
+              <a
+                href={guide.docUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="flex items-center gap-1 text-[11px] text-teal hover:underline"
+              >
+                <span>官方文档</span>
+                <ExternalLink size={10} />
+              </a>
+            )}
+          </div>
+          <div className="flex items-center justify-between gap-2 rounded bg-card px-3 py-2 border border-line/60 font-mono text-caption text-ink">
+            <span className="select-all overflow-x-auto whitespace-nowrap">{mainCmd}</span>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                onClick={() => handleCopy(mainCmd, false)}
+                title="复制命令"
+                className="flex items-center gap-1 rounded px-2 py-1 text-[11px] font-sans font-medium border border-line bg-canvas hover:border-teal hover:text-teal transition"
+              >
+                {copiedMain ? <Check size={11} className="text-teal" /> : <Copy size={11} />}
+                <span>{copiedMain ? "已复制" : "复制"}</span>
+              </button>
+              <button
+                onClick={() => handleRunInTerminal(mainCmd)}
+                disabled={runningInTerminal}
+                title="新建终端标签并自动执行安装命令"
+                className="flex items-center gap-1 rounded bg-teal px-2.5 py-1 text-[11px] font-sans font-medium text-white hover:bg-teal-hover transition shadow-xs"
+              >
+                <Terminal size={11} />
+                <span>在终端运行安装</span>
+              </button>
+            </div>
+          </div>
+
+          {guide?.altCommand && (
+            <div className="flex items-center justify-between pt-1 text-[11px] text-ash">
+              <span className="font-sans">
+                {guide.altCommandLabel ?? "备选方案"}：
+                <code className="ml-1 text-graphite font-mono">{guide.altCommand}</code>
+              </span>
+              <button
+                onClick={() => handleCopy(guide.altCommand!, true)}
+                className="text-teal hover:underline font-sans ml-2"
+              >
+                {copiedAlt ? "已复制" : "复制备选命令"}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
 
 export function ProviderInstancesPanel() {
   const runtimes = useWorkbench((s) => s.runtimes);
@@ -156,7 +470,7 @@ export function ProviderInstancesPanel() {
         </div>
       </div>
 
-      <div className="grid grid-cols-[250px_minmax(0,1fr)] gap-4 items-start">
+      <div className="grid grid-cols-[240px_minmax(0,1fr)] gap-4 items-start">
         {/* 左列：实例列表 */}
         <ul className="space-y-2">
           {runtimes.map((r) => {
@@ -164,13 +478,16 @@ export function ProviderInstancesPanel() {
             const isEnabled = p.enabled !== false;
             const isSelected = r.id === selected.id;
             const isDefault = activeId === r.id;
+            const rawVersion = r.state.status === "ready" ? r.state.version : undefined;
+            const shortVer = formatShortVersion(rawVersion);
+            const displayName = cleanDisplayName(p.displayName ?? r.presentation.displayName);
             return (
               <li key={r.id}>
                 <button
                   onClick={() => setSelectedId(r.id)}
                   aria-current={isSelected}
                   className={cn(
-                    "flex w-full items-start gap-2.5 rounded-card border px-3 py-2.5 text-left transition",
+                    "flex w-full items-center gap-2.5 rounded-card border px-3 py-2.5 text-left transition",
                     isSelected
                       ? "border-teal bg-teal-tint/60 shadow-sm"
                       : "border-line bg-card hover:bg-line-soft",
@@ -193,10 +510,11 @@ export function ProviderInstancesPanel() {
                       {r.presentation.glyph}
                     </span>
                   )}
-                  <span className="min-w-0 flex-1">
-                    <span className="flex items-center gap-1.5 flex-wrap">
+                  <span className="min-w-0 flex-1 overflow-hidden">
+                    {/* 第一行：执行器名称 + 默认标识 */}
+                    <span className="flex items-center gap-1.5 min-w-0">
                       <span className="truncate text-body-sm font-medium text-ink">
-                        {p.displayName ?? r.presentation.displayName}
+                        {displayName}
                       </span>
                       {r.testOnly && (
                         <span
@@ -212,10 +530,12 @@ export function ProviderInstancesPanel() {
                         </span>
                       )}
                     </span>
-                    <span className="mt-1 flex items-center gap-1.5 text-caption text-ash">
+
+                    {/* 第二行：状态 + 版本号（严格单行，绝不折断中文字符，超长尾部截断） */}
+                    <span className="mt-1 flex items-center gap-1.5 text-caption text-ash min-w-0 whitespace-nowrap overflow-hidden">
                       <span
                         className={cn(
-                          "h-1.5 w-1.5 rounded-full",
+                          "h-1.5 w-1.5 rounded-full shrink-0",
                           r.state.status === "ready"
                             ? "bg-teal"
                             : r.state.status === "starting"
@@ -223,11 +543,16 @@ export function ProviderInstancesPanel() {
                               : "bg-ash",
                         )}
                       />
-                      <span>
+                      <span className="shrink-0 whitespace-nowrap">
                         {isEnabled ? statusLabel(r.state.status, checking) : "已停用"}
                       </span>
-                      {r.state.status === "ready" && r.state.version && (
-                        <span className="font-mono text-[10px] text-ash">v{r.state.version}</span>
+                      {shortVer && (
+                        <span
+                          title={rawVersion}
+                          className="font-mono text-[10px] text-ash truncate min-w-0"
+                        >
+                          {shortVer}
+                        </span>
                       )}
                     </span>
                   </span>
@@ -253,6 +578,32 @@ export function ProviderInstancesPanel() {
       </div>
     </div>
   );
+}
+
+/**
+ * 清洗执行器显示名称：
+ * 去除历史或默认生成的「 · daemon」后缀，保持名称极简精炼。
+ */
+export function cleanDisplayName(name: string | undefined): string {
+  if (!name) return "";
+  return name.replace(/\s*·\s*daemon$/i, "").trim();
+}
+
+/**
+ * 提取精简版本号（保证左侧实例卡第二行单行展示，不换行）：
+ * 优先提取核心版本号（如 v0.16.9, v0.20.0, v2026.10.2），
+ * 剔除冗长的包名前缀或长括号说明，多余内容由右侧卡片与悬浮 title 显示。
+ */
+export function formatShortVersion(rawVersion: string | undefined): string | null {
+  if (!rawVersion || rawVersion.trim() === "") return null;
+  const trimmed = rawVersion.trim();
+  // 匹配类似 0.16.9 / v0.20.0 / 2026.10.2 / 0.2.0-rc.2 / 1.0.52
+  const match = trimmed.match(/v?(\d+\.\d+(?:\.\d+)?(?:-[a-zA-Z0-9.]+)?)/);
+  if (match?.[1]) {
+    return `v${match[1]}`;
+  }
+  const first = trimmed.split(/[\s(]/)[0] ?? trimmed;
+  return first.startsWith("v") || first.startsWith("V") ? first : `v${first}`;
 }
 
 function statusLabel(status: string | undefined, checking = false): string {
@@ -324,13 +675,15 @@ function InstanceEditor({
   const runtime = useWorkbench((s) => s.runtimes.find((r) => r.id === runtimeId));
   const pref = useWorkbench((s) => s.runtimePrefs[runtimeId]) ?? { enabled: true };
   const setPref = useWorkbench((s) => s.setRuntimePref);
+  const probeAll = useWorkbench((s) => s.probeAll);
   const [editingName, setEditingName] = useState(false);
+  const [copiedInstall, setCopiedInstall] = useState(false);
   const agyDefaultYolo = useTerminalStore((s) => s.agyDefaultYolo);
   const setAgyDefaultYolo = useTerminalStore((s) => s.setAgyDefaultYolo);
 
   if (!runtime) return null;
   const bareRuntimeId = runtimeId.replace(/^daemon:/, "").toLowerCase();
-  const name = pref.displayName ?? runtime.presentation.displayName;
+  const name = cleanDisplayName(pref.displayName ?? runtime.presentation.displayName);
   const guide = CLI_GUIDES[bareRuntimeId] ?? {
     desc: `${name} 终端执行器。`,
     tips: "工作台直接调度本地安装的命令行进程。",
@@ -340,8 +693,8 @@ function InstanceEditor({
     <div className="space-y-4">
       {/* 顶部卡片：执行器概览与状态 */}
       <section className="rounded-card border border-line bg-card p-4">
-        <div className="flex items-start justify-between gap-4">
-          <div className="flex items-center gap-3">
+        <div className="flex flex-wrap sm:flex-nowrap items-start justify-between gap-3">
+          <div className="flex items-center gap-3 min-w-0 flex-1">
             {executorIconSrc(runtime.id) ? (
               <img
                 src={executorIconSrc(runtime.id) ?? undefined}
@@ -357,8 +710,8 @@ function InstanceEditor({
                 {runtime.presentation.glyph}
               </span>
             )}
-            <div>
-              <div className="flex items-center gap-2">
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2">
                 {editingName ? (
                   <input
                     value={name}
@@ -369,8 +722,8 @@ function InstanceEditor({
                     className="rounded-input border border-teal bg-canvas px-2 py-0.5 text-body-sm font-medium text-ink outline-none"
                   />
                 ) : (
-                  <>
-                    <h3 className="text-body font-medium text-ink">{name}</h3>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <h3 className="text-body font-medium text-ink whitespace-nowrap">{name}</h3>
                     <button
                       onClick={() => setEditingName(true)}
                       title="修改显示名称"
@@ -378,21 +731,40 @@ function InstanceEditor({
                     >
                       <Pencil size={12} />
                     </button>
-                  </>
+                  </div>
                 )}
                 {runtime.state.status === "ready" && (
-                  <span className="flex items-center gap-1 rounded-chip bg-teal-tint px-2 py-0.5 text-caption font-medium text-teal">
-                    <span className="h-1.5 w-1.5 rounded-full bg-teal" />
+                  <span className="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-chip bg-teal-tint px-2 py-0.5 text-caption font-medium text-teal">
+                    <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-teal" />
                     已就绪
                   </span>
                 )}
                 {runtime.state.status === "ready" && runtime.state.version && (
-                  <span className="rounded-chip border border-line bg-canvas px-1.5 py-0.5 font-mono text-[10px] text-graphite">
-                    v{runtime.state.version}
+                  <span
+                    title={runtime.state.version}
+                    className="max-w-[200px] shrink-0 truncate rounded-chip border border-line bg-canvas px-1.5 py-0.5 font-mono text-[10px] text-graphite whitespace-nowrap"
+                  >
+                    {runtime.state.version.startsWith("v") || runtime.state.version.startsWith("V")
+                      ? runtime.state.version
+                      : /^\d/.test(runtime.state.version)
+                        ? `v${runtime.state.version}`
+                        : runtime.state.version}
+                  </span>
+                )}
+                {runtime.state.status === "not_installed" && (
+                  <span className="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-chip bg-amber-500/10 border border-amber-500/25 px-2 py-0.5 text-caption font-medium text-amber-500">
+                    <AlertCircle size={11} />
+                    未安装
+                  </span>
+                )}
+                {runtime.state.status === "error" && (
+                  <span className="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-chip bg-red-500/10 border border-red-500/25 px-2 py-0.5 text-caption font-medium text-red-500">
+                    <AlertCircle size={11} />
+                    异常
                   </span>
                 )}
               </div>
-              <p className="mt-1 text-caption text-ash leading-relaxed">{guide.desc}</p>
+              <p className="mt-1 text-caption text-ash leading-relaxed line-clamp-2">{guide.desc}</p>
             </div>
           </div>
 
@@ -429,6 +801,17 @@ function InstanceEditor({
           </span>
         </div>
       </section>
+
+      {/* 未安装 / 异常引导卡片：一键在终端安装与复制命令 */}
+      {(runtime.state.status === "not_installed" || runtime.state.status === "error") && (
+        <InstallGuideCard
+          runtimeId={runtimeId}
+          displayName={name}
+          hint={runtime.state.status === "not_installed" ? runtime.state.hint : (runtime.state.status === "error" ? runtime.state.message : undefined)}
+          status={runtime.state.status}
+          onRecheck={probeAll}
+        />
+      )}
 
       {/* 核心主区：平铺展开的模型生态管理（不折叠） */}
       <section className="space-y-2">
@@ -489,6 +872,25 @@ function InstanceEditor({
               <div className="flex items-center gap-2">
                 <span className="text-ash font-sans select-none">本地配置文件：</span>
                 <code className="text-graphite">{guide.configPath}</code>
+              </div>
+            )}
+            {PROVIDER_INSTALL_GUIDES[bareRuntimeId]?.commandWindows && (
+              <div className="flex items-center justify-between gap-2 pt-1.5 border-t border-line/60">
+                <div className="flex items-center gap-2 overflow-hidden">
+                  <span className="text-ash font-sans select-none shrink-0">安装命令：</span>
+                  <code className="text-graphite font-mono truncate">{PROVIDER_INSTALL_GUIDES[bareRuntimeId]?.commandWindows}</code>
+                </div>
+                <button
+                  onClick={() => {
+                    void navigator.clipboard.writeText(PROVIDER_INSTALL_GUIDES[bareRuntimeId]?.commandWindows ?? "");
+                    setCopiedInstall(true);
+                    setTimeout(() => setCopiedInstall(false), 2000);
+                  }}
+                  title="复制安装命令"
+                  className="text-teal hover:underline text-[11px] font-sans shrink-0 font-medium"
+                >
+                  {copiedInstall ? "已复制" : "复制"}
+                </button>
               </div>
             )}
           </div>

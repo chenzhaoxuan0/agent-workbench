@@ -12,6 +12,7 @@ import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { promisify } from "node:util";
+import { homedir } from "node:os";
 import path from "node:path";
 import { log } from "../log.ts";
 
@@ -47,7 +48,29 @@ async function locateOnPath(name: string): Promise<string[]> {
   const out = process.platform === "win32"
     ? await execFileP("where.exe", [name]).catch(() => ({ stdout: "", stderr: "" }))
     : await execFileP("which", [name]).catch(() => ({ stdout: "", stderr: "" }));
-  return out.stdout.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0);
+  const hits = out.stdout.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0);
+  if (hits.length > 0) return hits;
+
+  // 兜底：长驻进程中若在外部刚安装了新工具，当前 process.env.PATH 尚未继承 Windows Registry 的新 PATH。
+  // 检查已知的用户默认安装目录，确保即装即用。
+  if (process.platform === "win32") {
+    const home = homedir();
+    const candidatePaths = [
+      path.join(home, ".grok", "bin", `${name}.exe`),
+      path.join(home, ".grok", "bin", `${name}`),
+      path.join(home, "AppData", "Local", "cursor-agent", `${name}.ps1`),
+      path.join(home, "AppData", "Local", "cursor-agent", `${name}.cmd`),
+      path.join(home, "AppData", "Local", "cursor-agent", `${name}.exe`),
+      path.join(home, "AppData", "Roaming", "npm", `${name}.cmd`),
+      path.join(home, "AppData", "Roaming", "npm", `${name}.ps1`),
+      path.join(home, ".cargo", "bin", `${name}.exe`),
+      path.join(home, ".local", "bin", `${name}.exe`),
+      path.join(home, ".local", "bin", name),
+    ];
+    const found = candidatePaths.filter((p) => existsSync(p));
+    if (found.length > 0) return found;
+  }
+  return [];
 }
 
 /**

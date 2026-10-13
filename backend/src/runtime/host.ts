@@ -344,6 +344,16 @@ export class RuntimeHost {
       const agy = this.adapters.get("agy");
       if (agy !== undefined) return agy;
     }
+    // 兼容 cursor-agent / cursor 别名
+    if (runtimeId === "cursor-agent" || bare === "cursor-agent") {
+      const cur = this.adapters.get("cursor");
+      if (cur !== undefined) return cur;
+    }
+    // 兼容 grok-build / grok 别名
+    if (runtimeId === "grok-build" || bare === "grok-build") {
+      const grk = this.adapters.get("grok");
+      if (grk !== undefined) return grk;
+    }
     // 报可用清单：只说「no such executor: daemon:mcode」等于把人逼去翻代码
     const available = [...this.adapters.keys()].sort().join(", ");
     throw adapterError(

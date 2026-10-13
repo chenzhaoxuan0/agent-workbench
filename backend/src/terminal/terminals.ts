@@ -222,7 +222,14 @@ export class TerminalManager {
       isYolo = true;
       stripped = stripped.slice(0, -5).trim();
     }
-    const mapped = stripped === "antigravity" ? "agy" : stripped;
+    const mapped =
+      stripped === "antigravity"
+        ? "agy"
+        : stripped === "cursor"
+          ? "cursor-agent"
+          : stripped === "grok-build"
+            ? "grok"
+            : stripped;
     const targetCmd = mapped && mapped !== "mockperm" ? mapped : undefined;
 
     let shellArgs: string[] = [];
@@ -248,6 +255,10 @@ export class TerminalManager {
           extraArgsList.push("--dangerously-skip-permissions");
         } else if (targetCmd === "kimi" && !extraArgsList.includes("--yolo")) {
           extraArgsList.push("--yolo");
+        } else if (targetCmd === "cursor-agent" && !extraArgsList.includes("--yolo")) {
+          extraArgsList.push("--yolo", "--trust");
+        } else if (targetCmd === "grok" && !extraArgsList.includes("--always-approve")) {
+          extraArgsList.push("--always-approve");
         }
       }
       const extraArgs = extraArgsList.join(" ");
@@ -273,11 +284,24 @@ export class TerminalManager {
       }
     }
 
+    const userBinDirs = [
+      path.join(homedir(), ".grok", "bin"),
+      path.join(homedir(), "AppData", "Local", "cursor-agent"),
+      path.join(homedir(), "AppData", "Roaming", "npm"),
+      path.join(homedir(), ".cargo", "bin"),
+      path.join(homedir(), ".local", "bin"),
+    ].filter((p) => existsSync(p));
+
+    const curPath = process.env.PATH ?? process.env.Path ?? "";
+    const mergedPath = [...userBinDirs, curPath].join(path.delimiter);
+
     const envOverrides: Record<string, string> = {
       TERM: "xterm-256color",
       COLORTERM: "truecolor",
       TERM_PROGRAM: "vscode",
       TERM_PROGRAM_VERSION: "1.93.0",
+      PATH: mergedPath,
+      Path: mergedPath,
       ...opts.env,
     };
 
