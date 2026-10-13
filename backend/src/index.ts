@@ -332,7 +332,13 @@ const terminals = new TerminalManager((frame) => {
     // 待办 TUI 模式的运行记录与状态机收口（engine 内部按 terminalId 判归属）
     backlogEngine?.onTerminalExited(frame.terminalId, frame.exitCode ?? 0);
     // 手动派发终端（terminal.dispatch）的运行记录收口（无行的 id 静默无操作）
-    if ((frame.exitCode ?? 0) === 0) store.finishTerminalRun(frame.terminalId, "done", null);
+    const isUserInterrupt =
+      frame.exitCode === 130 ||
+      frame.exitCode === 143 ||
+      frame.exitCode === 3221225786 ||
+      frame.exitCode === -1073741510;
+    const manualDone = frame.killed || (frame.exitCode ?? 0) === 0 || isUserInterrupt;
+    if (manualDone) store.finishTerminalRun(frame.terminalId, "done", null);
     else store.finishTerminalRun(frame.terminalId, "failed", `terminal exit ${frame.exitCode ?? "?"}`);
   }
   broadcastTerminal(wss, { v: WIRE_VERSION, type: "terminal", ...frame });
@@ -1214,7 +1220,7 @@ registerMethod("unit.history", (params) => {
     entries.push({
       key: `manual-${r.id}`,
       kind: "manual",
-      title: `手动 TUI · ${r.runtimeId}`,
+      title: "交互式会话",
       subtitle: null,
       runtimeId: r.runtimeId,
       launchMode: "terminal",
@@ -1230,10 +1236,20 @@ registerMethod("unit.history", (params) => {
 
   for (const s of store.listSessions()) {
     if (s.unitId !== p.unitId || claimedSessionIds.has(s.id)) continue;
+    let title = s.title.trim();
+    if (title === "" || title === "（无标题会话）") {
+      const firstMsg = store.listMessages(s.id, 1)[0];
+      if (firstMsg?.text) {
+        const line = firstMsg.text.trim().split(/\r?\n/)[0]?.trim() ?? "";
+        if (line !== "") {
+          title = line.length > 60 ? `${line.slice(0, 60)}…` : line;
+        }
+      }
+    }
     entries.push({
       key: `session-${s.id}`,
       kind: "session",
-      title: s.title === "" ? "（无标题会话）" : s.title,
+      title: title === "" ? "（无标题会话）" : title,
       subtitle: null,
       runtimeId: s.runtimeId,
       launchMode: "headless",

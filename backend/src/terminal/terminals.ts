@@ -19,6 +19,10 @@ export interface TerminalFrameInput {
   readonly kind: "data" | "exit" | "created";
   readonly data?: string;
   readonly exitCode?: number;
+  /** 是否由客户端显式调用 terminal.kill 触发关闭（非意外崩退） */
+  readonly killed?: boolean;
+  /** 终端存活时长（毫秒） */
+  readonly durationMs?: number;
   /** kind=created 时随帧带的档案：前端据此直接开标签认领（不必再等 terminal.list 轮询） */
   readonly executor?: string;
   readonly unitId?: string;
@@ -52,6 +56,10 @@ interface TerminalSession {
   readonly cwd: string;
   readonly executor: string;
   readonly unitId?: string;
+  /** 创建时间戳（用于统计会话存活时长，区分瞬时闪退与正常长程使用） */
+  readonly bornAt: number;
+  /** 是否由客户端显式调用 kill 触发关闭 */
+  killedByClient?: boolean;
   /**
    * 输出滚动环 buffer（按字节截断的最近输出）。只为「浏览器刷新后重挂」服务：
    * 刷新即丢 xterm 的全部画布，没有它用户面对的是一块不知道进程还活着的安全黑屏。
@@ -275,6 +283,7 @@ export class TerminalManager {
       cwd,
       executor: targetCmd ? (isYolo ? `${targetCmd}:yolo` : targetCmd) : "shell",
       unitId: opts.unitId,
+      bornAt: Date.now(),
       scrollback: [],
       scrollbackBytes: 0,
       lastDataAt: Date.now(),
@@ -291,10 +300,12 @@ export class TerminalManager {
       this.emit({ terminalId, kind: "data", data });
     });
     shellProcess.onExit(({ exitCode }) => {
+      const killed = session.killedByClient === true;
+      const durationMs = Date.now() - session.bornAt;
       this.sessions.delete(terminalId);
       this.lastSelfExitAt = Date.now();
-      log.info("terminal exited", { terminalId, exitCode });
-      this.emit({ terminalId, kind: "exit", exitCode });
+      log.info("terminal exited", { terminalId, exitCode, killed, durationMs });
+      this.emit({ terminalId, kind: "exit", exitCode, killed, durationMs });
     });
 
     this.sessions.set(terminalId, session);
@@ -366,6 +377,7 @@ export class TerminalManager {
 
   kill(terminalId: string): void {
     const session = this.get(terminalId);
+    session.killedByClient = true;
     // kill 后 onExit 会补发 exit 帧并清台账
     session.pty.kill();
   }

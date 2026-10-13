@@ -2,9 +2,7 @@ import { useEffect, useMemo, useState, type ReactElement } from "react";
 import {
   AlarmClock,
   Bot,
-  ChevronDown,
   ChevronLeft,
-  ChevronRight,
   FolderGit2,
   FolderOpen,
   FolderPlus,
@@ -37,6 +35,7 @@ import { AddBotDialog, type AddBotDraft } from "./AddBotDialog.tsx";
 import { ImportBotDialog } from "./ImportBotDialog.tsx";
 import { ChannelMark, channelIdentityLabel } from "./ChannelMark.tsx";
 import { HistoryDialog, resumeArgsFor } from "./HistoryDialog.tsx";
+import { executorIconSrc } from "./executorIcon.ts";
 import { RotateCcw } from "lucide-react";
 import { cn } from "./cn.ts";
 
@@ -578,6 +577,12 @@ function UnitRow({
   const [historyFocus, setHistoryFocus] = useState<string | undefined>(undefined);
   const [histEntries, setHistEntries] = useState<readonly UnitHistoryEntry[] | null>(null);
   const [histErr, setHistErr] = useState<string | null>(null);
+  /** 历史列表分页：每轮显示 6 条，超过 6 条折叠成「更多」 */
+  const [visibleCount, setVisibleCount] = useState(6);
+
+  useEffect(() => {
+    if (!historyOpen) setVisibleCount(6);
+  }, [historyOpen]);
 
   // 展开时拉最近执行记录，且**开着期间保持实时**：派发终端的 created/exit 帧、
   // 会话起止事件都会改写历史（新条目出现 / 状态收口），命中即去抖重拉；
@@ -588,7 +593,7 @@ function UnitRow({
     const load = (): void => {
       if (!alive) return;
       setHistErr(null);
-      void fetchUnitHistory(unit.id, 20)
+      void fetchUnitHistory(unit.id, 100)
         .then((list) => {
           if (alive) setHistEntries(list);
         })
@@ -671,10 +676,6 @@ function UnitRow({
           unavailable && "opacity-60",
         )}
       >
-        {/* 折叠指示箭头：整行可点，箭头只负责说明状态 */}
-        <span aria-hidden className="flex h-8 w-3 shrink-0 items-center justify-center self-center text-ash/60">
-          {historyOpen ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
-        </span>
         {isBot ? (
           /* 自定义头像优先；缺省是彩色底 + 双眼（GrokBot 式吉祥物形态），右下角日程角标 */
           <span
@@ -751,13 +752,13 @@ function UnitRow({
 
       {/* 历史子列表：bot 行下的可折叠执行时间轴（最近若干条，点条目进对话详情） */}
       {historyOpen && (
-        <div data-no-drag draggable={false} onMouseDown={(e) => e.stopPropagation()} className="ml-9 space-y-px border-l border-line-soft py-1 pl-2">
+        <div data-no-drag draggable={false} onMouseDown={(e) => e.stopPropagation()} className="ml-6 space-y-px border-l border-line-soft py-1 pl-2">
           {histErr !== null && <p className="px-1.5 py-1 text-[10px] text-loss">读取失败：{histErr}</p>}
           {histEntries === null && histErr === null && <p className="px-1.5 py-1 text-[10px] text-ash">加载中…</p>}
           {histEntries !== null && histEntries.length === 0 && (
             <p className="px-1.5 py-1 text-[10px] text-ash">还没有执行记录 —— 自动化、待办或会话跑过之后出现在这里</p>
           )}
-          {histEntries?.slice(0, 12).map((e) => {
+          {histEntries?.slice(0, visibleCount).map((e) => {
             const args = resumeArgsFor(e.runtimeId, e.resumeRef);
             const self = units.find((u) => u.id === unit.id);
             return (
@@ -785,18 +786,34 @@ function UnitRow({
               />
             );
           })}
-          {histEntries !== null && histEntries.length > 12 && (
+          {histEntries !== null && histEntries.length > visibleCount && (
             <button
               type="button"
               data-no-drag
               draggable={false}
-              onClick={() => {
+              onClick={(e) => {
+                e.stopPropagation();
+                setVisibleCount((v) => v + 6);
+              }}
+              className="flex w-full cursor-pointer items-center justify-between rounded-btn px-1.5 py-1 text-left text-[10px] text-ash transition hover:bg-line-soft hover:text-graphite"
+            >
+              <span>更多（展开后 {Math.min(6, histEntries.length - visibleCount)} 条…）</span>
+              <span className="text-[9px] text-ash/70">剩余 {histEntries.length - visibleCount} 条</span>
+            </button>
+          )}
+          {histEntries !== null && histEntries.length > 6 && histEntries.length <= visibleCount && (
+            <button
+              type="button"
+              data-no-drag
+              draggable={false}
+              onClick={(e) => {
+                e.stopPropagation();
                 setHistoryFocus(undefined);
                 setHistoryDialogOpen(true);
               }}
               className="w-full cursor-pointer rounded-btn px-1.5 py-1 text-left text-[10px] text-ash hover:bg-line-soft hover:text-graphite"
             >
-              查看全部 {histEntries.length} 条 / 对话详情 →
+              查看完整历史对话详情 →
             </button>
           )}
         </div>
@@ -883,6 +900,9 @@ function HistoryListRow({
         : entry.status === "skipped"
           ? "bg-ash"
           : "bg-gain";
+  const iconSrc = executorIconSrc(entry.runtimeId);
+  const bareExec = entry.runtimeId.replace(/^daemon:/, "").replace(/:yolo$/, "");
+
   return (
     <button
       type="button"
@@ -892,6 +912,16 @@ function HistoryListRow({
       title={`${kindLabel} · ${entry.runtimeId}${entry.launchMode === "terminal" ? " · TUI" : " · 后台"}${entry.detail !== null && entry.detail !== "" ? `\n${entry.detail}` : ""}\n${entry.title}\n点击查看对话详情`}
       className="group/hrow flex w-full cursor-pointer items-center gap-1.5 rounded-btn px-1.5 py-1 text-left transition hover:bg-line-soft"
     >
+      {/* 执行器图标：有官方 logo 显示品牌图片，无则显示 2 字母徽标 */}
+      <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center" title={`执行器：${entry.runtimeId}`}>
+        {iconSrc ? (
+          <img src={iconSrc} alt={entry.runtimeId} className="h-3.5 w-3.5 object-contain" />
+        ) : (
+          <span className="flex h-3 w-3 items-center justify-center rounded-[2px] bg-line-soft text-[8px] font-semibold uppercase text-ash">
+            {bareExec.slice(0, 2)}
+          </span>
+        )}
+      </span>
       <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", dot)} />
       <span className="shrink-0 text-[10px] text-ash">{kindLabel}</span>
       <span className="min-w-0 flex-1 truncate text-[11px] text-graphite">{entry.title}</span>

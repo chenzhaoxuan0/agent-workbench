@@ -262,6 +262,15 @@ export class Store {
         // 列已存在
       }
     }
+    // 历史终端记录自愈：早期版本把用户关闭 TUI 误记为 failed（ConPTY pty.kill 退出码为 1）。
+    // 若运行持续超过 3 秒且是因为 exit 码关闭的，恢复为 done。
+    try {
+      this.db.exec(
+        `UPDATE terminal_runs SET status = 'done', detail = NULL WHERE status = 'failed' AND detail LIKE 'terminal exit %' AND finished_at IS NOT NULL AND (finished_at - started_at) > 3000`,
+      );
+    } catch {
+      // 忽略历史自愈异常
+    }
     log.info("store opened", { db: path.join(homeDir, "state.db") });
   }
 
