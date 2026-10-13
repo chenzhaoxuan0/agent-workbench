@@ -349,51 +349,25 @@ export function TerminalPanel({
                 <span className="ml-auto text-[9px] normal-case tracking-normal text-ash/50">记入历史</span>
               </div>
               {executorOptions.map((r) => {
-                const bareId = r.id.replace(/^daemon:/, "").toLowerCase();
-                const isAgy = bareId === "agy" || bareId === "antigravity";
-                const baseName = r.presentation.displayName.replace(/ · daemon$/, "");
                 return (
-                  <div key={r.id} className="space-y-0.5">
-                    <button
-                      onClick={() => handleLaunchExecutor(r.id, r.presentation.displayName)}
-                      className="flex w-full items-center gap-2.5 rounded px-2.5 py-1.5 text-left text-body-sm text-ink hover:bg-teal-tint hover:text-teal transition"
-                    >
-                      <ShellOrAgentIcon icon={r.id} />
-                      <div className="flex flex-col flex-1 min-w-0">
-                        <span className="text-caption font-mono font-medium truncate">
-                          {r.presentation.displayName}
-                        </span>
-                        <span className="text-[10px] text-ash/60 font-sans truncate">
-                          PowerShell 7 · 交互式 TUI
-                        </span>
-                      </div>
-                      {activeRuntimeId === r.id && (
-                        <span className="text-[10px] text-teal/70 font-sans">当前</span>
-                      )}
-                    </button>
-                    {isAgy && (
-                      <button
-                        onClick={() => handleLaunchExecutor("agy:yolo", `${baseName} (YOLO)`)}
-                        className="flex w-full items-center gap-2.5 rounded px-2.5 py-1.5 text-left text-body-sm text-ink hover:bg-amber-500/10 hover:text-amber-500 transition group"
-                        title="以 --dangerously-skip-permissions 启动，跳过全部工具审批"
-                      >
-                        <ShellOrAgentIcon icon="agy" />
-                        <div className="flex flex-col flex-1 min-w-0">
-                          <div className="flex items-center gap-1.5">
-                            <span className="text-caption font-mono font-medium truncate">
-                              {baseName} (YOLO)
-                            </span>
-                            <span className="rounded bg-amber-500/15 px-1 py-0.2 text-[9px] font-semibold text-amber-500 uppercase tracking-wider">
-                              YOLO
-                            </span>
-                          </div>
-                          <span className="text-[10px] text-ash/60 font-sans truncate group-hover:text-amber-500/80">
-                            PowerShell 7 · 免审批 (Dangerous)
-                          </span>
-                        </div>
-                      </button>
+                  <button
+                    key={r.id}
+                    onClick={() => handleLaunchExecutor(r.id, r.presentation.displayName)}
+                    className="flex w-full items-center gap-2.5 rounded px-2.5 py-1.5 text-left text-body-sm text-ink hover:bg-teal-tint hover:text-teal transition"
+                  >
+                    <ShellOrAgentIcon icon={r.id} />
+                    <div className="flex flex-col flex-1 min-w-0">
+                      <span className="text-caption font-mono font-medium truncate">
+                        {r.presentation.displayName}
+                      </span>
+                      <span className="text-[10px] text-ash/60 font-sans truncate">
+                        免审批 TUI · 运行记录进历史
+                      </span>
+                    </div>
+                    {activeRuntimeId === r.id && (
+                      <span className="text-[10px] text-teal/70 font-sans">当前</span>
                     )}
-                  </div>
+                  </button>
                 );
               })}
 

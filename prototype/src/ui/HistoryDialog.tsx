@@ -138,7 +138,6 @@ export function HistoryDialog({
     let alive = true;
     setEntries(null);
     setErr(null);
-    setExpanded(focusKey ?? null);
     const load = (): void => {
       if (!alive) return;
       void fetchUnitHistory(unitId, 200)
@@ -156,7 +155,13 @@ export function HistoryDialog({
       alive = false;
       clearInterval(poll);
     };
-  }, [unitId, focusKey]);
+    // focusKey 不进依赖：弹窗开着换展开目标时只动 expanded，列表不重载不闪
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [unitId]);
+
+  useEffect(() => {
+    setExpanded(focusKey ?? null);
+  }, [focusKey]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-6" onClick={onClose}>
