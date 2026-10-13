@@ -58,10 +58,21 @@ function formatDuration(entry: UnitHistoryEntry): string | null {
   return `${Math.floor(s / 3600)}h${Math.floor((s % 3600) / 60)}m`;
 }
 
-export function HistoryDialog({ unitId, unitName, onClose }: { unitId: string; unitName: string; onClose: () => void }): ReactElement {
+export function HistoryDialog({
+  unitId,
+  unitName,
+  onClose,
+  focusKey,
+}: {
+  unitId: string;
+  unitName: string;
+  onClose: () => void;
+  /** 侧栏子列表点进来时预展开的条目（对话直接可见，不用再点一次） */
+  focusKey?: string;
+}): ReactElement {
   const [entries, setEntries] = useState<readonly UnitHistoryEntry[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [expanded, setExpanded] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<string | null>(focusKey ?? null);
 
   useEffect(() => {
     let alive = true;

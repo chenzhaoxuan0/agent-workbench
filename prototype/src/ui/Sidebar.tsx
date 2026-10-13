@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactElement } from "react";
 import {
   AlarmClock,
   Bot,
@@ -19,6 +19,8 @@ import { useWorkbench, type ViewMode, type BotWriteGuards } from "../store/useWo
 import { useShell } from "../store/useShell.ts";
 import { useAppearance } from "../store/useAppearance.ts";
 import type { AvatarFrame } from "../core/appearance.ts";
+import { formatRelative } from "../core/automation.ts";
+import { fetchUnitHistory, type UnitHistoryEntry } from "../adapters/daemon/client.ts";
 import {
   asModelId,
   asRuntimeId,
@@ -557,7 +559,24 @@ function UnitRow({
   schedule?: string;
 }) {
   const isSynthetic = isSyntheticUnit(unit);
+  /** 历史详情弹窗（子列表条目点开看对话用；focusKey 预展开点进来的那条） */
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyFocus, setHistoryFocus] = useState<string | undefined>(undefined);
+  /** bot 行下的历史子列表（折叠面板）：展开时拉最近记录，收起不占地方 */
+  const [histListOpen, setHistListOpen] = useState(false);
+  const [histEntries, setHistEntries] = useState<readonly UnitHistoryEntry[] | null>(null);
+  const [histErr, setHistErr] = useState<string | null>(null);
+
+  const toggleHistoryList = (): void => {
+    const next = !histListOpen;
+    setHistListOpen(next);
+    if (!next) return;
+    setHistErr(null);
+    setHistEntries(null);
+    void fetchUnitHistory(unit.id, 20)
+      .then((list) => setHistEntries(list))
+      .catch((e: unknown) => setHistErr(e instanceof Error ? e.message : String(e)));
+  };
   // ZCode: unavailableLocalDirectory —— 路径不可用要显式说出来，不能当成正常单元
   // **兜底 ?? []**：bot.json 是手可编辑的（见 useWorkbench 的合并守卫注释），
   // 一个字段缺失不该让整个界面白屏。管家 bot 一度就因为没写 tags 把整页搞崩了。
@@ -671,13 +690,52 @@ function UnitRow({
         </span>
       </button>
 
-      {/* 悬浮快捷操作：设置（打开目录统一走头部的工作区路径弹层） */}
+      {/* 历史子列表：bot 行下的可折叠执行时间轴（最近若干条，点条目进对话详情） */}
+      {histListOpen && (
+        <div data-no-drag draggable={false} onMouseDown={(e) => e.stopPropagation()} className="ml-9 space-y-px border-l border-line-soft py-1 pl-2">
+          {histErr !== null && <p className="px-1.5 py-1 text-[10px] text-loss">读取失败：{histErr}</p>}
+          {histEntries === null && histErr === null && <p className="px-1.5 py-1 text-[10px] text-ash">加载中…</p>}
+          {histEntries !== null && histEntries.length === 0 && (
+            <p className="px-1.5 py-1 text-[10px] text-ash">还没有执行记录 —— 自动化、待办或会话跑过之后出现在这里</p>
+          )}
+          {histEntries?.slice(0, 12).map((e) => (
+            <HistoryListRow
+              key={e.key}
+              entry={e}
+              onOpenDetail={() => {
+                setHistoryFocus(e.key);
+                setHistoryOpen(true);
+              }}
+            />
+          ))}
+          {histEntries !== null && histEntries.length > 12 && (
+            <button
+              type="button"
+              data-no-drag
+              draggable={false}
+              onClick={() => {
+                setHistoryFocus(undefined);
+                setHistoryOpen(true);
+              }}
+              className="w-full cursor-pointer rounded-btn px-1.5 py-1 text-left text-[10px] text-ash hover:bg-line-soft hover:text-graphite"
+            >
+              查看全部 {histEntries.length} 条 / 对话详情 →
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* 悬浮快捷操作：历史（切换行下子列表）、设置（打开目录统一走头部的工作区路径弹层） */}
       <div
         data-no-drag
         draggable={false}
         onMouseDown={(e) => e.stopPropagation()}
         onDragStart={(e) => e.preventDefault()}
-        className="absolute right-1.5 top-1.5 z-10 flex items-center gap-0.5 rounded-btn bg-canvas/95 p-0.5 shadow-xs opacity-0 backdrop-blur-xs transition hover:opacity-100 focus-within:opacity-100 group-hover/row:opacity-100 cursor-default"
+        className={cn(
+          "absolute right-1.5 top-1.5 z-10 flex items-center gap-0.5 rounded-btn bg-canvas/95 p-0.5 shadow-xs backdrop-blur-xs transition hover:opacity-100 focus-within:opacity-100 group-hover/row:opacity-100 cursor-default",
+          // 子列表开着就常驻显示 —— 折叠把手不能随 hover 消失
+          histListOpen ? "opacity-100" : "opacity-0",
+        )}
       >
         <button
           type="button"
@@ -715,11 +773,15 @@ function UnitRow({
           onMouseDown={(e) => e.stopPropagation()}
           onClick={(e) => {
             e.stopPropagation();
-            setHistoryOpen(true);
+            toggleHistoryList();
           }}
-          aria-label={`查看 ${unit.name} 的历史会话`}
-          title={`历史会话 —— ${unit.name} 跑过的自动化 / 待办 / 手动会话时间轴`}
-          className="cursor-pointer rounded-btn p-1 text-ash hover:bg-line-soft hover:text-ink active:scale-90 transition"
+          aria-label={histListOpen ? `收起 ${unit.name} 的历史会话` : `展开 ${unit.name} 的历史会话`}
+          aria-expanded={histListOpen}
+          title={histListOpen ? "收起历史会话" : "展开历史会话 —— 自动化 / 待办 / 手动的执行时间轴"}
+          className={cn(
+            "cursor-pointer rounded-btn p-1 transition active:scale-90",
+            histListOpen ? "bg-teal-tint text-teal" : "text-ash hover:bg-line-soft hover:text-ink",
+          )}
         >
           <History size={12} />
         </button>
@@ -739,8 +801,38 @@ function UnitRow({
         </button>
       </div>
 
-      {historyOpen && <HistoryDialog unitId={unit.id} unitName={unit.name} onClose={() => setHistoryOpen(false)} />}
+      {historyOpen && (
+        <HistoryDialog unitId={unit.id} unitName={unit.name} focusKey={historyFocus} onClose={() => setHistoryOpen(false)} />
+      )}
     </div>
+  );
+}
+
+/** 历史子列表的单行：状态点 + 类型 + 标题 + 相对时间；点开进对话详情弹窗 */
+function HistoryListRow({ entry, onOpenDetail }: { entry: UnitHistoryEntry; onOpenDetail: () => void }): ReactElement {
+  const kindLabel = entry.kind === "automation" ? "定时" : entry.kind === "backlog" ? "待办" : "会话";
+  const dot =
+    entry.status === "failed"
+      ? "bg-loss"
+      : entry.status === "running"
+        ? "bg-blue-500 animate-pulse"
+        : entry.status === "skipped"
+          ? "bg-ash"
+          : "bg-gain";
+  return (
+    <button
+      type="button"
+      data-no-drag
+      draggable={false}
+      onClick={onOpenDetail}
+      title={`${kindLabel} · ${entry.runtimeId}${entry.launchMode === "terminal" ? " · TUI" : " · 后台"}${entry.detail !== null && entry.detail !== "" ? `\n${entry.detail}` : ""}\n${entry.title}\n点击查看对话详情`}
+      className="flex w-full cursor-pointer items-center gap-1.5 rounded-btn px-1.5 py-1 text-left transition hover:bg-line-soft"
+    >
+      <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", dot)} />
+      <span className="shrink-0 text-[10px] text-ash">{kindLabel}</span>
+      <span className="min-w-0 flex-1 truncate text-[11px] text-graphite">{entry.title}</span>
+      <span className="shrink-0 text-[10px] text-ash">{formatRelative(entry.startedAt)}</span>
+    </button>
   );
 }
 
