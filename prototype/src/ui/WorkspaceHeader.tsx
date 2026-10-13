@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Check, FolderOpen, History, Radio } from "lucide-react";
+import { Check, FolderOpen, History, MessageSquare, Radio, SquareTerminal } from "lucide-react";
 import { useShell } from "../store/useShell.ts";
 import { useWorkbench, selectActiveUnit } from "../store/useWorkbench.ts";
 import { useBacklog } from "../store/useBacklog.ts";
@@ -13,6 +13,8 @@ const iconBtn =
 
 export function WorkspaceHeader() {
   const sidebarCollapsed = useShell((s) => s.sidebarCollapsed);
+  const conversationView = useShell((s) => s.conversationView);
+  const setConversationView = useShell((s) => s.setConversationView);
   const [historyOpen, setHistoryOpen] = useState(false);
 
   const unit = useWorkbench(selectActiveUnit);
@@ -51,6 +53,38 @@ export function WorkspaceHeader() {
       ) : (
         <span className="text-body-sm text-ash">未选择 Agent</span>
       )}
+
+      {/* ---- 中区：会话形态切换（结构化对话 | 终端 TUI）----
+          docs/13 决策：新会话默认结构化聊天；终端画布保留为并行形态 */}
+      <div className="mx-auto hidden md:flex items-center rounded-btn bg-line-soft/80 p-0.5 border border-line/40">
+        <button
+          onClick={() => setConversationView("chat")}
+          title="结构化对话：归一化事件流渲染的消息时间线，支持工具卡片、审批与用量（所有执行器统一形态）"
+          className={cn(
+            "flex items-center gap-1.5 rounded-btn px-2.5 py-1 text-[12px] font-medium transition",
+            conversationView === "chat"
+              ? "bg-card text-teal shadow-xs font-semibold border border-teal/25"
+              : "text-graphite hover:text-ink",
+          )}
+        >
+          <MessageSquare size={13} />
+          <span>对话</span>
+        </button>
+
+        <button
+          onClick={() => setConversationView("terminal")}
+          title="交互终端模式：直接在工作空间运行 Agent CLI，享有原生 TUI 与斜杠命令"
+          className={cn(
+            "flex items-center gap-1.5 rounded-btn px-2.5 py-1 text-[12px] font-medium transition",
+            conversationView === "terminal"
+              ? "bg-card text-teal shadow-xs font-semibold border border-teal/25"
+              : "text-graphite hover:text-ink",
+          )}
+        >
+          <SquareTerminal size={13} />
+          <span>终端 TUI</span>
+        </button>
+      </div>
 
       {/* ---- 右区：工作状态 + 区分割线 + 后台守护通道 ---- */}
       <div className="ml-auto flex shrink-0 items-center gap-2">

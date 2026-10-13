@@ -236,6 +236,16 @@ export type SessionStatus =
  */
 export type SessionSource = "workbench" | "feishu" | "telegram" | "webhook" | "mcp" | "automation";
 
+/** 来源徽标文案 —— Timeline / 历史弹窗共用（docs/13 结构化聊天恢复） */
+export const SESSION_SOURCE_LABEL: Record<SessionSource, string> = {
+  workbench: "工作台",
+  feishu: "飞书",
+  telegram: "Telegram",
+  webhook: "webhook",
+  mcp: "MCP",
+  automation: "自动化",
+};
+
 export interface Session {
   readonly id: SessionId;
   readonly unitId: UnitId;

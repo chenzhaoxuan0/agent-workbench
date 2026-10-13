@@ -5,8 +5,11 @@ import { BacklogPage } from "./ui/BacklogPage.tsx";
 import { ProposalBanner } from "./ui/ProposalBanner.tsx";
 import { ImageStudioPage } from "./ui/ImageStudioPage.tsx";
 import { CommandCenter } from "./ui/CommandCenter.tsx";
+import { Composer } from "./ui/Composer.tsx";
 import { DesktopTopOverlay } from "./ui/DesktopTopOverlay.tsx";
 import { SettingsPage } from "./ui/SettingsPage.tsx";
+import { PermissionDialog } from "./ui/PermissionDialog.tsx";
+import { Timeline } from "./ui/Timeline.tsx";
 import { useWorkbench } from "./store/useWorkbench.ts";
 import { useTerminalStore } from "./store/useTerminalStore.ts";
 import { Sidebar } from "./ui/Sidebar.tsx";
@@ -14,17 +17,19 @@ import { TerminalPanel } from "./ui/TerminalPanel.tsx";
 import { WorkspaceHeader } from "./ui/WorkspaceHeader.tsx";
 import { bindShellShortcuts, useShell } from "./store/useShell.ts";
 import { HistoryDialog } from "./ui/HistoryDialog.tsx";
+import { cn } from "./ui/cn.ts";
 
 /**
  * 工作台外壳 —— 布局结构对齐 ZCode 的 WorkspaceShellLayout。
  *
  * 照搬的 ZCode 约定：
  *   - 侧栏 200px 起，min 200，max 视口 50%，宽度持久化
- *   - 会话区恒为终端画布（原「终端 / 会话历史 / 轨迹」三态切换已砍，
- *     见 useShell.ts 顶部注释）
  *   - **面板收起即归零**：左栏收起不留窄条，重开的唯一入口是
  *     工作区头部那颗状态感知的开关按钮
  *     —— ZCode 的 DesktopTopOverlay / WorkspaceHeaderActionSection 同款约定
+ *
+ * 会话区形态（docs/13 统一 Web 化）：结构化对话（默认）与终端画布可切换，
+ * 终端画布持久挂载（隐藏不卸载）。
  *
  * 与 ZCode 的差异：ZCode 右侧是内嵌浏览器，本项目右侧换成标签页面板
  * —— 因为「多工具平等切换 + 能力对比」比内嵌浏览器更核心。
@@ -172,6 +177,7 @@ function SidebarSlot() {
 
 function ConversationSlot() {
   const mainView = useShell((s) => s.mainView);
+  const conversationView = useShell((s) => s.conversationView);
 
   return (
     <Panel minSize="30%" className="min-w-0">
@@ -191,12 +197,26 @@ function ConversationSlot() {
           <BacklogPage />
         </main>
       ) : (
-        <main className="flex h-full min-h-0 flex-col" aria-label="终端">
-          {/* 工作区头部：展示 Agent 身份卡与动作 */}
+        <main className="flex h-full min-h-0 flex-col" aria-label="会话">
+          {/* 工作区头部：Agent 身份卡 + 会话形态切换（对话/终端） */}
           <WorkspaceHeader />
 
-          {/* 终端画布持久挂载：切换主视图时不杀进程、不丢缓冲，切回瞬间即达 */}
-          <div className="flex min-h-0 flex-1 flex-col">
+          {/* 结构化对话视图（docs/13：默认形态）—— 归一化事件流渲染 */}
+          {conversationView === "chat" && (
+            <div className="flex min-h-0 flex-1 flex-col">
+              <Timeline />
+              <PermissionDialog />
+              <Composer />
+            </div>
+          )}
+
+          {/* 终端画布持久挂载：切换视图时不杀进程、不丢缓冲，切回瞬间即达 */}
+          <div
+            className={cn(
+              "min-h-0 flex-1 flex-col",
+              conversationView === "terminal" ? "flex" : "hidden",
+            )}
+          >
             <TerminalPanel variant="canvas" />
           </div>
         </main>

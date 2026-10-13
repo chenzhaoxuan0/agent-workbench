@@ -26,11 +26,12 @@ import type { UnitId } from "../core/units.ts";
 export type MainView = "chat" | "automations" | "image" | "backlog";
 
 /**
- * 会话内视图曾有三态（terminal / chat / trajectory），2026-10 砍掉后两项：
- * 主用法是 TUI，会话历史与轨迹透视只覆盖工作台发起的会话，形同虚设。
- * 现在会话区恒为终端画布。真要找回，从 git log 取
- * （Timeline.tsx / TrajectoryView.tsx / Composer.tsx / core/trajectory.ts）。
+ * 会话内视图（docs/13 统一 Web 化：决策拍板「新会话默认结构化聊天」）：
+ * - chat 为结构化对话（Timeline + Composer，消费 RuntimeEvent 归一化事件流）
+ * - terminal 为终端画布（TUI 原生体验，xterm 画布持久挂载）
+ * trajectory 轨迹透视不随本轮恢复，需要时从 git 历史取（TrajectoryView.tsx）。
  */
+export type ConversationView = "chat" | "terminal";
 
 /**
  * 设置分区 id。
@@ -142,9 +143,13 @@ interface ShellState {
   /** 导入已有文件夹对话框（docs/09 §七）。与 addBotOpen 互斥：两个都是「加一个 bot 进来」，
    *  但一个建新东西、一个只登记现成文件夹，后果不同，表单也不能复用。 */
   importBotOpen: boolean;
+  /** 会话内视图：默认结构化聊天（docs/13 决策），终端画布为可切换的并行形态 */
+  conversationView: ConversationView;
 
   setSidebarWidth: (w: number) => void;
   toggleSidebar: () => void;
+
+  setConversationView: (v: ConversationView) => void;
 
   setMainView: (v: MainView) => void;
   /** 打开设置覆盖层（ZCode 的 WorkspaceSettingsLayer），可直落某个分区 */
@@ -177,8 +182,11 @@ export const useShell = create<ShellState>((set, get) => ({
   editUnitId: null,
   importBotOpen: false,
   historyModal: null,
+  conversationView: "chat",
 
   setMainView: (mainView) => set({ mainView }),
+
+  setConversationView: (conversationView) => set({ conversationView }),
 
   openSettings: (section) =>
     set((s) => ({
