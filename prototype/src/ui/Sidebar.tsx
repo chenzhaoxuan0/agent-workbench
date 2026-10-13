@@ -84,8 +84,16 @@ export function Sidebar() {
   const activeUnitId = useWorkbench((s) => s.activeUnitId);
   const setView = useWorkbench((s) => s.setView);
   const selectUnit = useWorkbench((s) => s.selectUnit);
-  /** 历史子列表的手风琴态：整个 bot 行可点，一次只展开一个（null = 全收起） */
-  const [historyUnitId, setHistoryUnitId] = useState<string | null>(null);
+  /** 历史子列表展开集合：每个 bot 独立展开，再次点击才收起（不再互斥自动关上） */
+  const [openHistoryUnits, setOpenHistoryUnits] = useState<Set<string>>(() => new Set());
+  const toggleHistoryUnit = (id: string) => {
+    setOpenHistoryUnits((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
   const addUnit = useWorkbench((s) => s.addUnit);
   const mainView = useShell((s) => s.mainView);
 
@@ -320,8 +328,8 @@ export function Sidebar() {
                     onToggleResident={() => makeNormal(u)}
                     isResident={true}
                     schedule={u.schedule?.enabled ? u.schedule.description : undefined}
-                    historyOpen={historyUnitId === u.id}
-                    onToggleHistory={() => setHistoryUnitId(historyUnitId === u.id ? null : u.id)}
+                    historyOpen={openHistoryUnits.has(u.id)}
+                    onToggleHistory={() => toggleHistoryUnit(u.id)}
                   />
                 </div>
               );
@@ -411,8 +419,8 @@ export function Sidebar() {
                   onToggleResident={() => makeResident(u)}
                   isResident={false}
                   schedule={u.schedule?.enabled ? u.schedule.description : undefined}
-                  historyOpen={historyUnitId === u.id}
-                  onToggleHistory={() => setHistoryUnitId(historyUnitId === u.id ? null : u.id)}
+                  historyOpen={openHistoryUnits.has(u.id)}
+                  onToggleHistory={() => toggleHistoryUnit(u.id)}
                 />
               </div>
             );
@@ -752,7 +760,7 @@ function UnitRow({
 
       {/* 历史子列表：bot 行下的可折叠执行时间轴（最近若干条，点条目进对话详情） */}
       {historyOpen && (
-        <div data-no-drag draggable={false} onMouseDown={(e) => e.stopPropagation()} className="ml-6 space-y-px border-l border-line-soft py-1 pl-2">
+        <div data-no-drag draggable={false} onMouseDown={(e) => e.stopPropagation()} className="space-y-px py-0.5 px-0.5">
           {histErr !== null && <p className="px-1.5 py-1 text-[10px] text-loss">读取失败：{histErr}</p>}
           {histEntries === null && histErr === null && <p className="px-1.5 py-1 text-[10px] text-ash">加载中…</p>}
           {histEntries !== null && histEntries.length === 0 && (
@@ -882,6 +890,24 @@ function UnitRow({
 
 /** 历史子列表的单行：状态点 + 类型 + 标题 + 相对时间；点开进对话详情弹窗。
  *  可恢复的条目（zcode/claude/codex 后台会话）行尾带 ⟲ 图标，点击即在 TUI 重现。 */
+/** 精简相对时间展示（侧栏紧凑宽度优化，如 刚刚/5m/2h/1d/10/12） */
+function formatHistoryTime(ts: number): string {
+  const diffMs = Date.now() - ts;
+  if (diffMs < 0) return "刚刚";
+  const diffSec = Math.floor(diffMs / 1000);
+  if (diffSec < 60) return "刚刚";
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `${diffMin}m`;
+  const diffHour = Math.floor(diffMin / 60);
+  if (diffHour < 24) return `${diffHour}h`;
+  const diffDay = Math.floor(diffHour / 24);
+  if (diffDay < 7) return `${diffDay}d`;
+  const d = new Date(ts);
+  return `${d.getMonth() + 1}/${d.getDate()}`;
+}
+
+/** 历史子列表的单行：执行器图标 + 状态点 + 标题 + 紧凑时间；点开进对话详情弹窗。
+ *  可恢复的条目（zcode/claude/codex/mcode 后台/TUI 会话）行尾带 ⟲ 图标，点击即在 TUI 重现。 */
 function HistoryListRow({
   entry,
   onOpenDetail,
@@ -909,8 +935,8 @@ function HistoryListRow({
       data-no-drag
       draggable={false}
       onClick={onOpenDetail}
-      title={`${kindLabel} · ${entry.runtimeId}${entry.launchMode === "terminal" ? " · TUI" : " · 后台"}${entry.detail !== null && entry.detail !== "" ? `\n${entry.detail}` : ""}\n${entry.title}\n点击查看对话详情`}
-      className="group/hrow flex w-full cursor-pointer items-center gap-1.5 rounded-btn px-1.5 py-1 text-left transition hover:bg-line-soft"
+      title={`${kindLabel} · ${entry.runtimeId}${entry.launchMode === "terminal" ? " · TUI" : " · 后台"}${entry.detail !== null && entry.detail !== "" ? `\n${entry.detail}` : ""}\n${entry.title}\n${formatRelative(entry.startedAt)}\n点击查看对话详情`}
+      className="group/hrow flex w-full cursor-pointer items-center gap-1.5 rounded-btn px-2 py-1 text-left transition hover:bg-line-soft"
     >
       {/* 执行器图标：有官方 logo 显示品牌图片，无则显示 2 字母徽标 */}
       <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center" title={`执行器：${entry.runtimeId}`}>
@@ -923,9 +949,8 @@ function HistoryListRow({
         )}
       </span>
       <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", dot)} />
-      <span className="shrink-0 text-[10px] text-ash">{kindLabel}</span>
       <span className="min-w-0 flex-1 truncate text-[11px] text-graphite">{entry.title}</span>
-      <span className="shrink-0 text-[10px] text-ash">{formatRelative(entry.startedAt)}</span>
+      <span className="shrink-0 text-[9px] text-ash/70">{formatHistoryTime(entry.startedAt)}</span>
       {onResume !== undefined && (
         <span
           role="button"

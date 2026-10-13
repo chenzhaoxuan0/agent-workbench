@@ -185,7 +185,9 @@ export class Store {
         status TEXT NOT NULL,
         started_at INTEGER NOT NULL,
         finished_at INTEGER,
-        detail TEXT
+        detail TEXT,
+        title TEXT,
+        resume_ref TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_terminal_runs_unit ON terminal_runs(unit_id, id);
 
@@ -255,6 +257,8 @@ export class Store {
       `ALTER TABLE automations ADD COLUMN launch_mode TEXT`,
       // 待办同款：terminal = 前端 TUI（缺省）；headless = 纯后台
       `ALTER TABLE backlog_items ADD COLUMN launch_mode TEXT`,
+      `ALTER TABLE terminal_runs ADD COLUMN title TEXT`,
+      `ALTER TABLE terminal_runs ADD COLUMN resume_ref TEXT`,
     ]) {
       try {
         this.db.exec(stmt);
@@ -844,14 +848,34 @@ export class Store {
 
   // ---- 手动派发终端（terminal.dispatch → unit.history 的 manual 条目）----------
 
-  startTerminalRun(a: { terminalId: string; unitId: string; unitName: string; runtimeId: string }): number {
+  startTerminalRun(a: { terminalId: string; unitId: string; unitName: string; runtimeId: string; title?: string | null }): number {
     const result = this.db
       .prepare(
-        `INSERT INTO terminal_runs (terminal_id, unit_id, unit_name, runtime_id, status, started_at)
-         VALUES (?, ?, ?, ?, 'running', ?)`,
+        `INSERT INTO terminal_runs (terminal_id, unit_id, unit_name, runtime_id, status, started_at, title)
+         VALUES (?, ?, ?, ?, 'running', ?, ?)`,
       )
-      .run(a.terminalId, a.unitId, a.unitName, a.runtimeId, Date.now());
+      .run(a.terminalId, a.unitId, a.unitName, a.runtimeId, Date.now(), a.title ?? null);
     return Number(result.lastInsertRowid);
+  }
+
+  /** 更新终端运行的标题或恢复引用（捕获到首条消息时实时写回） */
+  setTerminalRunTitle(terminalId: string, title: string, resumeRef?: string | null): void {
+    if (resumeRef) {
+      this.db
+        .prepare(`UPDATE terminal_runs SET title = ?, resume_ref = ? WHERE terminal_id = ?`)
+        .run(title, resumeRef, terminalId);
+    } else {
+      this.db
+        .prepare(`UPDATE terminal_runs SET title = ? WHERE terminal_id = ?`)
+        .run(title, terminalId);
+    }
+  }
+
+  /** 历史回溯修补：按记录 id 更新标题与原生会话引用 */
+  updateTerminalRunResume(id: number, title: string, resumeRef: string | null): void {
+    this.db
+      .prepare(`UPDATE terminal_runs SET title = ?, resume_ref = ? WHERE id = ?`)
+      .run(title, resumeRef, id);
   }
 
   /** 按终端 id 结算（autoterm id 全局唯一；不存在的 id 静默无操作） */
@@ -871,6 +895,8 @@ export class Store {
     startedAt: number;
     finishedAt: number | null;
     detail: string | null;
+    title: string | null;
+    resumeRef: string | null;
   }> {
     const rows = this.db
       .prepare(`SELECT * FROM terminal_runs WHERE unit_id = ? ORDER BY id DESC LIMIT ?`)
@@ -885,6 +911,8 @@ export class Store {
       startedAt: Number(r["started_at"]),
       finishedAt: r["finished_at"] === null || r["finished_at"] === undefined ? null : Number(r["finished_at"]),
       detail: r["detail"] === null || r["detail"] === undefined ? null : String(r["detail"]),
+      title: r["title"] === null || r["title"] === undefined ? null : String(r["title"]),
+      resumeRef: r["resume_ref"] === null || r["resume_ref"] === undefined ? null : String(r["resume_ref"]),
     }));
   }
 

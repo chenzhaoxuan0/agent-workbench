@@ -5,12 +5,14 @@
  * Phase 1 在这里注册 session.* 方法并把 RuntimeEvent 接进 broadcastEvent。
  */
 
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage } from "node:http";
+import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { exec, spawn } from "node:child_process";
 import { loadConfig } from "./config.ts";
 import { healthPayload, isLocalOrigin, isLoopbackAddr, startHttp, type HttpRoute } from "./httpd.ts";
@@ -340,6 +342,13 @@ const terminals = new TerminalManager((frame) => {
     const manualDone = frame.killed || (frame.exitCode ?? 0) === 0 || isUserInterrupt;
     if (manualDone) store.finishTerminalRun(frame.terminalId, "done", null);
     else store.finishTerminalRun(frame.terminalId, "failed", `terminal exit ${frame.exitCode ?? "?"}`);
+  }
+  if (frame.kind === "title") {
+    if (typeof frame.title === "string") {
+      store.setTerminalRunTitle(frame.terminalId, frame.title);
+      log.info("terminal title captured from input", { terminalId: frame.terminalId, title: frame.title });
+    }
+    return;
   }
   broadcastTerminal(wss, { v: WIRE_VERSION, type: "terminal", ...frame });
 });
@@ -1159,7 +1168,106 @@ interface UnitHistoryEntry {
   resumeRef: string | null;
 }
 
-registerMethod("unit.history", (params) => {
+/**
+ * 尝试从各 CLI 原生存储中回溯历史交互式会话的标题与恢复引用（mcode、zcode、claude 等）
+ */
+function resolveNativeTerminalSession(
+  runtimeId: string,
+  rootPath: string,
+  startedAt: number,
+  endedAt: number | null,
+): { title: string; resumeRef: string | null } | null {
+  const bareRuntime = runtimeId.replace(/^daemon:/, "").replace(/:yolo$/, "");
+  const home = os.homedir();
+  const minTime = startedAt - 30_000;
+  const maxTime = (endedAt ?? Date.now()) + 30_000;
+
+  if (bareRuntime === "mcode") {
+    try {
+      const dbPath = path.join(home, ".minimax", "v2", "sqlite", "runtime-state.sqlite");
+      if (existsSync(dbPath)) {
+        const db = new DatabaseSync(dbPath, { open: true, readOnly: true });
+        try {
+          const base = rootPath ? path.basename(rootPath) : "";
+          const pattern = base !== "" ? `%${base}%` : "%";
+          const row = db
+            .prepare(
+              `SELECT session_id, title, created_at_ms FROM local_runtime_sessions
+               WHERE workspace_dir LIKE ? AND created_at_ms >= ? AND created_at_ms <= ?
+               ORDER BY created_at_ms ASC LIMIT 1`,
+            )
+            .get(pattern, minTime, maxTime) as Record<string, unknown> | undefined;
+          if (row && typeof row["title"] === "string" && row["title"].trim() !== "") {
+            return {
+              title: String(row["title"]).trim(),
+              resumeRef: row["session_id"] ? String(row["session_id"]) : null,
+            };
+          }
+        } finally {
+          db.close();
+        }
+      }
+    } catch {
+      // 容错
+    }
+  }
+
+  if (bareRuntime === "zcode") {
+    try {
+      const dbPath = path.join(home, ".zcode", "cli", "db", "db.sqlite");
+      if (existsSync(dbPath)) {
+        const db = new DatabaseSync(dbPath, { open: true, readOnly: true });
+        try {
+          const row = db
+            .prepare(
+              `SELECT id, title, time_created FROM session
+               WHERE time_created >= ? AND time_created <= ?
+               ORDER BY time_created ASC LIMIT 1`,
+            )
+            .get(minTime, maxTime) as Record<string, unknown> | undefined;
+          if (row && typeof row["title"] === "string" && row["title"].trim() !== "") {
+            return {
+              title: String(row["title"]).trim(),
+              resumeRef: row["id"] ? String(row["id"]) : null,
+            };
+          }
+        } finally {
+          db.close();
+        }
+      }
+    } catch {
+      // 容错
+    }
+  }
+
+  if (bareRuntime === "claude") {
+    try {
+      const histPath = path.join(home, ".claude", "history.jsonl");
+      if (existsSync(histPath)) {
+        const content = readFileSync(histPath, "utf8");
+        const lines = content.split(/\r?\n/).filter(Boolean).slice(-100);
+        for (const line of lines) {
+          try {
+            const data = JSON.parse(line) as Record<string, unknown>;
+            const ts = Number(data["timestamp"]);
+            if (ts >= minTime && ts <= maxTime && typeof data["display"] === "string" && data["display"].trim() !== "") {
+              return {
+                title: String(data["display"]).trim(),
+                resumeRef: data["sessionId"] ? String(data["sessionId"]) : null,
+              };
+            }
+          } catch {}
+        }
+      }
+    } catch {
+      // 容错
+    }
+  }
+
+  return null;
+}
+
+registerMethod("unit.history", async (params) => {
   const p = (params ?? {}) as { unitId?: string; limit?: number };
   if (typeof p.unitId !== "string" || p.unitId === "") throw badAutomation("unitId is required");
   const limit = Math.min(Math.max(typeof p.limit === "number" && Number.isFinite(p.limit) ? Math.round(p.limit) : 100, 1), 500);
@@ -1167,6 +1275,8 @@ registerMethod("unit.history", (params) => {
   const entries: UnitHistoryEntry[] = [];
   /** 已被运行记录认领的会话 id（全量，不受单次 limit 影响）：会话条目去重用 */
   const claimedSessionIds = store.getClaimedSessionIds();
+  const bot = (await botRegistry.getBot(p.unitId)) ?? null;
+  const botRootPath = bot?.rootPath ? String(bot.rootPath) : "";
 
   for (const a of store.listAutomations()) {
     if (a.unitId !== p.unitId) continue;
@@ -1217,10 +1327,20 @@ registerMethod("unit.history", (params) => {
   }
 
   for (const r of store.listTerminalRuns(p.unitId, limit)) {
+    let title = r.title;
+    let resumeRef = r.resumeRef;
+    if (!title || title === "" || title === "交互式会话") {
+      const resolved = resolveNativeTerminalSession(r.runtimeId, botRootPath, r.startedAt, r.finishedAt);
+      if (resolved) {
+        title = resolved.title;
+        resumeRef = resolved.resumeRef;
+        store.updateTerminalRunResume(r.id, title, resumeRef);
+      }
+    }
     entries.push({
       key: `manual-${r.id}`,
       kind: "manual",
-      title: "交互式会话",
+      title: title && title !== "" ? title : "交互式会话",
       subtitle: null,
       runtimeId: r.runtimeId,
       launchMode: "terminal",
@@ -1230,7 +1350,7 @@ registerMethod("unit.history", (params) => {
       endedAt: r.finishedAt,
       detail: r.detail,
       sessionId: null,
-      resumeRef: null,
+      resumeRef: resumeRef ?? null,
     });
   }
 

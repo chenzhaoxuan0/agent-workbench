@@ -16,7 +16,8 @@ import { log } from "../log.ts";
 
 export interface TerminalFrameInput {
   readonly terminalId: string;
-  readonly kind: "data" | "exit" | "created";
+  readonly kind: "data" | "exit" | "created" | "title";
+  readonly title?: string;
   readonly data?: string;
   readonly exitCode?: number;
   /** 是否由客户端显式调用 terminal.kill 触发关闭（非意外崩退） */
@@ -69,6 +70,9 @@ interface TerminalSession {
   scrollbackBytes: number;
   /** 最近一帧输出的到达时间 —— writeWhenQuiet 的静默判据 */
   lastDataAt: number;
+  /** 用户在终端中敲入/粘贴的输入缓冲（用于提取首条 prompt 作为会话标题） */
+  inputBuffer: string;
+  firstInputCaptured?: boolean;
 }
 
 /** 每终端滚动回放上限。128KB ≈ 千行级输出，够看清「刚才跑到哪了」，内存也可承受 */
@@ -287,6 +291,7 @@ export class TerminalManager {
       scrollback: [],
       scrollbackBytes: 0,
       lastDataAt: Date.now(),
+      inputBuffer: "",
     };
 
     shellProcess.onData((data) => {
@@ -365,7 +370,36 @@ export class TerminalManager {
   }
 
   write(terminalId: string, data: string): void {
-    this.get(terminalId).pty.write(data);
+    const session = this.get(terminalId);
+    session.pty.write(data);
+    if (!session.firstInputCaptured) {
+      this.accumulateFirstInput(session, data);
+    }
+  }
+
+  private accumulateFirstInput(session: TerminalSession, data: string): void {
+    const cleaned = data
+      .replace(/\x1b\[[0-9;?]*[a-zA-Z~]/g, "")
+      .replace(/\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g, "");
+    for (const ch of cleaned) {
+      if (ch === "\r" || ch === "\n") {
+        const line = session.inputBuffer.trim();
+        if (line.length >= 2 && !["clear", "exit", "quit", ":q", ":q!"].includes(line.toLowerCase())) {
+          session.firstInputCaptured = true;
+          const title = line.length > 60 ? `${line.slice(0, 60)}…` : line;
+          this.emit({ terminalId: session.terminalId, kind: "title", title });
+          break;
+        }
+        session.inputBuffer = "";
+      } else if (ch === "\b" || ch === "\x7f") {
+        session.inputBuffer = session.inputBuffer.slice(0, -1);
+      } else if (ch.charCodeAt(0) >= 32 || ch.charCodeAt(0) > 127) {
+        session.inputBuffer += ch;
+        if (session.inputBuffer.length > 500) {
+          session.inputBuffer = session.inputBuffer.slice(0, 500);
+        }
+      }
+    }
   }
 
   resize(terminalId: string, cols: number, rows: number): void {
