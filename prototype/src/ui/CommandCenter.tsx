@@ -16,6 +16,7 @@ import { fetchUnitHistory, type UnitHistoryEntry } from "../adapters/daemon/clie
 import { useHistoryPrefs } from "../store/useHistoryPrefs.ts";
 import { formatRelative } from "../core/automation.ts";
 import { asUnitId } from "../core/units.ts";
+import { fuzzyMatchItem } from "./fuzzySearch.ts";
 import { cn } from "./cn.ts";
 
 /**
@@ -150,14 +151,45 @@ export function CommandCenter() {
     return out;
   }, [commands, units, automations, historyEntries, hideFailedInDialog]);
 
-  const filtered = useMemo(() => {
-    const needle = q.trim().toLowerCase();
-    const hit = (text: string) => text.toLowerCase().includes(needle);
-    return items.filter(
-      (it) =>
-        (scope === "all" || it.scope === scope) &&
-        (needle === "" || hit(it.label) || hit(it.hint ?? "") || hit(it.group)),
-    );
+  const { filtered, groups } = useMemo(() => {
+    const scopedItems = scope === "all" ? items : items.filter((it) => it.scope === scope);
+    const trimmed = q.trim();
+    if (!trimmed) {
+      const gList = [...new Set(scopedItems.map((it) => it.group))];
+      return { filtered: scopedItems, groups: gList };
+    }
+
+    const scoredByGroup = new Map<string, Array<{ item: Item; score: number }>>();
+    for (const it of scopedItems) {
+      const match = fuzzyMatchItem(it, trimmed);
+      if (match) {
+        const list = scoredByGroup.get(it.group) ?? [];
+        list.push(match);
+        scoredByGroup.set(it.group, list);
+      }
+    }
+
+    for (const list of scoredByGroup.values()) {
+      list.sort((a, b) => b.score - a.score);
+    }
+
+    const sortedGroups = Array.from(scoredByGroup.keys()).sort((gA, gB) => {
+      const maxA = scoredByGroup.get(gA)?.[0]?.score ?? 0;
+      const maxB = scoredByGroup.get(gB)?.[0]?.score ?? 0;
+      return maxB - maxA;
+    });
+
+    const flattened: Item[] = [];
+    for (const g of sortedGroups) {
+      const list = scoredByGroup.get(g);
+      if (list) {
+        for (const s of list) {
+          flattened.push(s.item);
+        }
+      }
+    }
+
+    return { filtered: flattened, groups: sortedGroups };
   }, [items, q, scope]);
 
   useEffect(() => {
@@ -187,7 +219,6 @@ export function CommandCenter() {
     setOpen(false);
   };
 
-  const groups = [...new Set(filtered.map((it) => it.group))];
   let rowIndex = -1;
 
   return (
