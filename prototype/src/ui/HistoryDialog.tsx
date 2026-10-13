@@ -62,16 +62,27 @@ function formatDuration(entry: UnitHistoryEntry): string | null {
 }
 
 /**
- * 每执行器的 TUI 恢复口径（实测 --help / resume --help）：
- *   zcode  --resume <sessionId>（我们的 id 即原生 sess_ id）
- *   claude --resume <session-id>（cli_ref = CLI 原生 session id）
- *   codex  resume <SESSION_ID>（子命令，cli_ref = thread id）
- * 其余执行器（ACP 系等）TUI 恢复未实测，暂不放开 —— 需要时补一行映射即可。
+ * 每执行器的 TUI 恢复口径（各家 --help 实测）：
+ *   zcode    --resume <sessionId>（我们的 id 即原生 sess_ id）
+ *   claude   --resume <session-id>（cli_ref = CLI 原生 session id）
+ *   codex    resume <SESSION_ID>（子命令，cli_ref = thread id）
+ *   mcode    --session <id>（ACP sessionId 与 TUI 会话同库）
+ *   kimi     --session <id>（-S，带 id 直接恢复）
+ *   opencode --session <id>（-s，session id to continue）
+ *   hermes   --resume <SESSION>
+ *   dsh      --resume <id>（TUI 走 dst shim，--resume [id]）
+ * ACP 系的 id 与 TUI 会话库同源（同一 CLI 的会话存储），若个别家实测对不上，
+ * 从表里删一行即可，记录侧不受影响。
  */
 const RESUME_ARGS: Record<string, (ref: string) => string[]> = {
   zcode: (ref) => ["--resume", ref],
   claude: (ref) => ["--resume", ref],
   codex: (ref) => ["resume", ref],
+  mcode: (ref) => ["--session", ref],
+  kimi: (ref) => ["--session", ref],
+  opencode: (ref) => ["--session", ref],
+  hermes: (ref) => ["--resume", ref],
+  dsh: (ref) => ["--resume", ref],
 };
 
 /** 可恢复判定（侧栏子列表与详情弹窗共用） */
