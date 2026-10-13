@@ -9,10 +9,12 @@ import {
   History,
   ListTodo,
   MessageSquare,
+  RotateCcw,
   Terminal,
   X,
 } from "lucide-react";
-import { fetchSessionMessages, fetchUnitHistory, type UnitHistoryEntry } from "../adapters/daemon/client.ts";
+import { dispatchTerminal, fetchSessionMessages, fetchUnitHistory, type UnitHistoryEntry } from "../adapters/daemon/client.ts";
+import { useWorkbench } from "../store/useWorkbench.ts";
 import { cn } from "./cn.ts";
 
 /**
@@ -71,9 +73,34 @@ export function HistoryDialog({
   /** 侧栏子列表点进来时预展开的条目（对话直接可见，不用再点一次） */
   focusKey?: string;
 }): ReactElement {
+  const units = useWorkbench((s) => s.units);
   const [entries, setEntries] = useState<readonly UnitHistoryEntry[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(focusKey ?? null);
+  const [resumeBusy, setResumeBusy] = useState<string | null>(null);
+
+  /**
+   * 在 TUI 中恢复：按条目的执行器派发终端并带 --resume <sessionId>。
+   * 目前只有 zcode 通了（我们的 session id 就是它的原生 sess_ id，CLI 有
+   * --resume flag）；claude 等适配器存的是自造 id、原生 id 未落库，暂不放开。
+   */
+  const resumable = (e: UnitHistoryEntry): boolean =>
+    e.sessionId !== null && e.runtimeId === "zcode" && units.some((u) => u.id === unitId);
+
+  const handleResume = (e: UnitHistoryEntry): void => {
+    const u = units.find((x) => x.id === unitId);
+    if (u === undefined || e.sessionId === null) return;
+    setResumeBusy(e.key);
+    void dispatchTerminal({
+      unitId,
+      unitName: u.name,
+      rootPath: u.rootPath,
+      runtimeId: e.runtimeId,
+      args: ["--resume", e.sessionId],
+    })
+      .catch((err2: unknown) => console.error("[HistoryDialog] TUI 恢复失败:", err2))
+      .finally(() => setResumeBusy(null));
+  };
 
   useEffect(() => {
     let alive = true;
@@ -128,6 +155,9 @@ export function HistoryDialog({
               entry={e}
               expanded={expanded === e.key}
               onToggle={() => setExpanded(expanded === e.key ? null : e.key)}
+              resumable={resumable(e)}
+              resumeBusy={resumeBusy === e.key}
+              onResume={() => handleResume(e)}
             />
           ))}
         </div>
@@ -136,7 +166,21 @@ export function HistoryDialog({
   );
 }
 
-function HistoryRow({ entry, expanded, onToggle }: { entry: UnitHistoryEntry; expanded: boolean; onToggle: () => void }): ReactElement {
+function HistoryRow({
+  entry,
+  expanded,
+  onToggle,
+  resumable,
+  resumeBusy,
+  onResume,
+}: {
+  entry: UnitHistoryEntry;
+  expanded: boolean;
+  onToggle: () => void;
+  resumable: boolean;
+  resumeBusy: boolean;
+  onResume: () => void;
+}): ReactElement {
   const kind = KIND_META[entry.kind];
   const st = useMemo(() => statusMeta(entry.status), [entry.status]);
   const dur = formatDuration(entry);
@@ -165,6 +209,31 @@ function HistoryRow({ entry, expanded, onToggle }: { entry: UnitHistoryEntry; ex
             <span className={cn("shrink-0 text-caption", st.cls)}>{st.label}</span>
             {dur !== null && <span className="shrink-0 text-caption text-ash">{dur}</span>}
             <span className="shrink-0 text-caption text-ash">{formatWhen(entry.startedAt)}</span>
+            {/* 在 TUI 中恢复：行根是 button，内嵌动作用 span 实现（button 套 button 非法） */}
+            {resumable && (
+              <span
+                role="button"
+                tabIndex={0}
+                onClick={(ev) => {
+                  ev.stopPropagation();
+                  onResume();
+                }}
+                onKeyDown={(ev) => {
+                  if (ev.key === "Enter" || ev.key === " ") {
+                    ev.stopPropagation();
+                    onResume();
+                  }
+                }}
+                title={`在新终端以 TUI 重现这段会话（${entry.runtimeId} --resume）—— 对话原文在执行器自己的存储里，不依赖本表`}
+                className={cn(
+                  "flex shrink-0 cursor-pointer items-center gap-0.5 rounded-chip bg-teal-tint px-1.5 py-px text-[10px] text-teal transition hover:bg-teal hover:text-canvas",
+                  resumeBusy && "opacity-50",
+                )}
+              >
+                <RotateCcw size={9} />
+                {resumeBusy ? "恢复中" : "TUI 恢复"}
+              </span>
+            )}
             {expandable && (expanded ? <ChevronDown size={13} className="shrink-0 text-ash" /> : <ChevronRight size={13} className="shrink-0 text-ash" />)}
           </span>
           <span className="mt-0.5 flex items-center gap-2 text-caption">

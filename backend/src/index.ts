@@ -350,6 +350,7 @@ function bracketedPaste(prompt: string): string {
 /**
  * 共享的 TUI 派发（automations / backlog / 手动派发终端都走这里）：在 PTY 里以
  * yolo 免审批拉起执行器 TUI，prompt 非空时注入（手动派发不带 prompt，人自己敲），
+ * args 透传给 CLI（历史会话恢复用，如 zcode 的 --resume <sessionId>），
  * 返回 autoterm_ 前缀的终端 id。终态不经 host —— 派发方各自挂 terminalId 映射，
  * 由上面的 exit 帧回调结算。
  */
@@ -358,6 +359,7 @@ async function launchExecutorTerminal(opts: {
   unitId: string;
   rootPath: string;
   prompt?: string;
+  args?: readonly string[];
 }): Promise<string> {
   const terminalId = `autoterm_${randomUUID()}`;
   terminals.create({
@@ -367,6 +369,7 @@ async function launchExecutorTerminal(opts: {
     executorId: tuiCommandFor(`${opts.runtimeId}:yolo`),
     unitId: opts.unitId,
     autoExit: true,
+    ...(opts.args !== undefined && opts.args.length > 0 ? { args: opts.args } : {}),
   });
   if (opts.prompt !== undefined && opts.prompt !== "") {
     // TUI 起稳后把提示词「敲」进去 —— 失败不回滚派发（终端已开，人可以自己输入）
@@ -825,20 +828,24 @@ registerMethod("terminal.create", (params) => {
  * 标签带「派发」徽章）。不带 prompt，人在 TUI 里自己敲。
  */
 registerMethod("terminal.dispatch", (params) => {
-  const p = (params ?? {}) as { unitId?: string; unitName?: string; rootPath?: string; runtimeId?: string };
+  const p = (params ?? {}) as { unitId?: string; unitName?: string; rootPath?: string; runtimeId?: string; args?: unknown };
   if (typeof p.unitId !== "string" || p.unitId === "" || typeof p.rootPath !== "string" || p.rootPath === "" ||
       typeof p.runtimeId !== "string" || p.runtimeId === "") {
     throw Object.assign(new Error("unitId, rootPath, runtimeId are required"), { code: "bad_params" });
+  }
+  if (p.args !== undefined && (!Array.isArray(p.args) || p.args.some((a) => typeof a !== "string"))) {
+    throw Object.assign(new Error("args must be string[]"), { code: "bad_params" });
   }
   // 属性收窄进不了异步闭包，先落局部常量
   const unitId = p.unitId;
   const unitName = p.unitName ?? unitId;
   const rootPath = p.rootPath;
   const runtimeId = p.runtimeId.replace(/^daemon:/, "");
+  const args = Array.isArray(p.args) ? (p.args as string[]) : undefined;
   return (async () => {
-    const terminalId = await launchExecutorTerminal({ runtimeId, unitId, rootPath });
+    const terminalId = await launchExecutorTerminal({ runtimeId, unitId, rootPath, args });
     const runId = store.startTerminalRun({ terminalId, unitId, unitName, runtimeId });
-    log.info("terminal dispatched manually", { terminalId, runId, unitId, runtimeId });
+    log.info("terminal dispatched manually", { terminalId, runId, unitId, runtimeId, args });
     return { terminalId, runId };
   })();
 });

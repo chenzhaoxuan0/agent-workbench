@@ -818,9 +818,10 @@ export async function fetchSessionMessages(
 /**
  * 手动派发终端：经派发系统打开前台 TUI（登记运行记录 → 进该 bot 的历史，
  * 终端标签带「派发」徽章；与终端面板手动开的裸 TUI 相区别）。不带 prompt。
+ * args 透传给 CLI（历史会话恢复用，如 zcode 的 --resume <sessionId>）。
  */
 export async function dispatchTerminal(
-  input: { unitId: string; unitName: string; rootPath: string; runtimeId: string },
+  input: { unitId: string; unitName: string; rootPath: string; runtimeId: string; args?: string[] },
   endpoint: string = defaultDaemonEndpoint(),
 ): Promise<{ terminalId: string; runId: number }> {
   const client = DaemonClient.get(endpoint);
