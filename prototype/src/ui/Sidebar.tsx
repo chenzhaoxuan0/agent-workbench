@@ -21,7 +21,7 @@ import { useShell } from "../store/useShell.ts";
 import { useAppearance } from "../store/useAppearance.ts";
 import type { AvatarFrame } from "../core/appearance.ts";
 import { formatRelative } from "../core/automation.ts";
-import { fetchUnitHistory, type UnitHistoryEntry } from "../adapters/daemon/client.ts";
+import { dispatchTerminal, fetchUnitHistory, type UnitHistoryEntry } from "../adapters/daemon/client.ts";
 import {
   asModelId,
   asRuntimeId,
@@ -36,7 +36,8 @@ export { isResidentUnit, isSyntheticUnit };
 import { AddBotDialog, type AddBotDraft } from "./AddBotDialog.tsx";
 import { ImportBotDialog } from "./ImportBotDialog.tsx";
 import { ChannelMark, channelIdentityLabel } from "./ChannelMark.tsx";
-import { HistoryDialog } from "./HistoryDialog.tsx";
+import { HistoryDialog, resumeArgsFor } from "./HistoryDialog.tsx";
+import { RotateCcw } from "lucide-react";
 import { cn } from "./cn.ts";
 
 /**
@@ -571,6 +572,7 @@ function UnitRow({
   onToggleHistory: () => void;
 }) {
   const isSynthetic = isSyntheticUnit(unit);
+  const units = useWorkbench((s) => s.units);
   /** 历史详情弹窗（子列表条目点开看对话用；focusKey 预展开点进来的那条） */
   const [historyDialogOpen, setHistoryDialogOpen] = useState(false);
   const [historyFocus, setHistoryFocus] = useState<string | undefined>(undefined);
@@ -755,16 +757,33 @@ function UnitRow({
           {histEntries !== null && histEntries.length === 0 && (
             <p className="px-1.5 py-1 text-[10px] text-ash">还没有执行记录 —— 自动化、待办或会话跑过之后出现在这里</p>
           )}
-          {histEntries?.slice(0, 12).map((e) => (
-            <HistoryListRow
-              key={e.key}
-              entry={e}
-              onOpenDetail={() => {
-                setHistoryFocus(e.key);
-                setHistoryDialogOpen(true);
-              }}
-            />
-          ))}
+          {histEntries?.slice(0, 12).map((e) => {
+            const args = resumeArgsFor(e.runtimeId, e.resumeRef);
+            const self = units.find((u) => u.id === unit.id);
+            return (
+              <HistoryListRow
+                key={e.key}
+                entry={e}
+                onOpenDetail={() => {
+                  setHistoryFocus(e.key);
+                  setHistoryDialogOpen(true);
+                }}
+                {...(args !== null && self !== undefined
+                  ? {
+                      onResume: () => {
+                        void dispatchTerminal({
+                          unitId: unit.id,
+                          unitName: self.name,
+                          rootPath: self.rootPath,
+                          runtimeId: e.runtimeId,
+                          args,
+                        }).catch((err: unknown) => console.error("[Sidebar] TUI 恢复失败:", err));
+                      },
+                    }
+                  : {})}
+              />
+            );
+          })}
           {histEntries !== null && histEntries.length > 12 && (
             <button
               type="button"
@@ -843,9 +862,18 @@ function UnitRow({
   );
 }
 
-/** 历史子列表的单行：状态点 + 类型 + 标题 + 相对时间；点开进对话详情弹窗 */
-function HistoryListRow({ entry, onOpenDetail }: { entry: UnitHistoryEntry; onOpenDetail: () => void }): ReactElement {
-  const kindLabel = entry.kind === "automation" ? "定时" : entry.kind === "backlog" ? "待办" : "会话";
+/** 历史子列表的单行：状态点 + 类型 + 标题 + 相对时间；点开进对话详情弹窗。
+ *  可恢复的条目（zcode/claude/codex 后台会话）行尾带 ⟲ 图标，点击即在 TUI 重现。 */
+function HistoryListRow({
+  entry,
+  onOpenDetail,
+  onResume,
+}: {
+  entry: UnitHistoryEntry;
+  onOpenDetail: () => void;
+  onResume?: () => void;
+}): ReactElement {
+  const kindLabel = entry.kind === "automation" ? "定时" : entry.kind === "backlog" ? "待办" : entry.kind === "manual" ? "手动" : "会话";
   const dot =
     entry.status === "failed"
       ? "bg-loss"
@@ -861,12 +889,33 @@ function HistoryListRow({ entry, onOpenDetail }: { entry: UnitHistoryEntry; onOp
       draggable={false}
       onClick={onOpenDetail}
       title={`${kindLabel} · ${entry.runtimeId}${entry.launchMode === "terminal" ? " · TUI" : " · 后台"}${entry.detail !== null && entry.detail !== "" ? `\n${entry.detail}` : ""}\n${entry.title}\n点击查看对话详情`}
-      className="flex w-full cursor-pointer items-center gap-1.5 rounded-btn px-1.5 py-1 text-left transition hover:bg-line-soft"
+      className="group/hrow flex w-full cursor-pointer items-center gap-1.5 rounded-btn px-1.5 py-1 text-left transition hover:bg-line-soft"
     >
       <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", dot)} />
       <span className="shrink-0 text-[10px] text-ash">{kindLabel}</span>
       <span className="min-w-0 flex-1 truncate text-[11px] text-graphite">{entry.title}</span>
       <span className="shrink-0 text-[10px] text-ash">{formatRelative(entry.startedAt)}</span>
+      {onResume !== undefined && (
+        <span
+          role="button"
+          tabIndex={0}
+          data-no-drag
+          onClick={(ev) => {
+            ev.stopPropagation();
+            onResume();
+          }}
+          onKeyDown={(ev) => {
+            if (ev.key === "Enter" || ev.key === " ") {
+              ev.stopPropagation();
+              onResume();
+            }
+          }}
+          title={`在 TUI 中重现这段会话（${entry.runtimeId} resume）`}
+          className="shrink-0 cursor-pointer rounded p-0.5 text-ash opacity-0 transition hover:bg-teal-tint hover:text-teal group-hover/hrow:opacity-100"
+        >
+          <RotateCcw size={10} />
+        </span>
+      )}
     </button>
   );
 }

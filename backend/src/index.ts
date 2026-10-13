@@ -1146,6 +1146,11 @@ interface UnitHistoryEntry {
   detail: string | null;
   /** headless 会话的 id（可查 session.messages 下钻）；TUI 运行为 null */
   sessionId: string | null;
+  /**
+   * 执行器原生会话引用（sessions.cli_ref：claude=cliSessionId、codex=threadId、
+   * zcode=原生 id、ACP 系=ref）。TUI 恢复按各家 resume 口径用它，不用我们的内部 id。
+   */
+  resumeRef: string | null;
 }
 
 registerMethod("unit.history", (params) => {
@@ -1174,6 +1179,9 @@ registerMethod("unit.history", (params) => {
         endedAt: r.finishedAt,
         detail: r.detail,
         sessionId: r.sessionId !== null && !r.sessionId.startsWith("autoterm_") ? r.sessionId : null,
+        resumeRef: r.sessionId !== null && !r.sessionId.startsWith("autoterm_")
+          ? (store.getSession(r.sessionId)?.cliRef ?? null)
+          : null,
       });
     }
   }
@@ -1196,6 +1204,7 @@ registerMethod("unit.history", (params) => {
         endedAt: r.finishedAt,
         detail: r.detail,
         sessionId: r.sessionId !== null && !isTerminal ? r.sessionId : null,
+        resumeRef: r.sessionId !== null && !isTerminal ? (store.getSession(r.sessionId)?.cliRef ?? null) : null,
       });
     }
   }
@@ -1214,6 +1223,7 @@ registerMethod("unit.history", (params) => {
       endedAt: r.finishedAt,
       detail: r.detail,
       sessionId: null,
+      resumeRef: null,
     });
   }
 
@@ -1232,6 +1242,7 @@ registerMethod("unit.history", (params) => {
       endedAt: s.endedAt,
       detail: null,
       sessionId: s.id,
+      resumeRef: s.cliRef,
     });
   }
 

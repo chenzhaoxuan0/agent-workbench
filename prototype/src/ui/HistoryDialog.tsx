@@ -61,6 +61,26 @@ function formatDuration(entry: UnitHistoryEntry): string | null {
   return `${Math.floor(s / 3600)}h${Math.floor((s % 3600) / 60)}m`;
 }
 
+/**
+ * 每执行器的 TUI 恢复口径（实测 --help / resume --help）：
+ *   zcode  --resume <sessionId>（我们的 id 即原生 sess_ id）
+ *   claude --resume <session-id>（cli_ref = CLI 原生 session id）
+ *   codex  resume <SESSION_ID>（子命令，cli_ref = thread id）
+ * 其余执行器（ACP 系等）TUI 恢复未实测，暂不放开 —— 需要时补一行映射即可。
+ */
+const RESUME_ARGS: Record<string, (ref: string) => string[]> = {
+  zcode: (ref) => ["--resume", ref],
+  claude: (ref) => ["--resume", ref],
+  codex: (ref) => ["resume", ref],
+};
+
+/** 可恢复判定（侧栏子列表与详情弹窗共用） */
+export function resumeArgsFor(runtimeId: string, resumeRef: string | null): string[] | null {
+  if (resumeRef === null) return null;
+  const build = RESUME_ARGS[runtimeId];
+  return build === undefined ? null : build(resumeRef);
+}
+
 export function HistoryDialog({
   unitId,
   unitName,
@@ -80,23 +100,24 @@ export function HistoryDialog({
   const [resumeBusy, setResumeBusy] = useState<string | null>(null);
 
   /**
-   * 在 TUI 中恢复：按条目的执行器派发终端并带 --resume <sessionId>。
-   * 目前只有 zcode 通了（我们的 session id 就是它的原生 sess_ id，CLI 有
-   * --resume flag）；claude 等适配器存的是自造 id、原生 id 未落库，暂不放开。
+   * 在 TUI 中恢复：按条目执行器派发终端，带各家 resume 口径的参数（见 RESUME_ARGS）。
+   * 依据是 cli_ref（执行器原生会话 id），不是我们的内部 id —— 记录侧只存 id，
+   * 适配全部收敛在这张映射表里。
    */
   const resumable = (e: UnitHistoryEntry): boolean =>
-    e.sessionId !== null && e.runtimeId === "zcode" && units.some((u) => u.id === unitId);
+    resumeArgsFor(e.runtimeId, e.resumeRef) !== null && units.some((u) => u.id === unitId);
 
   const handleResume = (e: UnitHistoryEntry): void => {
     const u = units.find((x) => x.id === unitId);
-    if (u === undefined || e.sessionId === null) return;
+    const args = resumeArgsFor(e.runtimeId, e.resumeRef);
+    if (u === undefined || args === null) return;
     setResumeBusy(e.key);
     void dispatchTerminal({
       unitId,
       unitName: u.name,
       rootPath: u.rootPath,
       runtimeId: e.runtimeId,
-      args: ["--resume", e.sessionId],
+      args,
     })
       .catch((err2: unknown) => console.error("[HistoryDialog] TUI 恢复失败:", err2))
       .finally(() => setResumeBusy(null));

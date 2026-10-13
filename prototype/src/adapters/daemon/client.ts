@@ -794,6 +794,8 @@ export interface UnitHistoryEntry {
   readonly detail: string | null;
   /** headless 会话 id（可查 session.messages 下钻对话）；TUI 运行为 null */
   readonly sessionId: string | null;
+  /** 执行器原生会话引用（cli_ref）—— TUI 恢复按各家 resume 口径用它 */
+  readonly resumeRef: string | null;
 }
 
 export async function fetchUnitHistory(
