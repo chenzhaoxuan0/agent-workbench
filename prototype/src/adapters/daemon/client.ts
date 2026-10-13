@@ -779,10 +779,10 @@ export async function fetchAutomationRuns(
 
 // ---- 单元历史（unit.history）---------------------------------------------------
 
-/** 单元历史条目：自动化 / 待办 / 会话统一时间轴（见后端 unit.history 注释） */
+/** 单元历史条目：自动化 / 待办 / 手动派发终端 / 会话统一时间轴（见后端 unit.history 注释） */
 export interface UnitHistoryEntry {
   readonly key: string;
-  readonly kind: "automation" | "backlog" | "session";
+  readonly kind: "automation" | "backlog" | "manual" | "session";
   readonly title: string;
   readonly subtitle: string | null;
   readonly runtimeId: string;
@@ -813,6 +813,18 @@ export async function fetchSessionMessages(
 ): Promise<Array<{ at: number; role: string; text: string }>> {
   const client = DaemonClient.get(endpoint);
   return client.rpc<Array<{ at: number; role: string; text: string }>>("session.messages", { sessionId }, 15000);
+}
+
+/**
+ * 手动派发终端：经派发系统打开前台 TUI（登记运行记录 → 进该 bot 的历史，
+ * 终端标签带「派发」徽章；与终端面板手动开的裸 TUI 相区别）。不带 prompt。
+ */
+export async function dispatchTerminal(
+  input: { unitId: string; unitName: string; rootPath: string; runtimeId: string },
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<{ terminalId: string; runId: number }> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<{ terminalId: string; runId: number }>("terminal.dispatch", input, 15000);
 }
 
 /** 立即运行：手动触发一次（不消耗定时次数口径） */

@@ -173,6 +173,21 @@ export class Store {
         detail TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_backlog_runs_item ON backlog_runs(item_id, id);
+      -- 手动派发终端的运行记录（terminal.dispatch：经派发系统的前台 TUI）。
+      -- 与 automation_runs / backlog_runs 并列 —— 手动打开没有任务行可挂，
+      -- 单独建表，unit.history 三方合并成统一时间轴。
+      CREATE TABLE IF NOT EXISTS terminal_runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        terminal_id TEXT NOT NULL,
+        unit_id TEXT NOT NULL,
+        unit_name TEXT NOT NULL,
+        runtime_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        started_at INTEGER NOT NULL,
+        finished_at INTEGER,
+        detail TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_terminal_runs_unit ON terminal_runs(unit_id, id);
 
       CREATE TABLE IF NOT EXISTS memory (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -816,6 +831,60 @@ export class Store {
       runtimeId: String(r["runtime_id"]),
       startedAt: Number(r["started_at"]),
     }));
+  }
+
+  // ---- 手动派发终端（terminal.dispatch → unit.history 的 manual 条目）----------
+
+  startTerminalRun(a: { terminalId: string; unitId: string; unitName: string; runtimeId: string }): number {
+    const result = this.db
+      .prepare(
+        `INSERT INTO terminal_runs (terminal_id, unit_id, unit_name, runtime_id, status, started_at)
+         VALUES (?, ?, ?, ?, 'running', ?)`,
+      )
+      .run(a.terminalId, a.unitId, a.unitName, a.runtimeId, Date.now());
+    return Number(result.lastInsertRowid);
+  }
+
+  /** 按终端 id 结算（autoterm id 全局唯一；不存在的 id 静默无操作） */
+  finishTerminalRun(terminalId: string, status: "done" | "failed", detail: string | null): void {
+    this.db
+      .prepare(`UPDATE terminal_runs SET status = ?, finished_at = ?, detail = ? WHERE terminal_id = ? AND status = 'running'`)
+      .run(status, Date.now(), detail, terminalId);
+  }
+
+  listTerminalRuns(unitId: string, limit = 50): Array<{
+    id: number;
+    terminalId: string;
+    unitId: string;
+    unitName: string;
+    runtimeId: string;
+    status: string;
+    startedAt: number;
+    finishedAt: number | null;
+    detail: string | null;
+  }> {
+    const rows = this.db
+      .prepare(`SELECT * FROM terminal_runs WHERE unit_id = ? ORDER BY id DESC LIMIT ?`)
+      .all(unitId, limit) as Array<Record<string, unknown>>;
+    return rows.map((r) => ({
+      id: Number(r["id"]),
+      terminalId: String(r["terminal_id"]),
+      unitId: String(r["unit_id"]),
+      unitName: String(r["unit_name"]),
+      runtimeId: String(r["runtime_id"]),
+      status: String(r["status"]),
+      startedAt: Number(r["started_at"]),
+      finishedAt: r["finished_at"] === null || r["finished_at"] === undefined ? null : Number(r["finished_at"]),
+      detail: r["detail"] === null || r["detail"] === undefined ? null : String(r["detail"]),
+    }));
+  }
+
+  /** 重启自愈用：running 的全量（PTY 随 daemon 一起死，全部按中断收口） */
+  listRunningTerminalRuns(): Array<{ terminalId: string; unitId: string }> {
+    const rows = this.db
+      .prepare(`SELECT terminal_id, unit_id FROM terminal_runs WHERE status = 'running'`)
+      .all() as Array<Record<string, unknown>>;
+    return rows.map((r) => ({ terminalId: String(r["terminal_id"]), unitId: String(r["unit_id"]) }));
   }
 
   // ---- 记忆三柱（Phase 7，sqlite 后端）---------------------------------------

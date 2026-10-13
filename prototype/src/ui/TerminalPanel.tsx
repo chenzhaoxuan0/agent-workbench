@@ -12,6 +12,7 @@ import {
   Rows2,
   Maximize2,
   Minimize2,
+  Rocket,
 } from "lucide-react";
 import { useWorkbench } from "../store/useWorkbench.ts";
 import {
@@ -23,6 +24,7 @@ import { terminalSessionRegistry } from "../store/TerminalSessionManager.ts";
 import { TerminalSplitTree } from "./TerminalSplitTree.tsx";
 import { TerminalPaneSlot, ShellOrAgentIcon } from "./TerminalPaneSlot.tsx";
 import { useAppearance } from "../store/useAppearance.ts";
+import { dispatchTerminal } from "../adapters/daemon/client.ts";
 import { cn } from "./cn.ts";
 
 export function TerminalPanel({
@@ -193,6 +195,20 @@ export function TerminalPanel({
     });
   };
 
+  // 手动派发终端：经派发系统打开当前 bot 的 TUI（登记运行记录进历史，
+  // 标签带「派发」徽章）—— 终端由 daemon 创建，created 帧推送会自动开标签
+  const [dispatching, setDispatching] = useState(false);
+  const handleDispatch = () => {
+    setMenuOpen(false);
+    if (!unit) return;
+    const bareId = boundExecutor.replace(/^daemon:/, "");
+    if (!bareId) return;
+    setDispatching(true);
+    void dispatchTerminal({ unitId: unit.id, unitName: unit.name, rootPath: unit.rootPath, runtimeId: bareId })
+      .catch((err: unknown) => console.error("[TerminalPanel] 派发终端失败:", err))
+      .finally(() => setDispatching(false));
+  };
+
   // 获取可用的 Agent 执行器列表
   const executorOptions = useMemo(() => {
     return runtimes.filter((r) => !r.testOnly);
@@ -254,6 +270,17 @@ export function TerminalPanel({
 
                 <span className="truncate">{tabTitle}</span>
 
+                {/* 派发徽章：autoterm_ 前缀 = 经派发系统（自动化/待办/手动派发），
+                    会进该 bot 的历史；普通标签没有它 */}
+                {firstInst?.id.startsWith("autoterm_") && (
+                  <span
+                    title="派发终端 —— 经过派发系统，会记入该 bot 的历史会话"
+                    className="shrink-0 rounded bg-violet-500/15 px-1 py-0.2 text-[9px] font-semibold text-violet-400 font-sans"
+                  >
+                    派发
+                  </span>
+                )}
+
                 {/* 分屏窗格数量小徽章 */}
                 {isSplitGroup && (
                   <span className="rounded bg-teal/10 px-1 py-0.2 text-[9px] text-teal font-sans">
@@ -307,10 +334,39 @@ export function TerminalPanel({
           {/* 下拉弹出菜单 */}
           {menuOpen && (
             <div className="absolute left-0 top-full mt-1.5 z-50 min-w-[250px] rounded-panel border border-line bg-card p-1.5 shadow-2xl backdrop-blur">
+              {/* 分组 0：派发终端 —— 经派发系统打开（区别于下面的裸 TUI：会进历史） */}
+              <div className="px-2 py-1 text-[11px] font-semibold text-violet-400/90 tracking-wide uppercase flex items-center gap-1">
+                <Rocket size={11} />
+                <span>派发终端（记入历史）</span>
+              </div>
+              <button
+                onClick={handleDispatch}
+                disabled={!unit || !boundExecutor.replace(/^daemon:/, "") || dispatching}
+                className="flex w-full items-center gap-2.5 rounded px-2.5 py-1.5 text-left text-body-sm text-ink hover:bg-violet-500/10 hover:text-violet-400 transition disabled:opacity-40 disabled:hover:bg-transparent"
+                title={
+                  unit
+                    ? `经派发系统打开 ${unit.name} 的执行器 TUI：运行记录进该 bot 的历史会话，标签带「派发」徽章`
+                    : "先在侧栏选择一个 bot"
+                }
+              >
+                <Rocket size={14} className="shrink-0" />
+                <div className="flex flex-col flex-1 min-w-0">
+                  <span className="text-caption font-mono font-medium truncate">
+                    {unit ? `${unit.name} · ${boundExecutor.replace(/^daemon:/, "")}` : "（未选择 bot）"}
+                  </span>
+                  <span className="text-[10px] text-ash/60 font-sans truncate">
+                    {dispatching ? "派发中…" : "免审批 TUI · 运行记录进历史 · 状态随终端收口"}
+                  </span>
+                </div>
+              </button>
+
+              <div className="my-1.5 h-px bg-line/50" />
+
               {/* 分组 1：Agent 交互式执行器（在 PowerShell 7 中运行其真 TUI） */}
               <div className="px-2 py-1 text-[11px] font-semibold text-teal/80 tracking-wide uppercase flex items-center gap-1">
                 <Zap size={11} />
                 <span>交互式 Agent CLI (TUI)</span>
+                <span className="ml-auto text-[9px] normal-case tracking-normal text-ash/50">不进历史</span>
               </div>
               {executorOptions.map((r) => {
                 const bareId = r.id.replace(/^daemon:/, "").toLowerCase();

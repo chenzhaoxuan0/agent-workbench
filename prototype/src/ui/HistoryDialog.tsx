@@ -28,6 +28,7 @@ import { cn } from "./cn.ts";
 const KIND_META: Record<UnitHistoryEntry["kind"], { icon: typeof History; label: string; cls: string }> = {
   automation: { icon: AlarmClock, label: "定时", cls: "bg-teal-tint text-teal" },
   backlog: { icon: ListTodo, label: "待办", cls: "bg-amber-500/10 text-amber-600" },
+  manual: { icon: Terminal, label: "手动", cls: "bg-violet-500/10 text-violet-500" },
   session: { icon: MessageSquare, label: "会话", cls: "bg-line-soft text-graphite" },
 };
 

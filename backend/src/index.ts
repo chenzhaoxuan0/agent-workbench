@@ -331,6 +331,9 @@ const terminals = new TerminalManager((frame) => {
     }
     // 待办 TUI 模式的运行记录与状态机收口（engine 内部按 terminalId 判归属）
     backlogEngine?.onTerminalExited(frame.terminalId, frame.exitCode ?? 0);
+    // 手动派发终端（terminal.dispatch）的运行记录收口（无行的 id 静默无操作）
+    if ((frame.exitCode ?? 0) === 0) store.finishTerminalRun(frame.terminalId, "done", null);
+    else store.finishTerminalRun(frame.terminalId, "failed", `terminal exit ${frame.exitCode ?? "?"}`);
   }
   broadcastTerminal(wss, { v: WIRE_VERSION, type: "terminal", ...frame });
 });
@@ -345,15 +348,16 @@ function bracketedPaste(prompt: string): string {
 }
 
 /**
- * 共享的 TUI 派发（automations 与 backlog 都走这里）：在 PTY 里以 yolo 免审批
- * 拉起执行器 TUI 并注入提示词，返回 autoterm_ 前缀的终端 id。
- * 终态不经 host —— 派发方各自挂 terminalId 映射，由上面的 exit 帧回调结算。
+ * 共享的 TUI 派发（automations / backlog / 手动派发终端都走这里）：在 PTY 里以
+ * yolo 免审批拉起执行器 TUI，prompt 非空时注入（手动派发不带 prompt，人自己敲），
+ * 返回 autoterm_ 前缀的终端 id。终态不经 host —— 派发方各自挂 terminalId 映射，
+ * 由上面的 exit 帧回调结算。
  */
 async function launchExecutorTerminal(opts: {
   runtimeId: string;
   unitId: string;
   rootPath: string;
-  prompt: string;
+  prompt?: string;
 }): Promise<string> {
   const terminalId = `autoterm_${randomUUID()}`;
   terminals.create({
@@ -364,10 +368,12 @@ async function launchExecutorTerminal(opts: {
     unitId: opts.unitId,
     autoExit: true,
   });
-  // TUI 起稳后把提示词「敲」进去 —— 失败不回滚派发（终端已开，人可以自己输入）
-  void terminals.writeWhenQuiet(terminalId, bracketedPaste(opts.prompt) + "\r").then(() => {
-    log.info("prompt injected to terminal", { terminalId, runtimeId: opts.runtimeId });
-  });
+  if (opts.prompt !== undefined && opts.prompt !== "") {
+    // TUI 起稳后把提示词「敲」进去 —— 失败不回滚派发（终端已开，人可以自己输入）
+    void terminals.writeWhenQuiet(terminalId, bracketedPaste(opts.prompt) + "\r").then(() => {
+      log.info("prompt injected to terminal", { terminalId, runtimeId: opts.runtimeId });
+    });
+  }
   return terminalId;
 }
 
@@ -498,6 +504,15 @@ function healAutomationRuns(): void {
 }
 
 healAutomationRuns();
+// 手动派发终端的自愈：PTY 随 daemon 一起死，running 行全部按中断收口
+{
+  let n = 0;
+  for (const r of store.listRunningTerminalRuns()) {
+    store.finishTerminalRun(r.terminalId, "failed", "daemon 重启，终端已随进程关闭");
+    n++;
+  }
+  if (n > 0) log.info("terminal runs healed after restart", { settled: n });
+}
 scheduler.start();
 
 // 渠道网关（docs/08 WP-8）：bot 的 IM 入站通道。
@@ -804,6 +819,29 @@ registerMethod("terminal.create", (params) => {
     env: p.env,
   });
 });
+/**
+ * 手动派发终端 —— 经派发系统打开前台 TUI（与终端面板手动开的区别：
+ * 登记 terminal_runs 运行记录，进该 bot 的 unit.history 时间轴，
+ * 标签带「派发」徽章）。不带 prompt，人在 TUI 里自己敲。
+ */
+registerMethod("terminal.dispatch", (params) => {
+  const p = (params ?? {}) as { unitId?: string; unitName?: string; rootPath?: string; runtimeId?: string };
+  if (typeof p.unitId !== "string" || p.unitId === "" || typeof p.rootPath !== "string" || p.rootPath === "" ||
+      typeof p.runtimeId !== "string" || p.runtimeId === "") {
+    throw Object.assign(new Error("unitId, rootPath, runtimeId are required"), { code: "bad_params" });
+  }
+  // 属性收窄进不了异步闭包，先落局部常量
+  const unitId = p.unitId;
+  const unitName = p.unitName ?? unitId;
+  const rootPath = p.rootPath;
+  const runtimeId = p.runtimeId.replace(/^daemon:/, "");
+  return (async () => {
+    const terminalId = await launchExecutorTerminal({ runtimeId, unitId, rootPath });
+    const runId = store.startTerminalRun({ terminalId, unitId, unitName, runtimeId });
+    log.info("terminal dispatched manually", { terminalId, runId, unitId, runtimeId });
+    return { terminalId, runId };
+  })();
+});
 registerMethod("terminal.input", (params) => {
   const p = (params ?? {}) as { terminalId?: string; data?: string };
   if (typeof p.terminalId !== "string" || typeof p.data !== "string") {
@@ -1089,7 +1127,7 @@ registerMethod("automation.runNow", (params) => {
 
 interface UnitHistoryEntry {
   key: string;
-  kind: "automation" | "backlog" | "session";
+  kind: "automation" | "backlog" | "session" | "manual";
   title: string;
   subtitle: string | null;
   runtimeId: string;
@@ -1153,6 +1191,23 @@ registerMethod("unit.history", (params) => {
         sessionId: r.sessionId !== null && !isTerminal ? r.sessionId : null,
       });
     }
+  }
+
+  for (const r of store.listTerminalRuns(p.unitId, limit)) {
+    entries.push({
+      key: `manual-${r.id}`,
+      kind: "manual",
+      title: `手动 TUI · ${r.runtimeId}`,
+      subtitle: null,
+      runtimeId: r.runtimeId,
+      launchMode: "terminal",
+      status: r.status,
+      trigger: "manual",
+      startedAt: r.startedAt,
+      endedAt: r.finishedAt,
+      detail: r.detail,
+      sessionId: null,
+    });
   }
 
   for (const s of store.listSessions()) {

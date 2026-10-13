@@ -233,6 +233,29 @@ try {
   const sessEntry = hist2.entries.find((e) => e.key === "session-sess-hist-fake");
   check("unclaimed session appears as session entry with sessionId", sessEntry !== undefined && sessEntry.sessionId === "sess-hist-fake", sessEntry);
 
+  // 3d. 手动派发终端：terminal.dispatch → autoterm_ 终端 + terminal_runs 记录进
+  //     unit.history（kind=manual），git 即退后 exit 帧收口为 done
+  const disp = await call<{ terminalId: string; runId: number }>("terminal.dispatch", {
+    unitId: "u-tui",
+    unitName: "TUI 冒烟",
+    rootPath: home,
+    runtimeId: "daemon:git",
+  });
+  check("terminal.dispatch returns autoterm id", disp.terminalId.startsWith("autoterm_"), disp);
+  const dispDeadline = Date.now() + 15000;
+  let dispEntry: { kind?: string; status?: string; runtimeId?: string } | undefined;
+  while (Date.now() < dispDeadline) {
+    const h3 = await call<{ entries: Array<{ key: string; kind: string; status: string; runtimeId: string }> }>("unit.history", { unitId: "u-tui" });
+    dispEntry = h3.entries.find((e) => e.key === `manual-${disp.runId}`);
+    if (dispEntry !== undefined && dispEntry.status !== "running") break;
+    await sleep(300);
+  }
+  check(
+    "manual dispatched terminal recorded in history and settled",
+    dispEntry?.kind === "manual" && dispEntry.status === "failed" && dispEntry.runtimeId === "git",
+    dispEntry, // git 无参退出码 1：failed + terminal exit 细节即证明 exit 帧收口成功
+  );
+
   // 4. 重启自愈：塞一条挂 autoterm_ 的 running 记录 → 重启后按终端关闭收口
   //    （真实场景是 daemon 重启杀掉 PTY；这里直接造行验证 heal 分支）
   const { DatabaseSync } = await import("node:sqlite");
