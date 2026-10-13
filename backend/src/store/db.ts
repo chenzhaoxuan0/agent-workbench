@@ -887,6 +887,23 @@ export class Store {
     return rows.map((r) => ({ terminalId: String(r["terminal_id"]), unitId: String(r["unit_id"]) }));
   }
 
+  /**
+   * 被自动化或待办认领的全部会话 id（全量，不受单次列表 limit 截断限制）：
+   * unit.history 合并时间轴时将会话条目去重，防止历史上的 headless 会话溢出成无标题杂项。
+   */
+  getClaimedSessionIds(): Set<string> {
+    const set = new Set<string>();
+    const aRows = this.db
+      .prepare(`SELECT session_id FROM automation_runs WHERE session_id IS NOT NULL AND session_id NOT LIKE 'autoterm_%'`)
+      .all() as Array<{ session_id: string }>;
+    for (const r of aRows) set.add(r.session_id);
+    const bRows = this.db
+      .prepare(`SELECT session_id FROM backlog_runs WHERE session_id IS NOT NULL AND session_id NOT LIKE 'autoterm_%'`)
+      .all() as Array<{ session_id: string }>;
+    for (const r of bRows) set.add(r.session_id);
+    return set;
+  }
+
   // ---- 记忆三柱（Phase 7，sqlite 后端）---------------------------------------
 
   insertMemory(pillar: string, content: string, source: string | null): number {

@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { dispatchTerminal, fetchSessionMessages, fetchUnitHistory, type UnitHistoryEntry } from "../adapters/daemon/client.ts";
 import { useWorkbench } from "../store/useWorkbench.ts";
+import { asUnitId } from "../core/units.ts";
 import { cn } from "./cn.ts";
 
 /**
@@ -83,6 +84,9 @@ const RESUME_ARGS: Record<string, (ref: string) => string[]> = {
   opencode: (ref) => ["--session", ref],
   hermes: (ref) => ["--resume", ref],
   dsh: (ref) => ["--resume", ref],
+  agy: (ref) => ["--conversation", ref],
+  antigravity: (ref) => ["--conversation", ref],
+  pi: (ref) => ["--session-id", ref],
 };
 
 /** 可恢复判定（侧栏子列表与详情弹窗共用） */
@@ -130,6 +134,10 @@ export function HistoryDialog({
       runtimeId: e.runtimeId,
       args,
     })
+      .then(() => {
+        useWorkbench.getState().selectUnit(asUnitId(unitId));
+        onClose();
+      })
       .catch((err2: unknown) => console.error("[HistoryDialog] TUI 恢复失败:", err2))
       .finally(() => setResumeBusy(null));
   };

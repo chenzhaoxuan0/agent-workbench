@@ -771,6 +771,7 @@ function UnitRow({
                 {...(args !== null && self !== undefined
                   ? {
                       onResume: () => {
+                        useWorkbench.getState().selectUnit(asUnitId(unit.id));
                         void dispatchTerminal({
                           unitId: unit.id,
                           unitName: self.name,

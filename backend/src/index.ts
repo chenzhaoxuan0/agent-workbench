@@ -1159,27 +1159,28 @@ registerMethod("unit.history", (params) => {
   const limit = Math.min(Math.max(typeof p.limit === "number" && Number.isFinite(p.limit) ? Math.round(p.limit) : 100, 1), 500);
 
   const entries: UnitHistoryEntry[] = [];
-  /** 已被运行记录认领的会话 id：会话条目去重用 */
-  const claimedSessionIds = new Set<string>();
+  /** 已被运行记录认领的会话 id（全量，不受单次 limit 影响）：会话条目去重用 */
+  const claimedSessionIds = store.getClaimedSessionIds();
 
   for (const a of store.listAutomations()) {
     if (a.unitId !== p.unitId) continue;
     for (const r of store.listAutomationRuns(a.id, limit)) {
-      if (r.sessionId !== null && !r.sessionId.startsWith("autoterm_")) claimedSessionIds.add(r.sessionId);
+      const isTerminal = r.sessionId !== null && r.sessionId.startsWith("autoterm_");
+      const launchMode: "terminal" | "headless" = isTerminal ? "terminal" : (r.sessionId !== null ? "headless" : a.launchMode);
       entries.push({
         key: `automation-${r.id}`,
         kind: "automation",
         title: a.name,
         subtitle: a.prompt.length > 80 ? `${a.prompt.slice(0, 80)}…` : a.prompt,
         runtimeId: a.runtimeId,
-        launchMode: a.launchMode,
+        launchMode,
         status: r.status,
         trigger: r.trigger,
         startedAt: r.startedAt,
         endedAt: r.finishedAt,
         detail: r.detail,
-        sessionId: r.sessionId !== null && !r.sessionId.startsWith("autoterm_") ? r.sessionId : null,
-        resumeRef: r.sessionId !== null && !r.sessionId.startsWith("autoterm_")
+        sessionId: !isTerminal ? r.sessionId : null,
+        resumeRef: !isTerminal && r.sessionId !== null
           ? (store.getSession(r.sessionId)?.cliRef ?? null)
           : null,
       });

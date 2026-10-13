@@ -101,14 +101,11 @@ export const TerminalPaneSlot = memo(function TerminalPaneSlot({
     });
 
     session.attachTo(container);
-    if (isActive) {
-      session.focus();
-    }
 
     return () => {
       session.detach();
     };
-  }, [inst.id, inst.shell, inst.cwd, inst.executorId, inst.unitId, isActive]);
+  }, [inst.id, inst.shell, inst.cwd, inst.executorId, inst.unitId]);
 
   // 当处于活跃状态时聚焦
   useEffect(() => {

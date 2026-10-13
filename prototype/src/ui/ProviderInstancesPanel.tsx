@@ -74,6 +74,12 @@ const CLI_GUIDES: Record<string, CliGuide> = {
     configPath: "~/.gemini/",
     tips: "支持 Gemini 3.8 / 3.7 / 3.1 等系列模型，具备深度思考、工具调用与多模态能力。",
   },
+  antigravity: {
+    desc: "Google 官方 Antigravity Agent 执行器，提供强大的全功能代码与多模态模型调度。",
+    authCmd: "agy",
+    configPath: "~/.gemini/",
+    tips: "支持 Gemini 3.8 / 3.7 / 3.1 等系列模型，具备深度思考、工具调用与多模态能力。",
+  },
   mockperm: {
     desc: "工作台权限闸（Permission Gate）端到端自动化验收测试夹具。",
     tips: "每轮对话均会触发真实的模拟权限审批挂起，专门用于测试与验收工作台的人机交互闸门。",

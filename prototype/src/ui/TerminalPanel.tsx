@@ -206,7 +206,16 @@ export function TerminalPanel({
     const bareId = execId.replace(/^daemon:/, "").replace(/:yolo$/, "");
     if (unit && bareId !== "") {
       void dispatchTerminal({ unitId: unit.id, unitName: unit.name, rootPath: unit.rootPath, runtimeId: bareId })
-        .catch((err: unknown) => console.error("[TerminalPanel] 派发终端失败，退回手动:", err));
+        .catch((err: unknown) => {
+          console.error("[TerminalPanel] 派发终端失败，退回手动:", err);
+          createTab({
+            profileId: "pwsh",
+            cwd: unit.rootPath,
+            executorId: execId,
+            unitId: unit.id,
+            title: `${unit.name} · ${displayName} (TUI)`,
+          });
+        });
       return;
     }
     createTab({
