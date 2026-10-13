@@ -187,9 +187,17 @@ export class Store {
         finished_at INTEGER,
         detail TEXT,
         title TEXT,
-        resume_ref TEXT
+        resume_ref TEXT,
+        output_text TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_terminal_runs_unit ON terminal_runs(unit_id, id);
+
+      -- 终端文本输出快照（ANSI 过滤后的纯文本日志，用于历史会话详情查看）
+      CREATE TABLE IF NOT EXISTS terminal_transcripts (
+        terminal_id TEXT PRIMARY KEY,
+        output_text TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      );
 
       CREATE TABLE IF NOT EXISTS memory (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -259,6 +267,7 @@ export class Store {
       `ALTER TABLE backlog_items ADD COLUMN launch_mode TEXT`,
       `ALTER TABLE terminal_runs ADD COLUMN title TEXT`,
       `ALTER TABLE terminal_runs ADD COLUMN resume_ref TEXT`,
+      `ALTER TABLE terminal_runs ADD COLUMN output_text TEXT`,
     ]) {
       try {
         this.db.exec(stmt);
@@ -879,10 +888,42 @@ export class Store {
   }
 
   /** 按终端 id 结算（autoterm id 全局唯一；不存在的 id 静默无操作） */
-  finishTerminalRun(terminalId: string, status: "done" | "failed", detail: string | null): void {
-    this.db
-      .prepare(`UPDATE terminal_runs SET status = ?, finished_at = ?, detail = ? WHERE terminal_id = ? AND status = 'running'`)
-      .run(status, Date.now(), detail, terminalId);
+  finishTerminalRun(terminalId: string, status: "done" | "failed", detail: string | null, outputText?: string | null): void {
+    if (outputText !== undefined && outputText !== null) {
+      this.db
+        .prepare(`UPDATE terminal_runs SET status = ?, finished_at = ?, detail = ?, output_text = ? WHERE terminal_id = ? AND status = 'running'`)
+        .run(status, Date.now(), detail, outputText, terminalId);
+      this.saveTerminalTranscript(terminalId, outputText);
+    } else {
+      this.db
+        .prepare(`UPDATE terminal_runs SET status = ?, finished_at = ?, detail = ? WHERE terminal_id = ? AND status = 'running'`)
+        .run(status, Date.now(), detail, terminalId);
+    }
+  }
+
+  saveTerminalTranscript(terminalId: string, outputText: string): void {
+    try {
+      this.db
+        .prepare(`INSERT INTO terminal_transcripts (terminal_id, output_text, created_at) VALUES (?, ?, ?) ON CONFLICT(terminal_id) DO UPDATE SET output_text = excluded.output_text`)
+        .run(terminalId, outputText, Date.now());
+    } catch {
+      // 容错
+    }
+  }
+
+  getTerminalTranscript(terminalId: string): string | null {
+    try {
+      const row = this.db
+        .prepare(`SELECT output_text FROM terminal_transcripts WHERE terminal_id = ?`)
+        .get(terminalId) as { output_text: string } | undefined;
+      if (row && typeof row.output_text === "string") return row.output_text;
+      const tr = this.db
+        .prepare(`SELECT output_text FROM terminal_runs WHERE terminal_id = ?`)
+        .get(terminalId) as { output_text: string } | undefined;
+      return tr && typeof tr.output_text === "string" ? tr.output_text : null;
+    } catch {
+      return null;
+    }
   }
 
   listTerminalRuns(unitId?: string, limit = 50): Array<{

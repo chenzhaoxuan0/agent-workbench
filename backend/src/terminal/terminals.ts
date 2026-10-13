@@ -29,6 +29,19 @@ export interface TerminalFrameInput {
   readonly unitId?: string;
   readonly cwd?: string;
   readonly shell?: string;
+  /** kind=exit 时提取的 ANSI 过滤后终端纯文本快照 */
+  readonly transcript?: string;
+}
+
+/** 过滤终端 ANSI 控制符、颜色码与重绘字符，提取干净的文本日志 */
+export function stripAnsi(str: string): string {
+  return str
+    .replace(/\x1b\[[0-9;?]*[a-zA-Z~]/g, "")
+    .replace(/\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g, "")
+    .replace(/\x1b[@-Z\\-_]/g, "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/\n{3,}/g, "\n\n");
 }
 
 export interface CreateOptions {
@@ -307,10 +320,12 @@ export class TerminalManager {
     shellProcess.onExit(({ exitCode }) => {
       const killed = session.killedByClient === true;
       const durationMs = Date.now() - session.bornAt;
+      const rawOutput = session.scrollback.join("");
+      const transcript = stripAnsi(rawOutput).trim();
       this.sessions.delete(terminalId);
       this.lastSelfExitAt = Date.now();
-      log.info("terminal exited", { terminalId, exitCode, killed, durationMs });
-      this.emit({ terminalId, kind: "exit", exitCode, killed, durationMs });
+      log.info("terminal exited", { terminalId, exitCode, killed, durationMs, transcriptChars: transcript.length });
+      this.emit({ terminalId, kind: "exit", exitCode, killed, durationMs, transcript: transcript !== "" ? transcript : undefined });
     });
 
     this.sessions.set(terminalId, session);

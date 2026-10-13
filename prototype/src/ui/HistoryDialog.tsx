@@ -6,6 +6,7 @@ import {
   CircleAlert,
   CircleCheck,
   CircleDot,
+  Copy,
   History,
   ListTodo,
   MessageSquare,
@@ -13,7 +14,13 @@ import {
   Terminal,
   X,
 } from "lucide-react";
-import { dispatchTerminal, fetchSessionMessages, fetchUnitHistory, type UnitHistoryEntry } from "../adapters/daemon/client.ts";
+import {
+  dispatchTerminal,
+  fetchSessionMessages,
+  fetchTerminalTranscript,
+  fetchUnitHistory,
+  type UnitHistoryEntry,
+} from "../adapters/daemon/client.ts";
 import { useWorkbench } from "../store/useWorkbench.ts";
 import { useHistoryPrefs } from "../store/useHistoryPrefs.ts";
 import { asUnitId } from "../core/units.ts";
@@ -282,7 +289,7 @@ function HistoryRow({
   const dur = formatDuration(entry);
   const KIcon = kind.icon;
   const SIcon = st.icon;
-  const expandable = entry.sessionId !== null;
+  const expandable = entry.sessionId !== null || Boolean(entry.terminalId) || entry.launchMode === "terminal";
 
   return (
     <div className="border-b border-line-soft last:border-b-0">
@@ -292,7 +299,7 @@ function HistoryRow({
           "flex w-full items-start gap-2 rounded-btn px-2 py-2 text-left transition",
           expandable ? "hover:bg-line-soft" : "cursor-default",
         )}
-        title={expandable ? "点击查看对话内容" : entry.launchMode === "terminal" ? "TUI 执行：无对话流，只有运行结果" : undefined}
+        title={expandable ? "点击查看对话内容或终端输出快照" : undefined}
       >
         <span className={cn("mt-0.5 shrink-0 rounded-chip px-1.5 py-0.5 text-[10px]", kind.cls)}>
           <KIcon size={10} className="mr-0.5 inline-block align-[-1px]" />
@@ -353,7 +360,18 @@ function HistoryRow({
           )}
         </span>
       </button>
-      {expanded && entry.sessionId !== null && <SessionMessages sessionId={entry.sessionId} />}
+      {expanded && (
+        <>
+          {entry.sessionId !== null && <SessionMessages sessionId={entry.sessionId} />}
+          {entry.launchMode === "terminal" && (
+            <TerminalTranscript
+              terminalId={entry.terminalId ?? null}
+              runtimeId={entry.runtimeId}
+              detail={entry.detail}
+            />
+          )}
+        </>
+      )}
     </div>
   );
 }
@@ -398,6 +416,96 @@ function SessionMessages({ sessionId }: { sessionId: string }): ReactElement {
           </p>
         </div>
       ))}
+    </div>
+  );
+}
+
+/** 展开的终端会话输出快照（ANSI 过滤后的纯文本日志，支持复制与滚动） */
+function TerminalTranscript({
+  terminalId,
+  runtimeId,
+  detail,
+}: {
+  terminalId: string | null;
+  runtimeId: string;
+  detail: string | null;
+}): ReactElement {
+  const [text, setText] = useState<string | null>(null);
+  const [loading, setLoading] = useState(terminalId !== null);
+  const [err, setErr] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (!terminalId) {
+      setLoading(false);
+      return;
+    }
+    let alive = true;
+    setLoading(true);
+    setErr(null);
+    void fetchTerminalTranscript(terminalId)
+      .then((res) => {
+        if (alive) {
+          setText(res);
+          setLoading(false);
+        }
+      })
+      .catch((e: unknown) => {
+        if (alive) {
+          setErr(e instanceof Error ? e.message : String(e));
+          setLoading(false);
+        }
+      });
+    return () => {
+      alive = false;
+    };
+  }, [terminalId]);
+
+  const handleCopy = () => {
+    if (!text) return;
+    void navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  const lineCount = text ? text.split("\n").length : 0;
+
+  return (
+    <div className="mx-2 mb-2 overflow-hidden rounded-btn border border-line bg-rail/80">
+      <div className="flex h-7 items-center justify-between border-b border-line/60 bg-rail px-2.5 text-[10px] text-ash">
+        <div className="flex items-center gap-1.5 font-mono">
+          <Terminal size={11} className="text-teal" />
+          <span>终端输出记录 · {runtimeId}</span>
+          {lineCount > 0 && <span className="text-ash/60">({lineCount} 行)</span>}
+        </div>
+        {text && text.trim() !== "" && (
+          <button
+            type="button"
+            onClick={handleCopy}
+            className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-ash transition hover:bg-line-soft hover:text-ink cursor-pointer"
+          >
+            <Copy size={10} />
+            <span>{copied ? "已复制" : "复制输出"}</span>
+          </button>
+        )}
+      </div>
+
+      <div className="p-2.5">
+        {loading && <p className="text-caption text-ash">正在读取终端输出…</p>}
+        {err !== null && <p className="text-caption text-loss">输出读取失败：{err}</p>}
+        {!loading && err === null && text && text.trim() !== "" && (
+          <pre className="max-h-72 overflow-y-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-ink select-text">
+            {text}
+          </pre>
+        )}
+        {!loading && err === null && (!text || text.trim() === "") && (
+          <div className="space-y-1 text-caption text-ash">
+            <p>未截获到终端文本输出（会话在产生输出前已退出，或属于早期历史会话）。</p>
+            {detail && <p className="font-mono text-[11px] text-graphite">结果摘要：{detail}</p>}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

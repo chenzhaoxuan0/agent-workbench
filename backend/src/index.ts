@@ -340,8 +340,12 @@ const terminals = new TerminalManager((frame) => {
       frame.exitCode === 3221225786 ||
       frame.exitCode === -1073741510;
     const manualDone = frame.killed || (frame.exitCode ?? 0) === 0 || isUserInterrupt;
-    if (manualDone) store.finishTerminalRun(frame.terminalId, "done", null);
-    else store.finishTerminalRun(frame.terminalId, "failed", `terminal exit ${frame.exitCode ?? "?"}`);
+    const transcript = frame.transcript ?? null;
+    if (transcript) {
+      store.saveTerminalTranscript(frame.terminalId, transcript);
+    }
+    if (manualDone) store.finishTerminalRun(frame.terminalId, "done", null, transcript);
+    else store.finishTerminalRun(frame.terminalId, "failed", `terminal exit ${frame.exitCode ?? "?"}`, transcript);
   }
   if (frame.kind === "title") {
     if (typeof frame.title === "string") {
@@ -887,6 +891,14 @@ registerMethod("terminal.kill", (params) => {
   return { killed: true };
 });
 registerMethod("terminal.list", () => terminals.list());
+registerMethod("terminal.transcript", (params) => {
+  const p = (params ?? {}) as { terminalId?: string };
+  if (typeof p.terminalId !== "string" || p.terminalId === "") {
+    throw Object.assign(new Error("terminalId is required"), { code: "bad_params" });
+  }
+  const text = store.getTerminalTranscript(p.terminalId);
+  return { terminalId: p.terminalId, text };
+});
 
 // ---- 自动化方法（Phase 5 v2）-------------------------------------------------
 

@@ -825,6 +825,20 @@ export async function fetchSessionMessages(
   return client.rpc<Array<{ at: number; role: string; text: string }>>("session.messages", { sessionId }, 15000);
 }
 
+/** 读取终端会话的输出文本快照（ANSI 过滤后的纯文本日志） */
+export async function fetchTerminalTranscript(
+  terminalId: string,
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<string | null> {
+  const client = DaemonClient.get(endpoint);
+  const r = await client.rpc<{ terminalId: string; text: string | null }>(
+    "terminal.transcript",
+    { terminalId },
+    15000,
+  );
+  return r.text;
+}
+
 /**
  * 手动派发终端：经派发系统打开前台 TUI（登记运行记录 → 进该 bot 的历史，
  * 终端标签带「派发」徽章；与终端面板手动开的裸 TUI 相区别）。不带 prompt。
