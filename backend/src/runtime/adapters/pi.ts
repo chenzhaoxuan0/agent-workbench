@@ -95,15 +95,20 @@ interface SessionState {
   /** daemon 发的稳定 id（对外唯一事实） */
   readonly sessionId: SessionId;
   readonly rootPath: string;
-  readonly mode: StartRequest["mode"];
-  /** pi 会话 id（--session-id 固定注入，首轮即知，因此 externalRef 恒非空） */
-  readonly piSessionId: string;
+  mode: StartRequest["mode"];
+  /** pi 会话 id（SDK 创建后为 pi 的 uuidv7；CLI 路径由 --session-id 固定注入） */
+  piSessionId: string;
   sink: AdapterSink | null;
   cancelled: boolean;
   child: ChildProcess | null;
   loop: { reasoningLevel?: string };
   /** usage 幂等键计数（WP-10） */
   usageCount: number;
+  /** SDK 进程内传输状态（失败一次后置 sdkFailed，永久回落 CLI） */
+  sdk: { session: { prompt(t: string, o: unknown): Promise<unknown>; abort(): Promise<void> | void; dispose(): Promise<void> | void; sessionId?: string }; unsubscribe: () => void } | null;
+  sdkFailed: boolean;
+  /** 当前轮聚合器（SDK 事件回调与轮收尾共用） */
+  acc: PiTurnAcc | null;
 }
 
 /** 一轮的聚合器：delta/工具事件行内即时 sink，文本/usage 由 turn_end 回填、exit 后收尾 */
@@ -248,19 +253,21 @@ export class PiAdapter implements ExecutorAdapter {
   }
 
   async start(req: StartRequest, sink: AdapterSink): Promise<AdapterSession> {
-    // 会话 id 由 daemon 侧生成并固定注入（--session-id），首轮即有稳定 externalRef，
-    // daemon 重启后 reattach 直接续命 —— 不依赖 pi 首轮事件回传
-    const ref = `pi_${randomUUID()}`;
+    // SDK 路径：piSessionId 由 pi 的 SessionManager 创建后回填（pi 的 uuidv7）；
+    // CLI 兜底路径在 spawnTurn 里按需生成。daemon 重启后 reattach 用同一 ref 续命。
     const state: SessionState = {
       sessionId: `sess_${randomUUID()}` as SessionId,
       rootPath: req.rootPath,
       mode: req.mode ?? "build",
-      piSessionId: ref,
+      piSessionId: "",
       sink,
       cancelled: false,
       child: null,
       loop: { reasoningLevel: req.reasoningLevel },
       usageCount: 0,
+      sdk: null,
+      sdkFailed: false,
+      acc: null,
     };
     this.sessions.set(state.sessionId, state);
 
@@ -273,9 +280,14 @@ export class PiAdapter implements ExecutorAdapter {
       cancel: async () => {
         state.cancelled = true;
         state.child?.kill();
+        try {
+          await state.sdk?.session.abort();
+        } catch {
+          /* abort 幂等 */
+        }
       },
       resolvePermission: async () => {
-        log.warn("resolvePermission called on pi -p session (no permission stream)");
+        log.warn("resolvePermission called on pi session (no permission stream)");
       },
       externalRef: () => state.piSessionId,
     };
@@ -292,6 +304,9 @@ export class PiAdapter implements ExecutorAdapter {
       child: null,
       loop: {},
       usageCount: 0,
+      sdk: null,
+      sdkFailed: false,
+      acc: null,
     };
     this.sessions.set(sessionId, state);
     return {
@@ -302,17 +317,31 @@ export class PiAdapter implements ExecutorAdapter {
       cancel: async () => {
         state.cancelled = true;
         state.child?.kill();
+        try {
+          await state.sdk?.session.abort();
+        } catch {
+          /* abort 幂等 */
+        }
       },
       resolvePermission: async () => {
-        log.warn("resolvePermission called on pi -p session (no permission stream)");
+        log.warn("resolvePermission called on pi session (no permission stream)");
       },
       externalRef: () => state.piSessionId,
     };
   }
 
   async disconnect(): Promise<void> {
-    for (const st of this.sessions.values()) st.child?.kill();
+    for (const st of this.sessions.values()) {
+      st.child?.kill();
+      st.sdk?.unsubscribe();
+      try {
+        await st.sdk?.session.dispose();
+      } catch {
+        /* dispose 尽力 */
+      }
+    }
     this.sessions.clear();
+    this.sdkServices.clear();
   }
 
   // ---- turn 执行 ----
@@ -329,9 +358,24 @@ export class PiAdapter implements ExecutorAdapter {
   ]);
 
   private async spawnTurn(state: SessionState, prompt: string, model: ModelId | null): Promise<void> {
+    // SDK 进程内传输优先（docs/13 Tier 3：pi-web 同款）；失败标记后本轮及后续全走 CLI
+    if (!state.sdkFailed) {
+      try {
+        await this.sdkTurn(state, prompt, model);
+        return;
+      } catch (err: unknown) {
+        state.sdkFailed = true;
+        state.sdk = null;
+        log.info("pi SDK 传输失败，回落 CLI --mode json", {
+          sessionId: state.sessionId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
     // 评审 P1 同款：cancelled 只描述"cancel 杀掉的那一轮"
     state.cancelled = false;
     const cmd = await resolveCommand("pi");
+    if (state.piSessionId === "") state.piSessionId = `pi_${randomUUID()}`;
     const args = ["--mode", "json", "--session-id", state.piSessionId];
     const effort = state.loop.reasoningLevel;
     if (effort !== undefined && PiAdapter.THINKING_LEVELS.has(effort)) {
@@ -362,6 +406,80 @@ export class PiAdapter implements ExecutorAdapter {
       return;
     }
     this.finalizeTurn(state, acc, exitCode);
+  }
+
+  // ---- SDK 进程内传输（pi-web 同款：同一引擎，同一 ~/.pi 会话文件）----------------
+
+  /** 每个 rootPath 一份 services（扩展加载贵，复用）；SessionManager 每会话一个 */
+  private readonly sdkServices = new Map<string, unknown>();
+  private sdkServicesLoading: Promise<unknown> | null = null;
+
+  private async servicesOf(rootPath: string): Promise<unknown> {
+    const hit = this.sdkServices.get(rootPath);
+    if (hit !== undefined) return hit;
+    this.sdkServicesLoading ??= (async () => {
+      const mod = await import("@earendil-works/pi-coding-agent");
+      const services = await mod.createAgentSessionServices({ cwd: rootPath });
+      this.sdkServices.set(rootPath, services);
+      return services;
+    })();
+    try {
+      return await this.sdkServicesLoading;
+    } finally {
+      this.sdkServicesLoading = null;
+    }
+  }
+
+  private async ensureSdkSession(state: SessionState, model: ModelId | null): Promise<void> {
+    if (state.sdk !== null) return;
+    const mod = await import("@earendil-works/pi-coding-agent");
+    const services = (await this.servicesOf(state.rootPath)) as Record<string, unknown>;
+
+    // 恢复（reattach 有 ref）优先按 id 找会话文件；找不到/出错回落新会话
+    let sessionManager: Awaited<ReturnType<typeof mod.SessionManager.create>> | undefined;
+    if (state.piSessionId !== "") {
+      try {
+        const file = await mod.SessionManager.findById(state.rootPath, state.piSessionId);
+        if (typeof file === "string") sessionManager = await mod.SessionManager.open(file);
+      } catch {
+        /* 回落新会话 */
+      }
+    }
+    if (sessionManager === undefined) {
+      sessionManager = await mod.SessionManager.create(state.rootPath);
+    }
+
+    const effort = state.loop.reasoningLevel;
+    const opts: Record<string, unknown> = { services, sessionManager };
+    if (model !== null) opts["model"] = model;
+    if (effort !== undefined && PiAdapter.THINKING_LEVELS.has(effort)) opts["thinkingLevel"] = effort;
+    const result = await mod.createAgentSessionFromServices(
+      opts as unknown as Parameters<typeof mod.createAgentSessionFromServices>[0],
+    );
+    const session = result.session;
+    // pi 生成的 uuidv7 即 externalRef（daemon 重启 reattach / Phase 1 reader 直读）
+    if (typeof session.sessionId === "string" && session.sessionId !== "") state.piSessionId = session.sessionId;
+    const acc: PiTurnAcc = { sawAny: false, turnText: "", messageId: `msg_${Date.now()}`, toolArgs: new Map() };
+    state.acc = acc;
+    const unsubscribe = session.subscribe((event: unknown) => {
+      // SDK 事件与 CLI --mode json 的 JSONL 同构（同一 AgentSessionEvent）——翻译层复用
+      this.handleLine(state, state.acc ?? acc, JSON.stringify(event));
+    });
+    state.sdk = { session, unsubscribe };
+  }
+
+  private async sdkTurn(state: SessionState, prompt: string, model: ModelId | null): Promise<void> {
+    await this.ensureSdkSession(state, model);
+    const { session } = state.sdk!;
+    state.acc = { sawAny: false, turnText: "", messageId: `msg_${Date.now()}`, toolArgs: new Map() };
+    state.cancelled = false;
+    state.sink?.({ type: "session.status", sessionId: state.sessionId, status: "running" });
+    await session.prompt(prompt, {});
+    if (state.cancelled) {
+      state.sink?.({ type: "session.status", sessionId: state.sessionId, status: "idle" });
+      return;
+    }
+    this.finalizeTurn(state, state.acc, 0);
   }
 
   // ---- JSONL → RuntimeEvent（逐行）----
