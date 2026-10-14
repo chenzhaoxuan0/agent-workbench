@@ -1,26 +1,33 @@
 /**
- * Grok Build（SpaceXAI grok）执行器适配器 —— `grok -p --output-format streaming-messages-json --include-partial-messages` + `--resume` 多轮。
+ * Grok Build（xAI grok）执行器适配器 —— **ACP 形态：`grok agent stdio` 常驻子进程**
+ * （docs/13 Phase 4 Tier 2 升级；原 `grok -p --output-format streaming-messages-json`
+ * 每轮一进程 headless 形态退役）。
  *
- * 协议事实（grok 1.x 实测与 xai-grok-pager 源码走查）：
- * - 源码库：crates/codegen/xai-grok-pager-bin 与 xai-grok-pager
- * - system:init：首个事件，带 session_id / model / tools 清单
- * - stream_event（--include-partial-messages）：Messages API wire format 流事件
- *   {content_block_delta, delta:{text_delta|thinking_delta}} —— 真流式 delta
- * - assistant：完整消息块 content[{text}|{tool_use,id,name,input}]
- * - user：工具结果 content[{tool_result,tool_use_id,is_error,content}]
- * - result：turn 终态 {result,is_error,duration_ms,usage:{input_tokens,output_tokens,cache_read_tokens},session_id}
- * - 多轮：--resume <session_id> 维系上下文
- * - 权限模式：--always-approve（别名 --yolo / --dangerously-skip-permissions）免除交互挂起
- * - 模型：--model <model>（默认 grok-4.6 / grok-4.5）；推理档位：--effort <low|medium|high|xhigh>
+ * 协议事实（grok 1.0.52 本机实测，2026-10-14）：
+ * - initialize {protocolVersion:1, clientCapabilities:{fs,terminal}} →
+ *   {agentCapabilities:{loadSession:true, sessionCapabilities:{list,resume,close},
+ *   promptCapabilities:{embeddedContext:true}, mcpCapabilities:{http,sse}}}
+ * - session/new {cwd, mcpServers:[]} → {sessionId:"<uuidv7>", models:{
+ *   currentModelId:"grok-4.7", availableModels:[{modelId,name,_meta:{totalContextTokens,
+ *   supportsReasoningEffort, reasoningEfforts…}}]}}
+ * - session/prompt {sessionId, prompt:[{type:"text",text}]} → 阻塞到轮末 {stopReason}
+ * - 通知 session/update（标准 ACP）：
+ *   agent_message_chunk / agent_thought_chunk（content:{type:"text",text}，
+ *   带 _meta.totalTokens —— 上下文累计，轮末差值出 usage）
+ *   tool_call{toolCallId,title,rawInput{command,…}}
+ *   tool_call_update{status:in_progress|completed|failed,content:[{type:"content",
+ *   content:{type:"text",text}}]}（tool_call_update 的 content.text 是实时输出流）
+ * - 权限：高风险命令走反向请求 session/request_permission（标准 ACP）
+ * - x.ai 扩展通知（_x.ai/*）：models/update、session_notification（tool_call_delta_chunk
+ *   等）、sessions/changed、queue/changed —— 不翻译进事件流，仅留调试日志
+ * - 多轮：同 sessionId 再 session/prompt；daemon 重启后 session/resume {sessionId}
+ * - grok 二进制在 ~/.grok/bin/grok.exe（PATH 常缺席；exec.ts 的 locateOnPath 已含该回退）
  */
 
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
-import { homedir } from "node:os";
-import path from "node:path";
-import type { ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
+import { createInterface } from "node:readline";
 import {
-  adapterError,
   type AdapterSession,
   type AdapterSink,
   type ExecutorAdapter,
@@ -34,167 +41,189 @@ import type {
   RuntimeEvent,
   SessionId,
 } from "../../contract.ts";
-import { execLines, resolveCommand, spawnLines, type ResolvedCommand } from "../exec.ts";
+import { execLines, resolveCommand } from "../exec.ts";
 import { log } from "../../log.ts";
 
-interface GrokContentBlock {
+// ---- ACP 线缆类型（宽松，同 mcode/dsh） ---------------------------------------
+
+interface AcpContent {
   type?: string;
   text?: string;
-  thinking?: string;
-  id?: string;
-  name?: string;
-  input?: unknown;
-  tool_use_id?: string;
-  is_error?: boolean;
   content?: unknown;
 }
 
-interface GrokEvent {
-  type?: string;
-  subtype?: string;
-  session_id?: string;
-  model?: string;
-  event?: {
-    type?: string;
-    delta?: { type?: string; text?: string; thinking?: string };
-  };
-  message?: {
-    id?: string;
-    content?: GrokContentBlock[];
-  };
-  result?: string;
-  is_error?: boolean;
-  duration_ms?: number;
-  total_cost_usd?: number;
-  usage?: {
-    input_tokens?: number;
-    output_tokens?: number;
-    cache_read_tokens?: number;
-    cache_creation_input_tokens?: number;
+interface AcpUpdate {
+  sessionUpdate?: string;
+  content?: AcpContent | AcpContent[];
+  toolCallId?: string;
+  title?: string;
+  kind?: string;
+  status?: string;
+  rawInput?: unknown;
+  _meta?: { totalTokens?: number };
+}
+
+interface AcpRequest {
+  id?: number;
+  method?: string;
+  params?: {
+    sessionId?: string;
+    toolCall?: { toolCallId?: string; title?: string; kind?: string };
+    options?: { optionId?: string; name?: string; kind?: string }[];
   };
 }
 
-interface SessionState {
+interface AcpResponse {
+  id?: number;
+  result?: { sessionId?: string; stopReason?: string; models?: GrokModels };
+  error?: { code?: number; message?: string };
+}
+
+interface GrokModels {
+  currentModelId?: string;
+  availableModels?: Array<{
+    modelId?: string;
+    name?: string;
+    _meta?: { totalContextTokens?: number; supportsReasoningEffort?: boolean; reasoningEfforts?: string[] };
+  }>;
+}
+
+interface PendingRequest {
+  resolve: (result: unknown) => void;
+  reject: (err: Error) => void;
+}
+
+interface GrokSession {
   readonly sessionId: SessionId;
   readonly rootPath: string;
-  mode: StartRequest["mode"];
-  model: ModelId | null;
-  reasoningLevel: string | undefined;
-  cliSessionId: string | null;
+  /** grok 的 ACP sessionId（uuidv7），session/new 后才有 */
+  ref: string | null;
   sink: AdapterSink | null;
-  cancelled: boolean;
   child: ChildProcess | null;
+  initialized: boolean;
+  closed: boolean;
+  nextId: number;
+  readonly pending: Map<number, PendingRequest>;
+  /** 本轮聚合：assistant 文本（prompt 阻塞返回时发 completed） */
+  turnText: string;
+  turnMessageId: string | null;
+  /** 轮起点的 _meta.totalTokens（差值出 usage） */
+  usedBefore: number | null;
+  usedNow: number | null;
   usageCount: number;
 }
 
-interface TurnAcc {
-  messageId: string;
-  initSeen: boolean;
-  sawAnyEvent: boolean;
-  resultText: string | null;
-  isError: boolean;
-  usage?: GrokEvent["usage"];
-  costUsd?: number;
-  durationMs?: number;
-}
-
-const STATIC_MODELS: readonly ExecutorModelInfo[] = [
+const DEFAULT_GROK_MODELS: readonly ExecutorModelInfo[] = [
   {
-    id: "grok-4.6" as ModelId,
-    displayName: "Grok 4.6",
-    contextWindow: 500_000,
+    id: "grok-4.7" as ModelId,
+    displayName: "Grok 4.7",
+    contextWindow: 256000,
+    reasoningLevels: ["low", "high"],
     multimodal: true,
-    reasoningLevels: ["low", "medium", "high", "xhigh"],
-    defaultReasoningLevel: "high",
-  },
-  {
-    id: "grok-4.5" as ModelId,
-    displayName: "Grok 4.5",
-    contextWindow: 500_000,
-    multimodal: true,
-    reasoningLevels: ["low", "medium", "high"],
-    defaultReasoningLevel: "high",
   },
 ];
-
-function getLocalGrokCandidates(): string[] {
-  const home = homedir();
-  return [
-    // 官方发布版安装目标（irm https://x.ai/cli/install.ps1 | iex）
-    path.join(home, ".grok", "bin", "grok.exe"),
-    path.join(home, ".grok", "bin", "grok"),
-    path.join(home, ".grok", "bin", "agent.exe"),
-    path.join(home, ".grok", "bin", "xai-grok-pager.exe"),
-    path.join(home, "AppData", "Local", "grok", "bin", "grok.exe"),
-    path.join(home, ".local", "bin", "grok.exe"),
-    path.join(home, ".local", "bin", "grok"),
-    path.join(home, ".cargo", "bin", "grok.exe"),
-    // 本地 grok-build 源码编译产物目录
-    "C:\\Users\\chenziyu\\project\\Agent\\grok-build\\target\\release\\xai-grok-pager.exe",
-    "C:\\Users\\chenziyu\\project\\Agent\\grok-build\\target\\release\\grok.exe",
-    "C:\\Users\\chenziyu\\project\\Agent\\grok-build\\target\\debug\\xai-grok-pager.exe",
-    "C:\\Users\\chenziyu\\project\\Agent\\grok-build\\target\\debug\\grok.exe",
-  ];
-}
-
-async function resolveGrokCommand(): Promise<ResolvedCommand> {
-  // 1. 优先查已知物理路径（直接绕过长驻进程未能继承 Windows 注册表新 PATH 的问题）
-  for (const p of getLocalGrokCandidates()) {
-    if (existsSync(p)) {
-      return { file: p, prefixArgs: [], via: "exe" };
-    }
-  }
-
-  // 2. PATH 解析
-  try {
-    return await resolveCommand("grok");
-  } catch {
-    // 尝试 xai-grok-pager 别名
-    try {
-      return await resolveCommand("xai-grok-pager");
-    } catch {
-      throw Object.assign(new Error("grok executable not found on PATH or target"), {
-        code: "not_installed",
-      });
-    }
-  }
-}
 
 export class GrokAdapter implements ExecutorAdapter {
   readonly id = "grok";
   readonly displayName = "Grok Build";
   readonly glyph = "G";
-  readonly tuiCommand = "grok";
-
-  private readonly sessions = new Map<SessionId, SessionState>();
-
+  private _models: ExecutorModelInfo[] = [...DEFAULT_GROK_MODELS];
   get models(): readonly ExecutorModelInfo[] {
-    return STATIC_MODELS;
+    return this._models;
+  }
+
+  async syncModels(): Promise<readonly ExecutorModelInfo[]> {
+    // 模型清单随 session/new 下发：起一个临时 ACP 进程问一次（8s 预算，失败保底静态清单）
+    try {
+      const harvested = await new Promise<ExecutorModelInfo[]>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("grok models 探测超时")), 12000);
+        void (async () => {
+          const cmd = await resolveCommand("grok");
+          const child = spawn(cmd.file, [...cmd.prefixArgs, "agent", "stdio"], {
+            stdio: ["pipe", "pipe", "pipe"],
+            windowsHide: true,
+          });
+          let nextId = 0;
+          const waiters = new Map<number, (r: AcpResponse) => void>();
+          createInterface({ input: child.stdout }).on("line", (line) => {
+            let f: AcpResponse | AcpRequest;
+            try {
+              f = JSON.parse(line) as AcpResponse;
+            } catch {
+              return;
+            }
+            if (f.id !== undefined && waiters.has(f.id)) {
+              waiters.get(f.id)!(f);
+              waiters.delete(f.id);
+            }
+          });
+          const req = (method: string, params: Record<string, unknown>): Promise<AcpResponse> => {
+            const id = ++nextId;
+            return new Promise((res) => {
+              waiters.set(id, res);
+              child.stdin?.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
+            });
+          };
+          const init = await req("initialize", {
+            protocolVersion: 1,
+            clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
+          });
+          if (init.error !== undefined) throw new Error(init.error.message ?? "initialize failed");
+          const sn = await req("session/new", { cwd: process.env["USERPROFILE"] ?? ".", mcpServers: [] });
+          child.kill();
+          clearTimeout(timer);
+          const models = sn.result?.models?.availableModels ?? [];
+          const out = models
+            .filter((m): m is typeof m & { modelId: string } => typeof m.modelId === "string")
+            .map((m) => ({
+              id: m.modelId as ModelId,
+              displayName: m.name ?? m.modelId,
+              contextWindow: m._meta?.totalContextTokens && m._meta.totalContextTokens > 0 ? m._meta.totalContextTokens : 256000,
+              reasoningLevels:
+                m._meta?.supportsReasoningEffort === true ? (m._meta.reasoningEfforts ?? ["low", "high"]) : undefined,
+              multimodal: true,
+            }));
+          resolve(out);
+        })().catch((err: unknown) => {
+          clearTimeout(timer);
+          reject(err instanceof Error ? err : new Error(String(err)));
+        });
+      });
+      if (harvested.length > 0) {
+        this._models = harvested;
+        log.info("grok models synced via ACP session/new", { count: harvested.length });
+      }
+    } catch (err: unknown) {
+      log.debug("grok 模型同步失败，用静态清单", { error: err instanceof Error ? err.message : String(err) });
+    }
+    return this._models;
   }
 
   readonly capabilities: RuntimeCapabilities = {
-    resumeSession: true,
-    fileDiff: false,
+    resumeSession: true, // session/resume（sessionCapabilities.resume 实测 true）
+    fileDiff: false, // diff 走 x.ai/* 扩展通知，暂不翻译
     terminal: false,
-    permissions: true,
-    subagents: true,
+    permissions: true, // session/request_permission 反向流（标准 ACP）
+    subagents: false,
     worktrees: false,
     sandbox: false,
-    mcp: true,
-    usage: true,
+    mcp: true, // mcpCapabilities http/sse；session/new 可挂 mcpServers
+    usage: true, // agent_message_chunk._meta.totalTokens 差值
     multimodal: true,
-    streaming: "realtime",
-    steering: "turn-end",
+    streaming: "realtime", // agent_message_chunk 真 token 流
+    steering: "turn-end", // prompt 阻塞语义：轮边界入队
   };
+
+  private readonly sessions = new Map<string, GrokSession>();
 
   async probe(): Promise<ProbeResult> {
     const t0 = Date.now();
     try {
-      const cmd = await resolveGrokCommand();
-      const versionOut = await execLines(cmd, ["--version"], 10000);
-      const version = versionOut.split(/\r?\n/)[0]?.trim() || "ready";
+      const cmd = await resolveCommand("grok");
+      const out = await execLines(cmd, ["--version"], 15000);
+      void this.syncModels().catch(() => {});
       return {
-        state: { status: "ready", version },
+        state: { status: "ready", version: out.trim() || "unknown" },
         capabilities: this.capabilities,
         elapsedMs: Date.now() - t0,
       };
@@ -203,10 +232,7 @@ export class GrokAdapter implements ExecutorAdapter {
       return {
         state:
           code === "not_installed"
-            ? {
-                status: "not_installed",
-                hint: "未找到 grok CLI。运行 irm https://x.ai/cli/install.ps1 | iex 安装，或在 grok-build 目录执行 cargo build -p xai-grok-pager-bin --release",
-              }
+            ? { status: "not_installed", hint: "未安装 grok（~/.grok/bin/grok.exe 或 PATH）" }
             : { status: "error", message: err instanceof Error ? err.message : String(err) },
         elapsedMs: Date.now() - t0,
       };
@@ -214,254 +240,323 @@ export class GrokAdapter implements ExecutorAdapter {
   }
 
   async start(req: StartRequest, sink: AdapterSink): Promise<AdapterSession> {
-    const sessionId = `sess_${randomUUID()}` as SessionId;
-    const state: SessionState = {
-      sessionId,
+    const state: GrokSession = {
+      sessionId: `sess_${randomUUID()}` as SessionId,
       rootPath: req.rootPath,
-      mode: req.mode,
-      model: req.model,
-      reasoningLevel: req.reasoningLevel,
-      cliSessionId: null,
+      ref: null,
       sink,
-      cancelled: false,
       child: null,
+      initialized: false,
+      closed: false,
+      nextId: 0,
+      pending: new Map(),
+      turnText: "",
+      turnMessageId: null,
+      usedBefore: null,
+      usedNow: null,
       usageCount: 0,
     };
-    this.sessions.set(sessionId, state);
-
-    void this.spawnTurn(state, req.prompt).catch((err: unknown) => {
-      log.error("grok initial turn failed", {
-        sessionId,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    });
-
-    return this.sessionHandle(state);
+    this.sessions.set(state.sessionId, state);
+    // 会话建立是异步的：host 拿到 AdapterSession 后调 send，send 里确保进程+握手+session/new
+    return this.sessionImpl(state);
   }
 
   reattach(sessionId: SessionId, ref: string, rootPath: string, sink: AdapterSink): AdapterSession {
-    const state: SessionState = {
+    const state: GrokSession = {
       sessionId,
       rootPath,
-      mode: "build",
-      model: null,
-      reasoningLevel: undefined,
-      cliSessionId: ref,
+      ref: null, // session/resume 成功后再填（ref 就是 resume 参数）
       sink,
-      cancelled: false,
       child: null,
+      initialized: false,
+      closed: false,
+      nextId: 0,
+      pending: new Map(),
+      turnText: "",
+      turnMessageId: null,
+      usedBefore: null,
+      usedNow: null,
       usageCount: 0,
     };
     this.sessions.set(sessionId, state);
-    return this.sessionHandle(state);
+    state.pending; // reattach 记录在 state.ref 之外：用字段存 resume 目标
+    (state as { resumeRef?: string }).resumeRef = ref;
+    return this.sessionImpl(state);
+  }
+
+  private sessionImpl(state: GrokSession): AdapterSession {
+    return {
+      id: state.sessionId,
+      send: async (text: string) => {
+        await this.ensureSession(state);
+        if (state.ref === null) throw new Error("grok 会话未建立");
+        state.turnText = "";
+        state.turnMessageId = null;
+        state.usedBefore = state.usedNow;
+        const r = await this.request(state, "session/prompt", {
+          sessionId: state.ref,
+          prompt: [{ type: "text", text }],
+        });
+        if ((r as AcpResponse).error !== undefined) {
+          state.sink?.({
+            type: "error",
+            sessionId: state.sessionId,
+            message: `grok session/prompt 失败：${(r as AcpResponse).error?.message ?? "unknown"}`,
+            recoverable: false,
+          });
+          state.sink?.({ type: "session.status", sessionId: state.sessionId, status: "failed" });
+          return;
+        }
+        // 阻塞返回 = 轮落定：completed + usage + idle
+        if (state.turnText !== "" && state.turnMessageId !== null) {
+          state.sink?.({ type: "message.completed", sessionId: state.sessionId, messageId: state.turnMessageId, text: state.turnText });
+        }
+        if (state.usedBefore !== null && state.usedNow !== null && state.usedNow > state.usedBefore) {
+          state.sink?.({
+            type: "usage",
+            sessionId: state.sessionId,
+            inputTokens: state.usedNow - state.usedBefore,
+            outputTokens: 0,
+            costUsd: 0,
+            model: "grok",
+            requestId: `grok:${state.ref}:${process.pid}:${++state.usageCount}`,
+          });
+        }
+        state.sink?.({ type: "session.status", sessionId: state.sessionId, status: "idle" });
+      },
+      cancel: async () => {
+        if (state.ref === null) return;
+        // ACP 标准：session/cancel（grok 支持与否实测未证；失败只置 idle 不硬杀）
+        const r = (await this.request(state, "session/cancel", { sessionId: state.ref })) as AcpResponse;
+        if (r.error !== undefined) {
+          log.debug("grok session/cancel 被拒", { err: r.error.message });
+          state.sink?.({ type: "session.status", sessionId: state.sessionId, status: "idle" });
+        }
+      },
+      resolvePermission: async (requestId: string, decision: "allow" | "deny" | "always") => {
+        const acpId = Number(requestId.replace(/^grok:/, ""));
+        if (!Number.isFinite(acpId)) return;
+        // 标准 ACP 三档：allow→allow_once（grok 无 always 档时降 once），deny→reject
+        this.replyRaw(state, acpId, {
+          outcome: { outcome: "selected", optionId: decision === "deny" ? "reject" : decision === "always" ? "always" : "allow" },
+        });
+        state.sink?.({
+          type: "permission.resolved",
+          sessionId: state.sessionId,
+          requestId,
+          decision: decision === "always" ? "allow" : decision,
+        });
+      },
+      externalRef: () => state.ref,
+    };
   }
 
   async disconnect(): Promise<void> {
-    for (const st of this.sessions.values()) st.child?.kill();
+    for (const s of this.sessions.values()) {
+      s.closed = true;
+      s.child?.kill();
+    }
     this.sessions.clear();
   }
 
-  private sessionHandle(state: SessionState): AdapterSession {
-    return {
-      id: state.sessionId,
-      send: async (text: string, loop?: { reasoningLevel?: string }) => {
-        if (loop?.reasoningLevel !== undefined) state.reasoningLevel = loop.reasoningLevel;
-        await this.spawnTurn(state, text);
-      },
-      cancel: async () => {
-        state.cancelled = true;
-        state.child?.kill();
-      },
-      resolvePermission: async () => {
-        log.warn("resolvePermission called on grok (runs with --always-approve / --yolo)");
-      },
-      externalRef: () => state.cliSessionId,
-    };
-  }
+  // ---- 进程 / 握手 / 请求基线 ---------------------------------------------------
 
-  private async spawnTurn(state: SessionState, prompt: string): Promise<void> {
-    state.cancelled = false;
-    const cmd = await resolveGrokCommand();
-    const args = [
-      "-p",
-      prompt,
-      "--output-format",
-      "streaming-messages-json",
-      "--include-partial-messages",
-      "--always-approve",
-    ];
-
-    if (state.cliSessionId !== null) {
-      args.push("--resume", state.cliSessionId);
-    }
-    if (state.model !== null) {
-      args.push("--model", state.model);
-    }
-    if (state.reasoningLevel !== undefined && state.reasoningLevel !== "") {
-      args.push("--effort", state.reasoningLevel);
-    }
-
-    const acc: TurnAcc = {
-      messageId: `msg_${Date.now()}`,
-      initSeen: false,
-      sawAnyEvent: false,
-      resultText: null,
-      isError: false,
-    };
-
-    const child = spawnLines(cmd, args, {
+  private async ensureSession(state: GrokSession): Promise<void> {
+    if (state.ref !== null) return;
+    const cmd = await resolveCommand("grok");
+    const child = spawn(cmd.file, [...cmd.prefixArgs, "agent", "stdio"], {
       cwd: state.rootPath,
-      onLine: (line) => this.handleLine(state, acc, line),
-      onStderrLine: (line) => log.debug("grok stderr", { line: line.slice(0, 200) }),
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
     });
     state.child = child;
+    createInterface({ input: child.stdout }).on("line", (line) => this.onLine(state, line));
+    child.stderr?.on("data", (d: Buffer) => {
+      const s = d.toString().trim();
+      if (s !== "") log.debug("grok stderr", { line: s.slice(0, 160) });
+    });
+    child.once("exit", (code) => {
+      log.info("grok ACP 进程退出", { code, session: state.sessionId });
+      state.child = null;
+      state.initialized = false;
+      state.ref = null;
+    });
 
-    const exitCode = await new Promise<number | null>((resolve) =>
-      child.once("close", (code) => resolve(code)),
-    );
-    state.child = null;
+    const init = (await this.request(state, "initialize", {
+      protocolVersion: 1,
+      clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
+    })) as AcpResponse;
+    if (init.error !== undefined) throw new Error(`grok initialize 失败：${init.error.message}`);
+    state.initialized = true;
 
-    if (state.cancelled) {
-      state.sink?.({ type: "session.status", sessionId: state.sessionId, status: "idle" });
-      return;
+    // reattach：先 resume，失败回落新会话
+    const resumeRef = (state as { resumeRef?: string }).resumeRef;
+    if (resumeRef !== undefined) {
+      const r = (await this.request(state, "session/resume", { sessionId: resumeRef })) as AcpResponse;
+      if (r.error === undefined && r.result !== undefined) {
+        state.ref = resumeRef;
+        return;
+      }
+      log.debug("grok session/resume 回落新会话", { err: r.error?.message });
     }
-
-    this.finalizeTurn(state, acc, exitCode);
+    const sn = (await this.request(state, "session/new", { cwd: state.rootPath, mcpServers: [] })) as AcpResponse;
+    if (sn.error !== undefined) throw new Error(`grok session/new 失败：${sn.error.message}`);
+    state.ref = sn.result?.sessionId ?? null;
+    // 模型清单顺手吸收
+    const models = sn.result?.models?.availableModels;
+    if (Array.isArray(models) && models.length > 0) {
+      const harvested = models
+        .filter((m): m is typeof m & { modelId: string } => typeof m.modelId === "string")
+        .map((m) => ({
+          id: m.modelId as ModelId,
+          displayName: m.name ?? m.modelId,
+          contextWindow: m._meta?.totalContextTokens ?? 256000,
+        }));
+      if (harvested.length > 0 && harvested.length !== this._models.length) this._models = harvested;
+    }
   }
 
-  private handleLine(state: SessionState, acc: TurnAcc, line: string): void {
-    const sink = state.sink;
-    if (sink === null || line.trim() === "") return;
+  private request(state: GrokSession, method: string, params: Record<string, unknown>): Promise<unknown> {
+    const id = ++state.nextId;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        state.pending.delete(id);
+        reject(new Error(`grok ${method} 超时`));
+      }, 120_000);
+      state.pending.set(id, {
+        resolve: (r) => {
+          clearTimeout(timer);
+          resolve(r);
+        },
+        reject: (err) => {
+          clearTimeout(timer);
+          reject(err);
+        },
+      });
+      state.child?.stdin?.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
+    });
+  }
 
-    let ev: GrokEvent;
+  private replyRaw(state: GrokSession, id: number, result: unknown): void {
+    state.child?.stdin?.write(JSON.stringify({ jsonrpc: "2.0", id, result }) + "\n");
+  }
+
+  private onLine(state: GrokSession, line: string): void {
+    const s = line.trim();
+    if (s === "") return;
+    let f: AcpResponse | AcpRequest;
     try {
-      ev = JSON.parse(line) as GrokEvent;
+      f = JSON.parse(s) as AcpResponse;
     } catch {
       return;
     }
-    acc.sawAnyEvent = true;
-    const sessionId = state.sessionId;
-
-    if (ev.type === "system" && ev.subtype === "init") {
-      acc.initSeen = true;
-      if (ev.session_id !== undefined) state.cliSessionId = ev.session_id;
-      sink({ type: "session.status", sessionId, status: "running" });
+    // 响应
+    if (f.id !== undefined && (f as AcpResponse).result !== undefined) {
+      const p = state.pending.get(f.id);
+      if (p !== undefined) {
+        state.pending.delete(f.id);
+        p.resolve(f);
+      }
       return;
     }
-
-    if (ev.type === "stream_event") {
-      const delta = ev.event?.delta;
-      if (delta?.type === "text_delta" && delta.text !== undefined && delta.text !== "") {
-        sink({
-          type: "message.delta",
-          sessionId,
-          messageId: acc.messageId,
-          role: "assistant",
-          text: delta.text,
+    if (f.id !== undefined && (f as AcpResponse).error !== undefined) {
+      const p = state.pending.get(f.id);
+      if (p !== undefined) {
+        state.pending.delete(f.id);
+        p.resolve(f);
+      }
+      return;
+    }
+    const req = f as AcpRequest;
+    // 反向请求（权限）
+    if (req.method !== undefined && req.id !== undefined) {
+      if (req.method === "session/request_permission") {
+        const tc = req.params?.toolCall;
+        const options = req.params?.options ?? [];
+        // optionId 按语义挑：allow_once / always / reject（grok 档位以实际下发为准）
+        state.sink?.({
+          type: "permission.requested",
+          sessionId: state.sessionId,
+          requestId: `grok:${req.id}`,
+          kind: tc?.kind === "execute" ? "shell" : tc?.kind === "edit" ? "file_write" : "tool",
+          detail: tc?.title ?? "grok 审批",
+          risk: tc?.kind === "execute" ? "high" : "medium",
         });
-      } else if (delta?.type === "thinking_delta" && delta.thinking !== undefined && delta.thinking !== "") {
-        sink({
-          type: "reasoning.delta",
-          sessionId,
-          messageId: acc.messageId,
-          text: delta.thinking,
-        });
+        // 决策回执在 resolvePermission（requestId 携带 acp id）；选项留痕
+        log.debug("grok 权限选项", { options: options.map((o) => `${o.optionId}:${o.kind}`).join(",") });
+        return;
       }
+      // 未知反向请求：婉拒（0 号 option 或 reject）
+      this.replyRaw(state, req.id, { outcome: { outcome: "rejected" } });
       return;
     }
-
-    if (ev.type === "assistant") {
-      for (const block of ev.message?.content ?? []) {
-        if (block.type === "tool_use" && block.id !== undefined) {
-          sink({
-            type: "tool.started",
-            sessionId,
-            callId: block.id,
-            toolName: block.name ?? "tool",
-            title: block.name ?? "tool",
-            input: block.input ?? null,
-          });
-        }
-      }
-      return;
-    }
-
-    if (ev.type === "user") {
-      for (const block of ev.message?.content ?? []) {
-        if (block.type === "tool_result" && block.tool_use_id !== undefined) {
-          const out =
-            typeof block.content === "string" ? block.content : JSON.stringify(block.content ?? null);
-          sink({
-            type: "tool.completed",
-            sessionId,
-            callId: block.tool_use_id,
-            ok: block.is_error !== true,
-            output: out.slice(0, 8000),
-          });
-        }
-      }
-      return;
-    }
-
-    if (ev.type === "result") {
-      acc.resultText = ev.result ?? "";
-      acc.isError = ev.is_error === true;
-      acc.usage = ev.usage;
-      acc.costUsd = ev.total_cost_usd;
-      acc.durationMs = ev.duration_ms;
-      if (ev.session_id !== undefined) state.cliSessionId = ev.session_id;
+    // 通知
+    if (req.method === "session/update") this.onUpdate(state, (f as unknown as { params?: { update?: AcpUpdate; sessionId?: string } }).params?.update);
+    else if (req.method !== undefined && req.method.startsWith("_x.ai")) {
+      log.debug("grok x.ai 通知", { method: req.method });
     }
   }
 
-  private finalizeTurn(state: SessionState, acc: TurnAcc, exitCode: number | null): void {
+  private textOfContent(content: AcpContent | AcpContent[] | undefined): string {
+    if (content === undefined) return "";
+    const arr = Array.isArray(content) ? content : [content];
+    return arr
+      .map((c) => (typeof c.text === "string" ? c.text : this.textOfContent(c.content as AcpContent | AcpContent[] | undefined)))
+      .join("");
+  }
+
+  private onUpdate(state: GrokSession, u: AcpUpdate | undefined): void {
+    if (u === undefined) return;
     const sink = state.sink;
     if (sink === null) return;
     const sessionId = state.sessionId;
-
-    if (!acc.sawAnyEvent) {
-      sink({
-        type: "error",
-        sessionId,
-        message: `grok exited without output (exit code ${exitCode})`,
-        recoverable: false,
-      });
-      sink({ type: "session.status", sessionId, status: "failed_executor" });
-      return;
+    switch (u.sessionUpdate) {
+      case "agent_message_chunk": {
+        const text = this.textOfContent(u.content);
+        if (text !== "") {
+          if (state.turnMessageId === null) state.turnMessageId = `msg_${state.sessionId.slice(5, 13)}`;
+          sink({ type: "message.delta", sessionId, messageId: state.turnMessageId, role: "assistant", text });
+          state.turnText += text;
+        }
+        if (u._meta?.totalTokens !== undefined) state.usedNow = u._meta.totalTokens;
+        break;
+      }
+      case "agent_thought_chunk": {
+        const text = this.textOfContent(u.content);
+        if (text !== "") sink({ type: "reasoning.delta", sessionId, messageId: `think_${Date.now()}`, text });
+        if (u._meta?.totalTokens !== undefined) state.usedNow = u._meta.totalTokens;
+        break;
+      }
+      case "tool_call": {
+        const raw = (u.rawInput ?? {}) as Record<string, unknown>;
+        sink({
+          type: "tool.started",
+          sessionId,
+          callId: u.toolCallId ?? `call_${Date.now()}`,
+          toolName: typeof raw["command"] === "string" ? "shell" : (u.title ?? "tool"),
+          title: u.title ?? "",
+          input: raw,
+        });
+        break;
+      }
+      case "tool_call_update": {
+        if (u.status === "completed" || u.status === "failed") {
+          const output = this.textOfContent(u.content);
+          sink({
+            type: "tool.completed",
+            sessionId,
+            callId: u.toolCallId ?? `call_${Date.now()}`,
+            ok: u.status === "completed",
+            output: output.slice(0, 4000),
+          });
+        }
+        break;
+      }
+      case "user_message_chunk":
+      case "plan":
+      case "available_commands_update":
+      default:
+        break;
     }
-
-    if (acc.isError) {
-      sink({
-        type: "error",
-        sessionId,
-        message: acc.resultText && acc.resultText.trim() !== "" ? acc.resultText : "grok reported error",
-        recoverable: false,
-      });
-      sink({ type: "session.status", sessionId, status: "failed_executor" });
-      return;
-    }
-
-    sink({
-      type: "message.completed",
-      sessionId,
-      messageId: acc.messageId,
-      text: acc.resultText ?? "",
-    });
-
-    if (acc.usage) {
-      state.usageCount += 1;
-      const u = acc.usage;
-      sink({
-        type: "usage",
-        sessionId,
-        model: state.model ?? ("grok-4.6" as ModelId),
-        inputTokens: u.input_tokens ?? 0,
-        outputTokens: u.output_tokens ?? 0,
-        cacheReadTokens: u.cache_read_tokens,
-        cacheWriteTokens: u.cache_creation_input_tokens,
-        costUsd: acc.costUsd ?? 0,
-      });
-    }
-
-    sink({ type: "session.status", sessionId, status: "idle" });
   }
 }
