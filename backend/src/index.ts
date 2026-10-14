@@ -5,13 +5,14 @@
  * Phase 1 在这里注册 session.* 方法并把 RuntimeEvent 接进 broadcastEvent。
  */
 
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import os from "node:os";
 import path from "node:path";
+import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { exec, spawn } from "node:child_process";
 import { loadConfig } from "./config.ts";
@@ -130,6 +131,45 @@ try {
 } catch (err: unknown) {
   console.error(`\n启动中止：${err instanceof Error ? err.message : String(err)}\n`);
   process.exit(1);
+}
+
+// ---- 事件循环阻塞监视器 -------------------------------------------------------
+//
+// 为什么存在：2026-10-15 实测 daemon 两次整体冻结（连 /healthz 都无响应，
+// CPU 静止 = 事件循环卡在某个同步调用里），根因当时抓不到现场。这个监视器
+// 把每次停摆的时长与时间点落到 <homeDir>/loop-stall.log（并落一份 Node
+// diagnostic report），下次再冻结就有「几点几分停了多久」的硬证据可对。
+// 正常情况零输出、零开销（1s 一个 unref 定时器）。
+
+{
+  const STALL_THRESHOLD_MS = 5_000;
+  const stallLogPath = join(config.homeDir, "loop-stall.log");
+  let lastTick = Date.now();
+  let lastReportAt = 0;
+  const timer = setInterval(() => {
+    const now = Date.now();
+    const drift = now - lastTick - 1000;
+    lastTick = now;
+    if (drift < STALL_THRESHOLD_MS) return;
+    const line = `${new Date(now).toISOString()} loop stalled ${Math.round(drift / 100) / 10}s\n`;
+    try {
+      appendFileSync(stallLogPath, line);
+      console.error(`[loop-stall] ${line.trim()}`);
+    } catch {
+      /* 家目录写不进就算了，console 至少还有 */
+    }
+    // 停摆结束后的第一拍落一份完整诊断报告（限频 10 分钟一份）
+    if (now - lastReportAt > 10 * 60_000) {
+      lastReportAt = now;
+      try {
+        const report = process.report?.getReport?.();
+        if (report !== undefined) appendFileSync(stallLogPath, JSON.stringify(report) + "\n");
+      } catch {
+        /* report 不可用（老 Node）就算了 */
+      }
+    }
+  }, 1000);
+  timer.unref?.();
 }
 
 // ---- 服务与执行器（先建好，REST 路由要引用）---------------------------------

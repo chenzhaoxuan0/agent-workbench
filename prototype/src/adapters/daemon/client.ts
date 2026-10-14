@@ -359,6 +359,8 @@ export async function listDaemonExecutors(endpoint: string = defaultDaemonEndpoi
  *
  * 空数组 = 该执行器没有原生命令面（不是错误）—— UI 回落工作台本地命令。
  * 注意 runtimeId 传**裸执行器 id**（daemon 侧口径），不是 `daemon:<id>`。
+ * 30s：daemon 侧 claude 拉取有 20s 硬超时兜底，正常 1-3s 返回；
+ * 再久只可能是 daemon 整体卡死，早点让 UI 进错误态。
  */
 export async function fetchExecutorCommands(
   runtimeId: string,
@@ -366,7 +368,7 @@ export async function fetchExecutorCommands(
   endpoint: string = defaultDaemonEndpoint(),
 ): Promise<readonly NativeCommandInfo[]> {
   const client = DaemonClient.get(endpoint);
-  return client.rpc<readonly NativeCommandInfo[]>("adapter.commands", { runtimeId, rootPath }, 45000);
+  return client.rpc<readonly NativeCommandInfo[]>("adapter.commands", { runtimeId, rootPath }, 30000);
 }
 
 /**

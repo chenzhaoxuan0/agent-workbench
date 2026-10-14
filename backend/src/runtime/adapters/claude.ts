@@ -217,6 +217,13 @@ export class ClaudeAdapter implements ExecutorAdapter {
       },
     };
 
+    /**
+     * 硬超时兜底：supportedCommands 没有自己的超时，CLI 卡在握手/更新/信任
+     * 流程时这个 await 会永远悬着 —— RPC 跟着超时，前端菜单转圈到天荒地老。
+     * 超时即收尾返回空清单（菜单如实显示「拉取失败」，下次打开重试）。
+     */
+    const HARD_TIMEOUT_MS = 20_000;
+
     try {
       const { query } = await import("@anthropic-ai/claude-agent-sdk");
       const q = query({ prompt: input, options: { cwd: rootPath } });
@@ -229,7 +236,17 @@ export class ClaudeAdapter implements ExecutorAdapter {
         }
       })();
       void drain;
-      const list = await q.supportedCommands();
+
+      const list = await Promise.race([
+        q.supportedCommands(),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), HARD_TIMEOUT_MS).unref?.()),
+      ]);
+      if (list === null) {
+        log.warn("claude supportedCommands 超时，返回空清单", { rootPath, ms: HARD_TIMEOUT_MS });
+        // interrupt 让还活着的 CLI 子进程尽快退出，别泄漏 260MB 的进程
+        void q.interrupt().catch(() => undefined);
+        return [];
+      }
       return toNativeCommands(Array.isArray(list) ? (list as readonly SdkSlashCommand[]) : []);
     } catch (err: unknown) {
       log.warn("claude supportedCommands failed", { rootPath, error: err instanceof Error ? err.message : String(err) });
