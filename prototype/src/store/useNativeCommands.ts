@@ -92,8 +92,15 @@ export function nativeCommandsFor(
   runtimeId: string,
   rootPath: string,
 ): NativeCommandsEntry {
-  return s.entries[`${runtimeId}|${rootPath}`] ?? { commands: [], status: "idle", at: 0 };
+  return s.entries[`${runtimeId}|${rootPath}`] ?? EMPTY_ENTRY;
 }
+
+/**
+ * 未命中的兜底条目 —— 必须是**模块级常量**：selector 每次调用都返回同一个引用。
+ * 若在这里 new 对象，zustand v5 + React 19 的 useSyncExternalStore 会判定
+ * getSnapshot 不稳定 → 无限循环 → 整页白/黑屏（首屏必踩：初始没有任何条目）。
+ */
+const EMPTY_ENTRY: NativeCommandsEntry = { commands: [], status: "idle", at: 0 };
 
 /** 当前执行器是否有**已加载**的原生命令面（去遮挡判定：拉到了才算数） */
 export function hasLoadedNativeCommands(s: NativeCommandsState, runtimeId: string, rootPath: string): boolean {
