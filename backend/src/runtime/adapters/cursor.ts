@@ -10,6 +10,12 @@
  * - 多轮：--resume <session_id> 维系上下文
  * - 权限模式：--trust 避免工作区信任弹窗；--yolo / -f 免除审批
  * - 动态模型：`cursor-agent --list-models` 探测可用模型清单
+ *
+ * docs/13 Phase 4 Tier 2 的 SDK 升级路径（@cursor/sdk 1.0.x 已上 npm）**待语义对齐
+ * POC**：SDK 走 CURSOR_API_KEY + 云/本地 workspace 的 agent 语义，与本地
+ * cursor-agent CLI 的工作目录语义有差异（计划原文已标注「升级前先做语义对齐」）。
+ * 本文件保留 CLI 主路径；POC 环境就绪后在 send() 前挂 SDK 传输（参照
+ * openclaw.ts 的双传输模式：SDK 失败回落 CLI）。
  */
 
 import { randomUUID } from "node:crypto";

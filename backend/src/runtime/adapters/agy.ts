@@ -16,7 +16,10 @@
  */
 
 import { randomUUID } from "node:crypto";
-import type { ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
+import { createInterface } from "node:readline";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   type AdapterSession,
   type AdapterSink,
@@ -87,7 +90,7 @@ interface AgyEvent {
 interface SessionState {
   readonly sessionId: SessionId;
   readonly rootPath: string;
-  readonly mode: StartRequest["mode"];
+  mode: StartRequest["mode"];
   model: ModelId | null;
   reasoningLevel: string | undefined;
   /** CLI 原生会话 ID（--conversation 用），首轮 init 事件给出 */
@@ -96,6 +99,12 @@ interface SessionState {
   cancelled: boolean;
   child: ChildProcess | null;
   usageCount: number;
+  /** SDK sidecar（google-antigravity）传输：进程与轮内状态；null = 未启用/回落 CLI */
+  sdkChild: ChildProcess | null;
+  sdkFailed: boolean;
+  sdkTurnText: string;
+  sdkMessageId: string | null;
+  sdkDone: boolean;
 }
 
 interface TurnAcc {
@@ -292,10 +301,13 @@ export class AgyAdapter implements ExecutorAdapter {
     try {
       const cmd = await resolveCommand("agy");
       const out = await execLines(cmd, ["--version"], 15000);
+      // antigravity SDK 探针：python + google-antigravity 在场即启用 sidecar 传输
+      const sdk = await this.probeSdk();
+      this.sdkAvailable = sdk;
       return {
         state: {
           status: "ready",
-          version: out.trim() || "unknown",
+          version: (out.trim() || "unknown") + (sdk ? " + antigravity-sdk" : "（pip install google-antigravity 可启用 SDK 传输）"),
         },
         capabilities: this.capabilities,
         elapsedMs: Date.now() - t0,
@@ -325,15 +337,29 @@ export class AgyAdapter implements ExecutorAdapter {
       cancelled: false,
       child: null,
       usageCount: 0,
+      sdkChild: null,
+      sdkFailed: false,
+      sdkTurnText: "",
+      sdkMessageId: null,
+      sdkDone: false,
     };
     this.sessions.set(sessionId, state);
 
-    void this.spawnTurn(state, req.prompt);
-
+    // 适配器契约：start() 不发轮（host 返回后会自动 send(prompt) 驱动首轮）
     return {
       id: sessionId,
       send: async (text: string, loop?: { reasoningLevel?: string }) => {
         if (loop?.reasoningLevel) state.reasoningLevel = loop.reasoningLevel;
+        // antigravity SDK sidecar 优先（docs/13 Tier 3，探针门控）；失败回落 CLI
+        if (this.sdkAvailable && !state.sdkFailed) {
+          try {
+            await this.sdkTurn(state, text);
+            return;
+          } catch (err: unknown) {
+            state.sdkFailed = true;
+            log.info("agy SDK sidecar 失败，回落 CLI --print", { sessionId: state.sessionId, error: err instanceof Error ? err.message : String(err) });
+          }
+        }
         await this.spawnTurn(state, text);
       },
       cancel: async () => {
@@ -359,12 +385,27 @@ export class AgyAdapter implements ExecutorAdapter {
       cancelled: false,
       child: null,
       usageCount: 0,
+      sdkChild: null,
+      sdkFailed: false,
+      sdkTurnText: "",
+      sdkMessageId: null,
+      sdkDone: false,
     };
     this.sessions.set(sessionId, state);
     return {
       id: sessionId,
       send: async (text: string, loop?: { reasoningLevel?: string }) => {
         if (loop?.reasoningLevel) state.reasoningLevel = loop.reasoningLevel;
+        // antigravity SDK sidecar 优先（docs/13 Tier 3，探针门控）；失败回落 CLI
+        if (this.sdkAvailable && !state.sdkFailed) {
+          try {
+            await this.sdkTurn(state, text);
+            return;
+          } catch (err: unknown) {
+            state.sdkFailed = true;
+            log.info("agy SDK sidecar 失败，回落 CLI --print", { sessionId: state.sessionId, error: err instanceof Error ? err.message : String(err) });
+          }
+        }
         await this.spawnTurn(state, text);
       },
       cancel: async () => {
@@ -379,8 +420,113 @@ export class AgyAdapter implements ExecutorAdapter {
   }
 
   async disconnect(): Promise<void> {
-    for (const st of this.sessions.values()) st.child?.kill();
+    for (const st of this.sessions.values()) {
+      st.child?.kill();
+      st.sdkChild?.kill();
+    }
     this.sessions.clear();
+  }
+
+  // ---- antigravity SDK sidecar 传输（探针门控）-----------------------------------
+
+  /** python + google-antigravity 可用性（probe 时探一次，缓存） */
+  private sdkAvailable = false;
+
+  /** probe 阶段探测：python -c 'import google.antigravity' 成功即启用 SDK 传输 */
+  private async probeSdk(): Promise<boolean> {
+    try {
+      await execLines({ file: 'python', prefixArgs: [], via: 'exe' }, ['-c', 'import google.antigravity'], 10000);
+      return true; // 报错（未装/无 python）会 throw
+    } catch {
+      return false;
+    }
+  }
+
+  markSdkAvailable(v: boolean): void {
+    this.sdkAvailable = v;
+  }
+
+  private ensureSdkChild(state: SessionState): ChildProcess {
+    if (state.sdkChild !== null && state.sdkChild.exitCode === null) return state.sdkChild;
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const child = spawn('python', ['-u', path.join(here, 'agy-antigravity-sidecar.py')], {
+      cwd: state.rootPath,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+    state.sdkChild = child;
+    state.sdkDone = false;
+    createInterface({ input: child.stdout }).on('line', (line) => this.onSdkLine(state, line));
+    child.stderr?.on('data', (d: Buffer) => log.debug('agy sidecar stderr', { line: d.toString().trim().slice(0, 160) }));
+    child.once('exit', (code) => {
+      state.sdkChild = null;
+      if (!state.sdkDone) {
+        state.sink?.({ type: 'error', sessionId: state.sessionId, message: 'antigravity sidecar 退出（' + code + '）', recoverable: false });
+        state.sink?.({ type: 'session.status', sessionId: state.sessionId, status: 'failed' });
+      }
+    });
+    // config：save_dir 落在会话目录（resume 用 conversation_id）
+    child.stdin?.write(JSON.stringify({ op: 'config', saveDir: path.join(state.rootPath, '.agent-workbench', 'antigravity') }) + "\n");
+    return child;
+  }
+
+  private onSdkLine(state: SessionState, line: string): void {
+    const s = line.trim();
+    if (s === '') return;
+    let msg: Record<string, unknown>;
+    try {
+      msg = JSON.parse(s) as Record<string, unknown>;
+    } catch {
+      return;
+    }
+    const sink = state.sink;
+    if (sink === null) return;
+    const evt = String(msg['evt'] ?? '');
+    if (evt === 'delta') {
+      const text = String(msg['text'] ?? '');
+      if (text === '') return;
+      if (msg['kind'] === 'thinking') {
+        sink({ type: 'reasoning.delta', sessionId: state.sessionId, messageId: 'think_' + Date.now(), text });
+      } else {
+        const messageId = state.sdkMessageId ?? 'msg_' + Date.now();
+        state.sdkMessageId = messageId;
+        state.sdkTurnText += text;
+        sink({ type: 'message.delta', sessionId: state.sessionId, messageId, role: 'assistant', text });
+      }
+    } else if (evt === 'tool') {
+      sink({ type: 'tool.started', sessionId: state.sessionId, callId: 't_' + Date.now(), toolName: String(msg['toolName'] ?? 'tool'), title: String(msg['toolName'] ?? ''), input: {} });
+    } else if (evt === 'started') {
+      const cid = String(msg['conversationId'] ?? '');
+      if (cid !== '') state.cliConversationId = cid;
+    } else if (evt === 'completed') {
+      state.sdkDone = true;
+      const messageId = state.sdkMessageId ?? 'msg_' + Date.now();
+      const text = String(msg['text'] ?? state.sdkTurnText);
+      if (state.sdkTurnText === '' && text !== '') {
+        sink({ type: 'message.delta', sessionId: state.sessionId, messageId, role: 'assistant', text });
+      }
+      sink({ type: 'message.completed', sessionId: state.sessionId, messageId, text });
+      sink({ type: 'session.status', sessionId: state.sessionId, status: 'idle' });
+    } else if (evt === 'error') {
+      state.sdkDone = true;
+      sink({ type: 'error', sessionId: state.sessionId, message: String(msg['message'] ?? 'antigravity error'), recoverable: false });
+      sink({ type: 'session.status', sessionId: state.sessionId, status: 'failed' });
+    }
+  }
+
+  private async sdkTurn(state: SessionState, text: string): Promise<void> {
+    const child = this.ensureSdkChild(state);
+    state.sdkTurnText = '';
+    state.sdkMessageId = null;
+    state.sdkDone = false;
+    state.sink?.({ type: "session.status", sessionId: state.sessionId, status: "running" });
+    child.stdin?.write(JSON.stringify({ op: "prompt", text }) + "\n");
+    // 等轮末（sidecar 的 completed/error 事件置 sdkDone；120s 预算）
+    const deadline = Date.now() + 120_000;
+    while (!state.sdkDone && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    if (!state.sdkDone) throw new Error('antigravity sidecar 轮超时（120s 无 completed）');
   }
 
   // ---- turn 执行 ----
