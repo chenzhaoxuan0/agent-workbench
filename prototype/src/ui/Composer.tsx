@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowUp, AtSign, Brain, Command, Sliders, Square, SquareTerminal } from "lucide-react";
+import { ArrowUp, Brain, Command, Sliders, Square, SquareTerminal } from "lucide-react";
 import { useWorkbench, selectActiveUnit, visibleModelsFor } from "../store/useWorkbench.ts";
 import { useShell } from "../store/useShell.ts";
 import { useMemoryPanel, readProjectMemory } from "../store/useMemoryPanel.ts";
@@ -20,7 +20,6 @@ import { cn } from "./cn.ts";
  * - 真实支持原生与工作台增强快捷斜杠指令（/mem, /skill, /clear, /model, /plan, /yolo, /status 等）
  */
 export function Composer() {
-  const conversationView = useShell((s) => s.conversationView);
   const draft = useWorkbench((s) => s.draft);
   const setDraft = useWorkbench((s) => s.setDraft);
   const run = useWorkbench((s) => s.run);
@@ -541,8 +540,8 @@ export function Composer() {
       : `对「${unit.name}」下任务…（输入 / 调出快捷指令，可开 worktree 隔离）`;
 
   return (
-    <div className="shrink-0 border-t border-line bg-rail">
-      <div className="mx-auto max-w-[900px] px-8 py-4">
+    <div className="shrink-0">
+      <div className="mx-auto max-w-[900px] px-8 pb-4 pt-2">
         {/* 短暂状态提示条 */}
         {statusMessage && (
           <div className="mb-2 flex items-center justify-between rounded-lg bg-teal-tint px-3 py-1.5 text-xs text-teal border border-teal/20 animate-in fade-in slide-in-from-bottom-1 duration-150">
@@ -559,7 +558,7 @@ export function Composer() {
 
         <div
           className={cn(
-            "relative rounded-input border bg-canvas px-4 py-3",
+            "relative rounded-input border bg-canvas px-4 py-3 shadow-subtle",
             "border-line",
             "focus-within:border-teal/50 focus-within:ring-2 focus-within:ring-teal/20",
           )}
@@ -619,36 +618,8 @@ export function Composer() {
               <span className="font-bold text-teal">/</span>
             </button>
 
-            {/* 「@ 引用」 */}
-            <button
-              type="button"
-              onClick={() => {
-                setDraft(`${draft}@`);
-                taRef.current?.focus();
-              }}
-              aria-label="引用文件"
-              title="@ 引用工作单元里的文件 / 会话 / 技能"
-              className="shrink-0 rounded-btn p-1.5 text-graphite hover:bg-line-soft hover:text-ink transition"
-            >
-              <AtSign size={14} />
-            </button>
-
             {/* 「记忆注入选择胶囊」 */}
             <MemoryScopePicker />
-
-            {/* 「切到终端 TUI」 */}
-            <button
-              type="button"
-              onClick={() => useShell.getState().setConversationView("terminal")}
-              aria-label="切到终端 TUI"
-              title="切换到终端 TUI 视图（原生 CLI 交互）"
-              className={cn(
-                "shrink-0 rounded-btn p-1.5 transition",
-                conversationView === "terminal" ? "bg-teal-tint text-teal" : "text-graphite hover:bg-line-soft hover:text-ink",
-              )}
-            >
-              <SquareTerminal size={14} />
-            </button>
 
             <div className="ml-auto flex flex-wrap items-center gap-1.5">
               <RuntimePicker />

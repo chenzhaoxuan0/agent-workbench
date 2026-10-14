@@ -6,6 +6,7 @@ import type { RuntimeEntry } from "../core/registry.ts";
 import { useShell } from "../store/useShell.ts";
 import { selectVisibleModels, useWorkbench, visibleModelsFor } from "../store/useWorkbench.ts";
 import { cn } from "./cn.ts";
+import { RuntimeIcon } from "./RuntimeIcon.tsx";
 
 /**
  * 执行器 + 模型选择器 —— 形态对齐 T3code 的 ProviderModelPicker：
@@ -99,6 +100,13 @@ export function RuntimePanel({ onDone }: { onDone?: () => void }) {
         : [...p.favoriteModels, row.spec.id],
     })]);
 
+  // 面板高度跟随执行器数量：rail 每行恒定 36px + 4px 间距（★ 行 + 分隔线 + 上下 padding ≈ 66px 常量）。
+  // 执行器变多时整体长高，而不是把 rail 行挤扁；超过视口可用高度（留出 header/composer）后封顶，
+  // 此时 rail 内部滚动兜底。下限保持原 346px，执行器少时观感不变。
+  const railNatural = 40 * enabledRuntimes.length + 66;
+  const maxPanelH = typeof window === "undefined" ? 640 : window.innerHeight - 240;
+  const panelH = Math.max(346, Math.min(railNatural, maxPanelH));
+
   return (
     <div
       role="dialog"
@@ -116,14 +124,15 @@ export function RuntimePanel({ onDone }: { onDone?: () => void }) {
           if (row) pick(row);
         }
       }}
-      className="flex h-[346px] w-full overflow-hidden rounded-card border border-line bg-canvas"
+      style={{ height: panelH }}
+      className="flex w-full overflow-hidden rounded-card border border-line bg-canvas"
     >
-      {/* 左 rail：★ 收藏视图 + 执行器图标（T3 的 ModelPickerSidebar） */}
-      <div className="flex w-11 shrink-0 flex-col items-center gap-1 border-r border-line-soft bg-rail py-2">
+      {/* 左 rail：★ 收藏视图 + 执行器图标（T3 的 ModelPickerSidebar）；行高恒定，超高时内部滚动 */}
+      <div className="flex w-11 shrink-0 flex-col items-center gap-1 overflow-y-auto border-r border-line-soft bg-rail py-2">
         <RailButton selected={rail === "favorites"} title="收藏的模型" onClick={() => setRail("favorites")}>
           <Star size={16} className={cn(rail === "favorites" && "fill-current")} />
         </RailButton>
-        <span className="my-0.5 h-px w-6 bg-line" aria-hidden />
+        <span className="my-0.5 h-px w-6 shrink-0 bg-line" aria-hidden />
         {enabledRuntimes.map((r) => (
           <RailButton
             key={r.id}
@@ -132,13 +141,7 @@ export function RuntimePanel({ onDone }: { onDone?: () => void }) {
             title={`${r.presentation.displayName}${r.testOnly ? " · 测试夹具（假执行器）" : ""} · 可选 ${visibleModelsFor(useWorkbench.getState(), r.id).length} 个模型`}
             onClick={() => setRail(r.id)}
           >
-            <span
-              className="flex h-5 w-5 items-center justify-center rounded text-caption font-medium text-white"
-              style={{ background: r.presentation.accent }}
-              aria-hidden
-            >
-              {r.presentation.glyph}
-            </span>
+            <RuntimeIcon runtime={r} size={20} />
           </RailButton>
         ))}
       </div>
@@ -243,15 +246,7 @@ export function RuntimePicker() {
           open ? "bg-line-soft text-ink" : "text-graphite hover:bg-line-soft hover:text-ink",
         )}
       >
-        {active && (
-          <span
-            className="flex h-4 w-4 shrink-0 items-center justify-center rounded text-caption leading-none font-medium text-white"
-            style={{ background: active.presentation.accent }}
-            aria-hidden
-          >
-            {active.presentation.glyph}
-          </span>
-        )}
+        {active && <RuntimeIcon runtime={active} size={16} className="rounded-[3px]" />}
         <span className="max-w-[84px] truncate">{active?.presentation.displayName ?? "执行器"}</span>
         {activeModel && (
           <>
@@ -290,7 +285,7 @@ function RailButton({
       title={title}
       aria-pressed={selected}
       className={cn(
-        "relative flex h-9 w-9 items-center justify-center rounded-btn",
+        "relative flex h-9 w-9 shrink-0 items-center justify-center rounded-btn",
         selected ? "bg-line-soft" : "hover:bg-line-soft",
         dimmed && "opacity-50",
       )}
@@ -367,13 +362,7 @@ function ModelRow({
         <span className="mt-0.5 flex items-center gap-1.5">
           {showRuntime && (
             <>
-              <span
-                className="flex h-3 w-3 shrink-0 items-center justify-center rounded-[3px] text-[8px] font-medium text-white"
-                style={{ background: row.runtime.presentation.accent }}
-                aria-hidden
-              >
-                {row.runtime.presentation.glyph}
-              </span>
+              <RuntimeIcon runtime={row.runtime} size={12} className="rounded-[3px]" />
               <span className="truncate text-caption text-ash">{row.runtime.presentation.displayName}</span>
               <span className="text-ash">·</span>
             </>

@@ -20,6 +20,7 @@ import {
 import type { RuntimeEvent } from "../core/events.ts";
 import { SESSION_SOURCE_LABEL } from "../core/units.ts";
 import { useWorkbench, selectActiveUnit } from "../store/useWorkbench.ts";
+import { useAppearance } from "../store/useAppearance.ts";
 import { botAvatarStyle } from "./Sidebar.tsx";
 import { MarkdownContent } from "./MarkdownContent.tsx";
 import { cn } from "./cn.ts";
@@ -627,48 +628,37 @@ const DECISION_LABEL: Record<string, string> = {
 
 /* ------------------------------------------------------------- 空态 */
 
-const SUGGESTIONS: readonly { title: string; desc: string; prompt: string }[] = [
-  {
-    title: "今日选题",
-    desc: "读语料风格，产出 5 个可写选题",
-    prompt: "读一下已沉淀的语料风格，产出今天可写的 5 个选题",
-  },
-  {
-    title: "扫描项目",
-    desc: "巡检目录结构与 TODO，列出改进项",
-    prompt: "巡检当前项目的目录结构与 TODO，列出可执行的改进项",
-  },
-  {
-    title: "写日报",
-    desc: "汇总今日产出，生成一段日报",
-    prompt: "汇总今天所有产出，生成一段可直接发的日报",
-  },
-  {
-    title: "复盘会话",
-    desc: "从轨迹里找出可改进的环节",
-    prompt: "复盘最近的会话轨迹，找出最值得改进的环节",
-  },
-];
-
 function EmptyState() {
-  const setDraft = useWorkbench((s) => s.setDraft);
   const unit = useWorkbench(selectActiveUnit);
+  const avatarFrame = useAppearance((s) => s.avatarFrame);
 
   const hour = new Date().getHours();
   const greeting =
     hour < 5 ? "夜深了" : hour < 9 ? "早上好" : hour < 12 ? "上午好" : hour < 14 ? "中午好" : hour < 18 ? "下午好" : "晚上好";
 
-  const avatar = unit ? botAvatarStyle(unit.name) : null;
+  const avatar = unit ? botAvatarStyle(unit.name, avatarFrame) : null;
 
   return (
     <div className="flex flex-col items-center">
       {unit && (
-        <div
-          className={cn("mb-3 flex h-14 w-14 items-center justify-center text-body-lg font-medium text-canvas shadow-subtle", avatar?.shape)}
-          style={{ backgroundColor: avatar?.color }}
-        >
-          {unit.id === "steward" ? "👑" : unit.name.slice(0, 1)}
-        </div>
+        /* 头像与 bot 设置里同一份：自定义头像优先，缺省回落设置页同款「浅底 + 首字」，
+           外框形态跟随外观设置的「bot 头像框形态」 */
+        unit.avatar ? (
+          <img
+            src={unit.avatar}
+            alt=""
+            className={cn("mb-3 h-14 w-14 object-cover shadow-subtle", avatar?.shape)}
+          />
+        ) : (
+          <div
+            className={cn(
+              "mb-3 flex h-14 w-14 items-center justify-center bg-line-soft text-body-lg font-medium text-graphite shadow-subtle",
+              avatar?.shape,
+            )}
+          >
+            {unit.name.slice(0, 1)}
+          </div>
+        )
       )}
       <p className="text-caption text-ash">{greeting}</p>
       <p className="mt-1 text-body-lg font-medium text-ink">
@@ -681,19 +671,6 @@ function EmptyState() {
             ? `已装载岗位：${unit.identity.role} · 读 AGENTS.md`
             : "从对话或快捷任务开始"}
       </p>
-
-      <div className="mt-8 grid w-full grid-cols-1 sm:grid-cols-2 gap-3 max-w-[640px]">
-        {SUGGESTIONS.map((s) => (
-          <button
-            key={s.title}
-            onClick={() => setDraft(s.prompt)}
-            className="rounded-card border border-line/60 bg-card px-4 py-3 text-left shadow-subtle hover:border-teal-edge hover:bg-surface-hover transition"
-          >
-            <p className="text-body-sm font-medium text-ink">{s.title}</p>
-            <p className="mt-0.5 text-body-sm text-graphite">{s.desc}</p>
-          </button>
-        ))}
-      </div>
     </div>
   );
 }

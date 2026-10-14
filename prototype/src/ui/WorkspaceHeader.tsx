@@ -54,9 +54,9 @@ export function WorkspaceHeader() {
         <span className="text-body-sm text-ash">未选择 Agent</span>
       )}
 
-      {/* ---- 中区：会话形态切换（结构化对话 | 终端 TUI）----
+      {/* ---- 会话形态切换（结构化对话 | 终端 TUI）：紧跟身份卡左对齐 ----
           docs/13 决策：新会话默认结构化聊天；终端画布保留为并行形态 */}
-      <div className="mx-auto hidden md:flex items-center rounded-btn bg-line-soft/80 p-0.5 border border-line/40">
+      <div className="hidden md:flex items-center rounded-btn bg-line-soft/80 p-0.5 border border-line/40">
         <button
           onClick={() => setConversationView("chat")}
           title="结构化对话：归一化事件流渲染的消息时间线，支持工具卡片、审批与用量（所有执行器统一形态）"
