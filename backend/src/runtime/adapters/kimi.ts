@@ -40,6 +40,140 @@
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
+
+// ---- kimi web 传输（docs/13 Phase 4 Tier 3：本地 HTTP server + WS 事件流）--------
+//
+// 协议事实（kimi 2.1.1 本机实测 + docs/en/reference/server-api.md）：
+// - 启动：`kimi web`，stdout 打 "Local: http://127.0.0.1:<port>/#token=<token>"
+//   （端口顺延；token 每次启动随机）；实例注册 ~/.kimi-code/server/instances/
+// - REST：POST /api/v1/sessions {title, metadata:{cwd}}（cwd 必填）→ {data:{id}}
+//   POST /api/v1/sessions/{id}/prompts {content:[{type:"text",text}]} → accepted
+//   GET /api/v1/sessions/{id}/messages?page_size=N（翻历史）
+// - WS：ws://host/api/v1/ws，子协议 `kimi-code.bearer.<token>` 认证；
+//   {type:"subscribe", payload:{session_ids:[…]}} 订阅后推
+//   turn.started → assistant.delta → tool.call.started/tool.result → turn.ended
+// - 双传输：web 拉不起来/请求失败回落既有 ACP 路径（kimi acp）
+
+class KimiWebServer {
+  private child: ChildProcess | null = null;
+  private base: string | null = null;
+  private token: string | null = null;
+  private ws: WebSocket | null = null;
+  private starting: Promise<boolean> | null = null;
+  eventHandler: ((msg: Record<string, unknown>) => void) | null = null;
+
+  async ready(): Promise<boolean> {
+    if (this.base !== null && this.child !== null && this.child.exitCode === null) return true;
+    this.starting ??= this.spawn().finally(() => {
+      this.starting = null;
+    });
+    return this.starting;
+  }
+
+  private async spawn(): Promise<boolean> {
+    try {
+      const cmd = await resolveCommand("kimi");
+      const child = spawn(cmd.file, [...cmd.prefixArgs, "web"], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+      this.child = child;
+      const info = await new Promise<{ base: string; token: string }>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("kimi web 30s 未就绪")), 30_000);
+        createInterface({ input: child.stdout }).on("line", (line) => {
+          const m = line.match(/Local:\s+(http:\/\/[\d.:]+)\/#token=(\S+)/);
+          if (m !== null) {
+            clearTimeout(timer);
+            resolve({ base: m[1]!, token: m[2]! });
+          }
+        });
+        child.once("exit", (code) => {
+          clearTimeout(timer);
+          reject(new Error(`kimi web 退出（code ${code}）`));
+        });
+      });
+      this.base = info.base;
+      this.token = info.token;
+      child.once("exit", () => {
+        this.base = null;
+        this.child = null;
+        this.ws = null;
+      });
+      return true;
+    } catch (err: unknown) {
+      log.debug("kimi web 拉起失败（回落 ACP）", { error: err instanceof Error ? err.message : String(err) });
+      return false;
+    }
+  }
+
+  async rest(path: string, method: "GET" | "POST", body?: unknown, timeoutMs = 20000): Promise<{ code: number; json: unknown }> {
+    const base = this.base;
+    if (base === null || this.token === null) return { code: -1, json: { msg: "kimi web not ready" } };
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const res = await fetch(base + path, {
+        method,
+        headers: { authorization: `Bearer ${this.token}`, "content-type": "application/json" },
+        ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+        signal: ctrl.signal,
+      });
+      const text = await res.text();
+      let json: unknown = undefined;
+      try {
+        json = text === "" ? undefined : JSON.parse(text);
+      } catch {
+        json = undefined;
+      }
+      return { code: res.status, json };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /** WS 订阅某会话（子协议认证；事件进 eventHandler） */
+  async subscribe(sessionId: string): Promise<void> {
+    const base = this.base;
+    const token = this.token;
+    if (base === null || token === null) return;
+    if (this.ws !== null && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ type: "subscribe", payload: { session_ids: [sessionId] } }));
+      return;
+    }
+    const ws = new WebSocket(base.replace(/^http/, "ws") + "/api/v1/ws", [`kimi-code.bearer.${token}`]);
+    this.ws = ws;
+    ws.onmessage = (ev: MessageEvent) => {
+      try {
+        const msg = JSON.parse(String(ev.data)) as Record<string, unknown>;
+        if (msg["type"] === "subscribe" || msg["type"] === "hello") return;
+        this.eventHandler?.(msg);
+      } catch {
+        /* 非 JSON 帧忽略 */
+      }
+    };
+    ws.onclose = () => {
+      this.ws = null;
+    };
+    await new Promise<void>((resolve) => {
+      ws.onopen = () => {
+        ws.send(JSON.stringify({ type: "subscribe", payload: { session_ids: [sessionId] } }));
+        resolve();
+      };
+      setTimeout(resolve, 3000); // 订阅失败不阻塞轮：REST 兜底
+    });
+  }
+
+  async kill(): Promise<void> {
+    const child = this.child;
+    this.child = null;
+    this.base = null;
+    try {
+      this.ws?.close();
+    } catch {
+      /* ignore */
+    }
+    this.ws = null;
+    child?.kill();
+  }
+}
+
 import {
   adapterError,
   type AdapterSession,
@@ -142,6 +276,11 @@ interface KimiSession {
   /** toolCallId → 标题（权限请求的 detail 兜底） */
   readonly toolTitles: Map<string, string>;
   turn: TurnAcc | null;
+  /** web 传输的轮内状态（webText 增量 / webSeen 消息幂等 / webDone 轮末） */
+  webText: string;
+  webMessageId: string | null;
+  webDone: boolean;
+  readonly webSeen: Set<string>;
 }
 
 // kimi 的模型清单随 session/new 下发（configOptions/availableModels）。登录态过期
@@ -250,6 +389,10 @@ export class KimiAdapter implements ExecutorAdapter {
       permissionPending: new Map(),
       toolTitles: new Map(),
       turn: null,
+      webText: "",
+      webMessageId: null,
+      webDone: false,
+      webSeen: new Set<string>(),
     };
     this.sessions.set(sessionId, state);
     return state;
@@ -259,6 +402,18 @@ export class KimiAdapter implements ExecutorAdapter {
     return {
       id: state.sessionId,
       send: async (text: string) => {
+        // kimi web 传输优先（docs/13 Tier 3）；失败回落 ACP
+        if (await this.web.ready()) {
+          try {
+            await this.webTurn(state, text);
+            return;
+          } catch (err: unknown) {
+            log.info("kimi web 传输失败（回落 ACP）", {
+              sessionId: state.sessionId,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+        }
         await this.runTurn(state, text);
       },
       cancel: async () => {
@@ -292,6 +447,133 @@ export class KimiAdapter implements ExecutorAdapter {
       st.child = null;
     }
     this.sessions.clear();
+    await this.web.kill();
+  }
+
+  // ---- kimi web 传输 -------------------------------------------------------------
+
+  private readonly web = new KimiWebServer();
+
+  /** web 传输发一轮：建会话（懒）→ WS 订阅 → 提交 prompt → 事件翻译到轮末 */
+  private async webTurn(state: KimiSession, prompt: string): Promise<void> {
+    const sink = state.sink;
+    const sessionId = state.sessionId;
+    sink?.({ type: "session.status", sessionId, status: "running" });
+
+    // 会话：懒建（ref 为空时）；kimi web 与 ACP 同一 session_ 命名空间，ref 互通
+    if (state.ref === null) {
+      const r = await this.web.rest("/api/v1/sessions", "POST", { title: "agent-workbench", metadata: { cwd: state.rootPath } });
+      const id = (r.json as { data?: { id?: string } } | undefined)?.data?.id;
+      if (id === undefined) throw new Error(`kimi web 建会话失败（HTTP ${r.code}）`);
+      state.ref = id;
+    }
+    this.web.eventHandler = (msg) => this.onWebEvent(state, msg);
+    await this.web.subscribe(state.ref);
+
+    // 轮内状态
+    state.webText = "";
+    state.webMessageId = null;
+
+    const r = await this.web.rest(`/api/v1/sessions/${state.ref}/prompts`, "POST", {
+      content: [{ type: "text", text: prompt }],
+    });
+    const status = (r.json as { data?: { status?: string } } | undefined)?.data?.status;
+    if (status === undefined) throw new Error(`kimi web prompt 提交失败（HTTP ${r.code}）${JSON.stringify(r.json ?? "").slice(0, 120)}`);
+
+    // 等轮末：WS 事件置 webDone；15s 无 WS 就用 REST 轮询兜底（busy + 消息差量）
+    const deadline = Date.now() + 300_000;
+    let lastBusy: boolean | null = null;
+    while (Date.now() < deadline) {
+      if (state.webDone) break;
+      await new Promise((res) => setTimeout(res, 1500));
+      if (state.webDone) break;
+      const s = await this.web.rest(`/api/v1/sessions/${state.ref}`, "GET");
+      const busy = (s.json as { data?: { busy?: boolean } } | undefined)?.data?.busy;
+      if (busy === false && lastBusy === true) break;
+      if (busy === false && lastBusy === null) {
+        // 从未 busy：可能瞬完，翻一次消息确认
+        await this.pollWebMessages(state);
+        break;
+      }
+      lastBusy = busy ?? lastBusy;
+      await this.pollWebMessages(state);
+    }
+    // 收口：再翻一次消息（WS 没接上/丢事件时兜底）+ idle
+    await this.pollWebMessages(state);
+    state.webDone = false;
+    sink?.({ type: "session.status", sessionId, status: "idle" });
+  }
+
+  /** REST 翻消息：把新增 assistant 消息翻成 message.delta/completed（幂等：按 seen id 跳过） */
+  private async pollWebMessages(state: KimiSession): Promise<void> {
+    const sink = state.sink;
+    if (sink === null || state.ref === null) return;
+    const r = await this.web.rest(`/api/v1/sessions/${state.ref}/messages?page_size=30`, "GET");
+    const items = (r.json as { data?: { items?: Array<Record<string, unknown>> } } | undefined)?.data?.items ?? [];
+    for (const m of items) {
+      const id = typeof m["id"] === "string" ? m["id"] : null;
+      if (id === null) continue;
+      if (state.webSeen.has(id)) continue;
+      state.webSeen.add(id);
+      if (m["role"] !== "assistant") continue;
+      const text = (Array.isArray(m["content"]) ? (m["content"] as Array<{ type?: string; text?: string }>).map((c) => c.text ?? "").join("") : String(m["content"] ?? "")).trim();
+      if (text === "") continue;
+      const messageId = id;
+      sink({ type: "message.delta", sessionId: state.sessionId, messageId, role: "assistant", text });
+      sink({ type: "message.completed", sessionId: state.sessionId, messageId, text });
+    }
+  }
+
+  /** kimi web WS 事件（turn.started / assistant.delta / tool 类 / turn.ended）→ RuntimeEvent */
+  private onWebEvent(state: KimiSession, msg: Record<string, unknown>): void {
+    const sink = state.sink;
+    if (sink === null) return;
+    const type = String(msg["type"] ?? "");
+    const sid = typeof msg["session_id"] === "string" ? msg["session_id"] : (msg["payload"] as Record<string, unknown> | undefined)?.["session_id"];
+    if (typeof sid === "string" && state.ref !== null && sid !== state.ref) return;
+    switch (type) {
+      case "assistant.delta": {
+        const text = String(msg["text"] ?? msg["delta"] ?? (msg["payload"] as Record<string, unknown> | undefined)?.["text"] ?? "");
+        if (text !== "") {
+          const messageId = state.webMessageId ?? `msg_${Date.now()}`;
+          state.webMessageId = messageId;
+          state.webText += text;
+          sink({ type: "message.delta", sessionId: state.sessionId, messageId, role: "assistant", text });
+        }
+        break;
+      }
+      case "tool.call.started": {
+        const p = (msg["payload"] ?? msg) as Record<string, unknown>;
+        sink({
+          type: "tool.started",
+          sessionId: state.sessionId,
+          callId: String(p["id"] ?? p["call_id"] ?? `call_${Date.now()}`),
+          toolName: String(p["name"] ?? p["tool"] ?? "tool"),
+          title: String(p["title"] ?? p["name"] ?? ""),
+          input: {},
+        });
+        break;
+      }
+      case "tool.result": {
+        const p = (msg["payload"] ?? msg) as Record<string, unknown>;
+        sink({
+          type: "tool.completed",
+          sessionId: state.sessionId,
+          callId: String(p["id"] ?? p["call_id"] ?? `call_${Date.now()}`),
+          ok: p["error"] === undefined || p["error"] === null,
+          output: String(p["output"] ?? p["text"] ?? "").slice(0, 4000),
+        });
+        break;
+      }
+      case "turn.ended": {
+        state.webDone = true;
+        // delta 已流过：completed 由 pollWebMessages 兜底（消息 id 才是权威）
+        break;
+      }
+      case "turn.started":
+      default:
+        break;
+    }
   }
 
   // ---- 进程与协议通道 ---------------------------------------------------------
