@@ -127,8 +127,9 @@ export function RuntimePanel({ onDone }: { onDone?: () => void }) {
       style={{ height: panelH }}
       className="flex w-full overflow-hidden rounded-card border border-line bg-canvas"
     >
-      {/* 左 rail：★ 收藏视图 + 执行器图标（T3 的 ModelPickerSidebar）；行高恒定，超高时内部滚动 */}
-      <div className="flex w-11 shrink-0 flex-col items-center gap-1 overflow-y-auto border-r border-line-soft bg-rail py-2">
+      {/* 左 rail：★ 收藏视图 + 执行器图标（T3 的 ModelPickerSidebar）；行高恒定，超高时内部滚动。
+          宽 48px = 36px 按钮 + 8px 竖向滚动条刚好放满，横向绝不出现滚动条 */}
+      <div className="flex w-12 shrink-0 flex-col items-center gap-1 overflow-y-auto overflow-x-hidden border-r border-line-soft bg-rail py-2">
         <RailButton selected={rail === "favorites"} title="收藏的模型" onClick={() => setRail("favorites")}>
           <Star size={16} className={cn(rail === "favorites" && "fill-current")} />
         </RailButton>
