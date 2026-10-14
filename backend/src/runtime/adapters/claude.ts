@@ -18,7 +18,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { query, type Options, type Query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { Options, Query, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import {
   type AdapterSession,
   type AdapterSink,
@@ -287,6 +287,7 @@ export class ClaudeAdapter implements ExecutorAdapter {
     };
 
     try {
+      const { query } = await import("@anthropic-ai/claude-agent-sdk");
       const q = query({ prompt: input, options });
       state.q = q;
       for await (const raw of q) {

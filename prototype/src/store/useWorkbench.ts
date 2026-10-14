@@ -897,13 +897,39 @@ export const selectUnitAutomations = (s: WorkbenchState): readonly Automation[] 
 
 // 注册执行器 bootstrap —— 必须在 store 创建之后（要校正 activeRuntimeId）：
 // 优先本地 daemon（真实执行），不可达时回退 mock（纯 UI 原型，daemon 没起是正常态）。
+//
+// ⚠ 必须重试（3s 间隔 × 40 次 ≈ 2 分钟）：`pnpm dev` 下 vite 0.5s 就绪而 daemon
+// 要 8–15s 才监听，页面先开就撞上竞态；单次尝试失败会让执行器列表永远空着
+// （「没有已注册的执行器」），用户只能手动刷新。重试让竞态自愈。
 void (async () => {
+  const { listDaemonExecutors } = await import("../adapters/daemon/client.ts");
+  const { createDaemonFactory } = await import("../adapters/daemon/adapter.ts");
+  const { defaultDaemonEndpoint } = await import("../adapters/daemon/client.ts");
+
+  const MAX_ATTEMPTS = 40;
+  let infos: Awaited<ReturnType<typeof listDaemonExecutors>> | null = null;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      const list = await listDaemonExecutors(defaultDaemonEndpoint());
+      if (list.length > 0) {
+        infos = list;
+        break;
+      }
+      // daemon 已监听但清单为空：注册在 listen 前同步完成，理论不可达——按失败重试
+      throw new Error("daemon 无可用执行器");
+    } catch (err: unknown) {
+      if (attempt === 1) {
+        console.info("[workbench] daemon 未就绪，3s 后重试（pnpm dev 下 daemon 比 vite 慢是常态）", err instanceof Error ? err.message : err);
+      }
+      if (attempt === MAX_ATTEMPTS) {
+        console.info("[workbench] 本地 daemon 不可达 —— 无执行器可用（启动 backend/ 的 daemon 即接入真实执行）", err instanceof Error ? err.message : err);
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+  }
+  if (infos === null) return;
   try {
-    const { listDaemonExecutors } = await import("../adapters/daemon/client.ts");
-    const { createDaemonFactory } = await import("../adapters/daemon/adapter.ts");
-    const { defaultDaemonEndpoint } = await import("../adapters/daemon/client.ts");
-    const infos = await listDaemonExecutors(defaultDaemonEndpoint());
-    if (infos.length === 0) throw new Error("daemon 无可用执行器");
     const factories = infos.map((info) => createDaemonFactory(info, defaultDaemonEndpoint()));
     runtimeRegistry.registerAll(factories);
     runtimeRegistry.setState(factories[0]!.id, { status: "stopped" });
@@ -959,10 +985,7 @@ void (async () => {
     // 自动化（Phase 5 v2）：daemon 可达时拉全量列表，页面打开即有数据
     void useWorkbench.getState().refreshAutomations();
   } catch (err: unknown) {
-    console.info(
-      "[workbench] 本地 daemon 不可达 —— 无执行器可用（启动 backend/ 的 daemon 即接入真实执行）",
-      err instanceof Error ? err.message : err,
-    );
-    // 评审后清 mock（用户指示）：daemon 不可达就空着，不再注册六家 mock 执行器充数
+    // 走到这里说明连接已成功但注册/后续装配失败——与「daemon 不可达」不同源
+    console.error("[workbench] 执行器注册失败（daemon 连接是好的，查 registerAll 装配链）", err instanceof Error ? err.message : err);
   }
 })();
