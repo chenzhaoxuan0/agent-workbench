@@ -38,28 +38,13 @@ import type {
 } from "../../contract.ts";
 import { isShellTool } from "../../contract.ts";
 import { execLines, resolveCommand, spawnLines, type ResolvedCommand } from "../exec.ts";
+import { ZCODE_METHODS, type ZcodeFrameLoose, type ZcodeSessionEventEnvelope } from "./zcode-protocol.ts";
 import { log } from "../../log.ts";
 
 const RPC_TIMEOUT_MS = 180_000;
 /** 本机（bigmodel 个人套餐）的 registry providerId；写错会被 create 拒绝并回落默认模型 */
 const CODING_PLAN_PROVIDER_ID = "account:bigmodel-individual-coding-plan";
 
-// ---- 宽松协议类型 ----------------------------------------------------------
-
-interface ProtoMessage {
-  id?: string | number;
-  method?: string;
-  params?: unknown;
-  result?: unknown;
-  error?: { code?: number; message?: string };
-}
-
-interface ProtoEvent {
-  sessionId?: string;
-  seq?: number;
-  type?: string;
-  payload?: Record<string, unknown>;
-}
 
 // ---- 翻译辅助 --------------------------------------------------------------
 
@@ -151,9 +136,9 @@ export class ZcodeAppServerTransport {
 
   private handleLine(line: string): void {
     if (line.trim() === "") return;
-    let msg: ProtoMessage;
+    let msg: ZcodeFrameLoose;
     try {
-      msg = JSON.parse(line) as ProtoMessage;
+      msg = JSON.parse(line) as ZcodeFrameLoose;
     } catch {
       log.warn("zcode app-server sent non-JSON line", { line: line.slice(0, 120) });
       return;
@@ -176,7 +161,7 @@ export class ZcodeAppServerTransport {
 
     // 通知：事件流
     if (msg.method === "session/event") {
-      void this.dispatchProtocolEvent((msg.params ?? {}) as ProtoEvent);
+      void this.dispatchProtocolEvent((msg.params ?? {}) as ZcodeSessionEventEnvelope);
       return;
     }
 
@@ -226,7 +211,7 @@ export class ZcodeAppServerTransport {
     st.sink?.({ type: "session.ended", sessionId: st.sessionId, reason });
   }
 
-  private async dispatchProtocolEvent(p: ProtoEvent): Promise<void> {
+  private async dispatchProtocolEvent(p: ZcodeSessionEventEnvelope): Promise<void> {
     const sessionId = str(p.sessionId);
     if (sessionId === undefined) return;
     const st = this.sessions.get(sessionId);
@@ -441,7 +426,7 @@ export class ZcodeAppServerTransport {
 
     let created: Record<string, unknown>;
     try {
-      created = await this.rpc<Record<string, unknown>>("session/create", createParams);
+      created = await this.rpc<Record<string, unknown>>(ZCODE_METHODS.sessionCreate, createParams);
     } catch (err: unknown) {
       if (req.model === null) throw err;
       log.warn("session/create with model failed, using executor default", {
@@ -449,7 +434,7 @@ export class ZcodeAppServerTransport {
         error: err instanceof Error ? err.message : String(err),
       });
       delete createParams["model"];
-      created = await this.rpc<Record<string, unknown>>("session/create", createParams);
+      created = await this.rpc<Record<string, unknown>>(ZCODE_METHODS.sessionCreate, createParams);
     }
 
     const session = created["session"] as Record<string, unknown> | undefined;
@@ -481,11 +466,11 @@ export class ZcodeAppServerTransport {
     this.sessions.set(state.sessionId, state);
     const bootstrap = async (): Promise<void> => {
       await this.ensureConnected();
-      await this.rpc("session/resume", {
+      await this.rpc(ZCODE_METHODS.sessionResume, {
         sessionId: state.sessionId,
         workspace: { workspacePath: state.rootPath, workspaceKey: state.rootPath },
       });
-      await this.rpc("session/subscribe", { sessionId: state.sessionId, deliveryKind: "desktop-continuous" });
+      await this.rpc(ZCODE_METHODS.sessionSubscribe, { sessionId: state.sessionId, deliveryKind: "desktop-continuous" });
     };
     state.ready = bootstrap().catch((err: unknown) => {
       log.warn("zcode session resume failed", {
@@ -499,7 +484,7 @@ export class ZcodeAppServerTransport {
   private makeAppServerSession(st: AppServerSessionState): AdapterSession {
     // 先订阅再发 prompt，事件一条不漏
     const ensureSubscribed = async (): Promise<void> => {
-      await this.rpc("session/subscribe", { sessionId: st.sessionId, deliveryKind: "desktop-continuous" });
+      await this.rpc(ZCODE_METHODS.sessionSubscribe, { sessionId: st.sessionId, deliveryKind: "desktop-continuous" });
     };
 
     return {
