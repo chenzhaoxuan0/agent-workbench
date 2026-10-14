@@ -1,47 +1,38 @@
 /**
- * OpenCode 执行器适配器 —— ACP 形态：`opencode acp` 常驻子进程，
- * JSON-RPC（newline-delimited）over stdio，与 mcode.ts / dsh.ts 同构。
+ * OpenCode 执行器适配器 —— **`opencode serve` 形态**（HTTP REST + SSE，
+ * docs/13 Phase 4 Tier 1 升级；2026-10 曾从 serve 迁 ACP，本次按计划反向升级）。
  *
- * 为什么从 HTTP server 形态（opencode serve + REST/SSE）换成 ACP：上一版按 t3code
- * 的 OpenCodeServerOwner 走 HTTP，是 opencode 的一等公民接口，但代价是自管 SSE
- * 重连、轮完成靠 session.idle 事件 + 30min 兜底定时器这类启发式。产品决定不需要
- * 单 serve 多会话复用（切执行器就开新会话），fileDiff 能力也用不上 —— 那就统一到
- * 仓库已有的 ACP 形态：轮末是协议级（session/prompt 阻塞返回 stopReason），
- * 进程生死即连接生死，与 dsh/mcode 一套心智。
+ * 当年迁走的两个代价这次都有解：
+ * - 阻塞轮完成 → `POST /session/{id}/prompt_async`（204 立即受理），
+ *   轮生命周期走 SSE 的 session.status busy/idle；
+ * - 自管 SSE 重连 → 保留（SSE 断开自动重连 + 按 sessionID 续运），
+ *   但多项目实例靠 `x-opencode-directory` header 隔离，不靠端口。
  *
- * 协议事实（opencode 1.18.34 实测 + packages/opencode/src/acp 源码走查）：
- * - initialize → {protocolVersion:1, agentCapabilities:{loadSession:true,
- *   sessionCapabilities:{close,fork,list,resume}, promptCapabilities:{image:true}},
- *   authMethods:[opencode-login]}
- * - session/new {cwd, mcpServers} → {sessionId:"ses_…", configOptions:[
- *   {id:"model", type:"select", value 是 "providerID/modelID" 纯字符串},
- *   {id:"mode", options:[build, plan]}]} —— 完整模型清单随会话下发，
- *   本机默认（currentValue）实测为 opencode/big-pickle
- * - 模型/模式选择走 session/set_config_option —— 注意是 snake_case：
- *   camelCase 的 session/setConfigOption 实测 method not found（dsh 相反，勿串）
- * - session/prompt → session/update 通知 + 阻塞到轮末 {stopReason}
- *   - agent_message_chunk / agent_thought_chunk（content:{type:"text"}）
- *   - tool_call{toolCallId,title,kind:execute/edit/search/read/think/other,rawInput}
- *   - tool_call_update{status:"completed"|"failed",content:[…]}
- *   - usage_update{used, size, cost:{amount,currency}} —— used 是上下文累计 token
- *     （input+cache 读写），cost.amount 是会话累计成本；按轮差值出 usage
- *   - available_commands_update / config_option_update / user_message_chunk 等不翻译
- * - 权限三档全（源码 permission.ts）：options = [{optionId:"once",kind:"allow_once"},
- *   {optionId:"always",kind:"allow_always"},{optionId:"reject",kind:"reject_once"}]
- *   —— daemon 的 allow/always/deny 恰好一一对应，无需降级
- * - reattach：session/resume {sessionId, cwd, mcpServers}（会话按项目落盘全局可寻址），
- *   失效回落新会话；恢复的历史更新会以 session/update 重放（轮外 chunk 丢弃，
- *   tool_call 保留 —— 时间线上可见历史，与 dsh/mcode 同款行为）
- * - fileDiff 如实报 false：ACP 事件翻译无 diff 流；edit 工具 rawInput 里的
- *   oldText/newText 是模型输入对，不是落盘结果（HTTP 形态的 GET /session/:id/diff
- *   才是权威 patch —— 那是旧形态唯一的能力优势，产品已确认用不上）
+ * 升级收益：162-path OpenAPI 全量面（diff/权限/question/fork/revert）、
+ * GET /session 历史直读（Phase 1 协议型来源）、token 级流式 delta。
+ *
+ * 协议事实（opencode 1.18.35 本机实测，2026-10-14）：
+ * - 启动：`opencode serve --hostname 127.0.0.1 --port <N>`，stdout 打
+ *   "opencode server listening on http://…" 即就绪；OPENCODE_SERVER_PASSWORD
+ *   未设时明文可用（本机回环，风险可受）
+ * - 会话：`POST /session`（body {title?}；目录用 header x-opencode-directory，
+ *   body 里的 directory 字段会 500）→ {id:"ses_…"}
+ * - 发轮：`POST /session/{id}/prompt_async` body
+ *   {parts:[{type:"text",text}], model?{providerID,modelID}} → 204
+ * - 取消：`POST /session/{id}/abort`
+ * - 权限：`POST /permission/{requestID}/reply` body {reply:"once"|"always"|"reject"}
+ * - SSE：`GET /event`（同 directory header）。事件 properties.sessionID 归属：
+ *   message.part.delta {messageID,partID,field:"text",delta}——真 token 流；
+ *   message.part.updated {part:{type:text|reasoning|tool,…,messageID}}；
+ *   message.updated {info:{id,role}}；session.status {status:{type:busy|idle}}；
+ *   session.idle（轮落定）；session.diff {diff:[…]}；permission.*（审批）
+ * - 模型：`GET /model`（同 header）→ [{id,providerID,name,limit,cost,capabilities}]
  */
 
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
 import {
-  adapterError,
   type AdapterSession,
   type AdapterSink,
   type ExecutorAdapter,
@@ -58,87 +49,85 @@ import type {
 import { execLines, resolveCommand } from "../exec.ts";
 import { log } from "../../log.ts";
 
-// ---- ACP 线缆类型（宽松，同 dsh/mcode） ---------------------------------------
+// ---- serve 进程管理（一个 adapter 一个常驻 serve，死了下次请求重启） --------------
 
-interface AcpContent {
-  type?: string;
-  text?: string;
-}
+class ServeProcess {
+  private child: ChildProcess | null = null;
+  private base: string | null = null;
+  private starting: Promise<string> | null = null;
 
-interface AcpUpdate {
-  sessionUpdate?: string;
-  content?: AcpContent | AcpContent[];
-  messageId?: string;
-  toolCallId?: string;
-  title?: string;
-  kind?: string;
-  status?: string;
-  rawInput?: unknown;
-  used?: number;
-  size?: number;
-  cost?: { amount?: number };
-}
+  baseUrl(): Promise<string> {
+    if (this.base !== null && this.child !== null && this.child.exitCode === null) return Promise.resolve(this.base);
+    this.starting ??= this.spawn().finally(() => {
+      this.starting = null;
+    });
+    return this.starting;
+  }
 
-interface AcpRequest {
-  id?: number;
-  method?: string;
-  params?: {
-    sessionId?: string;
-    toolCall?: { toolCallId?: string; title?: string; kind?: string };
-    options?: { optionId?: string; name?: string; kind?: string }[];
-  };
-}
+  private async spawn(): Promise<string> {
+    const cmd = await resolveCommand("opencode");
+    const port = 33000 + Math.floor(Math.random() * 2000);
+    const child = spawn(cmd.file, [...cmd.prefixArgs, "serve", "--hostname", "127.0.0.1", "--port", String(port)], {
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    this.child = child;
+    const base = await new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("opencode serve 15s 内未就绪")), 15_000);
+      createInterface({ input: child.stdout }).on("line", (line) => {
+        const m = line.match(/listening on (http:\/\/\S+)/);
+        if (m !== null) {
+          clearTimeout(timer);
+          resolve(m[1]!);
+        }
+      });
+      child.once("exit", (code) => {
+        clearTimeout(timer);
+        reject(new Error(`opencode serve 退出（code ${code}）`));
+      });
+    });
+    this.base = base;
+    child.once("exit", () => {
+      log.info("opencode serve exited", { code: child.exitCode });
+      this.base = null;
+      this.child = null;
+    });
+    child.stderr?.on("data", (d: Buffer) => {
+      const s = d.toString().trim();
+      if (s !== "" && !s.includes("OPENCODE_SERVER_PASSWORD")) log.debug("opencode serve stderr", { line: s.slice(0, 160) });
+    });
+    return base;
+  }
 
-interface AcpResponse {
-  id?: number;
-  result?: { sessionId?: string; stopReason?: string };
-  error?: { code?: number; message?: string };
+  async kill(): Promise<void> {
+    const child = this.child;
+    this.child = null;
+    this.base = null;
+    child?.kill();
+  }
 }
 
 // ---- 会话台账 ------------------------------------------------------------------
 
-interface PendingRequest {
-  resolve: (result: unknown) => void;
-  reject: (err: Error) => void;
-}
-
-interface PendingPermission {
-  readonly acpId: number;
-  readonly options: readonly { optionId?: string; name?: string; kind?: string }[];
-}
-
-interface TurnAcc {
-  turnText: string;
-  readonly messageId: string;
-  /** 轮起点前的累计用量（usage_update 差值口径用） */
-  readonly usedBefore: number;
-  readonly costBefore: number;
-}
-
 interface OcSession {
   readonly sessionId: SessionId;
   readonly rootPath: string;
-  readonly model: ModelId | null;
-  readonly mode: StartRequest["mode"];
-  /** opencode 的 ACP sessionId（"ses_…"），session/new 或 session/resume 后才有 */
+  /** "providerID/modelID" 形态的模型 id（serve 的 model 对象正好拆这两段） */
+  model: ModelId | null;
   ref: string | null;
   sink: AdapterSink | null;
-  child: ChildProcess | null;
-  initialized: boolean;
-  sessionLoaded: boolean;
-  /** configOption 只在本进程首轮流前设置一次（会话级选择，不是轮级参数） */
-  optionsApplied: boolean;
-  closed: boolean;
-  cancelled: boolean;
-  lastUsed: number;
+  /** 轮内流式聚合：messageID → 已流出文本（idle 时发 message.completed） */
+  readonly streamed: Map<string, string>;
+  /** messageId → role（message.updated 缓存） */
+  readonly roles: Map<string, string>;
+  /** 已翻译过 tool.started 的 partID（part.updated 会重复带全量 part） */
+  readonly seenToolParts: Set<string>;
+  /** 上次会话累计 token/cost（session.updated 差值出 usage） */
+  lastTokens: { input: number; output: number; cacheRead: number; cacheWrite: number } | null;
   lastCost: number;
   usageCount: number;
-  nextId: number;
-  readonly pending: Map<number, PendingRequest>;
-  readonly permissionPending: Map<string, PendingPermission>;
-  /** toolCallId → 标题（权限请求只带 toolCallId 时的 detail 兜底） */
-  readonly toolTitles: Map<string, string>;
-  turn: TurnAcc | null;
+  /** 已应答回执的审批 requestID（permission.updated 会重复推送） */
+  readonly answeredPermissions: Set<string>;
 }
 
 interface OpencodeModelEntry {
@@ -231,7 +220,39 @@ export class OpencodeAdapter implements ExecutorAdapter {
     return this._models;
   }
 
+  private readonly serve = new ServeProcess();
+  private readonly sessions = new Map<string, OcSession>();
+  /** 已开 SSE 的 rootPath（opencode 按目录隔离实例：每个项目一条流，空 header 会路由到错误实例） */
+  private readonly sseDirs = new Set<string>();
+
   async syncModels(): Promise<readonly ExecutorModelInfo[]> {
+    // 首选 serve 的 GET /model（结构化）；serve 起不来回落 CLI 解析（沿用旧实现）
+    try {
+      const base = await this.serve.baseUrl();
+      const list = (await this.rest(base, "/model", "GET")).json as OpencodeModelEntry[];
+      const synced = list
+        .filter((m) => typeof m.id === "string" && typeof m.providerID === "string")
+        .map((m) => ({
+          id: `${m.providerID}/${m.id}` as ModelId,
+          displayName: m.name ?? m.id ?? "",
+          contextWindow: m.limit?.context && m.limit.context > 0 ? m.limit.context : 200000,
+          maxOutput: m.limit?.output && m.limit.output > 0 ? m.limit.output : undefined,
+          reasoningLevels:
+            m.variants && typeof m.variants === "object"
+              ? Object.keys(m.variants).filter((k) => k !== "none")
+              : undefined,
+          multimodal: m.capabilities?.input?.image ?? false,
+          inputPerMTok: typeof m.cost?.input === "number" ? m.cost.input : undefined,
+          outputPerMTok: typeof m.cost?.output === "number" ? m.cost.output : undefined,
+        }));
+      if (synced.length > 0) {
+        this._models = synced;
+        log.info("opencode models synced via serve /model", { count: synced.length });
+        return synced;
+      }
+    } catch (err: unknown) {
+      log.debug("opencode /model 同步失败，回落 CLI 解析", { error: err instanceof Error ? err.message : String(err) });
+    }
     try {
       const cmd = await resolveCommand("opencode");
       const out = await execLines(cmd, ["models", "--verbose"], 10000);
@@ -247,22 +268,21 @@ export class OpencodeAdapter implements ExecutorAdapter {
     }
     return this._models;
   }
+
   readonly capabilities: RuntimeCapabilities = {
-    resumeSession: true, // session/resume（会话按项目落盘全局可寻址）
-    fileDiff: false, // ACP 事件翻译无 diff 流（见文件头）
+    resumeSession: true, // 会话按项目落盘全局可寻址：GET /session 找回 + prompt_async 续聊
+    fileDiff: true, // session.diff 事件（turn 级 diff 列表）
     terminal: false,
-    permissions: true, // request_permission 反向流，allow_once/allow_always/reject_once 三档全
+    permissions: true, // permission.* 事件 + /permission/{id}/reply（once/always/reject 三档）
     subagents: false,
     worktrees: false,
     sandbox: false,
-    mcp: true, // initialize 报 mcpCapabilities http/sse；session/new 可挂 mcpServers（daemon 暂不透传）
-    usage: true, // usage_update 带上下文累计 token 与会话累计成本，差值出账
-    multimodal: true, // promptCapabilities.image 实测 true
-    streaming: "realtime",
-    steering: "turn-end",
+    mcp: true,
+    usage: true, // session.updated 的 tokens/cost 差值出账
+    multimodal: true,
+    streaming: "realtime", // message.part.delta 真 token 流
+    steering: "turn-end", // busy 期间入队、idle 后发（host 侧 pendingSends 语义）
   };
-
-  private readonly sessions = new Map<string, OcSession>();
 
   async probe(): Promise<ProbeResult> {
     const t0 = Date.now();
@@ -280,468 +300,339 @@ export class OpencodeAdapter implements ExecutorAdapter {
       return {
         state:
           code === "not_installed"
-            ? { status: "not_installed", hint: "未安装 opencode CLI（npm i -g opencode-ai）" }
+            ? { status: "not_installed", hint: "未安装 opencode CLI" }
             : { status: "error", message: err instanceof Error ? err.message : String(err) },
         elapsedMs: Date.now() - t0,
       };
     }
   }
 
+  // ---- REST 基础设施 -----------------------------------------------------------
+
+  private async rest(
+    base: string,
+    path: string,
+    method: "GET" | "POST",
+    body?: unknown,
+    rootPath?: string,
+    timeoutMs = 20000,
+  ): Promise<{ status: number; json: unknown }> {
+    const headers: Record<string, string> = { "content-type": "application/json" };
+    if (rootPath !== undefined) headers["x-opencode-directory"] = rootPath;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const res = await fetch(base + path, {
+        method,
+        headers,
+        ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+        signal: ctrl.signal,
+      });
+      const text = await res.text();
+      let json: unknown = undefined;
+      try {
+        json = text === "" ? undefined : JSON.parse(text);
+      } catch {
+        json = undefined;
+      }
+      return { status: res.status, json };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  // ---- 会话生命周期 -------------------------------------------------------------
+
   async start(req: StartRequest, sink: AdapterSink): Promise<AdapterSession> {
-    const state = this.newState(`sess_${randomUUID()}` as SessionId, req.rootPath, req, sink);
-    return this.sessionHandle(state);
+    const base = await this.serve.baseUrl();
+    void this.startSse(base, req.rootPath);
+    const state: OcSession = {
+      sessionId: `sess_${randomUUID()}` as SessionId,
+      rootPath: req.rootPath,
+      model: req.model,
+      ref: null,
+      sink,
+      streamed: new Map(),
+      roles: new Map(),
+      seenToolParts: new Set(),
+      lastTokens: null,
+      lastCost: 0,
+      usageCount: 0,
+      answeredPermissions: new Set(),
+    };
+    const r = await this.rest(base, "/session", "POST", { title: req.unitName }, req.rootPath);
+    const id = (r.json as { id?: string } | undefined)?.id;
+    if (id === undefined) {
+      throw Object.assign(new Error(`opencode 会话创建失败（HTTP ${r.status}）`), { code: "start_failed" });
+    }
+    state.ref = id;
+    this.sessions.set(state.sessionId, state);
+    return this.sessionImpl(state);
   }
 
   reattach(sessionId: SessionId, ref: string, rootPath: string, sink: AdapterSink): AdapterSession {
-    const state = this.newState(sessionId, rootPath, { model: null, mode: undefined }, sink);
-    state.ref = ref; // session/resume 时用；cwd 不匹配或不可恢复时回落新会话
-    return this.sessionHandle(state);
-  }
-
-  private newState(
-    sessionId: SessionId,
-    rootPath: string,
-    opts: { model: StartRequest["model"]; mode?: StartRequest["mode"] },
-    sink: AdapterSink,
-  ): OcSession {
     const state: OcSession = {
       sessionId,
       rootPath,
-      model: opts.model ?? null,
-      mode: opts.mode,
-      ref: null,
+      model: null,
+      ref,
       sink,
-      child: null,
-      initialized: false,
-      sessionLoaded: false,
-      optionsApplied: false,
-      closed: false,
-      cancelled: false,
-      lastUsed: 0,
+      streamed: new Map(),
+      roles: new Map(),
+      seenToolParts: new Set(),
+      lastTokens: null,
       lastCost: 0,
       usageCount: 0,
-      nextId: 1,
-      pending: new Map(),
-      permissionPending: new Map(),
-      toolTitles: new Map(),
-      turn: null,
+      answeredPermissions: new Set(),
     };
     this.sessions.set(sessionId, state);
-    return state;
+    return this.sessionImpl(state);
   }
 
-  private sessionHandle(state: OcSession): AdapterSession {
+  private sessionImpl(state: OcSession): AdapterSession {
     return {
       id: state.sessionId,
       send: async (text: string) => {
-        await this.runTurn(state, text);
-      },
-      cancel: async () => {
-        state.cancelled = true;
-        if (state.ref !== null && state.child !== null && state.initialized) {
-          this.notify(state, "session/cancel", { sessionId: state.ref });
+        const base = await this.serve.baseUrl();
+        void this.startSse(base, state.rootPath);
+        if (state.ref === null) throw new Error("opencode 会话未建立");
+        const body: Record<string, unknown> = { parts: [{ type: "text", text }] };
+        if (state.model !== null && state.model.includes("/")) {
+          const [providerID, modelID] = state.model.split("/");
+          body["model"] = { providerID: providerID!, modelID: modelID! };
+        }
+        const r = await this.rest(base, `/session/${state.ref}/prompt_async`, "POST", body, state.rootPath);
+        if (r.status >= 300) {
+          state.sink?.({
+            type: "error",
+            sessionId: state.sessionId,
+            message: `opencode prompt_async 失败（HTTP ${r.status}）${JSON.stringify(r.json ?? "").slice(0, 160)}`,
+            recoverable: false,
+          });
+          state.sink?.({ type: "session.status", sessionId: state.sessionId, status: "failed" });
         }
       },
-      resolvePermission: async (requestId, decision) => {
-        this.resolvePermission(state, requestId, decision);
+      cancel: async () => {
+        if (state.ref === null) return;
+        const base = await this.serve.baseUrl();
+        await this.rest(base, `/session/${state.ref}/abort`, "POST", undefined, state.rootPath).catch(() => undefined);
+      },
+      resolvePermission: async (requestId: string, decision: "allow" | "deny" | "always") => {
+        if (state.ref === null) return;
+        const base = await this.serve.baseUrl();
+        state.answeredPermissions.add(requestId);
+        await this
+          .rest(
+            base,
+            `/permission/${requestId}/reply`,
+            "POST",
+            { reply: decision === "deny" ? "reject" : decision === "always" ? "always" : "once" },
+            state.rootPath,
+          )
+          .catch(() => undefined);
+        state.sink?.({
+          type: "permission.resolved",
+          sessionId: state.sessionId,
+          requestId,
+          decision: decision === "always" ? "allow" : decision,
+        });
       },
       externalRef: () => state.ref,
     };
   }
 
   async disconnect(): Promise<void> {
-    for (const st of this.sessions.values()) {
-      st.closed = true;
-      for (const p of st.pending.values()) p.reject(adapterError("adapter_disposed", "adapter is shutting down"));
-      st.pending.clear();
-      const child = st.child;
-      // stdin EOF 请求自退，kill 兜底（opencode 侧的 EOF 行为未实测，不赌它）
-      child?.stdin?.end();
-      const killTimer = setTimeout(() => {
-        if (child !== null && child.exitCode === null) child.kill();
-      }, 3000);
-      killTimer.unref?.();
-      child?.stdin?.destroy();
-      child?.stdout?.destroy();
-      child?.stderr?.destroy();
-      st.child = null;
-    }
+    await this.serve.kill();
     this.sessions.clear();
   }
 
-  // ---- 进程与协议通道 ---------------------------------------------------------
+  // ---- SSE 事件流 ---------------------------------------------------------------
 
-  private async ensureSession(state: OcSession): Promise<void> {
-    if (state.child === null) {
-      const cmd = await resolveCommand("opencode");
-      // 常驻协议进程：stdin 是协议通道，绝不能关（exec.ts closeStdin 语义）
-      const child = spawn(cmd.file, [...cmd.prefixArgs, "acp"], {
-        cwd: state.rootPath,
-        stdio: ["pipe", "pipe", "pipe"],
-        windowsHide: true,
-        env: { ...process.env },
-      });
-      state.child = child;
-      child.stdout?.setEncoding("utf8");
-      let buf = "";
-      child.stdout?.on("data", (chunk: string) => {
-        buf += chunk;
-        let idx: number;
-        while ((idx = buf.indexOf("\n")) >= 0) {
-          const line = buf.slice(0, idx).trim();
-          buf = buf.slice(idx + 1);
-          if (line !== "") this.handleWireLine(state, line);
+  private async startSse(base: string, rootPath: string): Promise<void> {
+    if (this.sseDirs.has(rootPath)) return;
+    this.sseDirs.add(rootPath);
+    const loop = async (): Promise<void> => {
+      while (this.sseDirs.has(rootPath)) {
+        try {
+          const ctrl = new AbortController();
+          const res = await fetch(base + "/event", {
+            headers: { "x-opencode-directory": rootPath },
+            signal: ctrl.signal,
+          });
+          if (res.body === null) throw new Error("SSE 无 body");
+          const reader = res.body.getReader();
+          const decoder = new TextDecoder();
+          let buf = "";
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buf += decoder.decode(value, { stream: true });
+            let sep: number;
+            while ((sep = buf.indexOf("\n\n")) >= 0) {
+              const frame = buf.slice(0, sep);
+              buf = buf.slice(sep + 2);
+              const dataLines = frame
+                .split(/\r?\n/)
+                .filter((l) => l.startsWith("data:"))
+                .map((l) => l.slice(5).trim())
+                .join("");
+              if (dataLines === "") continue;
+              try {
+                this.onEvent(JSON.parse(dataLines) as { type?: string; properties?: Record<string, unknown> });
+              } catch {
+                /* 坏帧跳过 */
+              }
+            }
+          }
+        } catch {
+          // 断流重连（1s 退避）
+          await new Promise((r) => setTimeout(r, 1000));
         }
-      });
-      child.stderr?.setEncoding("utf8");
-      createInterface({ input: child.stderr }).on("line", (line) =>
-        log.debug("opencode acp stderr", { line: line.slice(0, 200) }),
-      );
-      child.once("close", () => {
-        state.child = null;
-        state.initialized = false;
-        const err = adapterError("executor_exited", "opencode acp process exited");
-        for (const p of state.pending.values()) p.reject(err);
-        state.pending.clear();
-      });
-    }
-    if (!state.initialized) {
-      await this.request(state, "initialize", {
-        protocolVersion: 1,
-        clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
-      }, 60000);
-      state.initialized = true;
-    }
-    if (state.ref === null) {
-      const res = (await this.request(state, "session/new", { cwd: state.rootPath, mcpServers: [] }, 60000)) as {
-        sessionId?: string;
-      };
-      if (typeof res.sessionId !== "string" || res.sessionId === "") {
-        throw adapterError("acp_no_session", "opencode acp session/new returned no sessionId");
       }
-      state.ref = res.sessionId;
-      state.sessionLoaded = true;
-    } else if (!state.sessionLoaded) {
-      await this.resumeSession(state);
-    }
-  }
-
-  private async resumeSession(state: OcSession): Promise<void> {
-    try {
-      await this.request(state, "session/resume", { sessionId: state.ref, cwd: state.rootPath, mcpServers: [] }, 60000);
-      state.sessionLoaded = true;
-    } catch (err: unknown) {
-      // cwd 变了 / 会话不可恢复：回落新会话，宁可丢历史也不能永久不可用
-      log.warn("opencode session/resume failed, falling back to a fresh session", {
-        ref: state.ref,
-        error: err instanceof Error ? err.message : String(err),
-      });
-      state.ref = null;
-      state.sessionLoaded = false;
-      await this.ensureSession(state);
-    }
-  }
-
-  private request(state: OcSession, method: string, params: unknown, timeoutMs?: number): Promise<unknown> {
-    if (state.child === null) return Promise.reject(adapterError("executor_exited", "opencode acp not running"));
-    const id = state.nextId++;
-    return new Promise((resolve, reject) => {
-      const timer = timeoutMs === undefined
-        ? null
-        : setTimeout(() => {
-            state.pending.delete(id);
-            reject(adapterError("acp_timeout", `${method} timed out after ${timeoutMs}ms`));
-          }, timeoutMs);
-      state.pending.set(id, {
-        resolve: (v) => {
-          if (timer !== null) clearTimeout(timer);
-          resolve(v);
-        },
-        reject: (e) => {
-          if (timer !== null) clearTimeout(timer);
-          reject(e);
-        },
-      });
-      state.child!.stdin!.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
-    });
-  }
-
-  private notify(state: OcSession, method: string, params: unknown): void {
-    state.child?.stdin?.write(JSON.stringify({ jsonrpc: "2.0", method, params }) + "\n");
-  }
-
-  private handleWireLine(state: OcSession, line: string): void {
-    let msg: (AcpRequest & AcpResponse) | null = null;
-    try {
-      msg = JSON.parse(line) as AcpRequest & AcpResponse;
-    } catch {
-      return;
-    }
-    if (msg === null) return;
-
-    // ① agent → client 的请求（权限审批）；未知请求按协议礼貌回 method not found
-    if (msg.method !== undefined && msg.id !== undefined) {
-      if (msg.method === "session/request_permission") {
-        this.onPermissionRequest(state, msg.id, msg.params ?? {});
-      } else {
-        this.respond(state, msg.id, { error: { code: -32601, message: `method not found: ${msg.method}` } });
-      }
-      return;
-    }
-    // ② 响应
-    if (msg.id !== undefined) {
-      const p = state.pending.get(msg.id);
-      if (p === undefined) return;
-      state.pending.delete(msg.id);
-      if (msg.error !== undefined) p.reject(new Error(msg.error.message ?? "acp request failed"));
-      else p.resolve(msg.result ?? {});
-      return;
-    }
-    // ③ 通知
-    if (msg.method === "session/update") {
-      this.onSessionUpdate(state, msg.params as { update?: AcpUpdate });
-    }
-  }
-
-  private respond(state: OcSession, id: number, body: Record<string, unknown>): void {
-    state.child?.stdin?.write(JSON.stringify({ jsonrpc: "2.0", id, ...body }) + "\n");
-  }
-
-  // ---- turn 执行 ----
-
-  private async runTurn(state: OcSession, prompt: string): Promise<void> {
-    state.cancelled = false;
-    await this.ensureSession(state);
-    await this.applyConfigOptions(state);
-
-    const acc: TurnAcc = {
-      turnText: "",
-      messageId: `msg_${Date.now()}`,
-      usedBefore: state.lastUsed,
-      costBefore: state.lastCost,
     };
-    state.turn = acc;
-    try {
-      const res = (await this.request(state, "session/prompt", {
-        sessionId: state.ref,
-        prompt: [{ type: "text", text: prompt }],
-      })) as { stopReason?: string };
-      this.finalizeTurn(state, acc, res.stopReason ?? "end_turn", state.cancelled);
-    } catch (err: unknown) {
-      if (state.cancelled) {
-        this.finalizeTurn(state, acc, "cancelled", true);
-        return;
-      }
-      state.sink?.({
-        type: "error",
-        sessionId: state.sessionId,
-        message: `opencode session/prompt failed: ${err instanceof Error ? err.message : String(err)}`,
-        recoverable: false,
-      });
-      state.sink?.({ type: "session.status", sessionId: state.sessionId, status: "failed" });
-    } finally {
-      state.turn = null;
-    }
+    void loop();
   }
 
-  /** StartRequest 的模型与档位 → ACP configOption。注意方法名是 snake_case（实测，dsh 相反） */
-  private async applyConfigOptions(state: OcSession): Promise<void> {
-    if (state.optionsApplied || state.ref === null) return;
-    state.optionsApplied = true;
-    // 模型：value 是 "providerID/modelID" 纯字符串（实测）；null = 不设，跟随 opencode 默认
-    if (state.model !== null && state.model.includes("/")) {
-      try {
-        await this.request(state, "session/set_config_option", {
-          sessionId: state.ref,
-          configId: "model",
-          value: state.model,
-        });
-      } catch (err: unknown) {
-        log.debug("opencode applyModel failed (continuing with default model)", {
-          model: state.model,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-    }
-    // 档位：configOptions 只有 build/plan 两档，plan 之外都不设（build 是默认）
-    if (state.mode === "plan") {
-      try {
-        await this.request(state, "session/set_config_option", {
-          sessionId: state.ref,
-          configId: "mode",
-          value: "plan",
-        });
-      } catch (err: unknown) {
-        log.debug("opencode applyMode failed (continuing with build)", {
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-    }
+  private sessionOfRef(ref: unknown): OcSession | undefined {
+    if (typeof ref !== "string") return undefined;
+    for (const s of this.sessions.values()) if (s.ref === ref) return s;
+    return undefined;
   }
 
-  private finalizeTurn(state: OcSession, acc: TurnAcc, stopReason: string, cancelled: boolean): void {
+  private onEvent(ev: { type?: string; properties?: Record<string, unknown> }): void {
+    const type = ev.type ?? "";
+    const p = ev.properties ?? {};
+    const state = this.sessionOfRef(p["sessionID"]);
+    if (state === undefined) return;
     const sink = state.sink;
     if (sink === null) return;
     const sessionId = state.sessionId;
 
-    if (acc.turnText !== "") {
-      sink({ type: "message.completed", sessionId, messageId: acc.messageId, text: acc.turnText });
-    }
-    if (state.lastUsed > acc.usedBefore || state.lastCost > acc.costBefore) {
-      sink({
-        type: "usage",
-        sessionId,
-        // usage_update 的 used 是上下文累计 token（input+cache 读写）、cost.amount 是
-        // 会话累计成本 —— 都按轮差值出账；outputTokens 拆不出来，如实记 0
-        inputTokens: Math.max(0, state.lastUsed - acc.usedBefore),
-        outputTokens: 0,
-        cacheReadTokens: undefined,
-        cacheWriteTokens: undefined,
-        costUsd: Math.max(0, state.lastCost - acc.costBefore),
-        model: state.model ?? "opencode-default",
-        decodeMs: undefined,
-        requestId: `opencode:${state.ref ?? state.sessionId}:p${process.pid}:${++state.usageCount}`,
-      });
-    }
-    if (!cancelled && stopReason !== "end_turn" && stopReason !== "cancelled") {
-      sink({ type: "error", sessionId, message: `opencode turn ended with stopReason=${stopReason}`, recoverable: false });
-      sink({ type: "session.status", sessionId, status: "failed" });
-      return;
-    }
-    // agent loop 语义：turn 落定 ≠ 会话结束（同一 sessionId 可继续 session/prompt）
-    sink({ type: "session.status", sessionId, status: "idle" });
-  }
-
-  // ---- session/update → RuntimeEvent ------------------------------------------
-
-  private onSessionUpdate(state: OcSession, params: { update?: AcpUpdate }): void {
-    const sink = state.sink;
-    const update = params.update;
-    if (sink === null || update === undefined) return;
-    const sessionId = state.sessionId;
-    const acc = state.turn;
-
-    switch (update.sessionUpdate) {
-      case "agent_message_chunk": {
-        const text = chunkText(update.content);
-        if (text !== "" && acc !== null) {
-          acc.turnText += text;
-          sink({ type: "message.delta", sessionId, messageId: acc.messageId, role: "assistant", text });
+    switch (type) {
+      case "message.part.delta": {
+        const delta = typeof p["delta"] === "string" ? p["delta"] : "";
+        const messageID = typeof p["messageID"] === "string" ? p["messageID"] : `msg_${Date.now()}`;
+        if (delta !== "" && p["field"] === "text") {
+          sink({ type: "message.delta", sessionId, messageId: messageID, role: "assistant", text: delta });
+          state.streamed.set(messageID, (state.streamed.get(messageID) ?? "") + delta);
         }
         break;
       }
-      case "agent_thought_chunk": {
-        const text = chunkText(update.content);
-        if (text !== "" && acc !== null) {
-          sink({ type: "reasoning.delta", sessionId, messageId: acc.messageId, text });
+      case "message.part.updated": {
+        const part = (p["part"] ?? {}) as Record<string, unknown>;
+        const pt = typeof part["type"] === "string" ? part["type"] : "";
+        const messageID = typeof part["messageID"] === "string" ? part["messageID"] : "";
+        const partID = typeof part["id"] === "string" ? part["id"] : messageID;
+        if (pt === "reasoning") {
+          const text = typeof part["text"] === "string" ? part["text"] : "";
+          if (text !== "") sink({ type: "reasoning.delta", sessionId, messageId: partID, text });
+        } else if (pt === "tool" || pt === "tool-state") {
+          const tool = (part["tool"] ?? part["state"] ?? {}) as Record<string, unknown>;
+          if (!state.seenToolParts.has(partID) && typeof tool["name"] === "string") {
+            state.seenToolParts.add(partID);
+            sink({
+              type: "tool.started",
+              sessionId,
+              callId: partID,
+              toolName: String(tool["name"]),
+              title: String(tool["title"] ?? tool["name"]),
+              input: {},
+            });
+          }
+          if (part["status"] === "completed" || part["status"] === "failed" || tool["status"] === "completed" || tool["status"] === "failed") {
+            const output = typeof part["output"] === "string" ? part["output"] : JSON.stringify(part["metadata"] ?? "").slice(0, 800);
+            sink({
+              type: "tool.completed",
+              sessionId,
+              callId: partID,
+              ok: !String(part["status"] ?? tool["status"] ?? "").includes("fail"),
+              output,
+            });
+          }
         }
         break;
       }
-      case "tool_call": {
-        if (update.toolCallId === undefined) break;
-        if (update.title !== undefined) state.toolTitles.set(update.toolCallId, update.title);
-        sink({
-          type: "tool.started",
-          sessionId,
-          callId: update.toolCallId,
-          toolName: update.title ?? "tool",
-          title: update.title ?? "tool",
-          input: update.rawInput ?? null,
-        });
+      case "message.updated": {
+        const info = (p["info"] ?? {}) as Record<string, unknown>;
+        if (typeof info["id"] === "string" && typeof info["role"] === "string") {
+          state.roles.set(info["id"], info["role"]);
+        }
         break;
       }
-      case "tool_call_update": {
-        if (update.toolCallId === undefined) break;
-        if (update.status === "completed" || update.status === "failed") {
-          const output = chunkText(update.content);
+      case "session.updated": {
+        // 会话累计 tokens/cost —— 差值出账（idle 时结算）
+        const s = (p["info"] ?? p["session"] ?? {}) as Record<string, unknown>;
+        const tokens = (s["tokens"] ?? {}) as Record<string, unknown>;
+        if (tokens !== undefined && typeof tokens["input"] === "number") {
+          state.lastTokens = {
+            input: Number(tokens["input"] ?? 0),
+            output: Number(tokens["output"] ?? 0),
+            cacheRead: Number((tokens["cache"] as Record<string, unknown> | undefined)?.["read"] ?? 0),
+            cacheWrite: Number((tokens["cache"] as Record<string, unknown> | undefined)?.["write"] ?? 0),
+          };
+        }
+        if (typeof s["cost"] === "number") state.lastCost = s["cost"];
+        break;
+      }
+      case "session.idle": {
+        // 轮落定：结算流式消息 + usage
+        for (const [messageID, text] of state.streamed) {
+          sink({ type: "message.completed", sessionId, messageId: messageID, text });
+        }
+        state.streamed.clear();
+        const t = state.lastTokens;
+        if (t !== null) {
           sink({
-            type: "tool.completed",
+            type: "usage",
             sessionId,
-            callId: update.toolCallId,
-            ok: update.status === "completed",
-            output: output.slice(0, 8000),
+            inputTokens: t.input + t.cacheWrite,
+            outputTokens: t.output,
+            cacheReadTokens: t.cacheRead,
+            cacheWriteTokens: t.cacheWrite,
+            costUsd: state.lastCost,
+            model: String(state.model ?? "opencode"),
+            requestId: `opencode:${state.ref ?? sessionId}:p${process.pid}:${++state.usageCount}`,
           });
-          state.toolTitles.delete(update.toolCallId);
+        }
+        sink({ type: "session.status", sessionId, status: "idle" });
+        break;
+      }
+      case "session.diff": {
+        const diff = p["diff"];
+        if (Array.isArray(diff)) {
+          for (const d of diff as Record<string, unknown>[]) {
+            const path = typeof d["path"] === "string" ? d["path"] : typeof d["file"] === "string" ? d["file"] : null;
+            if (path === null) continue;
+            sink({
+              type: "file.diff",
+              sessionId,
+              path,
+              additions: Number(d["added"] ?? d["additions"] ?? 0),
+              deletions: Number(d["removed"] ?? d["deletions"] ?? 0),
+            });
+          }
         }
         break;
       }
-      case "usage_update": {
-        if (typeof update.used === "number") state.lastUsed = update.used;
-        if (typeof update.cost?.amount === "number") state.lastCost = update.cost.amount;
+      default: {
+        if (type.startsWith("permission.")) {
+          const perm = (p["permission"] ?? p["info"] ?? p) as Record<string, unknown>;
+          const requestID = typeof perm["id"] === "string" ? perm["id"] : typeof p["requestID"] === "string" ? p["requestID"] : null;
+          if (requestID === null || state.answeredPermissions.has(requestID)) break;
+          if (type.includes("updated") && perm["status"] !== undefined && perm["status"] !== "pending") break;
+          const tool = (perm["tool"] ?? perm["metadata"] ?? {}) as Record<string, unknown>;
+          const title = typeof tool["title"] === "string" ? tool["title"] : "opencode 审批";
+          sink({
+            type: "permission.requested",
+            sessionId,
+            requestId: requestID,
+            kind: typeof tool["name"] === "string" && /edit|write/i.test(String(tool["name"])) ? "file_write" : "tool",
+            detail: `${title} ${JSON.stringify(perm["input"] ?? tool["input"] ?? {}).slice(0, 200)}`,
+            risk: "medium",
+          });
+        }
         break;
       }
-      default:
-        break; // available_commands_update / config_option_update / user_message_chunk 等不翻译
     }
   }
-
-  // ---- 权限审批（agent → client 反向请求） --------------------------------------
-
-  private onPermissionRequest(state: OcSession, acpId: number, params: NonNullable<AcpRequest["params"]>): void {
-    const sink = state.sink;
-    if (sink === null) {
-      this.respond(state, acpId, { result: { outcome: { outcome: "cancelled" } } });
-      return;
-    }
-    const requestId = params.toolCall?.toolCallId ?? `perm_${acpId}`;
-    state.permissionPending.set(requestId, { acpId, options: params.options ?? [] });
-    const kind = permissionKind(params.toolCall?.kind);
-    const title = params.toolCall?.title ?? state.toolTitles.get(requestId);
-    sink({
-      type: "permission.requested",
-      sessionId: state.sessionId,
-      requestId,
-      kind,
-      detail: title !== undefined ? `opencode 请求执行：${title}` : "opencode 请求执行工具",
-      risk: kind === "shell" ? "medium" : "low",
-    });
-  }
-
-  private resolvePermission(state: OcSession, requestId: string, decision: "allow" | "deny" | "always"): void {
-    const pending = state.permissionPending.get(requestId);
-    if (pending === undefined) {
-      log.warn("resolvePermission on unknown opencode request", { requestId });
-      return;
-    }
-    state.permissionPending.delete(requestId);
-    // 三档一一对应（源码 permission.ts）：allow→once / always→always / deny→reject
-    const want = decision === "deny" ? "reject_once" : decision === "always" ? "allow_always" : "allow_once";
-    const option = pending.options.find((o) => o.kind === want) ?? pending.options[0];
-    this.respond(state, pending.acpId, {
-      result: { outcome: option === undefined ? { outcome: "cancelled" } : { outcome: "selected", optionId: option.optionId } },
-    });
-    state.sink?.({
-      type: "permission.resolved",
-      sessionId: state.sessionId,
-      requestId,
-      decision,
-    });
-  }
-}
-
-// ---- 小工具 -------------------------------------------------------------------
-
-function permissionKind(acpKind: string | undefined): "file_write" | "shell" | "network" | "tool" {
-  switch (acpKind) {
-    case "execute":
-      return "shell";
-    case "edit":
-      return "file_write";
-    case "fetch":
-      return "network";
-    default:
-      return "tool";
-  }
-}
-
-function asBlockArray(content: AcpContent | AcpContent[] | undefined): AcpContent[] {
-  if (content === undefined) return [];
-  return Array.isArray(content) ? content : [content];
-}
-
-function chunkText(content: AcpContent | AcpContent[] | undefined): string {
-  return asBlockArray(content)
-    .filter((b) => b.type === "text" || b.type === undefined)
-    .map((b) => b.text ?? "")
-    .join("");
 }
