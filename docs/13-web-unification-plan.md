@@ -247,3 +247,30 @@ backend/src/history/
 **执行顺序（决策后收敛）**：主线 = 结构化聊天垂直切片（Phase 2 骨干先行，
 live 会话接现有 RuntimeEvent 流）→ Phase 1 历史层（让聊天视图的历史区
 「刷新不空、TUI 会话可见」）→ 各 tier SDK 升级并行插入。Phase 3 整体后置。
+
+---
+
+## 十、落地记录（2026-10-14 实施完成）
+
+一期范围（Phase 1/2/4 全量 + 决策 1/3/4）全部落地，11 个提交，全量
+typecheck 与 daemon 冒烟通过。
+
+| 计划项 | 提交 | 实测 |
+|---|---|---|
+| Phase 2 结构化聊天（默认形态） | 8585086 | typecheck + vite 全模块转换通过；组件与状态机自 `d09a34d^`/`39e4e81^` 恢复并重接 |
+| Phase 1 会话事实源层（9 家 reader + RPC + 原生会话页签） | dfccc56 | 本机 8 家真实数据列表+下钻全通过；WS RPC 实测 |
+| T1 codex app-server | 6c0450e | E2E 全事件链（delta→completed→ref→usage→idle） |
+| T2 claude Agent SDK | 595743a | E2E 链路通；本机 ~/.claude 默认模型过期如实上报（环境问题） |
+| T1 opencode serve | a9c4db4 | E2E 全事件链（reasoning.delta→delta→completed→usage） |
+| T2 grok ACP | 37d8682 | E2E 全事件链 |
+| T1 openclaw Gateway | 892fa7b | E2E 全事件链；顺带修历史双发 bug |
+| T3 pi 进程内 SDK | 1ff2815 | E2E 全事件链，未触发回落 |
+| T3 kimi web 双传输 | 60c1ad6 | 传输机制全通；本轮无回复系本机 kimi 登录态过期（kimi login 恢复） |
+| 4D zcode 类型面抽取（b1） | d1090c6 | 编译通过；app-server 降级系 ZCode 桌面端占用 Built-in Release（环境冲突，桌面退出恢复） |
+| T3 antigravity sidecar + T2 cursor 标注 | 399eae6 | 探针门控（本机未装两 SDK；agy sidecar 装即用，cursor 待 POC 环境） |
+
+**未做/后置（与计划一致）**：Phase 3 远程访问（决策 2 后置）；opencode 历史走
+按需 serve（决策 4）——serve 传输已就位，历史 reader 接入是下一步小项；
+反向请求原语泛化（Phase 2 扩展项）——现有 permission.requested 已覆盖各家
+审批流，泛化留待第二个真实用例。
+
