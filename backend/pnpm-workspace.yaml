@@ -4,11 +4,13 @@
 #
 # backend 是独立的 pnpm 树（不是根 workspace 的成员），所以根上没有第二份。
 #
-# 三个包的 install/postinstall 必须跑：
+# 四个包的 install/postinstall 必须跑：
 #   node-pty    — node-gyp 编原生模块 + 拷 conpty.dll（Windows 终端页签靠它）
 #   esbuild     — 装平台二进制
 #   protobufjs  — 飞书官方 SDK 的传递依赖
+#   @google/genai — claude-agent-sdk 的传递依赖（SDK 官方依赖树，不跑构建脚本装不全）
 allowBuilds:
   node-pty: true
   esbuild: true
   protobufjs: true
+  '@google/genai': true
