@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowUp, Brain, Command, Sliders, Square, SquareTerminal } from "lucide-react";
 import { useWorkbench, selectActiveUnit, visibleModelsFor } from "../store/useWorkbench.ts";
 import { useShell } from "../store/useShell.ts";
 import { useMemoryPanel, readProjectMemory } from "../store/useMemoryPanel.ts";
+import { nativeCommandsFor, useNativeCommands } from "../store/useNativeCommands.ts";
 import { asModelId } from "../core/units.ts";
 import { RuntimePicker } from "./RuntimePicker.tsx";
 import { ReasoningEffortPicker } from "./LoopParamsPicker.tsx";
@@ -25,6 +26,7 @@ export function Composer() {
   const run = useWorkbench((s) => s.run);
   const busy = useWorkbench((s) => s.busy);
   const unit = useWorkbench(selectActiveUnit);
+  const activeRuntime = useWorkbench((s) => s.activeRuntimeId);
   const setPermissionMode = useWorkbench((s) => s.setPermissionMode);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const [inputHeight, setInputHeight] = useState(46);
@@ -53,6 +55,28 @@ export function Composer() {
   // 监听是否呈现斜杠命令菜单（支持 / 以及带有子参数的实时前缀过滤，如 /model, /mem 等）
   const isSlashActive = draft.startsWith("/") && !draft.includes("\n") && !slashMenuDismissed;
   const slashFilter = isSlashActive ? draft.slice(1) : "";
+
+  // ---- 执行器原生斜杠命令 --------------------------------------------------
+  // 菜单数据源：切换执行器/工作单元时预取（TTL 内不重拉），菜单打开时兜底确保。
+  // daemon: 前缀是界面侧命名空间，daemon RPC 要裸执行器 id。
+  const bareRuntimeId = activeRuntime.startsWith("daemon:") ? activeRuntime.slice("daemon:".length) : activeRuntime;
+  const nativeEntry = useNativeCommands((s) => nativeCommandsFor(s, bareRuntimeId, unit?.rootPath ?? ""));
+  const executorName =
+    useWorkbench((s) => s.runtimes.find((r) => r.id === s.activeRuntimeId)?.presentation.displayName) ?? bareRuntimeId;
+
+  useEffect(() => {
+    if (unit?.rootPath && bareRuntimeId) void useNativeCommands.getState().ensure(bareRuntimeId, unit.rootPath);
+  }, [bareRuntimeId, unit?.rootPath]);
+
+  /** 当前执行器已加载的原生命令名集合（含别名）——submit 的去遮挡判定 */
+  const nativeNames = useMemo(() => {
+    const names = new Set<string>();
+    for (const c of nativeEntry.commands) {
+      names.add(c.name.toLowerCase());
+      for (const a of c.aliases ?? []) names.add(a.toLowerCase());
+    }
+    return names;
+  }, [nativeEntry.commands]);
 
   const showEphemeral = (msg: string) => {
     setStatusMessage(msg);
@@ -173,6 +197,14 @@ export function Composer() {
   };
 
   const handleSelectSlashCommand = (cmd: SlashCommand) => {
+    // 0. 原生命令：只把命令文本放进草稿（参数留给用户补），Enter 后原样透传给执行器。
+    //    不在本地做任何语义 —— 分发/展开/输出回显都是执行器自己的事。
+    if (cmd.native !== undefined) {
+      setDraft(`/${cmd.native.name} `);
+      taRef.current?.focus();
+      return;
+    }
+
     setSlashMenuDismissed(true);
 
     // 1. 如果是具体模型选择
@@ -325,6 +357,17 @@ export function Composer() {
       const parts = v.split(/\s+/);
       const cmd = parts[0]?.toLowerCase();
       const arg = parts.slice(1).join(" ").trim().toLowerCase();
+
+      // 0. 原生命令优先（去遮挡）：执行器自己声明了这个命令，就原样透传交给它分发。
+      //    本地同名命令降级为菜单里的显式选项（点击仍走本地动作）。
+      //    判定只认「已加载的非空清单」：拉取失败/未拉到时维持旧行为（本地拦截），
+      //    避免「第一次打开菜单是本地语义、拉到清单后变原生」的不一致。
+      if (cmd !== undefined && nativeEntry.status === "ready" && nativeEntry.commands.length > 0 && nativeNames.has(cmd.slice(1))) {
+        setDraft("");
+        setSlashMenuDismissed(false);
+        void run(v);
+        return;
+      }
 
       // 1. /clear
       if (cmd === "/clear") {
@@ -569,6 +612,12 @@ export function Composer() {
               filter={slashFilter}
               onSelect={handleSelectSlashCommand}
               onClose={() => setSlashMenuDismissed(true)}
+              native={{
+                commands: nativeEntry.commands,
+                status: nativeEntry.status,
+                error: nativeEntry.error,
+                executorName,
+              }}
             />
           )}
 

@@ -2026,6 +2026,14 @@ registerMethod("adapter.probe", (params) => {
   if (typeof runtimeId !== "string") throw Object.assign(new Error("runtimeId is required"), { code: "bad_params" });
   return host.probe(runtimeId);
 });
+registerMethod("adapter.commands", (params) => {
+  const p = (params ?? {}) as { runtimeId?: string; rootPath?: string };
+  if (typeof p.runtimeId !== "string" || typeof p.rootPath !== "string") {
+    throw Object.assign(new Error("runtimeId and rootPath are required"), { code: "bad_params" });
+  }
+  // 空清单 = 该执行器没有原生命令面（UI 菜单回落工作台本地命令），不是错误
+  return host.listCommands(p.runtimeId, p.rootPath);
+});
 registerMethod("session.start", (params) => {
   // params 在协议里是可选的（wsd 的信封声明 params?: unknown）——
   // 缺了要当 bad_params 报，不能 `params as {...}` 后直接读属性（TypeError → internal）

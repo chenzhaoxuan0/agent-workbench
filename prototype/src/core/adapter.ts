@@ -269,3 +269,34 @@ export interface RawExecutorModel {
   readonly inputPerMTok?: number;
   readonly outputPerMTok?: number;
 }
+
+// ---------------------------------------------------------------------------
+// 原生斜杠命令（native slash commands）
+// ---------------------------------------------------------------------------
+
+/**
+ * 执行器原生的斜杠命令条目 —— 菜单数据的唯一形态。
+ *
+ * 语义约定（对齐 Claude Code supportedCommands / Codex prompts / OpenCode command）：
+ * - `name` 不带前导斜杠（UI 渲染 `/name`，发送时拼上）。
+ * - 执行方式是**透传**：文本原样发给执行器会话，由执行器自己分发（claude SDK 的
+ *   slash-command dispatch / codex 的 prompts 展开 / opencode 的 command 路由）。
+ *   工作台不在中间翻译语义 —— 这是与旧版「本地假命令」的本质区别。
+ * - `argumentHint` 直接来自执行器自己的声明（如 "<file>"），原样展示。
+ */
+export interface NativeCommandInfo {
+  /** 命令名，不带前导斜杠（如 "compact"） */
+  readonly name: string;
+  readonly description?: string;
+  /** 参数提示（如 "<file>"、"[query]"）——执行器原生声明，原样展示 */
+  readonly argumentHint?: string;
+  /** 别名（/cost ↔ /stats 这类）；键入别名也应命中 */
+  readonly aliases?: readonly string[];
+  /** 执行器自带的内置命令（区别于用户/项目自定义） */
+  readonly builtin?: boolean;
+  /**
+   * 命令来源：builtin = 执行器内置；user/project/plugin = 各自目录里发现的
+   * 自定义命令。展示徽标用，执行路径不区分。
+   */
+  readonly source?: "builtin" | "user" | "project" | "plugin";
+}

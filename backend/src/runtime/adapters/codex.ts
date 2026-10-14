@@ -23,6 +23,9 @@
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import {
   type AdapterSession,
   type AdapterSink,
@@ -32,6 +35,7 @@ import {
 } from "./types.ts";
 import type {
   ModelId,
+  NativeCommandInfo,
   ProbeResult,
   RuntimeCapabilities,
   RuntimeEvent,
@@ -97,6 +101,84 @@ function policyFor(mode: StartRequest["mode"]): { sandboxPolicy: { type: string 
   if (mode === "plan") return { sandboxPolicy: { type: "read-only" }, approvalPolicy: "untrusted" };
   if (mode === "yolo") return { sandboxPolicy: { type: "danger-full-access" }, approvalPolicy: "never" };
   return { sandboxPolicy: { type: "workspace-write" }, approvalPolicy: "on-request" };
+}
+
+// ---- 原生斜杠命令（custom prompts 的 TUI 等价发现/展开）-----------------------
+
+interface CodexPromptDef {
+  readonly info: NativeCommandInfo;
+  /** 命令正文（去掉 frontmatter 后的 markdown）——展开时用 */
+  readonly body: string;
+}
+
+/**
+ * codex 的自定义提示词（TUI 里就是斜杠命令）：`$CODEX_HOME/prompts/*.md`（用户级）
+ * 与 `<root>/.codex/prompts/*.md`（项目级）。app-server 协议没有命令发现面，
+ * 但**文件本身就是声明**——直接读目录等价于 TUI 的命令面板；send 时做与 TUI
+ * 相同的展开（$ARGUMENTS 替换），对用户来说就是同一个命令。
+ */
+function readCodexPrompts(rootPath: string): readonly CodexPromptDef[] {
+  const codexHome = process.env["CODEX_HOME"] || join(homedir(), ".codex");
+  const dirs: Array<{ dir: string; source: "user" | "project" }> = [
+    { dir: join(codexHome, "prompts"), source: "user" },
+    { dir: join(rootPath, ".codex", "prompts"), source: "project" },
+  ];
+  const out: CodexPromptDef[] = [];
+  const seen = new Set<string>();
+  for (const { dir, source } of dirs) {
+    let files: string[];
+    try {
+      files = readdirSync(dir).filter((f) => f.endsWith(".md"));
+    } catch {
+      continue; // 目录不存在 = 该层级没有自定义命令
+    }
+    for (const f of files) {
+      const name = f.slice(0, -3);
+      if (name === "" || seen.has(name)) continue; // 项目级覆盖用户级（TUI 同款优先级）
+      seen.add(name);
+      let raw: string;
+      try {
+        raw = readFileSync(join(dir, f), "utf8");
+      } catch {
+        continue;
+      }
+      const { info, body } = parsePromptFile(name, raw, source);
+      out.push({ info, body });
+    }
+  }
+  return out;
+}
+
+/** frontmatter 解析（description / argument-hint 两字段，其余忽略），正文原样 */
+function parsePromptFile(
+  name: string,
+  raw: string,
+  source: "user" | "project",
+): { info: NativeCommandInfo; body: string } {
+  let body = raw;
+  const description: Record<string, string> = {};
+  if (raw.startsWith("---\n") || raw.startsWith("---\r\n")) {
+    const end = raw.indexOf("\n---", 4);
+    if (end !== -1) {
+      const header = raw.slice(raw.indexOf("\n") + 1, end);
+      body = raw.slice(raw.indexOf("\n", end + 1) + 1);
+      for (const line of header.split(/\r?\n/)) {
+        const i = line.indexOf(":");
+        if (i === -1) continue;
+        const key = line.slice(0, i).trim().toLowerCase();
+        if (key === "description" || key === "argument-hint") description[key] = line.slice(i + 1).trim();
+      }
+    }
+  }
+  return {
+    info: {
+      name,
+      description: description["description"] || undefined,
+      argumentHint: description["argument-hint"] || undefined,
+      source,
+    },
+    body,
+  };
 }
 
 // ---- 常驻 app-server 连接 -----------------------------------------------------
@@ -304,6 +386,36 @@ export class CodexAdapter implements ExecutorAdapter {
   private readonly conn = new AppServerConnection();
   private readonly sessions = new Map<string, SessionState>();
 
+  /** 原生命令缓存（prompts 目录读盘结果，TTL 同 claude 口径） */
+  private readonly commandCache = new Map<string, { commands: readonly NativeCommandInfo[]; at: number }>();
+  private static readonly COMMAND_TTL_MS = 10 * 60 * 1000;
+
+  /** 自定义提示词清单（菜单数据）。读盘很便宜，TTL 只是为了少抖。 */
+  async listCommands(rootPath: string): Promise<readonly NativeCommandInfo[]> {
+    const hit = this.commandCache.get(rootPath);
+    if (hit !== undefined && Date.now() - hit.at < CodexAdapter.COMMAND_TTL_MS) return hit.commands;
+    const commands = readCodexPrompts(rootPath).map((p) => p.info);
+    this.commandCache.set(rootPath, { commands, at: Date.now() });
+    return commands;
+  }
+
+  /**
+   * /name args → 展开成 prompt 正文（TUI 等价：$ARGUMENTS 替换）。
+   * 只展开**确实存在**的自定义命令；其余 "/" 开头文本原样透传（codex 会当普通文本）。
+   * 每次现读文件而不是用缓存 —— 用户改完 .md 立即生效，跟 TUI 行为一致。
+   */
+  private expandNativeCommand(state: SessionState, text: string): string {
+    if (!text.startsWith("/")) return text;
+    const sp = text.search(/\s/);
+    const name = text.slice(1, sp === -1 ? undefined : sp);
+    if (name === "") return text;
+    const def = readCodexPrompts(state.rootPath).find((p) => p.info.name === name);
+    if (def === undefined) return text;
+    const args = sp === -1 ? "" : text.slice(sp + 1).trim();
+    log.debug("codex native command expanded", { name, rootPath: state.rootPath });
+    return def.body.replaceAll("$ARGUMENTS", args).trim();
+  }
+
   constructor() {
     this.conn.eventHandler = (method, params) => this.onNotify(method, params);
     this.conn.approvalHandler = (frame) => this.onServerCall(frame);
@@ -383,7 +495,7 @@ export class CodexAdapter implements ExecutorAdapter {
       id: state.sessionId,
       send: async (text: string, loop?: { reasoningLevel?: string }) => {
         if (loop?.reasoningLevel !== undefined) state.loop.reasoningLevel = loop.reasoningLevel;
-        await this.sendTurn(state, text);
+        await this.sendTurn(state, this.expandNativeCommand(state, text));
       },
       cancel: async () => {
         if (state.threadId === null) return;

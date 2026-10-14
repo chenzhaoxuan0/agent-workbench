@@ -13,7 +13,10 @@ import {
   Check,
   Calendar,
   FileCode,
+  TerminalSquare,
+  Loader2,
 } from "lucide-react";
+import type { NativeCommandInfo } from "../core/adapter.ts";
 import { selectVisibleModels, useWorkbench } from "../store/useWorkbench.ts";
 import { useMemoryPanel } from "../store/useMemoryPanel.ts";
 import { formatContext } from "../core/models.ts";
@@ -24,13 +27,15 @@ export interface SlashCommand {
   readonly name: string;
   readonly title: string;
   readonly description: string;
-  readonly category: "记忆" | "技能" | "模式" | "执行器" | "系统";
+  readonly category: "原生" | "记忆" | "技能" | "模式" | "执行器" | "系统";
   readonly icon: typeof Brain;
   readonly nativeCliHint?: string;
   readonly modelId?: string;
   readonly skillName?: string;
   readonly memoryPreset?: readonly ("semantic" | "daily")[];
   readonly isSubOption?: boolean;
+  /** 原生命令条目 —— 带它的命令是**透传执行**（不进本地分支） */
+  readonly native?: NativeCommandInfo;
 }
 
 export const TOP_LEVEL_COMMANDS: readonly SlashCommand[] = [
@@ -130,9 +135,29 @@ interface SlashCommandMenuProps {
   filter: string;
   onSelect: (cmd: SlashCommand) => void;
   onClose: () => void;
+  /** 当前执行器的原生命令面（清单 + 拉取状态），由 Composer 注入 */
+  readonly native: {
+    readonly commands: readonly NativeCommandInfo[];
+    readonly status: "idle" | "loading" | "ready" | "error";
+    readonly executorName: string;
+    readonly error?: string;
+  };
 }
 
-export function SlashCommandMenu({ filter, onSelect, onClose }: SlashCommandMenuProps) {
+/** 原生命令 → 菜单行（透传语义：name 就是发送文本） */
+function nativeRow(c: NativeCommandInfo): SlashCommand {
+  return {
+    id: `native:${c.name}`,
+    name: `/${c.name}`,
+    title: c.description ?? (c.argumentHint ? `参数：${c.argumentHint}` : c.name),
+    description: c.aliases && c.aliases.length > 0 ? `别名 /${c.aliases.join(" /")} · ${c.argumentHint ?? ""}` : (c.argumentHint ?? "执行器原生斜杠命令，透传给 CLI 分发"),
+    category: "原生",
+    icon: TerminalSquare,
+    native: c,
+  };
+}
+
+export function SlashCommandMenu({ filter, onSelect, onClose, native }: SlashCommandMenuProps) {
   const activeRuntimeId = useWorkbench((s) => s.activeRuntimeId);
   const runtimeModels = useWorkbench((s) => s.runtimeModels);
   const visibleModels = useWorkbench(selectVisibleModels(activeRuntimeId));
@@ -143,6 +168,21 @@ export function SlashCommandMenu({ filter, onSelect, onClose }: SlashCommandMenu
   const lowerQuery = rawQuery.toLowerCase();
 
   const matched = useMemo<readonly SlashCommand[]>(() => {
+    // ---- 原生命令区：按 name / 别名 / 描述过滤，永远参与匹配 ----
+    const nativeMatches = native.commands
+      .filter((c) => {
+        if (!lowerQuery) return true;
+        return (
+          c.name.toLowerCase().includes(lowerQuery) ||
+          (c.aliases?.some((a) => a.toLowerCase().includes(lowerQuery)) ?? false) ||
+          (c.description?.toLowerCase().includes(lowerQuery) ?? false)
+        );
+      })
+      .map(nativeRow);
+
+    // ---- 工作台本地命令区：沿用原有的前缀子命令展开逻辑 ----
+    const local: SlashCommand[] = [];
+
     // 1. 如果以 "model" 开头（如 "/model" 或 "/model claude"）
     if (lowerQuery.startsWith("model")) {
       const sub = lowerQuery.replace(/^model\s*/, "").trim();
@@ -164,7 +204,7 @@ export function SlashCommandMenu({ filter, onSelect, onClose }: SlashCommandMenu
           };
         });
 
-      if (rows.length > 0) return rows;
+      if (rows.length > 0) local.push(...rows);
     }
 
     // 2. 如果以 "mem" 开头（如 "/mem" 或 "/mem daily"）
@@ -229,7 +269,7 @@ export function SlashCommandMenu({ filter, onSelect, onClose }: SlashCommandMenu
           c.title.toLowerCase().includes(sub) ||
           c.description.toLowerCase().includes(sub),
       );
-      if (filteredMem.length > 0) return filteredMem;
+      if (filteredMem.length > 0) local.push(...filteredMem);
     }
 
     // 3. 如果以 "skill" 开头（如 "/skill"）
@@ -248,10 +288,10 @@ export function SlashCommandMenu({ filter, onSelect, onClose }: SlashCommandMenu
           isSubOption: true,
         }));
 
-      if (skillRows.length > 0) return skillRows;
-
-      return [
-        {
+      if (skillRows.length > 0) {
+        local.push(...skillRows);
+      } else {
+        local.push({
           id: "skill:empty",
           name: "/skill",
           title: "当前工作区暂未检测到 skills/ 资产",
@@ -259,19 +299,32 @@ export function SlashCommandMenu({ filter, onSelect, onClose }: SlashCommandMenu
           category: "技能",
           icon: Sparkles,
           isSubOption: true,
-        },
-      ];
+        });
+      }
     }
 
     // 4. 常规搜索顶级命令列表
-    return TOP_LEVEL_COMMANDS.filter(
-      (c) =>
-        c.name.toLowerCase().includes(lowerQuery) ||
-        c.title.toLowerCase().includes(lowerQuery) ||
-        c.description.toLowerCase().includes(lowerQuery) ||
-        c.category.toLowerCase().includes(lowerQuery),
-    );
-  }, [lowerQuery, activeRuntimeId, visibleModels, runtimeModels, skills]);
+    if (local.length === 0) {
+      const top = TOP_LEVEL_COMMANDS.filter(
+        (c) =>
+          c.name.toLowerCase().includes(lowerQuery) ||
+          c.title.toLowerCase().includes(lowerQuery) ||
+          c.description.toLowerCase().includes(lowerQuery) ||
+          c.category.toLowerCase().includes(lowerQuery),
+      );
+      // 与原生命令同名的工作台命令标注出来，避免「两个 /model 哪个是谁」的困惑
+      const nativeNames = new Set(native.commands.map((c) => `/${c.name.toLowerCase()}`));
+      local.push(
+        ...top.map((c) =>
+          nativeNames.has(c.name.toLowerCase())
+            ? { ...c, title: `${c.title}（工作台版）` }
+            : c,
+        ),
+      );
+    }
+
+    return [...nativeMatches, ...local];
+  }, [lowerQuery, activeRuntimeId, visibleModels, runtimeModels, skills, native.commands]);
 
   const [activeIndex, setActiveIndex] = useState(0);
 
@@ -296,7 +349,7 @@ export function SlashCommandMenu({ filter, onSelect, onClose }: SlashCommandMenu
       } else if (e.key === "Enter" || e.key === "Tab") {
         if (matched[activeIndex]) {
           e.preventDefault();
-          onSelect(matched[activeIndex]!);
+          onSelect(matched[activeIndex]);
         }
       } else if (e.key === "Escape") {
         e.preventDefault();
@@ -308,33 +361,57 @@ export function SlashCommandMenu({ filter, onSelect, onClose }: SlashCommandMenu
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [matched, activeIndex, onSelect, onClose]);
 
-  if (matched.length === 0) return null;
+  if (matched.length === 0 && native.status !== "loading") return null;
+
+  // 分组渲染：原生在前（执行器的真相），工作台在后；分组头按需插入
+  type Row = { type: "header"; label: string; hint?: string } | { type: "cmd"; cmd: SlashCommand; idx: number };
+  const finalRows: Row[] = [];
+  const firstLocal = matched.findIndex((c) => c.category !== "原生");
+  if (matched.some((c) => c.category === "原生")) {
+    finalRows.push({ type: "header", label: `${native.executorName} 原生命令`, hint: `透传到 CLI 分发 · ${native.commands.length} 条` });
+  }
+  matched.forEach((cmd, idx) => {
+    if (idx === firstLocal) finalRows.push({ type: "header", label: "工作台命令", hint: "本地功能调度" });
+    finalRows.push({ type: "cmd", cmd, idx });
+  });
 
   return (
     <div className="absolute bottom-full left-0 mb-3 w-[460px] max-w-[calc(100vw-3rem)] rounded-xl border border-line bg-card/95 p-1.5 shadow-2xl backdrop-blur-md z-50 animate-in fade-in zoom-in-95 duration-100 overflow-hidden">
       <div className="px-3 py-1.5 border-b border-line-soft flex items-center justify-between text-[11px] text-graphite">
         <span className="font-medium text-ink flex items-center gap-1.5">
           <span className="font-mono text-teal font-bold">/</span>
-          <span>快捷指令 · 原生与工作台功能调度</span>
+          <span>快捷指令 · {native.commands.length > 0 ? `${native.executorName} 原生 + 工作台` : "工作台功能调度"}</span>
         </span>
         <span className="font-mono text-[10px]">↑↓ 导航 · Enter 执行 · Esc 关闭</span>
       </div>
 
       <div className="max-h-72 overflow-y-auto py-1 space-y-0.5">
-        {matched.map((cmd, idx) => {
+        {finalRows.map((r, i) => {
+          if (r.type === "header") {
+            return (
+              <div key={`h${i}`} className="px-2.5 pt-1.5 pb-0.5 flex items-center justify-between text-[10px] font-medium text-graphite/80">
+                <span>{r.label}</span>
+                {r.hint ? <span className="font-mono">{r.hint}</span> : null}
+              </div>
+            );
+          }
+          const cmd = r.cmd;
+          const idx = r.idx;
           const Icon = cmd.icon;
           const isActive = idx === activeIndex;
 
           const categoryColor =
-            cmd.category === "记忆"
+            cmd.category === "原生"
               ? "text-teal bg-teal-tint"
-              : cmd.category === "技能"
-                ? "text-amber-600 bg-amber-500/10"
-                : cmd.category === "模式"
-                  ? "text-purple-600 bg-purple-500/10"
-                  : cmd.category === "执行器"
-                    ? "text-blue-600 bg-blue-500/10"
-                    : "text-graphite bg-line-soft";
+              : cmd.category === "记忆"
+                ? "text-teal bg-teal-tint"
+                : cmd.category === "技能"
+                  ? "text-amber-600 bg-amber-500/10"
+                  : cmd.category === "模式"
+                    ? "text-purple-600 bg-purple-500/10"
+                    : cmd.category === "执行器"
+                      ? "text-blue-600 bg-blue-500/10"
+                      : "text-graphite bg-line-soft";
 
           return (
             <button
@@ -361,6 +438,9 @@ export function SlashCommandMenu({ filter, onSelect, onClose }: SlashCommandMenu
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">
                   <span className="font-mono text-xs font-bold text-ink">{cmd.name}</span>
+                  {cmd.native?.argumentHint ? (
+                    <span className="font-mono text-[10px] text-graphite/70 shrink-0">{cmd.native.argumentHint}</span>
+                  ) : null}
                   <span className="text-xs font-medium text-ink truncate">{cmd.title}</span>
                   <span
                     className={cn(
@@ -368,7 +448,7 @@ export function SlashCommandMenu({ filter, onSelect, onClose }: SlashCommandMenu
                       categoryColor,
                     )}
                   >
-                    {cmd.category}
+                    {cmd.category === "原生" ? (cmd.native?.builtin ? "原生·内置" : "原生·自定义") : cmd.category}
                   </span>
                 </div>
                 <p className="text-[11px] text-graphite truncate mt-0.5">{cmd.description}</p>
@@ -376,6 +456,18 @@ export function SlashCommandMenu({ filter, onSelect, onClose }: SlashCommandMenu
             </button>
           );
         })}
+
+        {native.status === "loading" && native.commands.length === 0 && (
+          <div className="flex items-center gap-2 px-3 py-2 text-xs text-graphite">
+            <Loader2 size={13} className="animate-spin text-teal" />
+            <span>正在从 {native.executorName} 拉取原生命令清单…</span>
+          </div>
+        )}
+        {native.status === "error" && native.commands.length === 0 && (
+          <div className="px-3 py-1.5 text-[11px] text-graphite/70">
+            原生命令拉取失败（{native.error ?? "daemon 不可达"}）· 当前仅显示工作台命令
+          </div>
+        )}
       </div>
     </div>
   );

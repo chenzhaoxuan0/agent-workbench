@@ -15,6 +15,7 @@ import type { AdapterSession, ExecutorAdapter, ExecutorModelInfo, StartRequest }
 import { adapterError } from "./adapters/types.ts";
 import type {
   ModelId,
+  NativeCommandInfo,
   ProbeResult,
   RuntimeEvent,
   RuntimeId,
@@ -375,6 +376,21 @@ export class RuntimeHost {
     return adapter.probe();
   }
 
+  /**
+   * 列出执行器的原生斜杠命令（UI 菜单数据源）。没有原生命令面的执行器返回 []。
+   * 单家失败不抛 —— 菜单退化成工作台本地命令，不阻断其他执行器。
+   */
+  async listCommands(runtimeId: string, rootPath: string): Promise<readonly NativeCommandInfo[]> {
+    const adapter = this.getAdapter(runtimeId);
+    if (typeof adapter.listCommands !== "function") return [];
+    try {
+      return await adapter.listCommands(rootPath);
+    } catch (err: unknown) {
+      log.warn("listCommands failed", { id: adapter.id, error: err instanceof Error ? err.message : String(err) });
+      return [];
+    }
+  }
+
   private toSession(h: HostSession): Session {
     return {
       id: h.id,
@@ -411,8 +427,13 @@ export class RuntimeHost {
     // - 切换执行器会开新会话 → 冷启动时自然重新注入，这正是我们要的
     // - daemon 重启后 resumeSession 走 CLI 自己的历史，不重复注入
     // 注入失败绝不阻断派发 —— 记忆是增强，不是前置条件。
+    //
+    // 斜杠命令首消息跳过注入：执行器的 slash 分发要求消息以 "/" 开头（Claude SDK
+    // 的 slash-command dispatch 见 verbatimPrompts 文档），前面拼记忆块会把
+    // "/init" 这类原生命令变成一句普通文本 —— 命令就废了。命令是控制输入，不是内容。
+    const isNativeCommand = input.prompt.startsWith("/");
     let injected: InjectedPrompt | null = null;
-    if (this.memory !== undefined) {
+    if (this.memory !== undefined && !isNativeCommand) {
       try {
         injected = await this.memory.build(input.rootPath, input.prompt, input.memoryOptions);
       } catch (err: unknown) {

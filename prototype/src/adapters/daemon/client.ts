@@ -19,7 +19,7 @@
  * 自动取；都拿不到就连裸的，daemon 开着鉴权会 401。
  */
 
-import type { RuntimeCapabilities } from "../../core/adapter.ts";
+import type { NativeCommandInfo, RuntimeCapabilities } from "../../core/adapter.ts";
 import type { RuntimeEvent } from "../../core/events.ts";
 import { ruleFromCron, type Automation, type AutomationRun, type ScheduleRule } from "../../core/automation.ts";
 import type { BacklogConfig, BacklogItem, BacklogProposal, BacklogSignal, BacklogStateSnapshot, QuotaHeadroom } from "../../core/backlog.ts";
@@ -352,6 +352,21 @@ export async function listDaemonExecutors(endpoint: string = defaultDaemonEndpoi
   const client = DaemonClient.get(endpoint);
   const list = await client.rpc<DaemonExecutorInfo[]>("adapter.list", null, 10000);
   return list;
+}
+
+/**
+ * 拉某执行器的**原生斜杠命令**清单（斜杠菜单数据源）。
+ *
+ * 空数组 = 该执行器没有原生命令面（不是错误）—— UI 回落工作台本地命令。
+ * 注意 runtimeId 传**裸执行器 id**（daemon 侧口径），不是 `daemon:<id>`。
+ */
+export async function fetchExecutorCommands(
+  runtimeId: string,
+  rootPath: string,
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<readonly NativeCommandInfo[]> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<readonly NativeCommandInfo[]>("adapter.commands", { runtimeId, rootPath }, 45000);
 }
 
 /**

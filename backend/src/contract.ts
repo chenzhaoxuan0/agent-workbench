@@ -19,6 +19,7 @@ export type {
 
 export type {
   ConnectionState,
+  NativeCommandInfo,
   ProbeResult,
   RuntimeCapabilities,
   TransportDescriptor,

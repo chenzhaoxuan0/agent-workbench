@@ -28,6 +28,7 @@ import {
 } from "./types.ts";
 import type {
   ModelId,
+  NativeCommandInfo,
   ProbeResult,
   RuntimeCapabilities,
   RuntimeEvent,
@@ -61,6 +62,12 @@ interface SdkMsg {
   is_error?: boolean;
   total_cost_usd?: number;
   usage?: Record<string, number | undefined>;
+  /** system/local_command_output 的输出正文 */
+  content?: string;
+  /** system/commands_changed 推送的最新命令清单 */
+  commands?: readonly SdkSlashCommand[];
+  /** system/informational 的渲染级别（info 只进 transcript，不上时间线） */
+  level?: string;
 }
 
 interface SessionState {
@@ -88,6 +95,40 @@ function modeToPermission(mode: StartRequest["mode"]): Options["permissionMode"]
   if (mode === "edit") return "acceptEdits";
   if (mode === "plan") return "plan";
   return "default";
+}
+
+// ---- 原生斜杠命令（supportedCommands）----------------------------------------
+
+/**
+ * SDK 的 slash 命令清单里混着一类「UX 绑死在本地终端」的命令（SDK 文档原文：
+ * terminal_slash_commands —— exit / statusline 这类）。Web 端执行它们没有意义
+ * （/exit 甚至会杀掉常驻会话），菜单里直接隐藏。保守起见只藏确定终端绑定的这几个。
+ */
+const TERMINAL_BOUND_COMMANDS = new Set(["exit", "statusline", "terminal-setup", "vim", "ide"]);
+
+/** SDK SlashCommand 的宽松视图（supportedCommands / commands_changed 共用） */
+interface SdkSlashCommand {
+  name?: string;
+  description?: string;
+  argumentHint?: string;
+  aliases?: string[];
+  builtin?: boolean;
+}
+
+function toNativeCommands(list: readonly SdkSlashCommand[]): readonly NativeCommandInfo[] {
+  const out: NativeCommandInfo[] = [];
+  for (const c of list) {
+    if (typeof c.name !== "string" || c.name === "" || TERMINAL_BOUND_COMMANDS.has(c.name)) continue;
+    out.push({
+      name: c.name,
+      description: c.description || undefined,
+      argumentHint: c.argumentHint || undefined,
+      aliases: Array.isArray(c.aliases) && c.aliases.length > 0 ? c.aliases.filter((a) => typeof a === "string") : undefined,
+      builtin: c.builtin === true ? true : undefined,
+      source: c.builtin === true ? "builtin" : undefined,
+    });
+  }
+  return out;
 }
 
 export class ClaudeAdapter implements ExecutorAdapter {
@@ -123,6 +164,80 @@ export class ClaudeAdapter implements ExecutorAdapter {
   };
 
   private readonly sessions = new Map<string, SessionState>();
+
+  /** 原生命令缓存：rootPath → { 命令清单, 拉取时间 }。TTL 内菜单直接命中。 */
+  private readonly commandCache = new Map<string, { commands: readonly NativeCommandInfo[]; at: number }>();
+  /** listCommands 在途去重（菜单抖动/多视图并发打开时只拉一次） */
+  private readonly commandFetches = new Map<string, Promise<readonly NativeCommandInfo[]>>();
+  private static readonly COMMAND_TTL_MS = 10 * 60 * 1000;
+
+  /**
+   * 原生斜杠命令清单 —— 起一个**临时 query**（输入迭代器永远不给消息，
+   * CLI 只完成 initialize 握手后干等输入），调 `supportedCommands()` 拿全量
+   * （内置 + ~/.claude/commands + <root>/.claude/commands + 插件），拿完即收。
+   *
+   * 这是 SDK 官方的命令发现面（IDE 客户端同款用法）：清单是 CLI 自己算的，
+   * 工作台不维护静态表 —— 新装插件/新加项目命令自动出现（commands_changed
+   * 事件还会热刷新缓存，见 onMessage）。
+   */
+  async listCommands(rootPath: string): Promise<readonly NativeCommandInfo[]> {
+    const hit = this.commandCache.get(rootPath);
+    if (hit !== undefined && Date.now() - hit.at < ClaudeAdapter.COMMAND_TTL_MS) return hit.commands;
+
+    const inflight = this.commandFetches.get(rootPath);
+    if (inflight !== undefined) return inflight;
+
+    const fetch = this.fetchCommandsUncached(rootPath)
+      .then((commands) => {
+        this.commandCache.set(rootPath, { commands, at: Date.now() });
+        return commands;
+      })
+      .finally(() => {
+        this.commandFetches.delete(rootPath);
+      });
+    this.commandFetches.set(rootPath, fetch);
+    return fetch;
+  }
+
+  /** 临时 query 实现：阻塞输入 → supportedCommands → 关输入收尾。失败返回 []（UI 回落本地命令）。 */
+  private async fetchCommandsUncached(rootPath: string): Promise<readonly NativeCommandInfo[]> {
+    // 闭包里赋值、外部读 —— 用持有对象，别跟 TS 的控制流收窄较劲
+    const gate: { release: (() => void) | null } = { release: null };
+    const input: AsyncIterable<SDKUserMessage> = {
+      [Symbol.asyncIterator]() {
+        return {
+          next: () =>
+            new Promise<IteratorResult<SDKUserMessage>>((resolve) => {
+              gate.release = () => {
+                gate.release = null;
+                resolve({ value: undefined, done: true });
+              };
+            }),
+        };
+      },
+    };
+
+    try {
+      const { query } = await import("@anthropic-ai/claude-agent-sdk");
+      const q = query({ prompt: input, options: { cwd: rootPath } });
+      // 后台排空消息流（不迭代的话 CLI 侧输出堆着；这里只在乎 control 请求）
+      const drain = (async () => {
+        try {
+          for await (const _ of q) void _;
+        } catch {
+          /* 收尾阶段的中断/退出噪声不算错 */
+        }
+      })();
+      void drain;
+      const list = await q.supportedCommands();
+      return toNativeCommands(Array.isArray(list) ? (list as readonly SdkSlashCommand[]) : []);
+    } catch (err: unknown) {
+      log.warn("claude supportedCommands failed", { rootPath, error: err instanceof Error ? err.message : String(err) });
+      return [];
+    } finally {
+      gate.release?.();
+    }
+  }
 
   async probe(): Promise<ProbeResult> {
     const t0 = Date.now();
@@ -320,6 +435,32 @@ export class ClaudeAdapter implements ExecutorAdapter {
     switch (m.type) {
       case "system": {
         if (typeof m.session_id === "string") state.cliSessionId = m.session_id;
+        // 原生命令面的两类 system 子消息：
+        // - local_command_output：/usage /memory /doctor 这类**本地命令**的输出
+        //   （不经过模型循环，TUI 里直接打印）→ 翻成 assistant 消息进时间线。
+        //   不翻的话 Web 端发 /usage 就像石沉大海 —— 这正是「TUI 与 Web 天差地别」的主因之一。
+        // - commands_changed：CLI 主动推送最新命令清单（新装插件/技能动态发现）→ 热刷新缓存。
+        if (m.subtype === "local_command_output" && typeof m.content === "string" && m.content !== "") {
+          sink({
+            type: "message.completed",
+            sessionId,
+            messageId: `local_${Date.now()}`,
+            text: m.content,
+          });
+        } else if (m.subtype === "informational" && typeof m.content === "string" && m.content !== "" && m.level !== "info") {
+          // 横幅（Hook 拦截理由 / slash 命令状态行）：notice 起步才值得占时间线
+          sink({
+            type: "message.completed",
+            sessionId,
+            messageId: `banner_${Date.now()}`,
+            text: m.content,
+          });
+        } else if (m.subtype === "commands_changed" && Array.isArray(m.commands)) {
+          this.commandCache.set(state.rootPath, {
+            commands: toNativeCommands(m.commands as readonly SdkSlashCommand[]),
+            at: Date.now(),
+          });
+        }
         break;
       }
       case "stream_event": {

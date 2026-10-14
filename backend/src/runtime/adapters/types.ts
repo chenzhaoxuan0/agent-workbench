@@ -12,6 +12,7 @@
 import type {
   ConnectionState,
   ModelId,
+  NativeCommandInfo,
   ProbeResult,
   RuntimeCapabilities,
   RuntimeEvent,
@@ -88,6 +89,18 @@ export interface ExecutorAdapter {
   readonly capabilities: RuntimeCapabilities;
   /** 动态对齐/刷新模型清单与上下文参数（支持的 CLI 会实时查询，失败时保留 fallback） */
   syncModels?(): Promise<readonly ExecutorModelInfo[]>;
+  /**
+   * 列出该执行器在 rootPath 下的**原生斜杠命令**（可选能力）。
+   *
+   * - 命令来自执行器自己的声明面（Claude SDK supportedCommands / Codex prompts
+   *   目录 / OpenCode GET /command），不是工作台编的静态表；
+   * - 执行是透传语义：调用方把 "/name args" 当普通 turn 文本发进会话，
+   *   分发由执行器完成（个别 CLI —— codex/opencode —— 由适配器在 send 里
+   *   做与 TUI 等价的展开/路由，见各自实现）；
+   * - rootPath 影响命令清单（项目级自定义命令）；适配器自定缓存与 TTL；
+   * - 没有原生命令面的执行器不实现此方法，UI 菜单只显示工作台本地命令。
+   */
+  listCommands?(rootPath: string): Promise<readonly NativeCommandInfo[]>;
   /**
    * 交互式 TUI 的启动命令名（可选）。终端「一键直启」拼 pwsh 命令时用它
    * 替换裸 id —— 适用于「TUI 由另一个 shim 拉起」的执行器（dsh 的 TUI 走

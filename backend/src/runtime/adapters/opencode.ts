@@ -41,6 +41,7 @@ import {
 } from "./types.ts";
 import type {
   ModelId,
+  NativeCommandInfo,
   ProbeResult,
   RuntimeCapabilities,
   RuntimeEvent,
@@ -309,6 +310,62 @@ export class OpencodeAdapter implements ExecutorAdapter {
 
   // ---- REST 基础设施 -----------------------------------------------------------
 
+  /** 原生命令缓存（GET /command）；老版本没有该路由时静默回落空清单 */
+  private readonly commandCache = new Map<string, { commands: readonly NativeCommandInfo[]; at: number }>();
+  private static readonly COMMAND_TTL_MS = 10 * 60 * 1000;
+
+  /**
+   * opencode 的自定义命令面：`GET /command` 列出 `.opencode/command/*.md`
+   * （项目级 + 全局）发现的命令，`POST /session/{id}/command` 原生执行 ——
+   * 与 TUI 的斜杠命令同一条服务端路径，不是工作台模拟。
+   */
+  private async fetchCommandsUncached(base: string, rootPath: string): Promise<readonly NativeCommandInfo[]> {
+    const r = await this.rest(base, "/command", "GET", undefined, rootPath);
+    if (r.status >= 300 || !Array.isArray(r.json)) return [];
+    const out: NativeCommandInfo[] = [];
+    for (const entry of r.json as unknown[]) {
+      const c = (entry as { command?: { name?: string; description?: string } }).command;
+      if (typeof c?.name !== "string" || c.name === "") continue;
+      out.push({ name: c.name, description: c.description || undefined });
+    }
+    return out;
+  }
+
+  async listCommands(rootPath: string): Promise<readonly NativeCommandInfo[]> {
+    const hit = this.commandCache.get(rootPath);
+    if (hit !== undefined && Date.now() - hit.at < OpencodeAdapter.COMMAND_TTL_MS) return hit.commands;
+    const base = await this.serve.baseUrl();
+    const commands = await this.fetchCommandsUncached(base, rootPath).catch(() => []);
+    this.commandCache.set(rootPath, { commands, at: Date.now() });
+    return commands;
+  }
+
+  /**
+   * "/name args" 且 name 在 /command 清单里 → 走原生 command 路由。
+   * 不匹配（或路由失败）返回 false，调用方回落 prompt_async 原样透传。
+   */
+  private async runNativeCommand(base: string, state: OcSession, text: string): Promise<boolean> {
+    if (!text.startsWith("/")) return false;
+    const sp = text.search(/\s/);
+    const name = text.slice(1, sp === -1 ? undefined : sp);
+    if (name === "") return false;
+    const known = await this.listCommands(state.rootPath);
+    if (!known.some((c) => c.name === name)) return false;
+    const args = sp === -1 ? "" : text.slice(sp + 1).trim();
+    const r = await this.rest(
+      base,
+      `/session/${state.ref}/command`,
+      "POST",
+      { command: name, arguments: args },
+      state.rootPath,
+    );
+    if (r.status >= 300) {
+      log.debug("opencode command 路由失败，回落透传", { name, status: r.status });
+      return false;
+    }
+    return true;
+  }
+
   private async rest(
     base: string,
     path: string,
@@ -396,6 +453,8 @@ export class OpencodeAdapter implements ExecutorAdapter {
         const base = await this.serve.baseUrl();
         void this.startSse(base, state.rootPath);
         if (state.ref === null) throw new Error("opencode 会话未建立");
+        // 原生斜杠命令优先（.opencode/command 的服务端路由），其余原样 prompt
+        if (await this.runNativeCommand(base, state, text)) return;
         const body: Record<string, unknown> = { parts: [{ type: "text", text }] };
         if (state.model !== null && state.model.includes("/")) {
           const [providerID, modelID] = state.model.split("/");
