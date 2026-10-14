@@ -5,7 +5,7 @@
  * Phase 1 在这里注册 session.* 方法并把 RuntimeEvent 接进 broadcastEvent。
  */
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { timingSafeEqual } from "node:crypto";
@@ -133,43 +133,51 @@ try {
   process.exit(1);
 }
 
-// ---- 事件循环阻塞监视器 -------------------------------------------------------
+// ---- 事件循环阻塞监视器（Worker 版）------------------------------------------
 //
-// 为什么存在：2026-10-15 实测 daemon 两次整体冻结（连 /healthz 都无响应，
-// CPU 静止 = 事件循环卡在某个同步调用里），根因当时抓不到现场。这个监视器
-// 把每次停摆的时长与时间点落到 <homeDir>/loop-stall.log（并落一份 Node
-// diagnostic report），下次再冻结就有「几点几分停了多久」的硬证据可对。
-// 正常情况零输出、零开销（1s 一个 unref 定时器）。
+// 为什么必须是 worker：2026-10-15 实测 daemon 两次整体冻结（/healthz 无响应，
+// CPU 静止 = 主线程卡在同步调用里，minidump 栈回溯定位到 conpty.node）。旧版
+// 监视器是主线程 setInterval —— 主线程永久卡死时定时器根本不会触发，一行
+// 证据都留不下。worker 有独立事件循环：主线程停止心跳后它照样跑，把停摆
+// 的时间点/时长写进 <homeDir>/loop-stall.log（恢复时再补一行）。
+// 正常情况零输出、零开销（主线程 1s 一次 unref 心跳）。
 
 {
   const STALL_THRESHOLD_MS = 5_000;
   const stallLogPath = join(config.homeDir, "loop-stall.log");
-  let lastTick = Date.now();
-  let lastReportAt = 0;
-  const timer = setInterval(() => {
-    const now = Date.now();
-    const drift = now - lastTick - 1000;
-    lastTick = now;
-    if (drift < STALL_THRESHOLD_MS) return;
-    const line = `${new Date(now).toISOString()} loop stalled ${Math.round(drift / 100) / 10}s\n`;
-    try {
-      appendFileSync(stallLogPath, line);
-      console.error(`[loop-stall] ${line.trim()}`);
-    } catch {
-      /* 家目录写不进就算了，console 至少还有 */
-    }
-    // 停摆结束后的第一拍落一份完整诊断报告（限频 10 分钟一份）
-    if (now - lastReportAt > 10 * 60_000) {
-      lastReportAt = now;
-      try {
-        const report = process.report?.getReport?.();
-        if (report !== undefined) appendFileSync(stallLogPath, JSON.stringify(report) + "\n");
-      } catch {
-        /* report 不可用（老 Node）就算了 */
+  const watchdogSrc = `
+    const { parentPort } = require("node:worker_threads");
+    const { appendFileSync } = require("node:fs");
+    const THRESHOLD = ${STALL_THRESHOLD_MS};
+    const LOG = ${JSON.stringify(stallLogPath)};
+    let lastBeat = Date.now();
+    let stalledSince = 0;
+    parentPort.on("message", () => { lastBeat = Date.now(); });
+    setInterval(() => {
+      const silent = Date.now() - lastBeat;
+      if (silent > THRESHOLD && stalledSince === 0) {
+        stalledSince = Date.now();
+        const line = new Date().toISOString() + " main-loop stalled (> " + Math.round(silent / 100) / 10 + "s and counting)\\n";
+        try { appendFileSync(LOG, line); } catch {}
+        console.error("[loop-stall] " + line.trim());
+      } else if (silent <= THRESHOLD && stalledSince !== 0) {
+        const dur = Date.now() - stalledSince;
+        stalledSince = 0;
+        const line = new Date().toISOString() + " main-loop recovered, stalled " + Math.round(dur / 100) / 10 + "s\\n";
+        try { appendFileSync(LOG, line); } catch {}
+        console.error("[loop-stall] " + line.trim());
       }
-    }
-  }, 1000);
-  timer.unref?.();
+    }, 1000).unref();
+  `;
+  try {
+    const { Worker } = await import("node:worker_threads");
+    const watchdog = new Worker(watchdogSrc, { eval: true });
+    watchdog.unref();
+    const beat = setInterval(() => watchdog.postMessage(1), 1000);
+    beat.unref?.();
+  } catch (err: unknown) {
+    console.error("loop-stall watchdog 起不来（继续跑，只是没证据兜底）", err instanceof Error ? err.message : String(err));
+  }
 }
 
 // ---- 服务与执行器（先建好，REST 路由要引用）---------------------------------
@@ -2227,9 +2235,8 @@ async function shutdown(signal: string): Promise<void> {
   // 飞书也停：它有一个 15s reconcile interval 和每账号的长连接/子进程，
   // 漏掉它就会在 host.shutdown() 关掉 store 之后还能起新活（评审 P1 同类）
   feishuGateway.stop();
-  terminals.shutdown();
-  // pty 自退后的 ConPTY 句柄收尾窗口：抢跑 process.exit 会撞 libuv 断言（见其注释）
-  await terminals.waitPtyDrain();
+  // 杀光终端 → ConPTY 排空窗口 → terminate pty worker（顺序敏感，见 stop 注释）
+  await terminals.stop();
   const force = setTimeout(() => process.exit(0), 2000).unref(); // 挂起写兜底：2s 强制退
   try {
     await host.shutdown();

@@ -11,7 +11,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
-import pty from "node-pty";
+import { PtyHost, type PtyHandle } from "./ptyHost.ts";
 import { log } from "../log.ts";
 
 export interface TerminalFrameInput {
@@ -64,7 +64,8 @@ export interface CreateOptions {
 
 interface TerminalSession {
   readonly terminalId: string;
-  readonly pty: pty.IPty;
+  /** worker 侧 PTY 的句柄（pid 在 worker 回报 created 后回填；write/resize/kill 走 host） */
+  readonly pty: PtyHandle;
   /** create 时的 shell / cwd / 前台执行器 / unitId —— 重挂（F5）时前端靠它们无缝认领还原标签 */
   readonly shell: string;
   readonly cwd: string;
@@ -197,6 +198,11 @@ export class TerminalManager {
   private readonly sessions = new Map<string, TerminalSession>();
   /** 最近一次 pty 自退的时间（0 = 从未）—— shutdown 排空判据 */
   private lastSelfExitAt = 0;
+  /**
+   * node-pty 全部跑在 worker 线程（见 ptyHost.ts 头注释）：conpty 插件的
+   * 同步阻塞曾经把主线程整个冻结（minidump 实锤），隔离后最多死一个终端。
+   */
+  private readonly host = new PtyHost();
 
   constructor(private readonly emit: (frame: TerminalFrameInput) => void) {}
 
@@ -306,20 +312,48 @@ export class TerminalManager {
     };
 
     const isWindows = process.platform === "win32";
-    const shellProcess = pty.spawn(shell, shellArgs, {
-      name: "xterm-256color",
-      cols,
-      rows,
-      cwd,
-      env: { ...process.env, ...envOverrides } as Record<string, string>,
-      useConpty: isWindows,
-      useConptyDll: isWindows,
-      conptyInheritCursor: isWindows,
-    });
 
-    const session: TerminalSession = {
+    // 先立台账再挂监听：data/exit 帧最早也得等 worker 转一轮消息循环，
+    // 那时 session 引用已就位
+    let session!: TerminalSession;
+    const ptyHandle = this.host.create(
       terminalId,
-      pty: shellProcess,
+      {
+        file: shell,
+        args: shellArgs,
+        cwd,
+        cols,
+        rows,
+        env: { ...process.env, ...envOverrides } as Record<string, string>,
+      },
+      {
+        onData: (data) => {
+          session.lastDataAt = Date.now();
+          session.scrollback.push(data);
+          session.scrollbackBytes += Buffer.byteLength(data);
+          while (session.scrollbackBytes > SCROLLBACK_CAP_BYTES && session.scrollback.length > 1) {
+            const dropped = session.scrollback.shift();
+            session.scrollbackBytes -= Buffer.byteLength(dropped ?? "");
+          }
+          this.emit({ terminalId, kind: "data", data });
+        },
+        onExit: (exitCode) => {
+          const killed = session.killedByClient === true;
+          const durationMs = Date.now() - session.bornAt;
+          const rawOutput = session.scrollback.join("");
+          const transcript = stripAnsi(rawOutput).trim();
+          this.host.forget(terminalId);
+          this.sessions.delete(terminalId);
+          this.lastSelfExitAt = Date.now();
+          log.info("terminal exited", { terminalId, exitCode, killed, durationMs, transcriptChars: transcript.length });
+          this.emit({ terminalId, kind: "exit", exitCode, killed, durationMs, transcript: transcript !== "" ? transcript : undefined });
+        },
+      },
+    );
+
+    session = {
+      terminalId,
+      pty: ptyHandle,
       shell,
       cwd,
       executor: targetCmd ? (isYolo ? `${targetCmd}:yolo` : targetCmd) : "shell",
@@ -331,27 +365,6 @@ export class TerminalManager {
       inputBuffer: "",
     };
 
-    shellProcess.onData((data) => {
-      session.lastDataAt = Date.now();
-      session.scrollback.push(data);
-      session.scrollbackBytes += Buffer.byteLength(data);
-      while (session.scrollbackBytes > SCROLLBACK_CAP_BYTES && session.scrollback.length > 1) {
-        const dropped = session.scrollback.shift();
-        session.scrollbackBytes -= Buffer.byteLength(dropped ?? "");
-      }
-      this.emit({ terminalId, kind: "data", data });
-    });
-    shellProcess.onExit(({ exitCode }) => {
-      const killed = session.killedByClient === true;
-      const durationMs = Date.now() - session.bornAt;
-      const rawOutput = session.scrollback.join("");
-      const transcript = stripAnsi(rawOutput).trim();
-      this.sessions.delete(terminalId);
-      this.lastSelfExitAt = Date.now();
-      log.info("terminal exited", { terminalId, exitCode, killed, durationMs, transcriptChars: transcript.length });
-      this.emit({ terminalId, kind: "exit", exitCode, killed, durationMs, transcript: transcript !== "" ? transcript : undefined });
-    });
-
     this.sessions.set(terminalId, session);
     const recordedExec = targetCmd ? (isYolo ? `${targetCmd}:yolo` : targetCmd) : "shell";
     log.info("terminal created", {
@@ -360,7 +373,6 @@ export class TerminalManager {
       executor: recordedExec,
       unitId: opts.unitId,
       cwd: path.basename(cwd),
-      pid: shellProcess.pid,
     });
     // created 帧：后端侧（自动化派发）新建的终端靠它推送认领 —— 前端不轮询
     // terminal.list，收到帧即开标签；手动路径的帧无害（前端已有该终端则忽略）。
@@ -396,11 +408,7 @@ export class TerminalManager {
         const quietEnough = now - s.lastDataAt >= quiet;
         if ((now - bornAt >= minDelay && quietEnough) || now - bornAt >= maxWait) {
           clearInterval(timer);
-          try {
-            s.pty.write(data);
-          } catch (err: unknown) {
-            log.warn("terminal writeWhenQuiet failed", { terminalId, error: err instanceof Error ? err.message : String(err) });
-          }
+          this.host.write(terminalId, data);
           resolve();
         }
       }, 150);
@@ -410,7 +418,7 @@ export class TerminalManager {
 
   write(terminalId: string, data: string): void {
     const session = this.get(terminalId);
-    session.pty.write(data);
+    this.host.write(terminalId, data);
     if (!session.firstInputCaptured) {
       this.accumulateFirstInput(session, data);
     }
@@ -445,21 +453,22 @@ export class TerminalManager {
     if (!Number.isFinite(cols) || !Number.isFinite(rows) || cols < 2 || rows < 2 || cols > 500 || rows > 300) {
       throw Object.assign(new Error(`invalid terminal size ${cols}x${rows}`), { code: "bad_params" });
     }
-    this.get(terminalId).pty.resize(cols, rows);
+    this.get(terminalId);
+    this.host.resize(terminalId, cols, rows);
   }
 
   kill(terminalId: string): void {
     const session = this.get(terminalId);
     session.killedByClient = true;
-    // kill 后 onExit 会补发 exit 帧并清台账
-    session.pty.kill();
+    // kill 后 worker 侧 onExit 会补发 exit 帧并清台账
+    this.host.kill(terminalId);
   }
 
   list(): Array<{ terminalId: string; shell: string; pid: number; cwd: string; executor: string; unitId?: string; scrollback: string }> {
     return [...this.sessions.values()].map((s) => ({
       terminalId: s.terminalId,
-      shell: s.pty.process,
-      pid: s.pty.pid,
+      shell: s.shell,
+      pid: s.pty.pid ?? 0,
       cwd: s.cwd,
       executor: s.executor,
       unitId: s.unitId,
@@ -489,12 +498,13 @@ export class TerminalManager {
 
   shutdown(): void {
     for (const s of this.sessions.values()) {
-      try {
-        s.pty.kill();
-      } catch {
-        // 已经死了就算赢
-      }
+      this.host.kill(s.terminalId);
     }
     this.sessions.clear();
+  }
+
+  /** daemon 关停收尾：杀光终端 → ConPTY 排空窗口 → terminate pty worker */
+  async stop(): Promise<void> {
+    await this.host.shutdown(() => this.shutdown(), () => this.waitPtyDrain());
   }
 }

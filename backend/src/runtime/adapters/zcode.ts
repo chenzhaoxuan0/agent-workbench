@@ -20,6 +20,9 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { readdirSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { ChildProcess } from "node:child_process";
 import {
   type AdapterSession,
@@ -30,6 +33,7 @@ import {
 } from "./types.ts";
 import type {
   ModelId,
+  NativeCommandInfo,
   ProbeResult,
   RuntimeCapabilities,
   RuntimeEvent,
@@ -691,6 +695,73 @@ class PrintTransport {
 
 // ==== 适配器门面 ============================================================
 
+/**
+ * 文件级命令发现（协议不可用时的回退）：ZCode 自定义命令就是 markdown 文件 ——
+ * `<base>/.zcode/commands` 与 `<base>/.agents/commands`（base = 用户家目录或项目根，
+ * 上游 adapters/src/commands/roots.ts 的同款约定），frontmatter 认 description /
+ * argument-hint 两键。只列自定义段（内置命令清单没有独立事实源，不猜）。
+ */
+function readZcodeCustomCommands(rootPath: string): readonly NativeCommandInfo[] {
+  const out: NativeCommandInfo[] = [];
+  const seen = new Set<string>();
+  const bases: Array<{ base: string; source: "user" | "project" }> = [
+    { base: rootPath, source: "project" },
+    { base: homedir(), source: "user" },
+  ];
+  for (const { base, source } of bases) {
+    for (const ns of [".zcode", ".agents"]) {
+      const dir = join(base, ns, "commands");
+      let files: string[];
+      try {
+        files = readdirSync(dir, { recursive: true }).filter((f) => String(f).toLowerCase().endsWith(".md")).map((f) => join(dir, String(f)));
+      } catch {
+        continue;
+      }
+      for (const file of files) {
+        const name = file.split(/[\\/]/).pop()!.replace(/\.md$/i, "");
+        if (name === "" || seen.has(name)) continue; // 项目级覆盖用户级（上游同款优先级）
+        seen.add(name);
+        let raw: string;
+        try {
+          raw = readFileSync(file, "utf8");
+        } catch {
+          continue;
+        }
+        out.push({ ...parseZcodeCommandFile(name, raw), source });
+      }
+    }
+  }
+  return out;
+}
+
+/** frontmatter 解析（description / argument-hint 两键，扁平 yaml），与上游口径一致 */
+function parseZcodeCommandFile(name: string, raw: string): Omit<NativeCommandInfo, "source"> {
+  let description: string | undefined;
+  let argumentHint: string | undefined;
+  if (raw.startsWith("---\n") || raw.startsWith("---\r\n")) {
+    const end = raw.indexOf("\n---", 4);
+    if (end !== -1) {
+      for (const line of raw.slice(raw.indexOf("\n") + 1, end).split(/\r?\n/)) {
+        const i = line.indexOf(":");
+        if (i === -1) continue;
+        const key = line.slice(0, i).trim().toLowerCase();
+        const value = line.slice(i + 1).trim();
+        if (key === "description" && value !== "") description = value;
+        else if (key === "argument-hint" && value !== "") argumentHint = value;
+      }
+    }
+  }
+  return {
+    name,
+    description,
+    argumentHint,
+    // 正文首行兜底描述（上游 extractDescription 同款语义）
+    ...(description === undefined
+      ? { description: raw.split(/\r?\n/).find((l) => l.trim() !== "" && !l.startsWith("---"))?.trim().slice(0, 120) || undefined }
+      : {}),
+  };
+}
+
 export class ZcodeAdapter implements ExecutorAdapter {
   readonly id = "zcode";
   readonly displayName = "ZCode";
@@ -744,6 +815,55 @@ export class ZcodeAdapter implements ExecutorAdapter {
   private transport: "app-server" | "print" = "app-server";
   private readonly appServer = new ZcodeAppServerTransport();
   private readonly print = new PrintTransport();
+
+  /** 原生命令缓存（readPresentation 结果；TTL 与其他适配器同口径） */
+  private readonly commandCache = new Map<string, { commands: readonly NativeCommandInfo[]; at: number }>();
+  private static readonly COMMAND_TTL_MS = 10 * 60 * 1000;
+
+  /**
+   * ZCode 的原生命令面 —— 协议官方声明口：`workspace/readPresentation` 返回
+   * `{ mode, slashCommands: [{name, description, inputHint, source}] }`（上游
+   * packages/shared zcodeSlashCommandSchema；本地 workspaceKey = workspacePath）。
+   * 命令执行是透传："/name args" 作为 turn 文本走 session/send，服务端自己分发。
+   * app-server 不可用（print 回退档）时返回空清单。
+   */
+  async listCommands(rootPath: string): Promise<readonly NativeCommandInfo[]> {
+    const hit = this.commandCache.get(rootPath);
+    if (hit !== undefined && Date.now() - hit.at < ZcodeAdapter.COMMAND_TTL_MS) return hit.commands;
+    if (this.transport !== "app-server") return hit?.commands ?? [];
+    try {
+      const r = await this.appServer.rpc<{ slashCommands?: readonly {
+        name?: string;
+        description?: string;
+        inputHint?: string;
+        source?: "builtin" | "custom";
+      }[] }>(
+        ZCODE_METHODS.workspaceReadPresentation,
+        { workspace: { workspacePath: rootPath, workspaceKey: rootPath } },
+        20000,
+      );
+      const commands: NativeCommandInfo[] = [];
+      for (const c of r?.slashCommands ?? []) {
+        if (typeof c?.name !== "string" || c.name === "") continue;
+        commands.push({
+          name: c.name,
+          description: c.description || undefined,
+          argumentHint: c.inputHint || undefined,
+          builtin: c.source === "builtin" ? true : undefined,
+          source: c.source === "builtin" ? "builtin" : undefined,
+        });
+      }
+      this.commandCache.set(rootPath, { commands, at: Date.now() });
+      return commands;
+    } catch (err: unknown) {
+      // app-server 起不来（本机 0.16.9 实测 "Bundled 与 Active Release 均不可用"）
+      // → 文件级发现兜底：自定义命令段照样能列，内置段缺席（没有独立事实源，不猜）
+      log.debug("zcode readPresentation 失败，回落文件级命令发现", { rootPath, error: err instanceof Error ? err.message : String(err) });
+      const commands = readZcodeCustomCommands(rootPath);
+      if (commands.length > 0 || hit === undefined) this.commandCache.set(rootPath, { commands, at: Date.now() });
+      return commands;
+    }
+  }
 
   async probe(): Promise<ProbeResult> {
     const t0 = Date.now();
