@@ -35,6 +35,7 @@ import {
   type StartRequest,
 } from "./types.ts";
 import { builtinCommandsFor } from "./builtin-catalogs.ts";
+import { discoverCodexSkillsAndAgents, mergeCommandEntries } from "./discovery.ts";
 import type {
   ModelId,
   NativeCommandInfo,
@@ -395,17 +396,16 @@ export class CodexAdapter implements ExecutorAdapter {
   private readonly commandCache = new Map<string, { commands: readonly NativeCommandInfo[]; at: number }>();
   private static readonly COMMAND_TTL_MS = 10 * 60 * 1000;
 
-  /** 自定义提示词清单（菜单数据）。读盘很便宜，TTL 只是为了少抖。 */
+  /** 自定义提示词、技能与子智能体清单（菜单数据）。读盘很便宜，TTL 只是为了少抖。 */
   async listCommands(rootPath: string): Promise<readonly NativeCommandInfo[]> {
     const hit = this.commandCache.get(rootPath);
     if (hit !== undefined && Date.now() - hit.at < CodexAdapter.COMMAND_TTL_MS) return hit.commands;
     const custom = readCodexPrompts(rootPath).map((p) => p.info);
-    // 内置目录（v0.162.1 TUI 实测，见 builtin-catalogs.ts）+ 自定义 prompts；
-    // 同名时自定义覆盖内置（TUI 同款优先级）
-    const customNames = new Set(custom.map((c) => c.name));
-    const commands = [...builtinCommandsFor(this.id).filter((b) => !customNames.has(b.name)), ...custom];
-    this.commandCache.set(rootPath, { commands, at: Date.now() });
-    return commands;
+    const discovered = discoverCodexSkillsAndAgents(rootPath);
+    const builtins = builtinCommandsFor(this.id);
+    const merged = mergeCommandEntries(builtins, custom, discovered.skills, discovered.agents);
+    this.commandCache.set(rootPath, { commands: merged, at: Date.now() });
+    return merged;
   }
 
   /**

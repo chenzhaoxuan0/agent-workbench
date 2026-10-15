@@ -780,14 +780,17 @@ function readZcodeSkills(rootPath: string): readonly NativeCommandInfo[] {
       const dir = join(base, ns, "skills");
       let entries: string[];
       try {
-        entries = readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
+        entries = readdirSync(dir);
       } catch {
         continue;
       }
       for (const entry of entries) {
+        if (entry.startsWith(".")) continue;
+        const skillPath = join(dir, entry, "SKILL.md");
+        if (!existsSync(skillPath)) continue;
         let raw: string;
         try {
-          raw = readFileSync(join(dir, entry, "SKILL.md"), "utf8");
+          raw = readFileSync(skillPath, "utf8");
         } catch {
           continue; // 目录里没有 SKILL.md = 不是技能（可能是数据目录），跳过
         }

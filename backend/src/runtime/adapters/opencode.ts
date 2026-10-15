@@ -50,6 +50,16 @@ import type {
 } from "../../contract.ts";
 import { execLines, resolveCommand } from "../exec.ts";
 import { log } from "../../log.ts";
+import { builtinCommandsFor } from "./builtin-catalogs.ts";
+import {
+  discoverAgentsInDir,
+  discoverCommandsInDir,
+  discoverSkillsInDir,
+  mergeCommandEntries,
+  readStandardAgentsWorkspace,
+} from "./discovery.ts";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 // ---- serve 进程管理（一个 adapter 一个常驻 serve，死了下次请求重启） --------------
 
@@ -57,6 +67,10 @@ class ServeProcess {
   private child: ChildProcess | null = null;
   private base: string | null = null;
   private starting: Promise<string> | null = null;
+
+  isRunning(): boolean {
+    return this.base !== null && this.child !== null && this.child.exitCode === null;
+  }
 
   baseUrl(): Promise<string> {
     if (this.base !== null && this.child !== null && this.child.exitCode === null) return Promise.resolve(this.base);
@@ -321,38 +335,90 @@ export class OpencodeAdapter implements ExecutorAdapter {
   private static readonly COMMAND_TTL_MS = 10 * 60 * 1000;
 
   /**
-   * opencode 的自定义命令面：`GET /command` 列出 `.opencode/command/*.md`
-   * （项目级 + 全局）发现的命令，`POST /session/{id}/command` 原生执行 ——
-   * 与 TUI 的斜杠命令同一条服务端路径，不是工作台模拟。
+   * opencode 的命令面：`GET /command` 列出命令（含技能/提示词模板）。
+   * 宽容解析：兼容 array、{data: [...]} 及旧版格式。
    */
   private async fetchCommandsUncached(base: string, rootPath: string): Promise<readonly NativeCommandInfo[]> {
     const r = await this.rest(base, "/command", "GET", undefined, rootPath);
-    if (r.status >= 300 || !Array.isArray(r.json)) return [];
+    if (r.status >= 300) return [];
+    const list = Array.isArray(r.json)
+      ? r.json
+      : r.json && typeof r.json === "object" && Array.isArray((r.json as { data?: unknown[] }).data)
+        ? (r.json as { data: unknown[] }).data
+        : [];
     const out: NativeCommandInfo[] = [];
-    for (const entry of r.json as unknown[]) {
-      const c = (entry as { command?: { name?: string; description?: string } }).command;
-      if (typeof c?.name !== "string" || c.name === "") continue;
-      out.push({ name: c.name, description: c.description || undefined });
+    for (const entry of list) {
+      const item = entry as { name?: string; description?: string; hints?: string[]; command?: { name?: string; description?: string } };
+      const name = item.name ?? item.command?.name;
+      if (typeof name !== "string" || name === "") continue;
+      const description = item.description ?? item.command?.description;
+      const hint = Array.isArray(item.hints) && item.hints.length > 0 ? item.hints.join(" ") : undefined;
+      out.push({
+        name,
+        description: description || undefined,
+        argumentHint: hint,
+        kind: "command",
+      });
     }
     return out;
   }
 
   /**
-   * opencode 的子智能体面：`GET /agent` 列出 agent 定义（过滤 mode=subagent
-   * 只留子智能体段，primary 是默认交互面不进菜单）。老版本没有该路由时
-   * 静默回落空清单。选中插入 "/name "，能否分发由 opencode 自己决定。
+   * opencode 的技能面：`GET /skill` 列出已发现的所有技能（官方 Agent Skills 兼容面）。
+   */
+  private async fetchSkillsUncached(base: string, rootPath: string): Promise<readonly NativeCommandInfo[]> {
+    const r = await this.rest(base, "/skill", "GET", undefined, rootPath);
+    if (r.status >= 300) return [];
+    const list = Array.isArray(r.json)
+      ? r.json
+      : r.json && typeof r.json === "object" && Array.isArray((r.json as { data?: unknown[] }).data)
+        ? (r.json as { data: unknown[] }).data
+        : [];
+    const out: NativeCommandInfo[] = [];
+    for (const entry of list) {
+      const item = entry as { id?: string; name?: string; description?: string; path?: string; location?: string };
+      const name = item.name ?? item.id;
+      if (typeof name !== "string" || name === "") continue;
+      const isProject = (item.path !== undefined && item.path.includes(rootPath)) ||
+        (item.location !== undefined && item.location.includes(rootPath));
+      out.push({
+        name,
+        description: item.description || undefined,
+        source: isProject ? "project" : "user",
+        kind: "skill",
+      });
+    }
+    return out;
+  }
+
+  /**
+   * opencode 的子智能体面：`GET /agent` 列出 agent 定义（过滤 mode=subagent 或 all）。
    */
   private async fetchAgentsUncached(base: string, rootPath: string): Promise<readonly NativeCommandInfo[]> {
     const r = await this.rest(base, "/agent", "GET", undefined, rootPath);
     if (r.status >= 300) return [];
-    // 响应是 { name: {name, description, mode, ...} } 的映射表
-    const json = r.json as Record<string, { name?: string; description?: string; mode?: string }> | null;
-    if (typeof json !== "object" || json === null) return [];
     const out: NativeCommandInfo[] = [];
-    for (const def of Object.values(json)) {
-      if (typeof def?.name !== "string" || def.name === "") continue;
-      if (def.mode !== undefined && def.mode !== "subagent") continue;
-      out.push({ name: def.name, description: def.description || undefined, kind: "agent" });
+    if (Array.isArray(r.json)) {
+      for (const def of r.json as Array<{ name?: string; description?: string; mode?: string }>) {
+        if (typeof def?.name !== "string" || def.name === "") continue;
+        if (def.mode !== undefined && def.mode !== "subagent" && def.mode !== "all") continue;
+        out.push({ name: def.name, description: def.description || undefined, kind: "agent" });
+      }
+    } else if (typeof r.json === "object" && r.json !== null) {
+      const obj = (r.json as { data?: unknown }).data ?? r.json;
+      if (Array.isArray(obj)) {
+        for (const def of obj as Array<{ name?: string; description?: string; mode?: string }>) {
+          if (typeof def?.name !== "string" || def.name === "") continue;
+          if (def.mode !== undefined && def.mode !== "subagent" && def.mode !== "all") continue;
+          out.push({ name: def.name, description: def.description || undefined, kind: "agent" });
+        }
+      } else if (typeof obj === "object" && obj !== null) {
+        for (const def of Object.values(obj as Record<string, { name?: string; description?: string; mode?: string }>)) {
+          if (typeof def?.name !== "string" || def.name === "") continue;
+          if (def.mode !== undefined && def.mode !== "subagent" && def.mode !== "all") continue;
+          out.push({ name: def.name, description: def.description || undefined, kind: "agent" });
+        }
+      }
     }
     return out;
   }
@@ -360,10 +426,59 @@ export class OpencodeAdapter implements ExecutorAdapter {
   async listCommands(rootPath: string): Promise<readonly NativeCommandInfo[]> {
     const hit = this.commandCache.get(rootPath);
     if (hit !== undefined && Date.now() - hit.at < OpencodeAdapter.COMMAND_TTL_MS) return hit.commands;
-    const base = await this.serve.baseUrl();
-    const commands = await this.fetchCommandsUncached(base, rootPath).catch(() => [] as readonly NativeCommandInfo[]);
-    const agents = await this.fetchAgentsUncached(base, rootPath).catch(() => [] as readonly NativeCommandInfo[]);
-    const merged = [...commands, ...agents];
+
+    // 1. 本地文件级发现与公共 .agents 库（保证即使 serve 没起或者网络波动，也秒级出结果）
+    const userHome = homedir();
+    const standard = readStandardAgentsWorkspace(rootPath);
+    const fileCommands = [
+      ...discoverCommandsInDir(join(rootPath, ".opencode", "command"), "project"),
+      ...discoverCommandsInDir(join(rootPath, ".opencode", "commands"), "project"),
+      ...discoverCommandsInDir(join(userHome, ".opencode", "command"), "user"),
+      ...discoverCommandsInDir(join(userHome, ".opencode", "commands"), "user"),
+    ];
+    const fileSkills = [
+      ...discoverSkillsInDir(join(rootPath, ".opencode", "skills"), "project"),
+      ...discoverSkillsInDir(join(userHome, ".opencode", "skills"), "user"),
+      ...standard.skills,
+    ];
+    const fileAgents = [
+      ...discoverAgentsInDir(join(rootPath, ".opencode", "agent"), "project"),
+      ...discoverAgentsInDir(join(rootPath, ".opencode", "agents"), "project"),
+      ...discoverAgentsInDir(join(userHome, ".opencode", "agents"), "user"),
+      ...standard.agents,
+    ];
+
+    // 2. 尝试从活 serve 进程获取实时声明面（commands + skills + agents）
+    let serverCommands: readonly NativeCommandInfo[] = [];
+    let serverSkills: readonly NativeCommandInfo[] = [];
+    let serverAgents: readonly NativeCommandInfo[] = [];
+    try {
+      const basePromise = this.serve.baseUrl();
+      const base = await Promise.race([
+        basePromise,
+        new Promise<null>((r) => setTimeout(() => r(null), 2500)),
+      ]);
+      if (base !== null) {
+        [serverCommands, serverSkills, serverAgents] = await Promise.all([
+          this.fetchCommandsUncached(base, rootPath).catch(() => []),
+          this.fetchSkillsUncached(base, rootPath).catch(() => []),
+          this.fetchAgentsUncached(base, rootPath).catch(() => []),
+        ]);
+      }
+    } catch {
+      // serve 启动慢或未就绪时安静回落到本地文件级
+    }
+
+    const builtins = builtinCommandsFor(this.id);
+    const merged = mergeCommandEntries(
+      builtins,
+      fileCommands,
+      serverCommands,
+      fileSkills,
+      serverSkills,
+      fileAgents,
+      serverAgents,
+    );
     this.commandCache.set(rootPath, { commands: merged, at: Date.now() });
     return merged;
   }

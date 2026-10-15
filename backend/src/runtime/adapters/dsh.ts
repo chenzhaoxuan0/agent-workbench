@@ -50,6 +50,7 @@ import {
   type StartRequest,
 } from "./types.ts";
 import { builtinCommandsFor } from "./builtin-catalogs.ts";
+import { discoverGenericToolSkillsAndAgents, mergeCommandEntries } from "./discovery.ts";
 import type { NativeCommandInfo } from "../../contract.ts";
 import { pickAcpModelOptions, pickAcpSelectOption, queryAcpSessionNew } from "./acp-models.ts";
 import type {
@@ -303,13 +304,23 @@ export class DshAdapter implements ExecutorAdapter {
   readonly tuiCommand = "dst";
 
 
+  private readonly commandCache = new Map<string, { commands: readonly NativeCommandInfo[]; at: number }>();
+  private static readonly COMMAND_TTL_MS = 10 * 60 * 1000;
+
   /**
-   * 内置命令目录（官方文档/包内注册表为事实源，见 builtin-catalogs.ts）。
-   * 执行语义：透传 —— 协议层没有命令发现面，清单保证菜单可见性；
-   * 分发由执行器/模型自己决定。
+   * DSH 原生命令、技能与子智能体面：
+   * 内置目录（见 builtin-catalogs.ts）+ 原生技能（.dsh/skills 与 .agents/skills）+
+   * 子智能体（.dsh/agents 与 .agents/agents）。
+   * 执行语义：透传 —— "/name args" 原样发给 DSH。
    */
-  async listCommands(_rootPath: string): Promise<readonly NativeCommandInfo[]> {
-    return builtinCommandsFor("dsh");
+  async listCommands(rootPath: string): Promise<readonly NativeCommandInfo[]> {
+    const hit = this.commandCache.get(rootPath);
+    if (hit !== undefined && Date.now() - hit.at < DshAdapter.COMMAND_TTL_MS) return hit.commands;
+    const discovered = discoverGenericToolSkillsAndAgents(this.id, rootPath);
+    const builtins = builtinCommandsFor(this.id);
+    const merged = mergeCommandEntries(builtins, discovered.skills, discovered.agents);
+    this.commandCache.set(rootPath, { commands: merged, at: Date.now() });
+    return merged;
   }
 
   async probe(): Promise<ProbeResult> {

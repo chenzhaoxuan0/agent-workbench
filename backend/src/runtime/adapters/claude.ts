@@ -40,6 +40,7 @@ import type {
 } from "../../contract.ts";
 import { execLines, resolveCommand } from "../exec.ts";
 import { builtinCommandsFor } from "./builtin-catalogs.ts";
+import { readStandardAgentsWorkspace } from "./discovery.ts";
 import { log } from "../../log.ts";
 
 // ---- SDK 消息宽松视图（顶层判别用 SDK 类型，字段按宽容记录取） -------------------
@@ -161,19 +162,22 @@ function parseFrontmatter(raw: string): Record<string, string> {
   return out;
 }
 
-/** 枚举一层子目录里的 SKILL.md（skills/<name>/SKILL.md 约定，zcode/claude 同款） */
+/** 枚举一层子目录里的 SKILL.md（skills/<name>/SKILL.md 约定，支持普通目录与符号链接） */
 function readSkillDirs(dir: string): Array<{ name: string; description?: string }> {
   let entries: string[];
   try {
-    entries = readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
+    entries = readdirSync(dir);
   } catch {
     return [];
   }
   const out: Array<{ name: string; description?: string }> = [];
   for (const name of entries) {
+    if (name.startsWith(".")) continue;
+    const skillPath = join(dir, name, "SKILL.md");
+    if (!existsSync(skillPath)) continue;
     let raw: string;
     try {
-      raw = readFileSync(join(dir, name, "SKILL.md"), "utf8");
+      raw = readFileSync(skillPath, "utf8");
     } catch {
       continue;
     }
@@ -241,6 +245,21 @@ function readClaudeFileLevel(rootPath: string): readonly NativeCommandInfo[] {
       if (seen.has(key)) continue;
       seen.add(key);
       agents.push({ name: a.name, description: a.description, source, kind: "agent" });
+    }
+  }
+  const standard = readStandardAgentsWorkspace(rootPath);
+  for (const s of standard.skills) {
+    const key = `skill:${s.name}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      skills.push(s);
+    }
+  }
+  for (const a of standard.agents) {
+    const key = `agent:${a.name}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      agents.push(a);
     }
   }
   return [...commands, ...skills, ...agents];

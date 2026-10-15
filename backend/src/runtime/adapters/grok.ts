@@ -45,6 +45,7 @@ import type {
 } from "../../contract.ts";
 import { execLines, resolveCommand } from "../exec.ts";
 import { builtinCommandsFor } from "./builtin-catalogs.ts";
+import { readStandardAgentsWorkspace } from "./discovery.ts";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -638,20 +639,30 @@ function readGrokSkills(rootPath: string): readonly NativeCommandInfo[] {
     if (!existsSync(dir)) continue;
     let entries: string[];
     try {
-      entries = readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
+      entries = readdirSync(dir);
     } catch {
       continue;
     }
     for (const entry of entries) {
+      if (entry.startsWith(".")) continue;
       if (seen.has(entry)) continue; // .grok 优先，.claude 兼容源只补缺
+      const skillFile = join(dir, entry, "SKILL.md");
+      if (!existsSync(skillFile)) continue;
       let raw: string;
       try {
-        raw = readFileSync(join(dir, entry, "SKILL.md"), "utf8");
+        raw = readFileSync(skillFile, "utf8");
       } catch {
         continue;
       }
       seen.add(entry);
       out.push({ name: entry, description: parseGrokFrontmatter(raw).description, source, kind: "skill" });
+    }
+  }
+  const standard = readStandardAgentsWorkspace(rootPath);
+  for (const s of standard.skills) {
+    if (!seen.has(s.name)) {
+      seen.add(s.name);
+      out.push(s);
     }
   }
   return out;
@@ -687,6 +698,13 @@ function readGrokAgents(rootPath: string): readonly NativeCommandInfo[] {
       if (seen.has(name)) continue;
       seen.add(name);
       out.push({ name, description: fm.description, source, kind: "agent" });
+    }
+  }
+  const standard = readStandardAgentsWorkspace(rootPath);
+  for (const a of standard.agents) {
+    if (!seen.has(a.name)) {
+      seen.add(a.name);
+      out.push(a);
     }
   }
   return out;
