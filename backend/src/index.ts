@@ -485,10 +485,11 @@ function resolveSendTarget(
     const row = store.getSession(id);
     return row !== undefined && row.cliRef !== null ? id : null;
   };
+  // 1. 如果用户显式钉死了目标会话，只认该会话；接不回则直接返回 null，由外层回退到新开会话，绝不乱投到其它无关会话
   if (automation.targetSessionId !== null && automation.targetSessionId !== undefined && automation.targetSessionId !== "") {
-    const hit = pick(automation.targetSessionId);
-    if (hit !== null) return hit;
+    return pick(automation.targetSessionId);
   }
+  // 2. 自动续接模式：优先用显式传入的候选，否则挑该执行器最近一个可接回的会话
   if (fallbackSessionId !== undefined && fallbackSessionId !== null) {
     const hit = pick(fallbackSessionId);
     if (hit !== null) return hit;

@@ -375,9 +375,14 @@ export function copySkill(
   if (existsSync(join(from.dir, "SKILL.md")) || existsSync(join(to.dir, "SKILL.md"))) {
     throw Object.assign(new Error("单技能形态的源（SKILL.md 直挂源目录）不支持跨源复制"), { code: "single_form_source" });
   }
-  const srcDir = join(from.dir, dirName);
+  let srcDir = join(from.dir, dirName);
   if (!isDirectory(srcDir)) {
-    throw Object.assign(new Error(`skill folder not found: ${dirName}`), { code: "missing_skill" });
+    const disabledDir = join(from.dir, DISABLED_DIR, dirName);
+    if (isDirectory(disabledDir)) {
+      srcDir = disabledDir;
+    } else {
+      throw Object.assign(new Error(`skill folder not found: ${dirName}`), { code: "missing_skill" });
+    }
   }
   const dstDir = join(to.dir, dirName);
   if (existsSync(dstDir) || existsSync(join(to.dir, DISABLED_DIR, dirName))) {

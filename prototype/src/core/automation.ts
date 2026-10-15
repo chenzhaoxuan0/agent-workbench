@@ -322,8 +322,8 @@ export function computeScheduleNextRunAt(rule: ScheduleRule, from = Date.now()):
     }
     return 1; // 兜底：未知形态按每天推
   })();
-  // 没选具体星期时按周一算 —— 空数组永远不匹配会让 nextRunAt 恒为 null
-  const weeklyDays = rule.frequency === "weekly" && rule.weekdays.length > 0 ? rule.weekdays : null;
+  // 没选具体星期时按周一算 —— 空数组若设为 null 会误匹配所有日期（变成每天），空数组不匹配则会恒为 null
+  const weeklyDays = rule.frequency === "weekly" ? (rule.weekdays.length > 0 ? rule.weekdays : [1 as Weekday]) : null;
 
   const a = new Date(anchor);
   let y = a.getFullYear();

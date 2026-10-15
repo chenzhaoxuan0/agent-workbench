@@ -97,6 +97,8 @@ interface SessionState {
   /** 最近一次 tokenUsage（turn/completed 时出 usage 事件） */
   lastUsage: TokenUsage | undefined;
   usageCount: number;
+  /** reattach 正在进行的异步 thread/resume promise；sendTurn/cancel 前需先等待完成 */
+  readyPromise?: Promise<void>;
 }
 
 /** mode → codex 沙箱/审批档。plan 只读，yolo 全开不问，其余 workspace-write + 按需问。 */
@@ -494,13 +496,17 @@ export class CodexAdapter implements ExecutorAdapter {
       usageCount: 0,
     };
     this.sessions.set(sessionId, state);
-    // 幂等恢复：thread/resume 失败不致命（thread/start 后续按 id 仍可续）
-    void this.conn
-      .request("thread/resume", { threadId: ref }, 20000)
+    state.readyPromise = this.conn
+      .request("thread/resume", { threadId: ref, cwd: rootPath }, 20000)
       .then((r) => {
-        if (r.error !== undefined) log.debug("codex thread/resume 回落（turn 首轮会重试）", { ref, err: r.error.message });
+        if (r.error !== undefined) log.warn("codex thread/resume 失败或回落", { ref, err: r.error.message });
       })
-      .catch(() => undefined);
+      .catch((err: unknown) => {
+        log.warn("codex thread/resume 异常", { ref, err: err instanceof Error ? err.message : String(err) });
+      })
+      .finally(() => {
+        state.readyPromise = undefined;
+      });
     return this.sessionImpl(state);
   }
 
@@ -512,6 +518,7 @@ export class CodexAdapter implements ExecutorAdapter {
         await this.sendTurn(state, this.expandNativeCommand(state, text));
       },
       cancel: async () => {
+        if (state.readyPromise) await state.readyPromise;
         if (state.threadId === null) return;
         const r = await this.conn.request("turn/interrupt", { threadId: state.threadId }, 15000);
         if (r.error !== undefined) {
@@ -543,6 +550,9 @@ export class CodexAdapter implements ExecutorAdapter {
   // ---- turn ----
 
   private async sendTurn(state: SessionState, text: string): Promise<void> {
+    if (state.readyPromise) {
+      await state.readyPromise;
+    }
     if (state.threadId === null) {
       state.sink?.({ type: "error", sessionId: state.sessionId, message: "codex thread 未建立", recoverable: false });
       return;

@@ -162,10 +162,17 @@ export function SkillsSettingsSection() {
       try {
         if (cell === undefined) {
           // 分发：从行内任一源复制（源不动，目标多一份实体各自演化）
-          const srcGroupId = [...row.cells.keys()].find((gid) => {
+          // 优先选已启用的源，避免从停用目录复制；若全停用则兜底任一源
+          const candidateGroupIds = [...row.cells.keys()];
+          const activeGroupId = candidateGroupIds.find((gid) => {
+            const entry = row.cells.get(gid);
+            const g = mainGroups.find((x) => x.id === gid);
+            return g !== undefined && !g.readOnly && entry !== undefined && !entry.disabled;
+          }) ?? candidateGroupIds.find((gid) => {
             const g = mainGroups.find((x) => x.id === gid);
             return g !== undefined && !g.readOnly;
-          }) ?? [...row.cells.keys()][0];
+          });
+          const srcGroupId = activeGroupId ?? candidateGroupIds[0];
           const srcGroup = mainGroups.find((g) => g.id === srcGroupId);
           const srcEntry = srcGroupId !== undefined ? row.cells.get(srcGroupId) : undefined;
           if (srcGroup === undefined || srcEntry === undefined) {
