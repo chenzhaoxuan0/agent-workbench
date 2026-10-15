@@ -165,6 +165,22 @@ interface McodeSession {
   turn: TurnAcc | null;
 }
 
+/**
+ * mcode 设置配置项的方法名 —— **snake_case**。
+ *
+ * 踩过的坑：本机 mcode 0.6.8 对 `session/setConfigOption`（camelCase）回
+ * `-32601 Method not found`，真正的名字是 `session/set_config_option`。
+ * 8 个候选方法实测下来只有它被接受（session/setConfigOption / set_config /
+ * setConfig / session/set_model / session/setModel / mcode/session/config/set … 全是 -32601）。
+ *
+ * 之前写成 camelCase 的后果是**静默失效**：调用被 try/catch 吞掉只留 debug 日志，
+ * 权限档与模型选择看起来「设了」，实际执行器一直用它自己的默认值。
+ */
+const ACP_SET_CONFIG_OPTION = "session/set_config_option";
+
+/** 下发模型/权限档这类配置项的等待上限。它们发在 turn 前面，卡住就是整轮卡住 */
+const MODEL_SET_TIMEOUT_MS = 15000;
+
 /** `m:minimax:MiniMax-M3:v:thinking` → { base: "MiniMax-M3", variant: "thinking" }；认不出来返回 null */
 function parseMcodeModelValue(value: string): { base: string; variant: string } | null {
   const parts = value.split(":");
@@ -655,14 +671,19 @@ export class McodeAdapter implements ExecutorAdapter {
 
     // 选中的模型必须真的下发，否则界面上「选了 A 实际跑 B」——比没有下拉更糟。
     // 失败不挡轮（老版本可能没有该 configId），但要留痕。
+    //
+    // ⚠ 必须给超时：request 的 timeoutMs 是可选的，不传就是无限等。模型下发是
+    // 发在 turn 前面的，一旦 CLI 不回（老版本无此 configId 而选择不回错误、
+    // 或进程半死不活），整轮对话就永久卡在「发送中」——用户只能杀 daemon。
     const modelValue = this.acpModelValue(state.model);
     if (modelValue !== null) {
       try {
-        await this.request(state, "session/setConfigOption", {
-          sessionId: state.ref,
-          configId: "model",
-          value: modelValue,
-        });
+        await this.request(
+          state,
+          ACP_SET_CONFIG_OPTION,
+          { sessionId: state.ref, configId: "model", value: modelValue },
+          MODEL_SET_TIMEOUT_MS,
+        );
       } catch (err: unknown) {
         log.debug("mcode applyModel failed (continuing with agent default)", {
           model: state.model,
@@ -675,21 +696,23 @@ export class McodeAdapter implements ExecutorAdapter {
 
     try {
       if (state.mode === "plan") {
-        await this.request(state, "session/setMode", { sessionId: state.ref, modeId: "plan" });
+        await this.request(state, "session/setMode", { sessionId: state.ref, modeId: "plan" }, MODEL_SET_TIMEOUT_MS);
       } else {
         // 权限档（实测可选值 default | auto | bypassPermissions）：
         // build=default（按策略问）、edit=auto（自动放行编辑）、yolo=bypassPermissions
         const permissionMode = state.mode === "yolo" ? "bypassPermissions" : state.mode === "edit" ? "auto" : "default";
-        await this.request(state, "session/setConfigOption", {
-          sessionId: state.ref,
-          configId: "permissionMode",
-          value: permissionMode,
-        });
+        await this.request(
+          state,
+          ACP_SET_CONFIG_OPTION,
+          { sessionId: state.ref, configId: "permissionMode", value: permissionMode },
+          MODEL_SET_TIMEOUT_MS,
+        );
       }
     } catch (err: unknown) {
-      // 已装版本可能没有该方法（实测 0.5.5 无 session/setConfigOption，0.6.x 才有）：
-      // 模式是偏好不是前提，失败降级走会话默认档，日志压到 debug
-      log.debug("mcode applyMode failed (continuing with session default)", {
+      // 方法名写错 / 老版本没有该方法时降级走会话默认档。
+      // ⚠ 这次失败是**静默**的：权限档设不上意味着实际跑的是执行器默认档，
+      // 界面上却显示用户选的那档。所以这里必须留痕，不能只压 debug 了事。
+      log.warn("mcode 权限档/模式下发失败，本轮沿用执行器默认档", {
         mode: state.mode,
         error: err instanceof Error ? err.message : String(err),
       });
