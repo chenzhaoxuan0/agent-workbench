@@ -57,13 +57,17 @@ export function Composer() {
   // 菜单数据源：切换执行器/工作单元时预取（TTL 内不重拉），菜单打开时兜底确保。
   // daemon: 前缀是界面侧命名空间，daemon RPC 要裸执行器 id。
   const bareRuntimeId = activeRuntime.startsWith("daemon:") ? activeRuntime.slice("daemon:".length) : activeRuntime;
-  const nativeEntry = useNativeCommands((s) => nativeCommandsFor(s, bareRuntimeId, unit?.rootPath ?? ""));
+  // 无工作单元（落地页）也要能开面板：rootPath 用 "/"，适配器按「仅用户级」
+  // 处理（项目级目录 join 出来不存在，自然缺席）—— 与占位文案的承诺一致。
+  // ⚠ 选择器与 ensure 必须同一个键（commandsRoot），否则存取错位永远 miss。
+  const commandsRoot = unit?.rootPath ?? "/";
+  const nativeEntry = useNativeCommands((s) => nativeCommandsFor(s, bareRuntimeId, commandsRoot));
   const executorName =
     useWorkbench((s) => s.runtimes.find((r) => r.id === s.activeRuntimeId)?.presentation.displayName) ?? bareRuntimeId;
 
   useEffect(() => {
-    if (unit?.rootPath && bareRuntimeId) void useNativeCommands.getState().ensure(bareRuntimeId, unit.rootPath);
-  }, [bareRuntimeId, unit?.rootPath]);
+    if (bareRuntimeId) void useNativeCommands.getState().ensure(bareRuntimeId, commandsRoot);
+  }, [bareRuntimeId, commandsRoot]);
 
   /** 选中原生命令：只把 "/name " 放进草稿（参数留给用户补），收起菜单，Enter 发送。
    *  不在本地做任何语义 —— 分发/展开/输出回显都是执行器自己的事。 */
@@ -83,10 +87,10 @@ export function Composer() {
   };
 
   const placeholder = !unit
-    ? "先选一个工作单元，或新建一个 bot… (输入 / 查看执行器原生命令)"
+    ? "先选一个工作单元，或新建一个 bot… (输入 / 查看命令/技能/子智能体)"
     : unit.kind === "bot"
-      ? `给「${unit.name}」派活…（输入 / 调出 ${executorName} 原生命令，会先读其 AGENTS.md）`
-      : `对「${unit.name}」下任务…（输入 / 调出 ${executorName} 原生命令，可开 worktree 隔离）`;
+      ? `给「${unit.name}」派活…（输入 / 调出 ${executorName} 命令面板，会先读其 AGENTS.md）`
+      : `对「${unit.name}」下任务…（输入 / 调出 ${executorName} 命令面板，可开 worktree 隔离）`;
 
   return (
     <div className="shrink-0">

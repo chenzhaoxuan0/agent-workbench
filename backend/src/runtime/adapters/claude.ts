@@ -19,7 +19,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { Options, Query, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
@@ -39,6 +39,7 @@ import type {
   SessionId,
 } from "../../contract.ts";
 import { execLines, resolveCommand } from "../exec.ts";
+import { builtinCommandsFor } from "./builtin-catalogs.ts";
 import { log } from "../../log.ts";
 
 // ---- SDK 消息宽松视图（顶层判别用 SDK 类型，字段按宽容记录取） -------------------
@@ -133,6 +134,116 @@ function toNativeCommands(list: readonly SdkSlashCommand[]): readonly NativeComm
     });
   }
   return out;
+}
+
+// ---- 文件级发现（SDK 不可用时的兜底事实源）------------------------------------
+//
+// ~/.claude 与 <root>/.claude 下的三个目录是 Claude Code 的官方自定义面：
+// - commands/**.md  → 斜杠命令（frontmatter: description / argument-hint）
+// - skills/*/SKILL.md → 技能（frontmatter: name / description；"/name" 可触发）
+// - agents/**.md    → 子智能体定义（frontmatter: name / description）
+// 读文件不需要起 CLI —— SDK 的 spawn 在部分机器上会失败/悬死（实测本机：
+// 自带 claude.exe spawn ENOENT），这份清单保证菜单在那种机器上依然有真数据。
+
+/** 扁平 yaml frontmatter 的宽松解析：只取需要的键，坏格式当没有 */
+function parseFrontmatter(raw: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!raw.startsWith("---\n") && !raw.startsWith("---\r\n")) return out;
+  const end = raw.indexOf("\n---", 4);
+  if (end === -1) return out;
+  for (const line of raw.slice(raw.indexOf("\n") + 1, end).split(/\r?\n/)) {
+    const i = line.indexOf(":");
+    if (i === -1) continue;
+    const key = line.slice(0, i).trim().toLowerCase();
+    const value = line.slice(i + 1).trim();
+    if (value !== "") out[key] = value;
+  }
+  return out;
+}
+
+/** 枚举一层子目录里的 SKILL.md（skills/<name>/SKILL.md 约定，zcode/claude 同款） */
+function readSkillDirs(dir: string): Array<{ name: string; description?: string }> {
+  let entries: string[];
+  try {
+    entries = readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
+  } catch {
+    return [];
+  }
+  const out: Array<{ name: string; description?: string }> = [];
+  for (const name of entries) {
+    let raw: string;
+    try {
+      raw = readFileSync(join(dir, name, "SKILL.md"), "utf8");
+    } catch {
+      continue;
+    }
+    const fm = parseFrontmatter(raw);
+    out.push({ name: fm.name && fm.name !== "" ? fm.name : name, description: fm.description });
+  }
+  return out;
+}
+
+/** 枚举目录下（含一层子目录）的 .md 文件，返回 文件名(去后缀) → frontmatter */
+function readMarkdownDefs(dir: string): Array<{ name: string; description?: string; argumentHint?: string }> {
+  let files: string[];
+  try {
+    files = readdirSync(dir, { recursive: true }).filter((f) => String(f).toLowerCase().endsWith(".md")).map((f) => join(dir, String(f)));
+  } catch {
+    return [];
+  }
+  const out: Array<{ name: string; description?: string; argumentHint?: string }> = [];
+  for (const file of files) {
+    const name = file.split(/[\\/]/).pop()!.replace(/\.md$/i, "");
+    if (name === "") continue;
+    let raw: string;
+    try {
+      raw = readFileSync(file, "utf8");
+    } catch {
+      continue;
+    }
+    const fm = parseFrontmatter(raw);
+    out.push({ name, description: fm.description, argumentHint: fm["argument-hint"] ?? fm["argumentHint"] });
+  }
+  return out;
+}
+
+/**
+ * 文件级三段发现（命令 / 技能 / 子智能体）。项目级覆盖用户级（同名取先见者）。
+ * 只列自定义段 —— 内置命令清单没有独立事实源，不猜。
+ */
+function readClaudeFileLevel(rootPath: string): readonly NativeCommandInfo[] {
+  const bases: Array<{ base: string; source: "user" | "project" }> = [
+    { base: join(homedir(), ".claude"), source: "user" },
+    { base: join(rootPath, ".claude"), source: "project" },
+  ];
+  const commands: NativeCommandInfo[] = [];
+  const skills: NativeCommandInfo[] = [];
+  const agents: NativeCommandInfo[] = [];
+  const seen = new Set<string>();
+  for (const { base, source } of bases) {
+    for (const d of readMarkdownDefs(join(base, "commands"))) {
+      const key = `command:${d.name}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      commands.push({
+        name: d.name, description: d.description, argumentHint: d.argumentHint,
+        source, kind: "command",
+      });
+    }
+    for (const s of readSkillDirs(join(base, "skills"))) {
+      const key = `skill:${s.name}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      skills.push({ name: s.name, description: s.description, source, kind: "skill" });
+    }
+    for (const a of readMarkdownDefs(join(base, "agents"))) {
+      const key = `agent:${a.name}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      agents.push({ name: a.name, description: a.description, source, kind: "agent" });
+    }
+  }
+  return [...commands, ...skills, ...agents];
 }
 
 /** 别名 → 环境变量后缀。Claude Code 的四个档位别名，各网关可用环境变量改写其背后模型。 */
@@ -289,13 +400,15 @@ export class ClaudeAdapter implements ExecutorAdapter {
   private static readonly COMMAND_TTL_MS = 10 * 60 * 1000;
 
   /**
-   * 原生斜杠命令清单 —— 起一个**临时 query**（输入迭代器永远不给消息，
-   * CLI 只完成 initialize 握手后干等输入），调 `supportedCommands()` 拿全量
-   * （内置 + ~/.claude/commands + <root>/.claude/commands + 插件），拿完即收。
-   *
-   * 这是 SDK 官方的命令发现面（IDE 客户端同款用法）：清单是 CLI 自己算的，
-   * 工作台不维护静态表 —— 新装插件/新加项目命令自动出现（commands_changed
-   * 事件还会热刷新缓存，见 onMessage）。
+   * 原生斜杠命令清单。**绝不为列清单另起 SDK query** —— throwaway spawn 在
+   * 部分机器上会同步堵死 daemon 主线程（实测：菜单一次拉取让全部 RPC 超时
+   * 数分钟，Promise.race 超时在主线程被堵时根本没机会触发，熔断器也只防
+   * 后续不防首次）。两条零风险路径：
+   * ① 活会话问询：常驻 query 已完成握手，supportedCommands() 是既有通道上的
+   *    control 请求（内置 + 自定义 + 插件全量），不产生任何进程；
+   * ② 文件级发现（readClaudeFileLevel）：~/.claude 与 <root>/.claude 的
+   *    命令/技能/子智能体三段，毫秒级、零进程。内置段只在 ① 可用时出现。
+   * 活会话里 CLI 还会推 commands_changed 热刷新缓存（见 onMessage）。
    */
   async listCommands(rootPath: string): Promise<readonly NativeCommandInfo[]> {
     const hit = this.commandCache.get(rootPath);
@@ -316,61 +429,33 @@ export class ClaudeAdapter implements ExecutorAdapter {
     return fetch;
   }
 
-  /** 临时 query 实现：阻塞输入 → supportedCommands → 关输入收尾。失败返回 []（UI 回落本地命令）。 */
   private async fetchCommandsUncached(rootPath: string): Promise<readonly NativeCommandInfo[]> {
-    // 闭包里赋值、外部读 —— 用持有对象，别跟 TS 的控制流收窄较劲
-    const gate: { release: (() => void) | null } = { release: null };
-    const input: AsyncIterable<SDKUserMessage> = {
-      [Symbol.asyncIterator]() {
-        return {
-          next: () =>
-            new Promise<IteratorResult<SDKUserMessage>>((resolve) => {
-              gate.release = () => {
-                gate.release = null;
-                resolve({ value: undefined, done: true });
-              };
-            }),
-        };
-      },
-    };
+    const fileLevel = readClaudeFileLevel(rootPath);
 
-    /**
-     * 硬超时兜底：supportedCommands 没有自己的超时，CLI 卡在握手/更新/信任
-     * 流程时这个 await 会永远悬着 —— RPC 跟着超时，前端菜单转圈到天荒地老。
-     * 超时即收尾返回空清单（菜单如实显示「拉取失败」，下次打开重试）。
-     */
-    const HARD_TIMEOUT_MS = 20_000;
-
-    try {
-      const { query } = await import("@anthropic-ai/claude-agent-sdk");
-      const q = query({ prompt: input, options: { cwd: rootPath } });
-      // 后台排空消息流（不迭代的话 CLI 侧输出堆着；这里只在乎 control 请求）
-      const drain = (async () => {
-        try {
-          for await (const _ of q) void _;
-        } catch {
-          /* 收尾阶段的中断/退出噪声不算错 */
+    // ① 活会话问询：内置段只有这里有（SDK 官方全量清单）。5s 竞速 —— 活会话
+    //    的 control 通道正常是毫秒级；失约就只用文件级，不等它。
+    const live = [...this.sessions.values()].find((s) => !s.closed && s.q !== null);
+    if (live !== undefined && live.q !== null) {
+      try {
+        const list = await Promise.race([
+          live.q.supportedCommands(),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000).unref?.()),
+        ]);
+        if (Array.isArray(list)) {
+          const sdkCommands = toNativeCommands(list as readonly SdkSlashCommand[]);
+          // SDK 清单只有命令段；技能/子智能体由文件级补齐（重名时 SDK 段优先）
+          const sdkNames = new Set(sdkCommands.map((c) => c.name));
+          return [...sdkCommands, ...fileLevel.filter((c) => c.kind !== "command" && !sdkNames.has(c.name))];
         }
-      })();
-      void drain;
-
-      const list = await Promise.race([
-        q.supportedCommands(),
-        new Promise<null>((resolve) => setTimeout(() => resolve(null), HARD_TIMEOUT_MS).unref?.()),
-      ]);
-      if (list === null) {
-        log.warn("claude supportedCommands 超时，返回空清单", { rootPath, ms: HARD_TIMEOUT_MS });
-        // interrupt 让还活着的 CLI 子进程尽快退出，别泄漏 260MB 的进程
-        void q.interrupt().catch(() => undefined);
-        return [];
+        log.debug("claude 活会话 supportedCommands 超时，回落文件级", { rootPath });
+      } catch (err: unknown) {
+        log.debug("claude 活会话 supportedCommands 失败，回落文件级", { rootPath, error: err instanceof Error ? err.message : String(err) });
       }
-      return toNativeCommands(Array.isArray(list) ? (list as readonly SdkSlashCommand[]) : []);
-    } catch (err: unknown) {
-      log.warn("claude supportedCommands failed", { rootPath, error: err instanceof Error ? err.message : String(err) });
-      return [];
-    } finally {
-      gate.release?.();
     }
+    // ② 无活会话：内置目录（官方文档稳定集，见 builtin-catalogs.ts）+ 文件级三段。
+    //    自定义与内置同名时自定义优先（与 SDK 清单的优先级一致）。
+    const fileNames = new Set(fileLevel.map((c) => c.name));
+    return [...builtinCommandsFor(this.id).filter((b) => !fileNames.has(b.name)), ...fileLevel];
   }
 
   async probe(): Promise<ProbeResult> {

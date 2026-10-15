@@ -763,6 +763,90 @@ function parseZcodeCommandFile(name: string, raw: string): Omit<NativeCommandInf
   };
 }
 
+/**
+ * 文件级技能发现：`<base>/.zcode/skills` 与 `<base>/.agents/skills` 下的
+ * `<name>/SKILL.md`（frontmatter 认 name/description，缺 name 用目录名）。
+ * 与 readZcodeCustomCommands 同款 base × ns 组合，项目级覆盖用户级。
+ */
+function readZcodeSkills(rootPath: string): readonly NativeCommandInfo[] {
+  const out: NativeCommandInfo[] = [];
+  const seen = new Set<string>();
+  const bases: Array<{ base: string; source: "user" | "project" }> = [
+    { base: rootPath, source: "project" },
+    { base: homedir(), source: "user" },
+  ];
+  for (const { base, source } of bases) {
+    for (const ns of [".zcode", ".agents"]) {
+      const dir = join(base, ns, "skills");
+      let entries: string[];
+      try {
+        entries = readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
+      } catch {
+        continue;
+      }
+      for (const entry of entries) {
+        let raw: string;
+        try {
+          raw = readFileSync(join(dir, entry, "SKILL.md"), "utf8");
+        } catch {
+          continue; // 目录里没有 SKILL.md = 不是技能（可能是数据目录），跳过
+        }
+        const fm = parseZcodeCommandFile(entry, raw);
+        const name = entry; // 名字一律用目录名（"/name" 触发口径）
+        if (seen.has(name)) continue;
+        seen.add(name);
+        out.push({ name, description: fm.description, source, kind: "skill" });
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * 文件级子智能体发现：`<base>/.zcode/agents` 与 `<base>/.agents/agents` 下的
+ * *.md（frontmatter 认 name/description；上游 subagent 定义就是这些文件）。
+ * 协议口 subagents/readRuntimeConfig 需要 sessionId，listCommands 场景没有 ——
+ * 文件级是唯一无会话事实源。
+ */
+function readZcodeAgents(rootPath: string): readonly NativeCommandInfo[] {
+  const out: NativeCommandInfo[] = [];
+  const seen = new Set<string>();
+  const bases: Array<{ base: string; source: "user" | "project" }> = [
+    { base: rootPath, source: "project" },
+    { base: homedir(), source: "user" },
+  ];
+  for (const { base, source } of bases) {
+    for (const ns of [".zcode", ".agents"]) {
+      const dir = join(base, ns, "agents");
+      let files: string[];
+      try {
+        files = readdirSync(dir, { recursive: true }).filter((f) => String(f).toLowerCase().endsWith(".md")).map((f) => join(dir, String(f)));
+      } catch {
+        continue;
+      }
+      for (const file of files) {
+        const fileName = file.split(/[\\/]/).pop()!.replace(/\.md$/i, "");
+        if (fileName === "") continue;
+        let raw: string;
+        try {
+          raw = readFileSync(file, "utf8");
+        } catch {
+          continue;
+        }
+        const fm = parseZcodeCommandFile(fileName, raw);
+        // frontmatter name 优先（上游 subagent_type 语义），缺省用文件名
+        const fmName = /^name:\s*(.+)$/m.exec(raw)?.[1]?.trim();
+        const name = fmName && fmName !== "" ? fmName : fileName;
+        if (seen.has(name)) continue;
+        seen.add(name);
+        out.push({ name, description: fm.description, source, kind: "agent" });
+      }
+    }
+  }
+  return out;
+}
+
+
 // ---- 模型清单发现（读 CLI 自带目录，零用量）------------------------------------
 
 /** 内置目录里 providerRules 的一条（本机实际 providerId 形如 `account:<providerFamily>-<mode>`） */
@@ -1056,16 +1140,28 @@ export class ZcodeAdapter implements ExecutorAdapter {
   private static readonly COMMAND_TTL_MS = 10 * 60 * 1000;
 
   /**
-   * ZCode 的原生命令面 —— 协议官方声明口：`workspace/readPresentation` 返回
-   * `{ mode, slashCommands: [{name, description, inputHint, source}] }`（上游
-   * packages/shared zcodeSlashCommandSchema；本地 workspaceKey = workspacePath）。
+   * ZCode 的原生命令面（三段）：
+   * - 命令：协议官方声明口 `workspace/readPresentation` 的 slashCommands
+   *   （上游 packages/shared zcodeSlashCommandSchema；本地 workspaceKey = workspacePath）
+   * - 技能：`skills/referenceCatalog`（zcodeSkillsReferenceCatalog，scope =
+   *   workspace|user|plugin）。技能在 zcode 里也以 "/name" 触发，但归属技能组；
+   *   与 slashCommands 重名的条目从命令段剔除（技能目录是更强的分类事实源）
+   * - 子智能体：`subagents/readRuntimeConfig` 需要 sessionId（listCommands 没有），
+   *   按上游约定扫 `.zcode/agents` 与 `.agents/agents` 的 *.md（frontmatter
+   *   name/description）。选中插入 "/name "，能否分发由 zcode 自己决定。
    * 命令执行是透传："/name args" 作为 turn 文本走 session/send，服务端自己分发。
-   * app-server 不可用（print 回退档）时返回空清单。
+   * app-server 不可用（print 回退档）时全部走文件级发现。
    */
   async listCommands(rootPath: string): Promise<readonly NativeCommandInfo[]> {
     const hit = this.commandCache.get(rootPath);
     if (hit !== undefined && Date.now() - hit.at < ZcodeAdapter.COMMAND_TTL_MS) return hit.commands;
-    if (this.transport !== "app-server") return hit?.commands ?? [];
+
+    const agents = readZcodeAgents(rootPath);
+    if (this.transport !== "app-server") {
+      const fileLevel = [...readZcodeCustomCommands(rootPath), ...readZcodeSkills(rootPath), ...agents];
+      if (fileLevel.length > 0 || hit === undefined) this.commandCache.set(rootPath, { commands: fileLevel, at: Date.now() });
+      return fileLevel;
+    }
     try {
       const r = await this.appServer.rpc<{ slashCommands?: readonly {
         name?: string;
@@ -1088,16 +1184,51 @@ export class ZcodeAdapter implements ExecutorAdapter {
           source: c.source === "builtin" ? "builtin" : undefined,
         });
       }
-      this.commandCache.set(rootPath, { commands, at: Date.now() });
-      return commands;
+      // 技能目录（失败容忍：老版本 app-server 没有该方法时整段缺席，不猜）
+      const skills = await this.fetchSkillsViaProtocol(rootPath).catch(() => [] as readonly NativeCommandInfo[]);
+      const skillNames = new Set(skills.map((s) => s.name));
+      const merged = [
+        ...commands.filter((c) => !skillNames.has(c.name) || c.builtin === true),
+        ...skills,
+        ...agents,
+      ];
+      this.commandCache.set(rootPath, { commands: merged, at: Date.now() });
+      return merged;
     } catch (err: unknown) {
       // app-server 起不来（本机 0.16.9 实测 "Bundled 与 Active Release 均不可用"）
-      // → 文件级发现兜底：自定义命令段照样能列，内置段缺席（没有独立事实源，不猜）
+      // → 文件级发现兜底：自定义三段照样能列，内置段缺席（没有独立事实源，不猜）
       log.debug("zcode readPresentation 失败，回落文件级命令发现", { rootPath, error: err instanceof Error ? err.message : String(err) });
-      const commands = readZcodeCustomCommands(rootPath);
-      if (commands.length > 0 || hit === undefined) this.commandCache.set(rootPath, { commands, at: Date.now() });
-      return commands;
+      const fileLevel = [...readZcodeCustomCommands(rootPath), ...readZcodeSkills(rootPath), ...agents];
+      if (fileLevel.length > 0 || hit === undefined) this.commandCache.set(rootPath, { commands: fileLevel, at: Date.now() });
+      return fileLevel;
     }
+  }
+
+  /** `skills/referenceCatalog` → 技能段条目（scope 映射 source；名字冲突项目/工作区优先） */
+  private async fetchSkillsViaProtocol(rootPath: string): Promise<readonly NativeCommandInfo[]> {
+    const r = await this.appServer.rpc<{ skills?: readonly {
+      name?: string;
+      description?: string;
+      scope?: "workspace" | "user" | "plugin";
+      pluginName?: string;
+    }[] }>(
+      ZCODE_METHODS.skillsReferenceCatalog,
+      { workspace: { workspacePath: rootPath, workspaceKey: rootPath } },
+      15000,
+    );
+    const out: NativeCommandInfo[] = [];
+    const seen = new Set<string>();
+    for (const s of r?.skills ?? []) {
+      if (typeof s?.name !== "string" || s.name === "" || seen.has(s.name)) continue;
+      seen.add(s.name);
+      out.push({
+        name: s.name,
+        description: s.description || undefined,
+        source: s.scope === "workspace" ? "project" : s.scope === "plugin" ? "plugin" : "user",
+        kind: "skill",
+      });
+    }
+    return out;
   }
 
   async probe(): Promise<ProbeResult> {

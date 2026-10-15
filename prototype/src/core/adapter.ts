@@ -299,4 +299,13 @@ export interface NativeCommandInfo {
    * 自定义命令。展示徽标用，执行路径不区分。
    */
   readonly source?: "builtin" | "user" | "project" | "plugin";
+  /**
+   * 条目种类（菜单分组用，对齐 ZCode 斜杠面板的 命令/技能/子智能体 三段）：
+   * - command：斜杠命令，选中插入 "/name "，由执行器原生分发
+   * - skill：技能（SKILL.md 目录），zcode/claude 均可 "/name" 触发，同透传语义
+   * - agent：子智能体定义，选中插入 "/name "；能否分发由执行器自己决定，
+   *   不可分发时执行器会把文本当普通输入 —— 不在中间翻译语义
+   * 缺省 = command（存量数据不带 kind 也按命令渲染）。
+   */
+  readonly kind?: "command" | "skill" | "agent";
 }

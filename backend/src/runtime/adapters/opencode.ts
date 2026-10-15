@@ -337,13 +337,35 @@ export class OpencodeAdapter implements ExecutorAdapter {
     return out;
   }
 
+  /**
+   * opencode 的子智能体面：`GET /agent` 列出 agent 定义（过滤 mode=subagent
+   * 只留子智能体段，primary 是默认交互面不进菜单）。老版本没有该路由时
+   * 静默回落空清单。选中插入 "/name "，能否分发由 opencode 自己决定。
+   */
+  private async fetchAgentsUncached(base: string, rootPath: string): Promise<readonly NativeCommandInfo[]> {
+    const r = await this.rest(base, "/agent", "GET", undefined, rootPath);
+    if (r.status >= 300) return [];
+    // 响应是 { name: {name, description, mode, ...} } 的映射表
+    const json = r.json as Record<string, { name?: string; description?: string; mode?: string }> | null;
+    if (typeof json !== "object" || json === null) return [];
+    const out: NativeCommandInfo[] = [];
+    for (const def of Object.values(json)) {
+      if (typeof def?.name !== "string" || def.name === "") continue;
+      if (def.mode !== undefined && def.mode !== "subagent") continue;
+      out.push({ name: def.name, description: def.description || undefined, kind: "agent" });
+    }
+    return out;
+  }
+
   async listCommands(rootPath: string): Promise<readonly NativeCommandInfo[]> {
     const hit = this.commandCache.get(rootPath);
     if (hit !== undefined && Date.now() - hit.at < OpencodeAdapter.COMMAND_TTL_MS) return hit.commands;
     const base = await this.serve.baseUrl();
-    const commands = await this.fetchCommandsUncached(base, rootPath).catch(() => []);
-    this.commandCache.set(rootPath, { commands, at: Date.now() });
-    return commands;
+    const commands = await this.fetchCommandsUncached(base, rootPath).catch(() => [] as readonly NativeCommandInfo[]);
+    const agents = await this.fetchAgentsUncached(base, rootPath).catch(() => [] as readonly NativeCommandInfo[]);
+    const merged = [...commands, ...agents];
+    this.commandCache.set(rootPath, { commands: merged, at: Date.now() });
+    return merged;
   }
 
   /**

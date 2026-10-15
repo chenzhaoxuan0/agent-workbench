@@ -25,6 +25,8 @@ export const ZCODE_METHODS = {
   sessionCompact: "session/compact",
   providerList: "provider/list",
   workspaceReadPresentation: "workspace/readPresentation",
+  /** 技能目录（v3.15 zcodeSkillsReferenceCatalog：{workspace, sessionId?} → {skills: [...]}） */
+  skillsReferenceCatalog: "skills/referenceCatalog",
 } as const;
 
 export type ZcodeMethod = (typeof ZCODE_METHODS)[keyof typeof ZCODE_METHODS];

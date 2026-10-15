@@ -31,6 +31,8 @@ import type { Store } from "../store/db.ts";
 import type { PermissionGate } from "../permissions/gate.ts";
 import { appendJournal, MAX_USAGE } from "../store/journals.ts";
 import { redact as redactText } from "../memory/redact.ts";
+import { readFileSync, renameSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 /**
  * 界面侧的运行时命名空间前缀。
@@ -38,6 +40,11 @@ import { redact as redactText } from "../memory/redact.ts";
  * bot.json 里的 bindings 是界面写的，所以后端必须两种都认。
  */
 const FRONTEND_NS_PREFIX = "daemon:";
+
+/** listCommands 的兜底硬超时（毫秒）—— 比前端 RPC 的 30s 短，让界面按时拿到结果 */
+const LIST_COMMANDS_HARD_TIMEOUT_MS = 20_000;
+/** 命令清单磁盘缓存的新鲜期（毫秒）—— 与适配器内存缓存同口径；过期触发后台刷新 */
+const LIST_COMMANDS_DISK_TTL_MS = 10 * 60 * 1000;
 
 /** 对 WS 暴露的适配器摘要 */
 export interface AdapterInfo {
@@ -423,15 +430,130 @@ export class RuntimeHost {
   /**
    * 列出执行器的原生斜杠命令（UI 菜单数据源）。没有原生命令面的执行器返回 []。
    * 单家失败不抛 —— 菜单退化成工作台本地命令，不阻断其他执行器。
+   *
+   * ## 为什么要落盘缓存 + stale-while-revalidate
+   *
+   * 菜单的体验对标 TUI：TUI 里命令清单和渲染菜单在同一个进程，零开销秒开；
+   * 我们这边浏览器→daemon→执行器跨两层，冷路径上 zcode 要问 app-server
+   * （~1s）、opencode 要起 server（~6s）。落盘缓存让「曾经拉到过」的清单
+   * 在 daemon 重启后依然 0ms 命中（菜单先开、后台刷新）—— 首次成功之后，
+   * 菜单永远秒开。
+   *
+   * ## 防悬死
+   *
+   * 适配器自己的兜底超时可能失约（promise 悬死），RPC 不能跟着悬 —— 到点回
+   * 空清单，让前端按时进「拉取失败/空清单」态。落盘写入只在新清单非空或
+   * 本来就没有缓存时发生：一次瞬时失败不该抹掉一份好数据。
    */
   async listCommands(runtimeId: string, rootPath: string): Promise<readonly NativeCommandInfo[]> {
     const adapter = this.getAdapter(runtimeId);
     if (typeof adapter.listCommands !== "function") return [];
+    this.loadCommandsDiskOnce();
+    const key = `${adapter.id}|${rootPath}`;
+
+    // 命中磁盘缓存（不论新旧）：立即返回（菜单秒开），过期则后台刷新
+    const disk = this.commandsDisk.get(key);
+    if (disk !== undefined) {
+      if (Date.now() - disk.at > LIST_COMMANDS_DISK_TTL_MS) void this.refreshCommands(adapter, rootPath, key);
+      return disk.commands;
+    }
+
+    // 首次（从未成功过）：现场拉，护栏竞速
     try {
-      return await adapter.listCommands(rootPath);
+      const commands = await Promise.race([
+        adapter.listCommands(rootPath),
+        new Promise<readonly NativeCommandInfo[]>((resolve) =>
+          setTimeout(() => resolve([]), LIST_COMMANDS_HARD_TIMEOUT_MS).unref?.(),
+        ),
+      ]);
+      this.putCommandsDisk(key, commands);
+      return commands;
     } catch (err: unknown) {
       log.warn("listCommands failed", { id: adapter.id, error: err instanceof Error ? err.message : String(err) });
       return [];
+    }
+  }
+
+  // ---- 命令清单落盘缓存 --------------------------------------------------------
+
+  /**
+   * 启动预热：后台拉一遍「有命令面的执行器 × 已知 rootPath」。
+   * 冷启动成本（zcode 问 app-server ~1s、opencode 起 server ~6s）被藏进启动期，
+   * 用户第一次打开斜杠菜单时命中磁盘/适配器缓存。小并发（2）：预热不能抢
+   * 正在起会话的执行器的资源。失败静默 —— 预热是优化，不是功能路径。
+   */
+  async prewarmCommands(rootPaths: readonly string[]): Promise<void> {
+    this.loadCommandsDiskOnce();
+    const ids = [...this.adapters.values()].filter((a) => typeof a.listCommands === "function").map((a) => a.id);
+    const jobs: Array<() => Promise<void>> = [];
+    for (const id of ids) {
+      for (const root of rootPaths) jobs.push(() => this.listCommands(id, root).then(() => undefined));
+    }
+    let i = 0;
+    const workers = Array.from({ length: Math.min(2, jobs.length) }, async () => {
+      while (i < jobs.length) {
+        const job = jobs[i++]!;
+        await job().catch(() => undefined);
+      }
+    });
+    await Promise.all(workers);
+  }
+
+  /** key = `${adapter.id}|${rootPath}` → 清单 + 拉取时间 */
+  private readonly commandsDisk = new Map<string, { commands: readonly NativeCommandInfo[]; at: number }>();
+  private commandsDiskLoaded = false;
+  /** 在途后台刷新（同 key 只跑一个） */
+  private readonly commandsRefreshes = new Set<string>();
+
+  private loadCommandsDiskOnce(): void {
+    if (this.commandsDiskLoaded) return;
+    this.commandsDiskLoaded = true;
+    try {
+      const raw = readFileSync(join(this.homeDir, "commands-cache.json"), "utf8");
+      const parsed = JSON.parse(raw) as Record<string, { commands?: unknown; at?: number }>;
+      for (const [key, entry] of Object.entries(parsed)) {
+        if (Array.isArray(entry?.commands) && typeof entry.at === "number") {
+          this.commandsDisk.set(key, { commands: entry.commands as readonly NativeCommandInfo[], at: entry.at });
+        }
+      }
+    } catch {
+      /* 没有缓存文件/坏格式 = 全部按首次拉取走，不是错误 */
+    }
+  }
+
+  private putCommandsDisk(key: string, commands: readonly NativeCommandInfo[]): void {
+    // 瞬时失败常表现为空清单：非空旧缓存不该被一次空结果抹掉
+    if (commands.length === 0 && this.commandsDisk.has(key)) return;
+    this.commandsDisk.set(key, { commands, at: Date.now() });
+    try {
+      const out: Record<string, { commands: readonly NativeCommandInfo[]; at: number }> = {};
+      for (const [k, v] of this.commandsDisk) out[k] = v;
+      const path = join(this.homeDir, "commands-cache.json");
+      const tmp = `${path}.tmp`;
+      writeFileSync(tmp, JSON.stringify(out), "utf8");
+      renameSync(tmp, path);
+    } catch (err: unknown) {
+      log.debug("commands-cache 写盘失败（菜单不受影响，只是下次重启要重拉）", { error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  /** 后台刷新（stale-while-revalidate 的后台半边）：成功才覆写磁盘 */
+  private async refreshCommands(adapter: ExecutorAdapter, rootPath: string, key: string): Promise<void> {
+    if (adapter.listCommands === undefined) return;
+    if (this.commandsRefreshes.has(key)) return;
+    this.commandsRefreshes.add(key);
+    try {
+      const commands = await Promise.race([
+        adapter.listCommands(rootPath),
+        new Promise<readonly NativeCommandInfo[]>((resolve) =>
+          setTimeout(() => resolve([]), LIST_COMMANDS_HARD_TIMEOUT_MS).unref?.(),
+        ),
+      ]);
+      this.putCommandsDisk(key, [...commands]);
+    } catch (err: unknown) {
+      log.debug("commands-cache 后台刷新失败（保留旧清单）", { key, error: err instanceof Error ? err.message : String(err) });
+    } finally {
+      this.commandsRefreshes.delete(key);
     }
   }
 

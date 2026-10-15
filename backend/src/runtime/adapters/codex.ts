@@ -34,6 +34,7 @@ import {
   type ModelSyncOutcome,
   type StartRequest,
 } from "./types.ts";
+import { builtinCommandsFor } from "./builtin-catalogs.ts";
 import type {
   ModelId,
   NativeCommandInfo,
@@ -398,7 +399,11 @@ export class CodexAdapter implements ExecutorAdapter {
   async listCommands(rootPath: string): Promise<readonly NativeCommandInfo[]> {
     const hit = this.commandCache.get(rootPath);
     if (hit !== undefined && Date.now() - hit.at < CodexAdapter.COMMAND_TTL_MS) return hit.commands;
-    const commands = readCodexPrompts(rootPath).map((p) => p.info);
+    const custom = readCodexPrompts(rootPath).map((p) => p.info);
+    // 内置目录（v0.162.1 TUI 实测，见 builtin-catalogs.ts）+ 自定义 prompts；
+    // 同名时自定义覆盖内置（TUI 同款优先级）
+    const customNames = new Set(custom.map((c) => c.name));
+    const commands = [...builtinCommandsFor(this.id).filter((b) => !customNames.has(b.name)), ...custom];
     this.commandCache.set(rootPath, { commands, at: Date.now() });
     return commands;
   }

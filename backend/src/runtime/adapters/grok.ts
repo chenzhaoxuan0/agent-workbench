@@ -37,12 +37,17 @@ import {
 } from "./types.ts";
 import type {
   ModelId,
+  NativeCommandInfo,
   ProbeResult,
   RuntimeCapabilities,
   RuntimeEvent,
   SessionId,
 } from "../../contract.ts";
 import { execLines, resolveCommand } from "../exec.ts";
+import { builtinCommandsFor } from "./builtin-catalogs.ts";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { log } from "../../log.ts";
 
 // ---- ACP 线缆类型（宽松，同 mcode/dsh） ---------------------------------------
@@ -222,6 +227,28 @@ export class GrokAdapter implements ExecutorAdapter {
   };
 
   private readonly sessions = new Map<string, GrokSession>();
+
+  // ---- 原生斜杠命令面 -----------------------------------------------------------
+
+  /** 命令缓存（内置目录 + 文件级发现合并结果；TTL 同其他适配器口径） */
+  private readonly commandCache = new Map<string, { commands: readonly NativeCommandInfo[]; at: number }>();
+  private static readonly COMMAND_TTL_MS = 10 * 60 * 1000;
+
+  /**
+   * grok 的命令面三段：内置目录（~/.grok/README.md v1.0.52 官方 Slash Commands
+   * 表，见 builtin-catalogs.ts）+ 技能/子智能体（官方 File Locations 约定：
+   * `~/.grok/{skills,agents}` 与 `<root>/.grok/{skills,agents}`，另有
+   * `~/.claude/skills` Claude Code 兼容源）。ACP 协议没有命令发现 API，
+   * 文件级是唯一无进程事实源；目录还没创建时返回空段（如实）。
+   * 执行语义：透传 —— grok agent stdio 不拦截斜杠命令，文本到模型。
+   */
+  async listCommands(rootPath: string): Promise<readonly NativeCommandInfo[]> {
+    const hit = this.commandCache.get(rootPath);
+    if (hit !== undefined && Date.now() - hit.at < GrokAdapter.COMMAND_TTL_MS) return hit.commands;
+    const commands = [...builtinCommandsFor(this.id), ...readGrokSkills(rootPath), ...readGrokAgents(rootPath)];
+    this.commandCache.set(rootPath, { commands, at: Date.now() });
+    return commands;
+  }
 
   async probe(): Promise<ProbeResult> {
     const t0 = Date.now();
@@ -561,9 +588,128 @@ export class GrokAdapter implements ExecutorAdapter {
       }
       case "user_message_chunk":
       case "plan":
-      case "available_commands_update":
+        break;
+      case "available_commands_update": {
+        // grok ACP 的运行时命令面推送 —— 比静态目录更强的事实源，直接覆盖缓存。
+        // 通知形状官方文档没写（本机暂未捕获到样本），宽容解析 + 未识别时留痕。
+        const parsed = parseGrokCommandsUpdate(u);
+        if (parsed !== null) {
+          this.commandCache.set(state.rootPath, { commands: parsed, at: Date.now() });
+          log.info("grok 命令面运行时更新", { rootPath: state.rootPath, count: parsed.length });
+        } else {
+          log.debug("grok available_commands_update 未识别形状", { keys: Object.keys(u ?? {}) });
+        }
+        break;
+      }
       default:
         break;
     }
   }
+}
+
+// ---- 文件级发现（官方 File Locations 约定，零进程）----------------------------
+
+/** 扁平 yaml frontmatter 宽松解析：只取 name/description 两键 */
+function parseGrokFrontmatter(raw: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!raw.startsWith("---\n") && !raw.startsWith("---\r\n")) return out;
+  const end = raw.indexOf("\n---", 4);
+  if (end === -1) return out;
+  for (const line of raw.slice(raw.indexOf("\n") + 1, end).split(/\r?\n/)) {
+    const i = line.indexOf(":");
+    if (i === -1) continue;
+    const key = line.slice(0, i).trim().toLowerCase();
+    const value = line.slice(i + 1).trim();
+    if (value !== "") out[key] = value;
+  }
+  return out;
+}
+
+/** 技能段：`<base>/.grok/skills/<name>/SKILL.md`（+ ~/.claude/skills 兼容源，官方 Claude Code compat 约定） */
+function readGrokSkills(rootPath: string): readonly NativeCommandInfo[] {
+  const dirs: Array<{ dir: string; source: "user" | "project" }> = [
+    { dir: join(homedir(), ".grok", "skills"), source: "user" },
+    { dir: join(rootPath, ".grok", "skills"), source: "project" },
+    { dir: join(homedir(), ".claude", "skills"), source: "user" },
+  ];
+  const out: NativeCommandInfo[] = [];
+  const seen = new Set<string>();
+  for (const { dir, source } of dirs) {
+    if (!existsSync(dir)) continue;
+    let entries: string[];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (seen.has(entry)) continue; // .grok 优先，.claude 兼容源只补缺
+      let raw: string;
+      try {
+        raw = readFileSync(join(dir, entry, "SKILL.md"), "utf8");
+      } catch {
+        continue;
+      }
+      seen.add(entry);
+      out.push({ name: entry, description: parseGrokFrontmatter(raw).description, source, kind: "skill" });
+    }
+  }
+  return out;
+}
+
+/** 子智能体段：`<base>/.grok/agents/*.md`（frontmatter name/description；缺 name 用文件名） */
+function readGrokAgents(rootPath: string): readonly NativeCommandInfo[] {
+  const dirs: Array<{ dir: string; source: "user" | "project" }> = [
+    { dir: join(homedir(), ".grok", "agents"), source: "user" },
+    { dir: join(rootPath, ".grok", "agents"), source: "project" },
+  ];
+  const out: NativeCommandInfo[] = [];
+  const seen = new Set<string>();
+  for (const { dir, source } of dirs) {
+    if (!existsSync(dir)) continue;
+    let files: string[];
+    try {
+      files = readdirSync(dir, { recursive: true }).filter((f) => String(f).toLowerCase().endsWith(".md")).map((f) => join(dir, String(f)));
+    } catch {
+      continue;
+    }
+    for (const file of files) {
+      const fileName = file.split(/[\/]/).pop()!.replace(/\.md$/i, "");
+      if (fileName === "") continue;
+      let raw: string;
+      try {
+        raw = readFileSync(file, "utf8");
+      } catch {
+        continue;
+      }
+      const fm = parseGrokFrontmatter(raw);
+      const name = fm.name && fm.name !== "" ? fm.name : fileName;
+      if (seen.has(name)) continue;
+      seen.add(name);
+      out.push({ name, description: fm.description, source, kind: "agent" });
+    }
+  }
+  return out;
+}
+
+/** available_commands_update 的宽容解析：认得的形状返回命令段，认不得返回 null（留痕用） */
+function parseGrokCommandsUpdate(u: AcpUpdate | undefined): readonly NativeCommandInfo[] | null {
+  if (u === undefined) return null;
+  const raw = u as AcpUpdate & { commands?: unknown };
+  // 形状 A：{ sessionUpdate: "available_commands_update", commands: [{name, description…}] }
+  if (Array.isArray(raw.commands)) {
+    const out: NativeCommandInfo[] = [];
+    for (const c of raw.commands as unknown[]) {
+      const e = c as { name?: unknown; description?: unknown; argumentHint?: unknown; inputHint?: unknown };
+      if (typeof e?.name !== "string" || e.name === "") continue;
+      out.push({
+        name: e.name,
+        description: typeof e.description === "string" ? e.description : undefined,
+        argumentHint: typeof e.argumentHint === "string" ? e.argumentHint : typeof e.inputHint === "string" ? e.inputHint : undefined,
+        kind: "command",
+      });
+    }
+    return out.length > 0 ? out : null;
+  }
+  return null;
 }

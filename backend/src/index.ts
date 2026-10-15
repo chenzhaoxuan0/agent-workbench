@@ -2238,6 +2238,22 @@ log.info("daemon listening", {
   home: config.homeDir,
 });
 
+// 命令面板预热（后台，不挡 listen）：拉一遍「有命令面的执行器 × 已知 bot
+// rootPath」，让用户第一次打开斜杠菜单就命中缓存 —— 对标 TUI 的秒开体验。
+// 冷启动成本（opencode 起 server ~6s、zcode 问 app-server ~1s）全部藏进启动期。
+void (async () => {
+  try {
+    const bots = await botRegistry.listBots();
+    const roots = [...new Set(bots.map((b) => b.rootPath).filter((r): r is string => typeof r === "string" && r !== ""))];
+    if (roots.length > 0) {
+      await host.prewarmCommands(roots);
+      log.info("命令面板预热完成", { roots: roots.length });
+    }
+  } catch {
+    /* 预热是优化不是功能路径：失败留给菜单打开时的正常拉取 */
+  }
+})();
+
 let shuttingDown = false;
 // 评审 P1：host.shutdown 必须真等——undelivered 广播是异步 socket 写、adapter.disconnect
 // 杀子进程、store.close 落盘，全部排在第一个 await 之后；此前同步 process.exit 抢跑全跳过
