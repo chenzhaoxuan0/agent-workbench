@@ -36,6 +36,18 @@ export interface ScheduleRule {
 
 export type RunStatus = "idle" | "running" | "completed" | "failed" | "paused";
 
+/**
+ * 到点之后把消息投到哪里。
+ *
+ * - `new_session`：新开一个会话把 prompt 当首轮发出去（历史行为，缺省）
+ * - `existing_session`：往 `targetSessionId` 那个已有对话里续发一条消息 ——
+ *   会话死了先 resume 再发，上下文原地接上，不重开对话。
+ *
+ * 这就是「定时发送」的全部口径：新对话还是老对话，二选一。
+ */
+export type DispatchTarget = "new_session" | "existing_session";
+
+
 export interface AutomationRun {
   readonly startedAt: number;
   readonly endedAt?: number;
@@ -69,6 +81,15 @@ export interface Automation {
   readonly cron?: string;
   /** 执行方式：terminal = 到点在前端拉执行器 TUI（缺省）；headless = 纯后台 host 会话 */
   readonly launchMode?: "terminal" | "headless";
+  /** 到点把消息投到哪里（缺省 = new_session，与 v2 旧行一致） */
+  readonly dispatchTarget?: DispatchTarget;
+  /** dispatchTarget=existing_session 时的收件对话 id */
+  readonly targetSessionId?: string | null;
+  /**
+   * 这条自动化是哪来的：manual = 用户手建；quota_resume = 用量耗尽自动排的续跑。
+   * 自动排的那条要在卡片上说明白「为什么会有这条」，否则用户以为是自己建的。
+   */
+  readonly origin?: "manual" | "quota_resume";
   /** 调度权威来源：rule = scheduleRule；cron = 纯 cron 行（表单的规则还原能力有限，不能拿来改写它） */
   readonly scheduleSource?: "rule" | "cron";
   /**

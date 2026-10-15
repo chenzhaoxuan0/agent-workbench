@@ -3,6 +3,7 @@ import { CalendarClock, X } from "lucide-react";
 import {
   scheduleRuleToCron,
   type Automation,
+  type DispatchTarget,
   type ScheduleRule,
   type Weekday,
 } from "../core/automation.ts";
@@ -63,6 +64,26 @@ const MODE_OPTIONS: readonly { id: string; label: string }[] = [
 const LAUNCH_MODE_OPTIONS: readonly { id: "terminal" | "headless"; label: string; hint: string }[] = [
   { id: "terminal", label: "终端 TUI（默认）", hint: "到点在前端拉起执行器终端界面，可看可插手（自动配免审批）" },
   { id: "headless", label: "纯后台", hint: "原 headless 会话：不弹终端、走会话台账，适合例行任务" },
+];
+
+/**
+ * 「发到哪里」—— 定时发送的全部口径就这一处二选一。
+ *
+ * 说人话：到点了，是**新开一个对话**把这几句话当开场白，
+ * 还是**往一个已经聊过的对话里再发一条**，让 agent 在原上下文里接着干。
+ * 「用量恢复后续跑」用的就是后者 —— 中断前的东西还在那儿，不该从头交代一遍。
+ */
+const DISPATCH_TARGET_OPTIONS: readonly { id: DispatchTarget; label: string; hint: string }[] = [
+  {
+    id: "new_session",
+    label: "新对话（默认）",
+    hint: "到点新开一个对话，把下面这段提示词当第一句话发出去",
+  },
+  {
+    id: "existing_session",
+    label: "已有对话",
+    hint: "到点把提示词当一条消息发进老对话。对话如果已经结束会自动接回来，上下文不断",
+  },
 ];
 
 /** 表单里的调度草稿（tab + 各 tab 的字段） */
@@ -148,6 +169,7 @@ export function AutomationDialog({
   const [model, setModel] = useState(initial?.model ?? "");
   const [mode, setMode] = useState(initial?.mode ?? "");
   const [launchMode, setLaunchMode] = useState<"terminal" | "headless">(initial?.launchMode === "headless" ? "headless" : "terminal");
+  const [dispatchTarget, setDispatchTarget] = useState<DispatchTarget>(initial?.dispatchTarget === "existing_session" ? "existing_session" : "new_session");
   const [draft, setDraft] = useState<BuilderDraft>(() =>
     initial !== null
       ? draftOf(initial)
@@ -268,7 +290,11 @@ export function AutomationDialog({
       // delay 分支不发 maxRuns：delayMinutes 本身就定性一次性（跑一次收口），
       // 后端 create 明确拒绝「delayMinutes + maxRuns」组合，带上就是必报错
       maxRuns: draft.freq === "delay" ? undefined : (draft.recurring ? null : Math.max(1, Math.round(draft.maxRuns))),
-      launchMode,
+      launchMode: dispatchTarget === "existing_session" ? "headless" : launchMode,
+      dispatchTarget,
+      // 留空 = 发火时自动挑该执行器最近一个能接回来的对话（daemon 侧回退），
+      // 这正是「用量恢复后续跑」要的行为，不该让用户手填一个会过期的会话 id
+      targetSessionId: null,
       ...(touched && draft.freq === "delay" ? { delayMinutes: Math.max(1, Math.round(draft.delayMinutes)) } : {}),
       ...(scheduleRule !== null ? { scheduleRule } : {}),
       ...(cronPassthrough !== undefined ? { cron: cronPassthrough } : {}),
@@ -342,13 +368,13 @@ export function AutomationDialog({
             </select>
           </Field>
 
-          <Field label="执行方式" hint={LAUNCH_MODE_OPTIONS.find((m) => m.id === launchMode)?.hint}>
+          <Field label="发到哪里" hint={DISPATCH_TARGET_OPTIONS.find((m) => m.id === dispatchTarget)?.hint}>
             <select
-              value={launchMode}
-              onChange={(e) => setLaunchMode(e.target.value === "headless" ? "headless" : "terminal")}
+              value={dispatchTarget}
+              onChange={(e) => setDispatchTarget(e.target.value === "existing_session" ? "existing_session" : "new_session")}
               className={inputCls}
             >
-              {LAUNCH_MODE_OPTIONS.map((m) => (
+              {DISPATCH_TARGET_OPTIONS.map((m) => (
                 <option key={m.id} value={m.id}>
                   {m.label}
                 </option>
@@ -356,7 +382,24 @@ export function AutomationDialog({
             </select>
           </Field>
 
-          <Field label="提示词" hint="到点后原样发给执行器的一段话">
+          {/* 往老对话发消息不需要决定「怎么起会话」—— 这个控件对新对话才有意义 */}
+          {dispatchTarget === "new_session" && (
+            <Field label="执行方式" hint={LAUNCH_MODE_OPTIONS.find((m) => m.id === launchMode)?.hint}>
+              <select
+                value={launchMode}
+                onChange={(e) => setLaunchMode(e.target.value === "headless" ? "headless" : "terminal")}
+                className={inputCls}
+              >
+                {LAUNCH_MODE_OPTIONS.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.label}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          )}
+
+          <Field label="提示词" hint={dispatchTarget === "existing_session" ? "到点后原样发进那个老对话里的一段话" : "到点后原样发给执行器的一段话"}>
             <textarea
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}

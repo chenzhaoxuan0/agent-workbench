@@ -26,6 +26,7 @@ export function normalizeBacklogConfig(raw: unknown): BacklogConfig {
   const hb = (r["heartbeat"] ?? {}) as Record<string, unknown>;
   const co = (r["consolidate"] ?? {}) as Record<string, unknown>;
   const fs = (r["feishu"] ?? {}) as Record<string, unknown>;
+  const qr = (r["quotaResume"] ?? {}) as Record<string, unknown>;
   const runtimes: Record<string, BacklogConfig["runtimes"][string]> = {};
   if (r["runtimes"] !== null && typeof r["runtimes"] === "object") {
     for (const [id, v] of Object.entries(r["runtimes"] as Record<string, unknown>)) {
@@ -52,6 +53,16 @@ export function normalizeBacklogConfig(raw: unknown): BacklogConfig {
       model: typeof hb["model"] === "string" && hb["model"] !== "" ? hb["model"] : null,
     },
     runtimes,
+    quotaResume: {
+      // 缺省 enabled=true（跟默认配置同向）：只写了一半的旧配置不该把续跑悄悄关掉
+      enabled: qr["enabled"] !== false,
+      exhaustedPercent: clampInt(qr["exhaustedPercent"], 0, 100, d.quotaResume.exhaustedPercent),
+      delayMinutes: clampInt(qr["delayMinutes"], 0, 24 * 60, d.quotaResume.delayMinutes),
+      message: typeof qr["message"] === "string" && qr["message"].trim() !== "" ? qr["message"] : d.quotaResume.message,
+      runtimes: Array.isArray(qr["runtimes"])
+        ? qr["runtimes"].filter((x): x is string => typeof x === "string" && x !== "")
+        : null,
+    },
     consolidate: {
       enabled: co["enabled"] !== false,
       atMinutes: clampInt(co["atMinutes"], 0, 24 * 60 - 1, d.consolidate.atMinutes),
@@ -79,7 +90,7 @@ export function getBacklogConfig(store: Store): BacklogConfig {
 export function setBacklogConfig(store: Store, patch: unknown): BacklogConfig {
   const prev = getBacklogConfig(store);
   const p = (patch ?? {}) as Record<string, unknown>;
-  const section = (name: "heartbeat" | "consolidate" | "feishu"): Record<string, unknown> => {
+  const section = (name: "heartbeat" | "quotaResume" | "consolidate" | "feishu"): Record<string, unknown> => {
     const base = prev[name] as unknown as Record<string, unknown>;
     const over = p[name];
     return over !== null && typeof over === "object" ? { ...base, ...(over as Record<string, unknown>) } : base;
@@ -88,6 +99,7 @@ export function setBacklogConfig(store: Store, patch: unknown): BacklogConfig {
   if (p["heartbeat"] !== undefined) merged["heartbeat"] = section("heartbeat");
   if (p["consolidate"] !== undefined) merged["consolidate"] = section("consolidate");
   if (p["feishu"] !== undefined) merged["feishu"] = section("feishu");
+  if (p["quotaResume"] !== undefined) merged["quotaResume"] = section("quotaResume");
   // runtimes 单独按 id 合并（prev 的保留，patch 的覆盖同名项）
   if (p["runtimes"] !== null && typeof p["runtimes"] === "object") {
     merged["runtimes"] = { ...prev.runtimes, ...(p["runtimes"] as Record<string, unknown>) };

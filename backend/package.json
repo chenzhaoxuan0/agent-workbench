@@ -47,7 +47,8 @@
     "smoke:backlog": "tsx scripts/smoke-backlog.ts",
     "smoke:image": "tsx scripts/smoke-image-proxy.ts",
     "smoke:autoterm": "tsx scripts/smoke-autoterm.ts",
-    "smoke:models": "tsx scripts/smoke-model-sync.ts"
+    "smoke:models": "tsx scripts/smoke-model-sync.ts",
+    "smoke:quotaresume": "tsx scripts/smoke-quota-resume.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.296",

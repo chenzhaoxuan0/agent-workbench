@@ -39,10 +39,13 @@ import { AgyAdapter } from "./runtime/adapters/agy.ts";
 import { GrokAdapter } from "./runtime/adapters/grok.ts";
 import { CursorAdapter } from "./runtime/adapters/cursor.ts";
 import { OpenclawAdapter } from "./runtime/adapters/openclaw.ts";
+
 import { TerminalManager } from "./terminal/terminals.ts";
 import { Store } from "./store/db.ts";
 import { listNativeSessions, readNativeSession } from "./history/index.ts";
 import { AutomationScheduler } from "./automation/scheduler.ts";
+import { QuotaResumeWatcher } from "./automation/quotaResume.ts";
+import { QuotaProbe } from "./backlog/probe.ts";
 import { cronNextAt, parseCron } from "./automation/cron.ts";
 import {
   buildRelativeDelaySchedule,
@@ -454,6 +457,38 @@ async function launchExecutorTerminal(opts: {
   return terminalId;
 }
 
+/**
+ * 定时发送的收件对话（dispatch_target = existing_session）。
+ *
+ * 三级回退，宁可往前退也不能空发：
+ *  1. 规则上钉死的 targetSessionId（用户手动指定的那一个）
+ *  2. 该执行器最近一个还能 resume 的会话 ——「刚撞到用量墙的那个对话」就是它：
+ *     cliRef 非空才接得回来（首轮没结束过的会话拿不到 cliRef，接不了）
+ *  3. 全都接不回来 → 返回 null，调用方退回「新开会话」，绝不静默丢弃这条自动化
+ */
+function resolveSendTarget(
+  automation: { runtimeId: string; targetSessionId?: string | null },
+  fallbackSessionId?: string | null,
+): string | null {
+  const pick = (id: string): string | null => {
+    const row = store.getSession(id);
+    return row !== undefined && row.cliRef !== null ? id : null;
+  };
+  if (automation.targetSessionId !== null && automation.targetSessionId !== undefined && automation.targetSessionId !== "") {
+    const hit = pick(automation.targetSessionId);
+    if (hit !== null) return hit;
+  }
+  if (fallbackSessionId !== undefined && fallbackSessionId !== null) {
+    const hit = pick(fallbackSessionId);
+    if (hit !== null) return hit;
+  }
+  for (const s of store.listSessions()) {
+    if (s.runtimeId !== automation.runtimeId || s.cliRef === null) continue;
+    return s.id;
+  }
+  return null;
+}
+
 async function runAutomation(
   a: {
     id: number;
@@ -465,9 +500,45 @@ async function runAutomation(
     model: string | null;
     mode: string | null;
     launchMode: "terminal" | "headless";
+    dispatchTarget?: "new_session" | "existing_session";
+    targetSessionId?: string | null;
   },
   opts: { trigger: "schedule" | "manual" },
 ): Promise<{ runId: number; sessionId: string }> {
+  // 定时发送到已有对话：不新开会话，把 prompt 当一条消息投进那个对话。
+  // 会话多半已经因为用量耗尽而结束 —— resumeSession 把盘里的会话接回执行器
+  // （cli_ref 续命），接回来后再发，agent 在原上下文里接着干。
+  if (a.dispatchTarget === "existing_session") {
+    const targetId = resolveSendTarget(a);
+    if (targetId !== null) {
+      const runId = store.startAutomationRun(a.id, targetId, opts.trigger);
+      try {
+        host.resumeSession(asSessionId(targetId));
+        host.sendMessage(asSessionId(targetId), a.prompt);
+        // 投递成功只回填 sessionId，status 留在 running —— 终态由 session.ended 回灌
+        const ended = store.getSession(targetId);
+        const endedFailed = ended !== undefined && ended.endedAt !== null && ended.status === "failed";
+        if (ended !== undefined && ended.endedAt !== null) {
+          store.finishAutomationRun(runId, endedFailed ? "failed" : "done", `ended: ${ended.status}`);
+        } else {
+          automationRunBySession.set(targetId, { runId, automationId: a.id });
+        }
+        if (endedFailed) store.setAutomationError(a.id, `ended: ${ended!.status}`, Date.now());
+        else store.setAutomationError(a.id, null, null);
+        log.info("automation message sent to existing session", { automationId: a.id, runId, sessionId: targetId, trigger: opts.trigger });
+        return { runId, sessionId: targetId };
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        store.finishAutomationRun(runId, "failed", message);
+        store.setAutomationError(a.id, message, Date.now());
+        throw err;
+      }
+    }
+    // 接不回任何老会话：记一笔再退回新开会话，别让这条续跑静默消失
+    log.warn("existing-session automation found no resumable target, falling back to new session", { automationId: a.id });
+    store.setAutomationError(a.id, "找不到可续接的对话，已改为新开会话", Date.now());
+  }
+
   // TUI 模式：到点在前端 PTY 里拉起执行器本尊的终端界面（yolo 免审批），
   // 人可看、可插手、可补充信息。不走 host —— 没有会话台账与事件流，
   // 运行记录的终态由终端 exit 帧回灌（autoExit：CLI 退 → shell 退 → exit 帧）。
@@ -591,6 +662,17 @@ healAutomationRuns();
   if (n > 0) log.info("terminal runs healed after restart", { settled: n });
 }
 scheduler.start();
+
+// 用量耗尽自动续跑：订阅执行器的窗口打满时自动排一条一次性自动化，
+// 到点往撞墙的那个对话里发一句「继续」。排出来的东西就是普通 automation，
+// 所以卡片、停用、手动触发全都是现成的。
+// 探针自带 5 分钟 TTL 缓存，这里只消费缓存读数，不额外起子进程。
+const quotaResumeWatcher = new QuotaResumeWatcher({
+  store,
+  probe: new QuotaProbe(config.homeDir),
+  getConfig: () => getBacklogConfig(store),
+});
+quotaResumeWatcher.start();
 
 // 渠道网关（docs/08 WP-8）：bot 的 IM 入站通道。
 //
@@ -1038,10 +1120,15 @@ registerMethod("automation.create", (params) => {
     cron?: string; scheduleRule?: unknown; delayMinutes?: number;
     recurring?: boolean; maxRuns?: number;
     launchMode?: string;
+    dispatchTarget?: string;
+    targetSessionId?: string | null;
   };
   if (typeof p.unitId !== "string" || typeof p.runtimeId !== "string" ||
       typeof p.rootPath !== "string" || typeof p.prompt !== "string") {
     throw badAutomation("unitId, runtimeId, rootPath, prompt are required");
+  }
+  if (p.dispatchTarget !== undefined && p.dispatchTarget !== "new_session" && p.dispatchTarget !== "existing_session") {
+    throw badAutomation("dispatchTarget 只能是 new_session 或 existing_session");
   }
   if (p.launchMode !== undefined && p.launchMode !== "terminal" && p.launchMode !== "headless") {
     throw badAutomation("launchMode 只能是 terminal 或 headless");
@@ -1077,6 +1164,9 @@ registerMethod("automation.create", (params) => {
     maxRuns,
     nextRunAt,
     launchMode: p.launchMode === "headless" ? "headless" : "terminal",
+    // 定时发送到已有对话：目标会话可以留空 —— 发火时按执行器最近一个可 resume 的会话回退
+    dispatchTarget: p.dispatchTarget === "existing_session" ? "existing_session" : "new_session",
+    targetSessionId: typeof p.targetSessionId === "string" && p.targetSessionId !== "" ? p.targetSessionId : null,
   });
   return { id, nextRunAt };
 });
@@ -1088,10 +1178,15 @@ registerMethod("automation.update", (params) => {
     cron?: string; scheduleRule?: unknown; delayMinutes?: number;
     recurring?: boolean; maxRuns?: number | null;
     launchMode?: string;
+    dispatchTarget?: string;
+    targetSessionId?: string | null;
   };
   if (typeof p.id !== "number") throw badAutomation("id is required");
   if (p.launchMode !== undefined && p.launchMode !== "terminal" && p.launchMode !== "headless") {
     throw badAutomation("launchMode 只能是 terminal 或 headless");
+  }
+  if (p.dispatchTarget !== undefined && p.dispatchTarget !== "new_session" && p.dispatchTarget !== "existing_session") {
+    throw badAutomation("dispatchTarget 只能是 new_session 或 existing_session");
   }
   const hit = store.getAutomation(p.id);
   if (hit === undefined) throw Object.assign(new Error(`no such automation: ${p.id}`), { code: "unknown_automation" });
@@ -1107,6 +1202,10 @@ registerMethod("automation.update", (params) => {
   if (typeof p.unitName === "string") patch.unitName = p.unitName;
   if (typeof p.runtimeId === "string") patch.runtimeId = p.runtimeId;
   if (typeof p.rootPath === "string") patch.rootPath = p.rootPath;
+  if (p.dispatchTarget === "new_session" || p.dispatchTarget === "existing_session") patch.dispatchTarget = p.dispatchTarget;
+  if (p.targetSessionId !== undefined) {
+    patch.targetSessionId = typeof p.targetSessionId === "string" && p.targetSessionId !== "" ? p.targetSessionId : null;
+  }
 
   if (typeof p.delayMinutes === "number" && p.recurring === true) {
     throw badAutomation("delayMinutes 是一次性任务，不能配 recurring=true");
@@ -1508,7 +1607,6 @@ registerMethod("history.native.detail", async (params) => {
   return { detail };
 });
 
-
 // ---- 待办 / GTD 方法（backlog.*）----------------------------------------------
 //
 // 确认门语义：backlog.proposal.confirm / backlog.runNow 都是**用户动作**（弹窗按钮、
@@ -1677,6 +1775,13 @@ registerMethod("backlog.quotas", async (params) => {
   return { quotas: await requireEngine().quotas(p.refresh === true) };
 });
 
+// 续跑判定快照：给前端解释「为什么现在有 / 没有那条续跑任务」。
+// 只读，不触发探测 —— 想强制刷新走 backlog.quotas 的 refresh。
+registerMethod("quotaResume.state", () => {
+  const cfg = getBacklogConfig(store);
+  return { enabled: cfg.quotaResume.enabled, config: cfg.quotaResume, states: quotaResumeWatcher.snapshot() };
+});
+
 registerMethod("backlog.state.forceBusy", (params) => {
   const p = (params ?? {}) as { on?: boolean };
   if (typeof p.on !== "boolean") throw badBacklog("on is required");
@@ -1695,8 +1800,6 @@ registerMethod("backlog.consolidate.run", (params) => {
   const p = (params ?? {}) as { force?: boolean };
   return requireEngine().consolidate(p.force !== false);
 });
-
-
 
 // ---- 记忆方法（docs/10）-----------------------------------------------------
 //
@@ -2099,6 +2202,7 @@ registerMethod("adapter.commands", (params) => {
   // 空清单 = 该执行器没有原生命令面（UI 菜单回落工作台本地命令），不是错误
   return host.listCommands(p.runtimeId, p.rootPath);
 });
+
 registerMethod("session.start", (params) => {
   // params 在协议里是可选的（wsd 的信封声明 params?: unknown）——
   // 缺了要当 bad_params 报，不能 `params as {...}` 后直接读属性（TypeError → internal）
@@ -2262,6 +2366,7 @@ async function shutdown(signal: string): Promise<void> {
   shuttingDown = true;
   log.info("shutting down", { signal });
   scheduler.stop();
+  quotaResumeWatcher.stop();
   backlogEngine?.stop();
   memoryScheduler?.stop(); // 之前漏了：60s interval 会活到 process.exit，正在跑的日报/curator 被从中间砍断
   telegramGateway.stop();

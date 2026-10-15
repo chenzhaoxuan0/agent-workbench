@@ -216,6 +216,8 @@ export interface BacklogConfig {
   readonly heartbeat: HeartbeatConfig;
   /** 订阅执行器余量配置（runtimeId → 配置） */
   readonly runtimes: Readonly<Record<string, RuntimeQuotaConfig>>;
+  /** 用量耗尽自动续跑：恢复后自动往撞墙的那个对话里发一句「继续」 */
+  readonly quotaResume: QuotaResumeConfig;
   /** 每日收件箱统合：atMinutes = 一天内的分钟数（22:00 = 1320） */
   readonly consolidate: { readonly enabled: boolean; readonly atMinutes: number };
   /** 飞书出站：提议与结果通知发到哪个机器人/会话 */
@@ -225,6 +227,28 @@ export interface BacklogConfig {
     readonly accountId: string;
     readonly receiveId: string;
   };
+}
+
+/**
+ * 用量耗尽自动续跑（QuotaResume）。
+ *
+ * 订阅执行器的 5 小时窗口被打满时，会话多半停在半路。等窗口重置后自动发一句
+ * 「继续」，agent 就在**原来那个对话**里接着干 —— 不新开对话，上下文不丢。
+ *
+ * 开关口径：`runtimes[id].subscribed` 才是真正的用户意图（用户自己勾的订阅制），
+ * 这里只是说「对勾了的执行器要不要顺带自动排续跑」。默认开 —— 续跑是派一条
+ * 一次性的定时消息，后果可控；而默认关的话这个功能会安静地不工作，用户看不出原因。
+ */
+export interface QuotaResumeConfig {
+  readonly enabled: boolean;
+  /** 剩余百分比 ≤ 此值即判「用尽」，开始排续跑。默认 2 —— 避开 0% 边界抖动 */
+  readonly exhaustedPercent: number;
+  /** 恢复后等几分钟再发（配额系统往往不是整点立刻生效，留一分钟余量） */
+  readonly delayMinutes: number;
+  /** 发出去的那句话 */
+  readonly message: string;
+  /** 只盯这几个执行器；null = 盯全部 subscribed 的 */
+  readonly runtimes: readonly string[] | null;
 }
 
 /** 提议/结果通知的飞书出站默认关：出站地址是用户环境的事实，得他填 */
@@ -245,6 +269,13 @@ export const DEFAULT_BACKLOG_CONFIG: BacklogConfig = {
     mcode: { subscribed: true, probeCmd: "mmx quota show --output json", probeFormat: "mmx-json", windowHours: 5, limit: null },
   },
   consolidate: { enabled: true, atMinutes: 22 * 60 },
+  quotaResume: {
+    enabled: true,
+    exhaustedPercent: 2,
+    delayMinutes: 1,
+    message: "用量窗口已恢复，请接着刚才中断的工作继续推进。",
+    runtimes: null,
+  },
   feishu: { enabled: false, botId: "steward", accountId: "main", receiveId: "" },
 };
 

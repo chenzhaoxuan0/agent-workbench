@@ -350,6 +350,25 @@ function AutomationCard({ a, unitName, onEdit }: { a: Automation; unitName: stri
 
       <div className="mt-auto flex items-center gap-2 border-t border-line-soft pt-2.5">
         <span className="font-mono text-caption text-ash">{a.runtimeId}</span>
+        {/* 投递目标：发给新对话 vs 往老对话里发一条。用户建任务时最容易误解的就是这个 */}
+        <span
+          className={cn(
+            "rounded-chip px-1.5 py-px text-caption",
+            a.dispatchTarget === "existing_session" ? "bg-teal-tint text-teal" : "bg-line-soft text-ash",
+          )}
+          title={a.dispatchTarget === "existing_session" ? "到点把提示词当一条消息发进已有的对话（对话已结束会自动接回来）" : "到点新开一个对话，把提示词当第一句话"}
+        >
+          {a.dispatchTarget === "existing_session" ? "发到已有对话" : "新对话"}
+        </span>
+        {/* 自动排的续跑要标出来：否则用户看到一条自己没建过的任务会以为系统乱排 */}
+        {a.origin === "quota_resume" && (
+          <span
+            className="rounded-chip bg-amber-500/10 px-1.5 py-px text-caption text-amber-600"
+            title="用量耗尽时自动排的续跑任务，到点往刚才中断的那个对话里发一句「继续」"
+          >
+            用量续跑
+          </span>
+        )}
         {/* 执行方式标记：TUI = 到点在前端拉终端；后台 = headless 会话（不弹终端） */}
         <span
           className={cn(

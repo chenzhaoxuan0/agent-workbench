@@ -22,7 +22,7 @@
 import type { NativeCommandInfo, RuntimeCapabilities } from "../../core/adapter.ts";
 import type { RuntimeEvent } from "../../core/events.ts";
 import { ruleFromCron, type Automation, type AutomationRun, type ScheduleRule } from "../../core/automation.ts";
-import type { BacklogConfig, BacklogItem, BacklogProposal, BacklogSignal, BacklogStateSnapshot, QuotaHeadroom } from "../../core/backlog.ts";
+import type { BacklogConfig, BacklogItem, BacklogProposal, BacklogSignal, BacklogStateSnapshot, QuotaHeadroom, QuotaResumeConfig } from "../../core/backlog.ts";
 import type { WorkUnit } from "../../core/units.ts";
 
 export interface DaemonModelInfo {
@@ -716,6 +716,10 @@ export interface DaemonAutomation {
   readonly lastErrorAt: number | null;
   /** terminal = 到点在前端拉执行器 TUI；headless = 原 host 会话。旧行缺省按 terminal 读 */
   readonly launchMode?: "terminal" | "headless";
+  /** 到点把消息投到哪里。旧行缺省 = new_session */
+  readonly dispatchTarget?: "new_session" | "existing_session";
+  readonly targetSessionId?: string | null;
+  readonly origin?: "manual" | "quota_resume";
   readonly createdAt: number;
   readonly runs: readonly DaemonAutomationRun[];
 }
@@ -738,6 +742,9 @@ export interface AutomationWriteInput {
   readonly delayMinutes?: number;
   /** 执行方式：缺省 = terminal（前端可见 TUI） */
   readonly launchMode?: "terminal" | "headless";
+  /** 定时发送到已有对话。缺省 targetSessionId = 发火时按最新的可续接会话定 */
+  readonly dispatchTarget?: "new_session" | "existing_session";
+  readonly targetSessionId?: string | null;
 }
 
 function mapAutomationRun(r: DaemonAutomationRun): AutomationRun {
@@ -777,6 +784,9 @@ export function daemonAutomationToAutomation(a: DaemonAutomation): Automation {
     cron: a.cron,
     scheduleSource: a.scheduleRule === null ? "cron" : "rule",
     launchMode: a.launchMode === "headless" ? "headless" : "terminal",
+    dispatchTarget: a.dispatchTarget === "existing_session" ? "existing_session" : "new_session",
+    targetSessionId: a.targetSessionId ?? null,
+    origin: a.origin === "quota_resume" ? "quota_resume" : "manual",
     nextRunAt: a.nextRunAt ?? undefined,
     lastFailure: a.lastError === null ? undefined : { at: a.lastErrorAt ?? a.createdAt, reason: a.lastError },
   };
@@ -786,6 +796,35 @@ export async function fetchAutomations(endpoint: string = defaultDaemonEndpoint(
   const client = DaemonClient.get(endpoint);
   const raw = await client.rpc<DaemonAutomation[]>("automation.list", null, 15000);
   return raw.map(daemonAutomationToAutomation);
+}
+
+/**
+ * 续跑判定快照：每个订阅执行器「用尽没有 / 排没排 / 为什么没排」。
+ *
+ * 只读缓存，不触发探针（探针要起子进程，5 分钟 TTL）；要强制刷新走
+ * `backlog.quotas` 的 refresh 参数。
+ */
+export interface QuotaResumeStateRow {
+  readonly runtimeId: string;
+  readonly percent: number | null;
+  readonly resetsAt: number | null;
+  readonly scheduledAutomationId: number | null;
+  readonly fireAt: number | null;
+  readonly targetSessionId: string | null;
+  /** 没排的原因；有值时界面必须显示，否则用户只看到「没反应」 */
+  readonly note: string | null;
+  readonly checkedAt: number;
+}
+
+export async function fetchQuotaResumeState(
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<{ enabled: boolean; config: QuotaResumeConfig; states: readonly QuotaResumeStateRow[] }> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<{ enabled: boolean; config: QuotaResumeConfig; states: readonly QuotaResumeStateRow[] }>(
+    "quotaResume.state",
+    null,
+    15000,
+  );
 }
 
 export async function createAutomation(

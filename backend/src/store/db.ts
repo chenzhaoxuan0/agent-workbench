@@ -14,7 +14,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
-import type { ScheduleRule } from "../../../prototype/src/core/automation.ts";
+import type { DispatchTarget, ScheduleRule } from "../../../prototype/src/core/automation.ts";
 import { log } from "../log.ts";
 
 export interface SessionRow {
@@ -268,6 +268,14 @@ export class Store {
       `ALTER TABLE terminal_runs ADD COLUMN title TEXT`,
       `ALTER TABLE terminal_runs ADD COLUMN resume_ref TEXT`,
       `ALTER TABLE terminal_runs ADD COLUMN output_text TEXT`,
+      // 派发目标（v3）：new_session = 新开会话（历史行为，NULL 按它读）；
+      // existing_session = 到点往 target_session_id 那个老对话里续发一条消息。
+      // 「定时发送」原语就落在这两列上 —— 用量耗尽后续跑用的也是它。
+      `ALTER TABLE automations ADD COLUMN dispatch_target TEXT`,
+      `ALTER TABLE automations ADD COLUMN target_session_id TEXT`,
+      // 来源：manual = 用户手建；quota_resume = 用量耗尽后自动排的续跑。
+      // 自动排的那条要去重（同一窗口只排一条），这个标记就是去重的凭据。
+      `ALTER TABLE automations ADD COLUMN origin TEXT`,
     ]) {
       try {
         this.db.exec(stmt);
@@ -434,6 +442,10 @@ export class Store {
       lastError: r["last_error"] === null || r["last_error"] === undefined ? null : String(r["last_error"]),
       lastErrorAt: r["last_error_at"] === null || r["last_error_at"] === undefined ? null : Number(r["last_error_at"]),
       launchMode: r["launch_mode"] === "headless" ? "headless" : "terminal",
+      // 旧行 dispatch_target 为 NULL —— 按 new_session 读，保持 v2 行为不变
+      dispatchTarget: r["dispatch_target"] === "existing_session" ? "existing_session" : "new_session",
+      targetSessionId: r["target_session_id"] === null || r["target_session_id"] === undefined ? null : String(r["target_session_id"]),
+      origin: r["origin"] === "quota_resume" ? "quota_resume" : "manual",
       createdAt: Number(r["created_at"]),
     };
   }
@@ -453,12 +465,16 @@ export class Store {
     maxRuns: number | null;
     nextRunAt: number | null;
     launchMode: "terminal" | "headless";
+    dispatchTarget?: DispatchTarget;
+    targetSessionId?: string | null;
+    origin?: "manual" | "quota_resume";
   }): number {
     const result = this.db
       .prepare(
         `INSERT INTO automations (unit_id, unit_name, name, runtime_id, root_path, prompt, model, mode, cron,
-           schedule_rule, recurring, max_runs, run_count, next_run_at, enabled, created_at, launch_mode)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 1, ?, ?)`,
+           schedule_rule, recurring, max_runs, run_count, next_run_at, enabled, created_at, launch_mode,
+           dispatch_target, target_session_id, origin)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 1, ?, ?, ?, ?, ?)`,
       )
       .run(
         a.unitId,
@@ -476,6 +492,9 @@ export class Store {
         a.nextRunAt,
         Date.now(),
         a.launchMode,
+        a.dispatchTarget ?? "new_session",
+        a.targetSessionId ?? null,
+        a.origin ?? "manual",
       );
     return Number(result.lastInsertRowid);
   }
@@ -501,6 +520,9 @@ export class Store {
     lastError: string | null;
     lastErrorAt: number | null;
     launchMode: "terminal" | "headless";
+    dispatchTarget: DispatchTarget;
+    targetSessionId: string | null;
+    origin: "manual" | "quota_resume";
     createdAt: number;
   }> {
     const rows = this.db.prepare(`SELECT * FROM automations ORDER BY id DESC`).all() as Array<Record<string, unknown>>;
@@ -535,6 +557,8 @@ export class Store {
       nextRunAt: number | null;
       lastRunAt: number | null;
       launchMode: "terminal" | "headless";
+      dispatchTarget?: DispatchTarget;
+      targetSessionId?: string | null;
     }>,
   ): boolean {
     const sets: string[] = [];
@@ -560,6 +584,8 @@ export class Store {
     if (patch.nextRunAt !== undefined) put("next_run_at", patch.nextRunAt);
     if (patch.lastRunAt !== undefined) put("last_run_at", patch.lastRunAt);
     if (patch.launchMode !== undefined) put("launch_mode", patch.launchMode);
+    if (patch.dispatchTarget !== undefined) put("dispatch_target", patch.dispatchTarget);
+    if (patch.targetSessionId !== undefined) put("target_session_id", patch.targetSessionId);
     if (sets.length === 0) return true;
     values.push(id);
     const result = this.db.prepare(`UPDATE automations SET ${sets.join(", ")} WHERE id = ?`).run(...values);
