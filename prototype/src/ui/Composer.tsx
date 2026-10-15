@@ -117,7 +117,7 @@ export function Composer() {
         >
           {/* 斜杠指令参数提示条（命令已选定、输入参数阶段） */}
           {activeCommandHint && !slashMenuDismissed && (
-            <div className="absolute bottom-full left-0 mb-2 px-3 py-1.5 rounded-lg border border-line bg-card/95 shadow-md backdrop-blur-md flex items-center gap-2 text-xs animate-in fade-in duration-100 max-w-[calc(100vw-3rem)] overflow-hidden z-40">
+            <div className="absolute bottom-full -left-px -right-px mb-2 px-3.5 py-2 rounded-xl border border-line bg-card/95 shadow-md backdrop-blur-md flex items-center gap-2.5 text-xs animate-in fade-in duration-100 z-40">
               <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded bg-ink text-canvas font-mono text-[10px] font-bold leading-none">
                 /
               </span>
@@ -128,7 +128,7 @@ export function Composer() {
                 </span>
               ) : null}
               {activeCommandHint.description ? (
-                <span className="text-graphite text-[11px] truncate max-w-[320px]">
+                <span className="text-graphite text-xs truncate flex-1 min-w-0">
                   {activeCommandHint.description}
                 </span>
               ) : null}
