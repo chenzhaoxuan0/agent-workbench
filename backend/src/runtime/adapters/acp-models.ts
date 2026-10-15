@@ -64,16 +64,18 @@ export async function queryAcpSessionNew(
       ...(opts.env === undefined ? {} : { env: { ...process.env, ...opts.env } }),
     });
     let settled = false;
+    const waiters = new Map<number, (f: AcpFrame) => void>();
     const finish = (fn: () => void): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      // 进程已死，还挂着的等待者永远等不到回复了 —— 清掉，别留悬垂闭包
+      waiters.clear();
       child.kill();
       fn();
     };
     const timer = setTimeout(() => finish(() => reject(new Error(`ACP session/new 超时（${timeoutMs}ms）`))), timeoutMs);
 
-    const waiters = new Map<number, (f: AcpFrame) => void>();
     createInterface({ input: child.stdout }).on("line", (line) => {
       let f: AcpFrame;
       try {
@@ -90,29 +92,62 @@ export async function queryAcpSessionNew(
     child.stderr?.resume();
 
     let nextId = 0;
-    const req = (method: string, params: Record<string, unknown>): Promise<AcpFrame> =>
+    const req = (method: string, params: Record<string, unknown>, timeout?: number): Promise<AcpFrame> =>
       new Promise((res) => {
         const id = (nextId += 1);
-        waiters.set(id, res);
+        let done = false;
+        const t = timeout === undefined ? undefined : setTimeout(() => {
+          done = true;
+          waiters.delete(id);
+          // 超时也要给调用方一个交代，不能让它永远 await 下去
+          res({ id, error: { code: -32000, message: `${method} 超时（${timeout}ms）` } });
+        }, timeout);
+        waiters.set(id, (f) => {
+          if (done) return;
+          if (t !== undefined) clearTimeout(t);
+          res(f);
+        });
         child.stdin?.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
       });
 
     // 进程提前退出（命令错、CLI 没装）时不能永远挂着 —— 补发拒绝
     child.on("exit", () => finish(() => reject(new Error("ACP 进程在返回 session/new 前退出"))));
     child.on("error", (e: Error) => finish(() => reject(e)));
+    // 进程被杀后对 stdin 写入会异步抛 EPIPE。stdin 上没有 error 监听器时，
+    // 这会变成未捕获异常直接把 daemon 干崩 —— 必须挂一个空监听器。
+    child.stdin?.on("error", () => undefined);
 
     void (async () => {
       try {
         const init = await req("initialize", {
           protocolVersion: 1,
           clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
-        });
+        }, timeoutMs);
         if (init.error !== undefined) throw new Error(init.error.message ?? "initialize failed");
         const sn = await req("session/new", {
           cwd: opts.cwd ?? process.env["USERPROFILE"] ?? ".",
           mcpServers: [],
-        });
+        }, timeoutMs);
         if (sn.error !== undefined) throw new Error(sn.error.message ?? "session/new failed");
+
+        // **主动关掉这个只为探测而建的会话**。
+        //
+        // session/new 不是「查询」，它真的会在执行器那边落一条会话记录
+        // （实测 mcode 每次刷新都在 ~/.minimax/v2/sessions/ 下留一个空会话目录）。
+        // 零 token ≠ 零副作用：用户按十次按钮就攒十份垃圾。ACP 提供了
+        // session/close（mcode 的 sessionCapabilities.close、dsh 的 close 均声明支持），
+        // 所以这里关掉再杀进程。关不掉也不该影响探测结果 —— 它只是卫生问题。
+        //
+        // 实测（本机 2026-10-15，逐个适配器量过）：dsh 与 grok 关得掉，残留 0；
+        // **mcode 关不掉**，每次刷新仍留 1 条空会话记录 —— 该记录的 messages.jsonl
+        // 是 0 字节，没有产生任何对话，也就没有任何 token 消耗。ACP 没有标准的
+        // session/delete，mcode 的扩展方法表里也没有删除类方法，所以这条残留
+        // 目前消不掉。它只在按下按钮与 daemon 启动预热时发生，频率很低。
+        const sessionId = (sn.result as { readonly sessionId?: unknown } | undefined)?.sessionId;
+        if (typeof sessionId === "string" && sessionId !== "") {
+          await req("session/close", { sessionId }, 3000).catch(() => undefined);
+        }
+
         finish(() => resolve(sn.result ?? {}));
       } catch (err: unknown) {
         finish(() => reject(err instanceof Error ? err : new Error(String(err))));

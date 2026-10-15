@@ -159,12 +159,11 @@ export class RuntimeRegistry {
    * @returns 是否真的换了清单（换了才 emit，避免空刷新把整个界面重渲一遍）
    */
   updateModels(id: RuntimeId, raw: readonly RawExecutorModel[], discoverable: boolean): boolean {
-    this.#modelDiscoverable.set(id, discoverable);
     const prev = this.#modelOverrides.get(id);
-    // 清单没变就别 emit —— 每家执行器都刷新一次的话，全量 emit 会让下拉框反复重建
-    if (prev !== undefined && prev.length === raw.length && prev.every((m, i) => m.id === raw[i]?.id)) {
-      return false;
+    if (prev !== undefined && sameModelList(prev, raw) && this.#modelDiscoverable.get(id) === discoverable) {
+      return false; // 真的什么都没变，不必 emit
     }
+    this.#modelDiscoverable.set(id, discoverable);
     this.#modelOverrides.set(id, raw);
     this.#emit();
     return true;
@@ -199,6 +198,39 @@ export class RuntimeRegistry {
     const snapshot = this.list();
     for (const fn of this.#listeners) fn(snapshot);
   }
+}
+
+/**
+ * 两份清单是否**实质**相同。
+ *
+ * ⚠ 早先只比 id，结果漏掉了最该刷的那类变化：执行器给同一个模型改了上下文窗口、
+ * 显示名或推理档位，但 id 一个没动。表现就是「我按了刷新，界面说无变化」，
+ * 而那个过期的 200000 窗口还挂着 —— 正是这套机制本来要消灭的毛病。
+ * 所以逐字段比，宁可多 emit 一次也不能把真实变化判成没变。
+ */
+function sameModelList(a: readonly RawExecutorModel[], b: readonly RawExecutorModel[]): boolean {
+  if (a.length !== b.length) return false;
+  return a.every((m, i) => {
+    const o = b[i];
+    if (o === undefined) return false;
+    return (
+      m.id === o.id &&
+      m.displayName === o.displayName &&
+      m.contextWindow === o.contextWindow &&
+      m.maxOutput === o.maxOutput &&
+      m.multimodal === o.multimodal &&
+      m.defaultReasoningLevel === o.defaultReasoningLevel &&
+      sameStrings(m.reasoningLevels, o.reasoningLevels) &&
+      m.inputPerMTok === o.inputPerMTok &&
+      m.outputPerMTok === o.outputPerMTok
+    );
+  });
+}
+
+function sameStrings(a: readonly string[] | undefined, b: readonly string[] | undefined): boolean {
+  if (a === b) return true;
+  if (a === undefined || b === undefined) return false;
+  return a.length === b.length && a.every((s, i) => s === b[i]);
 }
 
 /** 全局单例。Electron 阶段会按窗口隔离。 */
