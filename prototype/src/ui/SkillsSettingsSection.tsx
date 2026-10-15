@@ -30,6 +30,8 @@ export function SkillsSettingsSection() {
   const [err, setErr] = useState<string | null>(null);
   /** 在途开关动作（`${groupId}|${dirName}`），防重复点击与批量闪烁 */
   const [pending, setPending] = useState<ReadonlySet<string>>(new Set());
+  /** 选中的技能源（组 id）；null = 默认第一个源。切 bot 后项目源变化时自动回落 */
+  const [selSource, setSelSource] = useState<string | null>(null);
   /** 请求序号：快速切 bot 连发 load 时只有最新一次允许写状态（旧响应后到不得覆盖新数据） */
   const reqSeq = useRef(0);
 
@@ -113,8 +115,16 @@ export function SkillsSettingsSection() {
     })();
   };
 
+  // 技能源切换：主源（用户级/项目级）各占一个 tab；只读插件源聚合一个 tab
+  //（zcode/agy 插件逐版本成源，单独列 tab 会把切换条挤爆）
+  const PLUGIN_TAB = "__plugins__";
+  const mainGroups = (inv?.groups ?? []).filter((g) => g.scope !== "plugin");
+  const pluginGroups = (inv?.groups ?? []).filter((g) => g.scope === "plugin");
+  const activeGroup = mainGroups.find((g) => g.id === selSource) ?? mainGroups[0];
+  const pluginTabActive = selSource === PLUGIN_TAB || (selSource === null && mainGroups.length === 0 && pluginGroups.length > 0);
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <p className="-mt-2 text-body-sm leading-relaxed text-graphite">
         停用 = 把技能文件夹移入技能源内的 <span className="font-mono text-ink">.disabled/</span> 目录，
         对读取该源的所有执行器立即生效；恢复即搬回，文件一个不丢。
@@ -151,7 +161,56 @@ export function SkillsSettingsSection() {
         </p>
       )}
 
-      {status === "ready" && inv?.groups.map((g) => (
+      {/* 技能源切换条（对齐 MCP 分区的执行器 tab 形态） */}
+      {status === "ready" && (mainGroups.length > 0 || pluginGroups.length > 0) && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          {mainGroups.map((g) => {
+            const active = !pluginTabActive && activeGroup?.id === g.id;
+            const enabled = g.skills.filter((s) => !s.disabled).length;
+            return (
+              <button
+                key={g.id}
+                onClick={() => setSelSource(g.id)}
+                className={cn(
+                  "rounded-chip border px-2.5 py-1 text-body-sm transition",
+                  active
+                    ? "border-teal bg-teal-tint font-medium text-ink"
+                    : "border-line text-graphite hover:bg-line-soft hover:text-ink",
+                )}
+              >
+                {g.label}
+                <span className="ml-1 tnum text-caption">{enabled}</span>
+              </button>
+            );
+          })}
+          {pluginGroups.length > 0 && (
+            <button
+              onClick={() => setSelSource(PLUGIN_TAB)}
+              className={cn(
+                "rounded-chip border px-2.5 py-1 text-body-sm transition",
+                pluginTabActive
+                  ? "border-teal bg-teal-tint font-medium text-ink"
+                  : "border-line text-graphite hover:bg-line-soft hover:text-ink",
+              )}
+            >
+              插件源
+              <span className="ml-1 tnum text-caption">{pluginGroups.length}</span>
+            </button>
+          )}
+        </div>
+      )}
+
+      {status === "ready" && !pluginTabActive && activeGroup !== undefined && (
+        <SkillGroupCard
+          key={activeGroup.id}
+          group={activeGroup}
+          pending={pending}
+          onToggle={handleToggle}
+          onBatch={handleBatch}
+        />
+      )}
+
+      {status === "ready" && pluginTabActive && pluginGroups.map((g) => (
         <SkillGroupCard
           key={g.id}
           group={g}

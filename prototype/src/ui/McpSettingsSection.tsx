@@ -8,6 +8,7 @@
  * - 跨执行器复制是一次性动作：读源 → 格式转换 → 写目标，此后各家独立演化。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import type { McpInventory, McpMutationResult, McpServerEntry, McpServerInstance, McpServerRow } from "../core/mcp.ts";
 import {
   mcpCopyRpc,
@@ -399,6 +400,7 @@ function EntryEditor({
   onSubmit: (entry: McpServerEntry) => void;
   onCancel: () => void;
 }) {
+  const [mode, setMode] = useState<"form" | "json">("form");
   const [name, setName] = useState(initial?.name ?? "");
   const [transport, setTransport] = useState<McpServerEntry["transport"]>(initial?.transport ?? "stdio");
   const [command, setCommand] = useState(initial?.command ?? "");
@@ -406,63 +408,163 @@ function EntryEditor({
   const [env, setEnv] = useState(kvToText(initial?.env));
   const [url, setUrl] = useState(initial?.url ?? "");
   const [headers, setHeaders] = useState(kvToText(initial?.headers));
+  const [jsonText, setJsonText] = useState(initial === undefined ? DEFAULT_ENTRY_JSON : JSON.stringify(initial, null, 2));
   const [formErr, setFormErr] = useState<string | null>(null);
 
-  const submit = (): void => {
-    const n = name.trim();
-    if (n === "") { setFormErr("服务名不能为空"); return; }
-    // 镜像后端 validateEntry 的名称规则：提前拦下，省一趟 bad_params 往返
-    if (n.startsWith(".")) { setFormErr("服务名不能以点开头"); return; }
-    if (/[\\/]/.test(n)) { setFormErr("服务名不能包含 / 或 \\"); return; }
-    if (transport === "stdio" && command.trim() === "") { setFormErr("stdio 服务必须填 command"); return; }
-    if (transport !== "stdio" && url.trim() === "") { setFormErr(`${transport} 服务必须填 url`); return; }
-    const parsedEnv = textToKv(env, setFormErr);
-    const parsedHeaders = textToKv(headers, setFormErr);
-    if (parsedEnv === null || parsedHeaders === null) return;
-    onSubmit({
-      name: n,
+  /** 从表单状态构造条目（不校验 —— JSON 模式预填与提交共用，提交前另行校验） */
+  const buildFromForm = (): McpServerEntry => {
+    const parsedEnv = textToKv(env, () => {});
+    const parsedHeaders = textToKv(headers, () => {});
+    return {
+      name: name.trim(),
       transport,
       ...(transport === "stdio"
-        ? { command: command.trim(), ...(args.trim() !== "" ? { args: args.trim().split(/\s+/) } : {}), ...(parsedEnv !== undefined ? { env: parsedEnv } : {}) }
-        : { url: url.trim(), ...(parsedHeaders !== undefined ? { headers: parsedHeaders } : {}) }),
-    });
+        ? {
+            command: command.trim(),
+            ...(args.trim() !== "" ? { args: args.trim().split(/\s+/) } : {}),
+            ...(parsedEnv !== undefined && parsedEnv !== null ? { env: parsedEnv } : {}),
+          }
+        : {
+            url: url.trim(),
+            ...(parsedHeaders !== undefined && parsedHeaders !== null ? { headers: parsedHeaders } : {}),
+          }),
+    };
+  };
+
+  /** 提交前统一校验（两种模式共用，镜像后端 validateEntry） */
+  const validateEntry = (entry: McpServerEntry): string | null => {
+    if (entry.name === "") return "服务名不能为空";
+    if (entry.name.startsWith(".")) return "服务名不能以点开头";
+    if (/[\\/]/.test(entry.name)) return "服务名不能包含 / 或 \\";
+    if (entry.transport !== "stdio" && entry.transport !== "http" && entry.transport !== "sse") {
+      return "连接方式必须是 stdio / http / sse";
+    }
+    if (entry.transport === "stdio" && (entry.command === undefined || entry.command.trim() === "")) return "stdio 服务必须填命令";
+    if (entry.transport !== "stdio" && (entry.url === undefined || entry.url.trim() === "")) return `${entry.transport} 服务必须填端点 URL`;
+    if (initial !== undefined && entry.name !== initial.name) return "编辑时不能改名（改名 = 删除后新建）";
+    return null;
+  };
+
+  const submit = (): void => {
+    const entry = mode === "form" ? buildFromForm() : parseJsonEntry(jsonText);
+    if (typeof entry === "string") {
+      setFormErr(entry);
+      return;
+    }
+    const v = validateEntry(entry);
+    if (v !== null) {
+      setFormErr(v);
+      return;
+    }
+    onSubmit(entry);
+  };
+
+  /** 双模式互切：表单 → JSON 序列化当前值；JSON → 表单尽量回填（解析失败保持表单现值） */
+  const switchMode = (next: "form" | "json"): void => {
+    if (next === mode) return;
+    if (next === "json") {
+      setJsonText(JSON.stringify(buildFromForm(), null, 2));
+    } else {
+      try {
+        const r = JSON.parse(jsonText) as Record<string, unknown>;
+        if (typeof r.name === "string") setName(r.name);
+        if (r.transport === "stdio" || r.transport === "http" || r.transport === "sse") setTransport(r.transport);
+        if (typeof r.command === "string") setCommand(r.command);
+        if (Array.isArray(r.args)) setArgs(r.args.filter((x): x is string => typeof x === "string").join(" "));
+        if (typeof r.url === "string") setUrl(r.url);
+        if (r.env !== null && typeof r.env === "object" && !Array.isArray(r.env)) {
+          const e: Record<string, string> = {};
+          for (const [k, val] of Object.entries(r.env)) if (typeof val === "string") e[k] = val;
+          setEnv(kvToText(e));
+        }
+        if (r.headers !== null && typeof r.headers === "object" && !Array.isArray(r.headers)) {
+          const h: Record<string, string> = {};
+          for (const [k, val] of Object.entries(r.headers)) if (typeof val === "string") h[k] = val;
+          setHeaders(kvToText(h));
+        }
+      } catch {
+        /* JSON 暂时非法：保持表单现值，用户切回 JSON 可继续改 */
+      }
+    }
+    setMode(next);
+    setFormErr(null);
   };
 
   const input = "h-8 w-full rounded-btn border border-line bg-canvas px-2.5 font-mono text-body-sm text-ink focus:border-teal focus:outline-none";
 
   return (
-    <div className="space-y-2.5 rounded-card border border-line bg-card p-4">
-      <p className="text-caption font-medium text-graphite">{initial === undefined ? "添加服务" : `编辑 ${initial.name}`}</p>
-      <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-[1fr_128px]">
-        <input
-          className={input}
-          placeholder="服务名（如 web-reader）"
-          value={name}
-          disabled={initial !== undefined}
-          onChange={(e) => setName(e.target.value)}
-        />
-        <select
-          className={cn(input, "font-sans")}
-          value={transport}
-          onChange={(e) => setTransport(e.target.value as McpServerEntry["transport"])}
-        >
-          <option value="stdio">stdio</option>
-          <option value="http">http</option>
-          <option value="sse">sse</option>
-        </select>
+    <div className="space-y-3 rounded-card border border-line bg-card p-4">
+      <div className="flex items-center gap-2">
+        <p className="text-caption font-medium text-graphite">{initial === undefined ? "添加服务" : `编辑 ${initial.name}`}</p>
+        <div className="ml-auto flex gap-1">
+          {(["form", "json"] as const).map((m) => (
+            <button
+              key={m}
+              onClick={() => switchMode(m)}
+              className={cn(
+                "rounded-chip border px-2 py-0.5 text-caption transition",
+                mode === m ? "border-teal bg-teal-tint font-medium text-ink" : "border-line text-graphite hover:bg-line-soft hover:text-ink",
+              )}
+            >
+              {m === "form" ? "表单" : "JSON"}
+            </button>
+          ))}
+        </div>
       </div>
-      {transport === "stdio" ? (
+
+      {mode === "form" ? (
         <>
-          <input className={input} placeholder="command（如 npx —— Windows 下 npx 等会自动包 cmd /c）" value={command} onChange={(e) => setCommand(e.target.value)} />
-          <input className={input} placeholder="args（空格分隔，如 -y zread-mcp）" value={args} onChange={(e) => setArgs(e.target.value)} />
-          <textarea className={cn(input, "h-16 py-1.5")} placeholder={"env 每行一个 KEY=VALUE"} value={env} onChange={(e) => setEnv(e.target.value)} />
+          <Field label="服务名称" hint="各执行器配置里的唯一键名，斜杠菜单与日志里都叫它（如 web-reader）。编辑时不可改名">
+            <input className={input} value={name} disabled={initial !== undefined} onChange={(e) => setName(e.target.value)} />
+          </Field>
+          <Field label="连接方式" hint="stdio = 本地命令子进程；http = Streamable HTTP 端点；sse = SSE 端点">
+            <select
+              className={cn(input, "font-sans")}
+              value={transport}
+              onChange={(e) => setTransport(e.target.value as McpServerEntry["transport"])}
+            >
+              <option value="stdio">stdio（本地命令）</option>
+              <option value="http">http（Streamable HTTP）</option>
+              <option value="sse">sse（SSE 端点）</option>
+            </select>
+          </Field>
+          {transport === "stdio" ? (
+            <>
+              <Field label="命令" hint="可执行文件名，如 npx / uvx / python。Windows 下 npx 等会自动包 cmd /c，无需手写">
+                <input className={input} value={command} onChange={(e) => setCommand(e.target.value)} />
+              </Field>
+              <Field label="参数" hint="空格分隔（暂不支持含空格的单个参数，复杂参数请用 JSON 模式）">
+                <input className={input} value={args} onChange={(e) => setArgs(e.target.value)} />
+              </Field>
+              <Field label="环境变量" hint="每行一个 KEY=VALUE，注入子进程环境（放 API Key 的地方）">
+                <textarea className={cn(input, "h-20 py-1.5")} value={env} onChange={(e) => setEnv(e.target.value)} />
+              </Field>
+            </>
+          ) : (
+            <>
+              <Field label="端点 URL" hint="服务提供方的 MCP 端点，如 https://open.bigmodel.cn/api/mcp/xxx/mcp">
+                <input className={input} value={url} onChange={(e) => setUrl(e.target.value)} />
+              </Field>
+              <Field label="请求头" hint="每行一个 KEY=VALUE（如 Authorization=Bearer xxx）">
+                <textarea className={cn(input, "h-20 py-1.5")} value={headers} onChange={(e) => setHeaders(e.target.value)} />
+              </Field>
+            </>
+          )}
         </>
       ) : (
-        <>
-          <input className={input} placeholder="url（如 https://open.bigmodel.cn/api/mcp/xxx/mcp）" value={url} onChange={(e) => setUrl(e.target.value)} />
-          <textarea className={cn(input, "h-16 py-1.5")} placeholder={"headers 每行一个 KEY=VALUE"} value={headers} onChange={(e) => setHeaders(e.target.value)} />
-        </>
+        <Field
+          label="条目 JSON"
+          hint={initial === undefined ? "完整条目定义，字段：name / transport / command / args / env / url / headers" : "完整条目定义；name 必须保持不变（改名 = 删除后新建）"}
+        >
+          <textarea
+            className={cn(input, "h-64 py-1.5")}
+            spellCheck={false}
+            value={jsonText}
+            onChange={(e) => setJsonText(e.target.value)}
+          />
+        </Field>
       )}
+
       {formErr !== null && <p className="text-caption text-loss">{formErr}</p>}
       <div className="flex gap-2">
         <button onClick={submit} className="rounded-btn bg-ink px-3 py-1.5 text-body-sm text-canvas">保存</button>
@@ -470,6 +572,57 @@ function EntryEditor({
       </div>
     </div>
   );
+}
+
+/** 编辑器字段：标题 + 一句说明 + 控件（对齐 cc-switch 的表单形态） */
+function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
+  return (
+    <div>
+      <p className="text-caption font-medium text-graphite">{label}</p>
+      {hint !== undefined && <p className="mb-1 text-caption leading-relaxed text-ash">{hint}</p>}
+      {children}
+    </div>
+  );
+}
+
+/** 新建时的 JSON 模板 */
+const DEFAULT_ENTRY_JSON = `{
+  "name": "",
+  "transport": "stdio",
+  "command": "",
+  "args": [],
+  "env": {}
+}`;
+
+/** JSON 模式解析：返回条目或错误信息（字符串）。只收已知字段，与后端 sanitizeEntry 同口径 */
+function parseJsonEntry(text: string): McpServerEntry | string {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch (e) {
+    return `JSON 解析失败：${e instanceof Error ? e.message : String(e)}`;
+  }
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return "条目必须是 JSON 对象";
+  const r = raw as Record<string, unknown>;
+  if (r.transport !== "stdio" && r.transport !== "http" && r.transport !== "sse") {
+    return "transport 必须是 stdio / http / sse";
+  }
+  const pick = (v: unknown): Record<string, string> | undefined => {
+    if (v === null || typeof v !== "object" || Array.isArray(v)) return undefined;
+    const out: Record<string, string> = {};
+    for (const [k, val] of Object.entries(v)) if (typeof val === "string") out[k] = val;
+    return out;
+  };
+  const args = Array.isArray(r.args) && r.args.every((x) => typeof x === "string") ? (r.args as string[]) : undefined;
+  return {
+    name: typeof r.name === "string" ? r.name : "",
+    transport: r.transport,
+    ...(typeof r.command === "string" ? { command: r.command } : {}),
+    ...(args !== undefined && args.length > 0 ? { args } : {}),
+    ...(pick(r.env) !== undefined ? { env: pick(r.env) } : {}),
+    ...(typeof r.url === "string" ? { url: r.url } : {}),
+    ...(pick(r.headers) !== undefined ? { headers: pick(r.headers) } : {}),
+  };
 }
 
 function kvToText(kv: Readonly<Record<string, string>> | undefined): string {

@@ -85,8 +85,9 @@ function sourceDefs(rootPath: string | undefined): SourceDef[] {
     }
   }
   // zcode 官方插件技能：~/.zcode/cli/plugins/cache/<org>/<plugin>/<version>/skills
-  // （zcode 协议面 skills/referenceCatalog 的 plugin scope 就是它们；多版本目录全部列出，
-  //  停用开关不提供——插件由插件机制自管，与 agy 插件同一口径）
+  // （zcode 协议面 skills/referenceCatalog 的 plugin scope 就是它们；缓存里常驻多个
+  //  历史版本、只有最高版被激活，每个插件只列最新一版，其余是纯噪音——
+  //  实测一个 browser-use 就压着 9 个版本目录。停用开关不提供：插件由插件机制自管）
   const zcodePluginsRoot = join(home, ".zcode", "cli", "plugins", "cache");
   if (existsSync(zcodePluginsRoot)) {
     try {
@@ -96,12 +97,16 @@ function sourceDefs(rootPath: string | undefined): SourceDef[] {
         for (const plugin of readdirSync(orgDir)) {
           if (plugin.startsWith(".")) continue;
           const pluginDir = join(orgDir, plugin);
+          let best: string | null = null;
           for (const version of readdirSync(pluginDir)) {
             if (version.startsWith(".")) continue;
+            if (best === null || cmpSemver(version, best) > 0) best = version;
+          }
+          if (best !== null) {
             defs.push({
-              dir: join(pluginDir, version, "skills"),
+              dir: join(pluginDir, best, "skills"),
               scope: "plugin",
-              label: `zcode 插件 · ${plugin} ${version}`,
+              label: `zcode 插件 · ${plugin} ${best}`,
               readers: ["zcode"],
               readOnly: true,
             });
@@ -142,6 +147,21 @@ function sourceDefs(rootPath: string | undefined): SourceDef[] {
 function sameDir(a: string, b: string): boolean {
   const norm = (p: string): string => p.replaceAll("/", "\\").replace(/\\+$/, "\\").toLowerCase();
   return norm(a) === norm(b);
+}
+
+/** 语义化版本比较（'0.5.10' > '0.5.9'）；非数字段按字符串比兜底 */
+function cmpSemver(a: string, b: string): number {
+  const pa = a.split(".");
+  const pb = b.split(".");
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const x = pa[i] ?? "";
+    const y = pb[i] ?? "";
+    const nx = Number(x);
+    const ny = Number(y);
+    const c = Number.isFinite(nx) && Number.isFinite(ny) ? nx - ny : x < y ? -1 : x > y ? 1 : 0;
+    if (c !== 0) return c;
+  }
+  return 0;
 }
 
 /** 读取一个技能文件夹的 frontmatter 展示信息（读不了就退化为目录名） */
