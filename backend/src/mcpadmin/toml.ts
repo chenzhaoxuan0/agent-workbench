@@ -132,7 +132,10 @@ function parseTomlString(raw: string): string | undefined {
         if (n === "n") out += "\n";
         else if (n === "t") out += "\t";
         else if (n === "r") out += "\r";
-        else out += n;
+        else if (n === "u" && /^[0-9a-fA-F]{4}/.test(v.slice(i + 2, i + 6))) {
+          out += String.fromCharCode(Number.parseInt(v.slice(i + 2, i + 6), 16));
+          i += 4; // 吃掉 uXXXX 四位（本分支随后的 i++ 与 for 的 i++ 合计再进 2：`\`+`u`+4hex = 6）
+        } else out += n;
         i++;
       } else out += c;
     }
@@ -193,8 +196,22 @@ function parseBodyKv(lines: readonly string[]): Map<string, string | string[]> {
 // ---- 值序列化 ----
 
 function tomlString(s: string): string {
-  if (!s.includes("'") && !/[\n\r\t\u0000-\u001f]/.test(s)) return `'${s}'`;
-  return `"${s.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("\n", "\\n").replaceAll("\r", "\\r").replaceAll("\t", "\\t")}"`;
+  if (!s.includes("'") && !/[\n\r\t\u0000-\u001f\u007f]/.test(s)) return `'${s}'`;
+  // 基本串：常规转义之外，其余控制字符（C0 + 0x7f）必须走 \uXXXX ——
+  // 裸控制字符是非法 TOML，会害 Codex 拒载整份 config.toml
+  let out = '"';
+  for (const ch of s) {
+    if (ch === '"') out += '\\"';
+    else if (ch === "\\") out += "\\\\";
+    else if (ch === "\n") out += "\\n";
+    else if (ch === "\r") out += "\\r";
+    else if (ch === "\t") out += "\\t";
+    else {
+      const code = ch.codePointAt(0)!;
+      out += code < 0x20 || code === 0x7f ? `\\u${code.toString(16).padStart(4, "0")}` : ch;
+    }
+  }
+  return out + '"';
 }
 
 function headerName(name: string): string {

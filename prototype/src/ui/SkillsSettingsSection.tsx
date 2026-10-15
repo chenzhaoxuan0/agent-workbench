@@ -65,7 +65,7 @@ export function SkillsSettingsSection() {
 
   /** 单个开关：RPC 搬运 → 清命令缓存 → 重拉清单（盘上世界变了，重新看真相） */
   const toggle = useCallback(
-    async (group: SkillSourceGroupInfo, entry: SkillEntryInfo, disabled: boolean): Promise<string | null> => {
+    async (group: SkillSourceGroupInfo, entry: SkillEntryInfo, disabled: boolean): Promise<{ msg: string; code?: string } | null> => {
       const key = `${group.id}|${entry.dirName}`;
       markPending(key, true);
       try {
@@ -74,7 +74,7 @@ export function SkillsSettingsSection() {
         useNativeCommands.getState().invalidateAll();
         return null;
       } catch (e) {
-        return e instanceof Error ? e.message : String(e);
+        return { msg: e instanceof Error ? e.message : String(e), code: (e as { code?: string }).code };
       } finally {
         markPending(key, false);
       }
@@ -85,19 +85,28 @@ export function SkillsSettingsSection() {
   const handleToggle = (group: SkillSourceGroupInfo, entry: SkillEntryInfo, disabled: boolean): void => {
     void (async () => {
       const e = await toggle(group, entry, disabled);
-      if (e !== null) setErr(e);
+      if (e !== null) setErr(e.msg);
       await load(activeRoot);
     })();
   };
 
-  /** 目录级批量：只动状态需要变的条目，逐个搬运；失败聚合报首错（本地 rename，毫秒级） */
+  /**
+   * 目录级批量：只动状态需要变的条目，逐个搬运；失败聚合报首错（本地 rename，毫秒级）。
+   * daemon 断连/超时立即中止 —— 每个失败项都要吃满连接超时，20 项串行能拖两分钟。
+   */
   const handleBatch = (group: SkillSourceGroupInfo, disabled: boolean): void => {
     void (async () => {
-      const targets = group.skills.filter((s) => s.disabled !== disabled);
+      const targets = group.skills.filter((s) => s.disabled !== disabled && s.singleForm !== true);
       let firstErr: string | null = null;
       for (const t of targets) {
         const e = await toggle(group, t, disabled);
-        if (e !== null && firstErr === null) firstErr = e;
+        if (e !== null) {
+          if (firstErr === null) firstErr = e.msg;
+          if (e.code === "daemon_unreachable" || e.code === "daemon_rpc_timeout" || e.code === "daemon_disconnected") {
+            firstErr = `daemon 连接不可用，批量操作中止（可恢复后重试）：${e.msg}`;
+            break;
+          }
+        }
       }
       if (firstErr !== null) setErr(firstErr);
       await load(activeRoot);
@@ -120,8 +129,14 @@ export function SkillsSettingsSection() {
       )}
 
       {status === "ready" && loadErr !== null && (
-        <p className="rounded-btn border border-line bg-card px-3 py-2 text-caption leading-relaxed text-ash">
-          清单刷新失败（保留上次内容）：{loadErr}
+        <p className="flex items-center gap-2 rounded-btn border border-line bg-card px-3 py-2 text-caption leading-relaxed text-ash">
+          <span className="min-w-0 flex-1">清单刷新失败（保留上次内容）：{loadErr}</span>
+          <button
+            onClick={() => void load(activeRoot)}
+            className="shrink-0 rounded-btn border border-line px-2 py-1 text-caption text-graphite transition hover:bg-line-soft hover:text-ink"
+          >
+            重试
+          </button>
         </p>
       )}
 
@@ -220,8 +235,10 @@ function SkillGroupCard({
                   <p className="truncate text-caption text-ash" title={s.description}>{s.description}</p>
                 )}
               </div>
-              {group.readOnly ? (
-                <span className="shrink-0 text-caption text-ash">只读</span>
+              {group.readOnly || s.singleForm === true ? (
+                <span className="shrink-0 text-caption text-ash" title={s.singleForm === true ? "SKILL.md 直挂源目录，源目录即技能：无法搬进自己内部" : undefined}>
+                  {s.singleForm === true ? "单技能形态" : "只读"}
+                </span>
               ) : (
                 <Toggle on={!s.disabled} onChange={(v) => onToggle(group, s, !v)} />
               )}

@@ -76,6 +76,7 @@ export function McpSettingsSection() {
           const r = await op(withSha ? sha : undefined);
           setLastMutation({ executorId: selected, text: r.newText });
           setConflict(null);
+          setRawText(null); // 原文已过期（刚被改写），别和落盘预览打架
           // 回执的新指纹先就地更新：不等全量重载，紧接着的下一次操作就不会
           // 拿着旧 sha 撞出「自己和自己冲突」
           setInv((prev) =>
@@ -265,8 +266,14 @@ export function McpSettingsSection() {
       )}
 
       {loadErr !== null && (
-        <p className="rounded-btn border border-line bg-card px-3 py-2 text-caption leading-relaxed text-ash">
-          清单刷新失败（保留上次内容）：{loadErr}
+        <p className="flex items-center gap-2 rounded-btn border border-line bg-card px-3 py-2 text-caption leading-relaxed text-ash">
+          <span className="min-w-0 flex-1">清单刷新失败（保留上次内容）：{loadErr}</span>
+          <button
+            onClick={() => void load()}
+            className="shrink-0 rounded-btn border border-line px-2 py-1 text-caption text-graphite transition hover:bg-line-soft hover:text-ink"
+          >
+            重试
+          </button>
         </p>
       )}
 
@@ -404,6 +411,9 @@ function EntryEditor({
   const submit = (): void => {
     const n = name.trim();
     if (n === "") { setFormErr("服务名不能为空"); return; }
+    // 镜像后端 validateEntry 的名称规则：提前拦下，省一趟 bad_params 往返
+    if (n.startsWith(".")) { setFormErr("服务名不能以点开头"); return; }
+    if (/[\\/]/.test(n)) { setFormErr("服务名不能包含 / 或 \\"); return; }
     if (transport === "stdio" && command.trim() === "") { setFormErr("stdio 服务必须填 command"); return; }
     if (transport !== "stdio" && url.trim() === "") { setFormErr(`${transport} 服务必须填 url`); return; }
     const parsedEnv = textToKv(env, setFormErr);
@@ -496,6 +506,7 @@ function CopyPanel({
   expectedSha?: string;
   onDone: (outcomes: readonly { executorId: string; ok: boolean; error?: string }[]) => Promise<void>;
 }) {
+  // 源候选是挂载时的快照（inv 刷新后不追新）；count 缺省 = 解析失败的家，排除出复制源是保护
   const sources = inv.files.filter((f) => f.executorId !== targetId && (f.count ?? 0) > 0);
   const [src, setSrc] = useState(sources[0]?.executorId ?? "");
   const srcRows = inv.rows.filter((r) => r.instances.some((i) => i.executorId === src && !i.disabled));

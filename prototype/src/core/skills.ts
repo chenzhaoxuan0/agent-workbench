@@ -16,6 +16,11 @@ export interface SkillEntryInfo {
   readonly description?: string;
   /** true = 文件夹现在位于技能源的 .disabled/ 内（对一切执行器不可见） */
   readonly disabled: boolean;
+  /**
+   * true = 单技能形态（SKILL.md 直挂源目录，源目录本身即技能）：
+   * 列出供盘点，但不可开关 —— 搬运目标在自己内部，物理不可行。
+   */
+  readonly singleForm?: boolean;
 }
 
 /** 读取某技能源的执行器引用（id = daemon 裸执行器 id） */

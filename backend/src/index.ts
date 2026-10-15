@@ -2290,7 +2290,11 @@ registerMethod("mcp.copy", (params) => {
     throw Object.assign(new Error("fromExecutorId, name and toExecutorIds are required"), { code: "bad_params" });
   }
   const targets = p.toExecutorIds.filter((x): x is string => typeof x === "string");
-  const expectedShas = p.expectedShas !== null && typeof p.expectedShas === "object" ? p.expectedShas : {};
+  // 指纹只收字符串值：非字符串（空串/数字）会被 assertSha 当成有效指纹比对而必判 conflict
+  const expectedShas =
+    p.expectedShas !== null && typeof p.expectedShas === "object"
+      ? Object.fromEntries(Object.entries(p.expectedShas).filter((kv): kv is [string, string] => typeof kv[1] === "string" && kv[1] !== ""))
+      : {};
   return mcpCopy(mcpDeps, p.fromExecutorId, p.name, targets, expectedShas);
 });
 

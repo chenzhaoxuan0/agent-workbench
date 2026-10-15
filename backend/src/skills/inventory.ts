@@ -3,8 +3,10 @@
  *
  * 领域语言见仓库根 CONTEXT.md「技能与扩展」：
  * - 技能源（Skill Source）：技能被发现的真实目录。本模块持有一张静态
- *   「源 → 读取它的执行器」映射表（与 runtime/adapters/discovery.ts 及各适配器
- *   的发现路径一一对应，改发现路径必须同步这里）。
+ *   「源 → 读取它的执行器」映射表，与发现层的**文件级扫描段**一一对应
+ *   （runtime/adapters/discovery.ts 及各适配器的目录清单，改发现路径必须同步这里）。
+ *   协议/服务端段（claude 活会话 supportedCommands、opencode serve /skill）
+ *   无法静态枚举，不在管理范围 —— 那些技能只出现在斜杠菜单。
  * - 停用（Disabled）：把技能文件夹移入其技能源内的 `.disabled/` 目录。
  *   安全性三层：发现层跳过点开头条目；一层扫描深度不命中 `.disabled/<name>/SKILL.md`；
  *   ZCode CLI 原生扫描策略同样跳过点目录（见 skill-scan-policy，README 参照表）。
@@ -17,7 +19,7 @@
  */
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { parseFrontmatter } from "../runtime/adapters/discovery.ts";
 import type { SkillEntryInfo, SkillSourceGroupInfo, SkillsInventory } from "../contract.ts";
 
@@ -157,6 +159,15 @@ function listSkills(dir: string): SkillEntryInfo[] {
   const out: SkillEntryInfo[] = [];
   if (!existsSync(dir)) return out;
 
+  // 单技能形态：<源>/SKILL.md 直挂（整个源目录就是一个技能，discoverSkillsInDir 同款短路）。
+  // 列出但不可开关 —— 搬运目标在自己内部，物理不可行；列出是为了管理页不出现
+  // 「菜单里有、这里没有」的盲区（fallback 名与发现层同规则：目录叫 skills 用父目录名）。
+  if (existsSync(join(dir, "SKILL.md"))) {
+    const fallback = basename(dir).toLowerCase() === "skills" ? basename(dirname(dir)) : basename(dir);
+    const meta = readSkillMeta(fallback, dir);
+    return [{ dirName: basename(dir), name: meta.name, description: meta.description, disabled: false, singleForm: true }];
+  }
+
   let entries: string[];
   try {
     entries = readdirSync(dir);
@@ -202,7 +213,9 @@ export function buildSkillsInventory(
   const groups: SkillSourceGroupInfo[] = [];
   const seenDirs = new Set<string>();
   for (const def of sourceDefs(rootPath)) {
-    if (seenDirs.has(def.dir.toLowerCase())) continue; // rootPath 恰为家目录等重合场景，去重
+    // rootPath 恰为家目录等重合场景，去重（先注册的用户级胜出）。toLowerCase 是
+    // Windows 大小写不敏感口径；大小写敏感盘上仅大小写不同的两个源会被过度合并（极端场景，接受）
+    if (seenDirs.has(def.dir.toLowerCase())) continue;
     seenDirs.add(def.dir.toLowerCase());
     const skills = listSkills(def.dir);
     if (skills.length === 0) continue;
@@ -244,6 +257,10 @@ export function setSkillDisabled(
   if (def.readOnly) {
     throw Object.assign(new Error(`skill source is read-only: ${def.label}`), { code: "read_only_source" });
   }
+  // 单技能形态（源目录即技能）：搬不进自己内部，物理不可行
+  if (existsSync(join(def.dir, "SKILL.md"))) {
+    throw Object.assign(new Error("单技能形态的源（SKILL.md 直挂源目录）不可开关"), { code: "single_form_source" });
+  }
   if (typeof dirName !== "string" || dirName === "" || dirName.startsWith(".") || /[\\/]/.test(dirName)) {
     throw Object.assign(new Error("dirName must be a plain folder name"), { code: "bad_params" });
   }
@@ -254,11 +271,11 @@ export function setSkillDisabled(
     if (!isDirectory(from)) {
       throw Object.assign(new Error(`skill folder not found: ${dirName}`), { code: "missing_skill" });
     }
-    mkdirSync(join(def.dir, DISABLED_DIR), { recursive: true });
+    ensureDisabledDirUsable(def.dir);
     if (existsSync(to)) {
       throw Object.assign(new Error(`.disabled/ 已有同名文件夹：${dirName}`), { code: "conflict" });
     }
-    renameSync(from, to);
+    renameOrThrow(from, to);
   } else {
     const from = join(def.dir, DISABLED_DIR, dirName);
     const to = join(def.dir, dirName);
@@ -268,9 +285,38 @@ export function setSkillDisabled(
     if (existsSync(to)) {
       throw Object.assign(new Error(`技能源里已有同名文件夹（可能是停用期间新建的）：${dirName}`), { code: "conflict" });
     }
-    renameSync(from, to);
+    renameOrThrow(from, to);
   }
   return { readers: def.readers };
+}
+
+/** .disabled 路径被普通文件占据时给可操作的报错（mkdirSync 的 EEXIST 原始错误没法看） */
+function ensureDisabledDirUsable(sourceDir: string): void {
+  const disabledDir = join(sourceDir, DISABLED_DIR);
+  if (existsSync(disabledDir) && !isDirectory(disabledDir)) {
+    throw Object.assign(new Error(`.disabled 被同名普通文件占用，请先处理：${disabledDir}`), { code: "conflict" });
+  }
+  mkdirSync(disabledDir, { recursive: true });
+}
+
+/**
+ * 搬运 + 错误翻译：目录被占用（编辑器/杀软）报 locked、目标已有内容报 conflict，
+ * 其余原样抛 —— 检查与 rename 之间的竞态窗口里 Windows 的真实行为并不总是
+ * 「目标存在即失败」（目录→同名文件会静默覆盖），这里兜底成可读错误。
+ */
+function renameOrThrow(from: string, to: string): void {
+  try {
+    renameSync(from, to);
+  } catch (err: unknown) {
+    const code = (err as NodeJS.ErrnoException | undefined)?.code;
+    if (code === "EPERM" || code === "EACCES" || code === "EBUSY") {
+      throw Object.assign(new Error("目录被占用（编辑器/杀毒扫描中？），请稍后重试"), { code: "locked" });
+    }
+    if (code === "EEXIST" || code === "ENOTEMPTY") {
+      throw Object.assign(new Error("目标位置已有同名内容"), { code: "conflict" });
+    }
+    throw err;
+  }
 }
 
 /** 只有目录才能被搬运：源里恰好有个同名普通文件（如 README）时明确拒绝，不搬文件 */
