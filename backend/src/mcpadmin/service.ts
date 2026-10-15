@@ -18,7 +18,7 @@ import type {
   McpServerEntry,
   McpServerInstance,
 } from "../contract.ts";
-import { findExecutorDef, MCP_EXECUTORS, type McpExecutorDef } from "./executors.ts";
+import { findExecutorDef, MCP_EXECUTORS, MCP_UNSUPPORTED_EXECUTORS, type McpExecutorDef } from "./executors.ts";
 import { assertSha, fingerprint, firstWriteBackup, readTextOrNull, writeTextAtomic } from "./fsx.ts";
 
 export interface McpServiceDeps {
@@ -86,8 +86,8 @@ function readLive(def: McpExecutorDef, deps: McpServiceDeps): { text: string | n
   return { text, entries: def.readServers(text) };
 }
 
-/** 校验条目形态（写入前的最后防线） */
-function validateEntry(entry: McpServerEntry): void {
+/** 校验条目形态（写入前的最后防线）；def 给定时附带该执行器的传输能力校验 */
+function validateEntry(entry: McpServerEntry, def?: McpExecutorDef): void {
   const name = entry.name.trim();
   if (name === "" || /[\\/]/.test(name) || name.startsWith(".")) {
     throw Object.assign(new Error("服务名不能为空、不能以点开头、不能含路径分隔符"), { code: "bad_params" });
@@ -100,6 +100,9 @@ function validateEntry(entry: McpServerEntry): void {
   }
   if (entry.transport !== "stdio" && (entry.url === undefined || entry.url.trim() === "")) {
     throw Object.assign(new Error(`${entry.transport} 服务必须提供 url`), { code: "bad_params" });
+  }
+  if (def?.disallowedTransports?.includes(entry.transport)) {
+    throw Object.assign(new Error(`${def.name} 不支持 ${entry.transport} 传输，请换一种连接方式`), { code: "bad_params" });
   }
 }
 
@@ -202,7 +205,7 @@ export function mcpInventory(deps: McpServiceDeps): McpInventory {
   const rows = [...byName.entries()]
     .map(([name, instances]) => ({ name, instances: instances.sort((a, b) => a.executorId.localeCompare(b.executorId)) }))
     .sort((a, b) => a.name.localeCompare(b.name));
-  return { files, rows };
+  return { files, rows, unsupported: MCP_UNSUPPORTED_EXECUTORS };
 }
 
 function push(map: Map<string, McpServerInstance[]>, name: string, inst: McpServerInstance): void {
@@ -214,7 +217,7 @@ function push(map: Map<string, McpServerInstance[]>, name: string, inst: McpServ
 /** 新增/编辑一条（编辑保留条目上的未知扩展键） */
 export async function mcpSave(deps: McpServiceDeps, executorId: string, entry: McpServerEntry, expectedSha?: string): Promise<McpMutationResult> {
   const def = findExecutorDef(executorId);
-  validateEntry(entry);
+  validateEntry(entry, def);
   const result = await mutateFile(def, deps, expectedSha, (text) => def.writeServer(text ?? def.emptySeed, entry));
   // 编辑时条目名若在停用库也有一份（先停用后改名重建），从库里清掉，避免双份。
   // 注意：不能在这里失败回滚 live —— vault 残留只是清单双实例，下次操作自愈；
@@ -287,7 +290,7 @@ export async function mcpSetEnabled(deps: McpServiceDeps, executorId: string, na
     if (entry === undefined) {
       throw Object.assign(new Error(`停用库里没有 ${name}（可能从未停用，或已从库里删除）`), { code: "not_in_vault" });
     }
-    validateEntry(entry);
+    validateEntry(entry, def);
     const result = await mutateFile(def, deps, expectedSha, (text) => def.writeServer(text ?? def.emptySeed, entry));
     const bucket = vault[executorId];
     if (bucket !== undefined) {

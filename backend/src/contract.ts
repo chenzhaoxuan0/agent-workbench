@@ -53,6 +53,7 @@ export type {
   McpServerInstance,
   McpServerRow,
   McpTransport,
+  McpUnsupportedExecutor,
 } from "../../prototype/src/core/mcp.ts";
 
 import { isShellTool as coreIsShellTool } from "../../prototype/src/core/events.ts";

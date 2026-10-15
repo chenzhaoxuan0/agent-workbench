@@ -218,8 +218,9 @@ function headerName(name: string): string {
   return /^[A-Za-z0-9_-]+$/.test(name) ? name : tomlString(name);
 }
 
-/** 条目 → 段组字节文本（主表 + 可选 env / http_headers 子表），用文件既有 EOL */
-function generateGroup(entry: McpServerEntry, eol: string, extraMainLines: readonly string[] = []): string {
+/** 条目 → 段组字节文本（主表 + 可选 env / 请求头子表），用文件既有 EOL。
+ * headersKey：codex 用 http_headers，grok 用 headers（两家 schema 同构、键名不同） */
+function generateGroup(entry: McpServerEntry, eol: string, extraMainLines: readonly string[] = [], headersKey = "http_headers"): string {
   const h = headerName(entry.name);
   const main: string[] = [`[mcp_servers.${h}]`];
   if (entry.transport === "stdio") {
@@ -238,7 +239,7 @@ function generateGroup(entry: McpServerEntry, eol: string, extraMainLines: reado
   }
   if (entry.headers !== undefined && Object.keys(entry.headers).length > 0 && entry.transport !== "stdio") {
     const hLines = Object.entries(entry.headers).map(([k, v]) => `${tomlString(k)} = ${tomlString(v)}`);
-    text += eol + `[mcp_servers.${h}.http_headers]` + eol + hLines.join(eol) + eol;
+    text += eol + `[mcp_servers.${h}.${headersKey}]` + eol + hLines.join(eol) + eol;
   }
   return text;
 }
@@ -270,7 +271,7 @@ export function readTomlEntries(text: string): Map<string, McpServerEntry> {
       const env: Record<string, string> = {};
       for (const [k, v] of parseBodyKv(segBodyLines(text, seg))) if (typeof v === "string") env[k] = v;
       envs.set(seg.path[1]!, env);
-    } else if (seg.path.length === 3 && seg.path[2] === "http_headers") {
+    } else if (seg.path.length === 3 && (seg.path[2] === "http_headers" || seg.path[2] === "headers")) {
       const h: Record<string, string> = {};
       for (const [k, v] of parseBodyKv(segBodyLines(text, seg))) if (typeof v === "string") h[k] = v;
       headers.set(seg.path[1]!, h);
@@ -353,7 +354,8 @@ function collectUnknownMainLines(text: string, group: readonly Seg[], eol: strin
  *   主表未知扩展键值行、任意深度的未知子表、组尾注释/空行原字节保留）
  * - 不存在：文件末尾追加（TOML 语义：末尾新表头安全）
  */
-export function upsertTomlEntry(text: string, entry: McpServerEntry): string {
+export function upsertTomlEntry(text: string, entry: McpServerEntry, opts: { headersKey?: string } = {}): string {
+  const headersKey = opts.headersKey ?? "http_headers";
   text = stripBom(text);
   const eol = detectEol(text);
   const segs = findSegments(text);
@@ -361,25 +363,25 @@ export function upsertTomlEntry(text: string, entry: McpServerEntry): string {
 
   if (group.length === 0) {
     // 末尾追加：补齐行尾，隔一个空行（文件已有独立尾段时不强加）
-    if (text === "") return generateGroup(entry, eol);
+    if (text === "") return generateGroup(entry, eol, [], headersKey);
     let out = text.endsWith("\n") ? text : text + eol;
     if (!/\n[ \t]*\r?\n$/.test(out)) out += eol;
-    return out + generateGroup(entry, eol);
+    return out + generateGroup(entry, eol, [], headersKey);
   }
 
   const first = group[0]!;
   const last = group[group.length - 1]!;
   const cutEnd = groupCutEnd(text, first, last);
   const extraMain = collectUnknownMainLines(text, group, eol);
-  // 未知子表（env/http_headers 之外的任意深度子表）按原字节保留，维持原有相对顺序
+  // 未知子表（env/请求头之外的任意深度子表）按原字节保留，维持原有相对顺序
   const keepSubRaw = group
     .filter((s) => {
       const p = s.path;
-      return p !== null && p.length >= 3 && !(p.length === 3 && (p[2] === "env" || p[2] === "http_headers"));
+      return p !== null && p.length >= 3 && !(p.length === 3 && (p[2] === "env" || p[2] === headersKey));
     })
     .map((s) => text.slice(s.start, s.end))
     .join("");
-  return text.slice(0, first.start) + generateGroup(entry, eol, extraMain) + keepSubRaw + text.slice(cutEnd);
+  return text.slice(0, first.start) + generateGroup(entry, eol, extraMain, headersKey) + keepSubRaw + text.slice(cutEnd);
 }
 
 /** 定点删除一个条目的全部段（主表 + 子表）：整段字节区间摘除，组尾注释/空行与区间外原样 */

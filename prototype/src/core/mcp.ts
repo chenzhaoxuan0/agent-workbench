@@ -61,6 +61,15 @@ export interface McpServerRow {
 export interface McpInventory {
   readonly files: readonly McpFileStatus[];
   readonly rows: readonly McpServerRow[];
+  /** 无持久化 MCP 配置面的执行器（dsh/sdk-bridge：MCP 随会话/协议注入，不落盘） */
+  readonly unsupported?: readonly McpUnsupportedExecutor[];
+}
+
+/** 无配置面执行器的说明条目 */
+export interface McpUnsupportedExecutor {
+  readonly id: string;
+  readonly name: string;
+  readonly reason: string;
 }
 
 /** 变更类 RPC 的通用回执：新文件全文（预览落盘内容）+ 新指纹 */

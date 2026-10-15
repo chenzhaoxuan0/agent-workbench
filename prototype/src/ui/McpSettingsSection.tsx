@@ -320,6 +320,13 @@ export function McpSettingsSection() {
           <pre className="mt-2 max-h-72 overflow-auto rounded-btn bg-canvas p-3 font-mono text-caption leading-relaxed text-ink">{lastMutation.text}</pre>
         </details>
       )}
+
+      {(inv.unsupported?.length ?? 0) > 0 && (
+        <p className="text-caption leading-relaxed text-ash">
+          无持久化配置、不在上列：
+          {inv.unsupported!.map((u) => `${u.name}（${u.reason}）`).join("；")}。
+        </p>
+      )}
     </div>
   );
 }
