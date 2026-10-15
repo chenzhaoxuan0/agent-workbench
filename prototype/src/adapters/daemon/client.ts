@@ -446,6 +446,22 @@ export async function setSkillDisabledRpc(
   );
 }
 
+/** 跨技能源复制技能文件夹（矩阵视图「打钩到某源」）：复制非移动，多源共存各自演化 */
+export async function copySkillRpc(
+  fromSourceDir: string,
+  dirName: string,
+  toSourceDir: string,
+  rootPath?: string,
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<{ ok: boolean; readers: string[] }> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<{ ok: boolean; readers: string[] }>(
+    "skills.copy",
+    { fromSourceDir, dirName, toSourceDir, rootPath: rootPath ?? null },
+    30000,
+  );
+}
+
 // ---- MCP 管理（ADR 0004：expectedSha 是乐观锁指纹，冲突时 daemon 报 code=conflict）----
 
 /** 全量清单：五家文件状态 + 按名聚行的服务实例（live + 停用库） */

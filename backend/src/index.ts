@@ -39,7 +39,7 @@ import { AgyAdapter } from "./runtime/adapters/agy.ts";
 import { GrokAdapter } from "./runtime/adapters/grok.ts";
 import { CursorAdapter } from "./runtime/adapters/cursor.ts";
 import { OpenclawAdapter } from "./runtime/adapters/openclaw.ts";
-import { buildSkillsInventory, setSkillDisabled } from "./skills/inventory.ts";
+import { buildSkillsInventory, copySkill, setSkillDisabled } from "./skills/inventory.ts";
 import {
   mcpCopy,
   mcpInventory,
@@ -2239,6 +2239,17 @@ registerMethod("skills.inventory", async (params) => {
  * 原生配置文件是唯一真相源：搬完即生效（发现层与 ZCode 原生都不扫点目录），
  * 这里只补一件事——立刻失效受影响执行器的命令缓存，别让斜杠菜单显示旧世界。
  */
+registerMethod("skills.copy", (params) => {
+  const p = (params ?? {}) as { fromSourceDir?: string; dirName?: string; toSourceDir?: string; rootPath?: string };
+  if (typeof p.fromSourceDir !== "string" || typeof p.dirName !== "string" || typeof p.toSourceDir !== "string") {
+    throw Object.assign(new Error("fromSourceDir, dirName and toSourceDir are required"), { code: "bad_params" });
+  }
+  const rootPath = typeof p.rootPath === "string" && p.rootPath.trim() !== "" ? p.rootPath : undefined;
+  const result = copySkill(p.fromSourceDir, p.dirName, p.toSourceDir, rootPath);
+  host.invalidateCommandsFor(result.readers);
+  return { ok: true, readers: result.readers };
+});
+
 registerMethod("skills.setDisabled", (params) => {
   const p = (params ?? {}) as { sourceDir?: string; dirName?: string; disabled?: boolean; rootPath?: string };
   if (typeof p.sourceDir !== "string" || typeof p.dirName !== "string" || typeof p.disabled !== "boolean") {

@@ -43,6 +43,10 @@ export function McpSettingsSection() {
   const [editing, setEditing] = useState<{ mode: "create" } | { mode: "edit"; entry: McpServerEntry } | null>(null);
   const [copyOpen, setCopyOpen] = useState(false);
   const [rawText, setRawText] = useState<string | null>(null);
+  /** 逐家 / 矩阵两种视图（矩阵 = cc-switch AppMatrix 形态的真相源实时投影） */
+  const [view, setView] = useState<"list" | "matrix">("list");
+  /** 矩阵在途格子（`${row}|${executorId}`） */
+  const [cellPending, setCellPending] = useState<ReadonlySet<string>>(new Set());
   /** 请求序号：并发 load 时只有最新一次允许写状态（旧响应后到不得覆盖新数据） */
   const reqSeq = useRef(0);
 
@@ -69,13 +73,15 @@ export function McpSettingsSection() {
   const file = inv?.files.find((f) => f.executorId === selected);
   const sha = file?.sha;
 
-  /** 统一变更出口：成功 → 记录落盘预览 + 就地更新指纹 + 重载；conflict → 三选一；其余 → 红条 */
+  /** 统一变更出口：成功 → 记录落盘预览 + 就地更新指纹 + 重载；conflict → 三选一；其余 → 红条。
+   *  executorId 显式传参：矩阵视图的操作跨执行器，锁与预览都按目标家算 */
   const runMutation = useCallback(
-    (label: string, op: (expectedSha?: string) => Promise<McpMutationResult>): Promise<void> => {
+    (label: string, executorId: string, op: (expectedSha?: string) => Promise<McpMutationResult>): Promise<void> => {
+      const fileSha = inv?.files.find((f) => f.executorId === executorId)?.sha;
       const attempt = async (withSha: boolean): Promise<void> => {
         try {
-          const r = await op(withSha ? sha : undefined);
-          setLastMutation({ executorId: selected, text: r.newText });
+          const r = await op(withSha ? fileSha : undefined);
+          setLastMutation({ executorId, text: r.newText });
           setConflict(null);
           setRawText(null); // 原文已过期（刚被改写），别和落盘预览打架
           // 回执的新指纹先就地更新：不等全量重载，紧接着的下一次操作就不会
@@ -83,13 +89,13 @@ export function McpSettingsSection() {
           setInv((prev) =>
             prev === null
               ? prev
-              : { ...prev, files: prev.files.map((f) => (f.executorId === selected ? { ...f, sha: r.newSha } : f)) },
+              : { ...prev, files: prev.files.map((f) => (f.executorId === executorId ? { ...f, sha: r.newSha } : f)) },
           );
           await load();
         } catch (e) {
           const code = (e as { code?: string }).code;
           if (code === "conflict") {
-            const name = inv?.files.find((f) => f.executorId === selected)?.executorName ?? selected;
+            const name = inv?.files.find((f) => f.executorId === executorId)?.executorName ?? executorId;
             setConflict({
               message: `${label}（${name}）：${e instanceof Error ? e.message : String(e)}`,
               retry: () => attempt(false),
@@ -101,7 +107,7 @@ export function McpSettingsSection() {
       };
       return attempt(true);
     },
-    [sha, selected, load, inv],
+    [load, inv],
   );
 
   const rowsOf = (executorId: string): McpServerRow[] =>
@@ -112,11 +118,51 @@ export function McpSettingsSection() {
   const toggle = (name: string, disabled: boolean): void => {
     // enabled 的「下一态」恰是当前 disabled 位：live(disabled=false)点关 → enabled=false 停用；
     // 停用库(disabled=true)点开 → enabled=true 恢复
-    void runMutation(disabled ? `恢复 ${name}` : `停用 ${name}`, (s) => mcpSetEnabledRpc(selected, name, disabled, s));
+    void runMutation(disabled ? `恢复 ${name}` : `停用 ${name}`, selected, (s) => mcpSetEnabledRpc(selected, name, disabled, s));
   };
 
   const purge = (name: string): void => {
-    void runMutation(`彻底删除 ${name}`, (s) => mcpRemoveRpc(selected, name, { toVault: false, expectedSha: s }));
+    void runMutation(`彻底删除 ${name}`, selected, (s) => mcpRemoveRpc(selected, name, { toVault: false, expectedSha: s }));
+  };
+
+  /** 矩阵格子操作：空 = 从行内首个启用实例分发（复制写入）；✓ = 停用进库；◦ = 从库恢复 */
+  const matrixCell = (row: McpServerRow, executorId: string): void => {
+    const key = `${row.name}|${executorId}`;
+    const execName = inv?.files.find((f) => f.executorId === executorId)?.executorName ?? executorId;
+    const inst = row.instances.find((i) => i.executorId === executorId);
+    const markPending = (on: boolean): void =>
+      setCellPending((prev) => {
+        const n = new Set(prev);
+        if (on) n.add(key);
+        else n.delete(key);
+        return n;
+      });
+    if (inst === undefined) {
+      const src = row.instances.find((i) => !i.disabled);
+      if (src === undefined) {
+        setErr(`「${row.name}」在任何执行器上都没有定义——请先在某一家添加，再回矩阵分发`);
+        return;
+      }
+      // 分发走复制通道：结果是逐目标 outcomes（不是单文件回执），独立处理
+      markPending(true);
+      void (async () => {
+        try {
+          const fileSha = inv?.files.find((f) => f.executorId === executorId)?.sha;
+          const outcomes = await mcpCopyRpc(src.executorId, row.name, [executorId], fileSha !== undefined ? { [executorId]: fileSha } : {});
+          const fail = outcomes.find((o) => !o.ok);
+          if (fail !== undefined) setErr(`分发 ${row.name} 到 ${execName} 未完成：${fail.error}`);
+          await load();
+        } catch (e) {
+          setErr(`分发 ${row.name} 到 ${execName} 失败：${e instanceof Error ? e.message : String(e)}`);
+        } finally {
+          markPending(false);
+        }
+      })();
+      return;
+    }
+    const label = inst.disabled ? `恢复 ${row.name}（${execName}）` : `停用 ${row.name}（${execName}）`;
+    markPending(true);
+    void runMutation(label, executorId, (s) => mcpSetEnabledRpc(executorId, row.name, inst.disabled, s)).finally(() => markPending(false));
   };
 
   const showRaw = (): void => {
@@ -146,6 +192,40 @@ export function McpSettingsSection() {
         停用 = 条目移出配置文件并存入停用库，恢复即写回；改对新会话生效，运行中的会话不受影响。
       </p>
 
+      {/* 视图切换：逐家（tab 进单家清单） / 矩阵（行=服务 × 列=执行器，cc-switch AppMatrix 形态） */}
+      <div className="flex items-center gap-2">
+        <div className="flex gap-1">
+          {(["list", "matrix"] as const).map((v) => (
+            <button
+              key={v}
+              onClick={() => {
+                setView(v);
+                setConflict(null);
+                setErr(null);
+                setLastMutation(null);
+                setEditing(null);
+                setCopyOpen(false);
+              }}
+              className={cn(
+                "rounded-chip border px-2.5 py-1 text-caption transition",
+                view === v ? "border-teal bg-teal-tint font-medium text-ink" : "border-line text-graphite hover:bg-line-soft hover:text-ink",
+              )}
+            >
+              {v === "list" ? "逐家管理" : "统合矩阵"}
+            </button>
+          ))}
+        </div>
+        {view === "matrix" && (
+          <span className="text-caption text-ash">
+            打钩 = 分发到该执行器（从行内首个启用定义复制）；取消 = 停用进库；空心点 = 停用库可恢复
+          </span>
+        )}
+      </div>
+
+      {view === "matrix" ? (
+        <McpMatrix inv={inv} pending={cellPending} onCell={matrixCell} />
+      ) : (
+        <>
       {/* 执行器 tab */}
       <div className="flex flex-wrap items-center gap-1.5">
         {inv.files.map((f) => (
@@ -219,7 +299,7 @@ export function McpSettingsSection() {
           onSubmit={(entry) => {
             const label = editing.mode === "edit" ? `编辑 ${entry.name}` : `添加 ${entry.name}`;
             setEditing(null);
-            void runMutation(label, (s) => mcpSaveRpc(selected, entry, s));
+            void runMutation(label, selected, (s) => mcpSaveRpc(selected, entry, s));
           }}
         />
       )}
@@ -304,6 +384,8 @@ export function McpSettingsSection() {
           })}
         </ul>
       </div>
+        </>
+      )}
 
       {/* 原文 / 落盘预览 */}
       {rawText !== null && (
@@ -713,6 +795,92 @@ function CopyPanel({
       >
         {busy ? "复制中…" : "复制"}
       </button>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------- 统合矩阵 */
+
+/**
+ * 行 = 服务（跨执行器按名聚合），列 = 执行器。格子三态：
+ * ✓ = 该家配置文件里（live）；◦ = 该家停用库；空 = 该家没有。
+ * 数据全部来自实时 inventory —— 矩阵是真相源的投影，不是账本。
+ */
+function McpMatrix({
+  inv,
+  pending,
+  onCell,
+}: {
+  inv: McpInventory;
+  pending: ReadonlySet<string>;
+  onCell: (row: McpServerRow, executorId: string) => void;
+}) {
+  return (
+    <div className="overflow-x-auto rounded-card border border-line bg-card">
+      <table className="w-full border-collapse">
+        <thead>
+          <tr className="border-b border-line">
+            <th className="sticky left-0 z-[1] bg-card px-3 py-2 text-left text-caption font-medium text-graphite">服务</th>
+            {inv.files.map((f) => (
+              <th key={f.executorId} className="min-w-[64px] px-1 py-2 text-center text-caption font-medium text-graphite" title={f.path}>
+                <span className="block truncate">{f.executorName}</span>
+                <span className={cn("tnum block text-[10px]", f.error !== undefined ? "text-loss" : "text-ash")}>
+                  {f.error !== undefined ? "!" : f.count ?? "—"}
+                </span>
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {inv.rows.length === 0 && (
+            <tr>
+              <td colSpan={inv.files.length + 1} className="px-4 py-3 text-caption text-ash">
+                还没有任何 MCP 服务 —— 在「逐家管理」里添加第一条，再回矩阵分发到各家。
+              </td>
+            </tr>
+          )}
+          {inv.rows.map((row) => {
+            const anyLive = row.instances.some((i) => !i.disabled);
+            const transport = row.instances[0]?.entry.transport ?? "stdio";
+            return (
+              <tr key={row.name} className="border-b border-line-soft last:border-b-0">
+                <td className="sticky left-0 z-[1] max-w-[200px] bg-card px-3 py-1.5">
+                  <span className={cn("block truncate text-body-sm", anyLive ? "text-ink" : "text-ash")} title={row.name}>{row.name}</span>
+                  <span className="block text-[10px] text-ash">{transport}</span>
+                </td>
+                {inv.files.map((f) => {
+                  const inst = row.instances.find((i) => i.executorId === f.executorId);
+                  const key = `${row.name}|${f.executorId}`;
+                  const busy = pending.has(key);
+                  const state = inst === undefined ? "none" : inst.disabled ? "vault" : "live";
+                  const title =
+                    state === "live" ? `${row.name} 已在 ${f.executorName}（点击停用进库）`
+                      : state === "vault" ? `${row.name} 在 ${f.executorName} 停用库（点击恢复）`
+                        : anyLive ? `分发到 ${f.executorName}（从行内首个启用定义复制）`
+                          : "行内没有启用定义，无法分发";
+                  return (
+                    <td key={f.executorId} className="px-1 py-1 text-center">
+                      <button
+                        onClick={() => onCell(row, f.executorId)}
+                        disabled={busy}
+                        title={title}
+                        className={cn(
+                          "h-6 w-6 rounded-chip border text-caption leading-none transition",
+                          state === "live" ? "border-teal bg-teal text-canvas"
+                            : state === "vault" ? "border-line bg-line-soft text-graphite"
+                              : "border-line bg-canvas text-ash hover:border-teal hover:text-teal",
+                        )}
+                      >
+                        {busy ? "…" : state === "live" ? "✓" : state === "vault" ? "◦" : "+"}
+                      </button>
+                    </td>
+                  );
+                })}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }

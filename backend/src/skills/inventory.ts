@@ -17,7 +17,7 @@
  * - `.disabled/` 只进 skills 目录，绝不进 agents/commands 目录（那里的递归扫描
  *   曾不滤点目录，discovery.ts 已加固 hasDotSegment）。
  */
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { parseFrontmatter } from "../runtime/adapters/discovery.ts";
@@ -346,4 +346,53 @@ function isDirectory(path: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * 跨技能源复制一个技能（矩阵视图「打钩到某源」的落点）：把源里启用中的技能
+ * 文件夹**复制**到目标源（源不动 —— 复制不是移动，多源共存各自演化）。
+ * 目标源已有同名（启用或 .disabled 里）即冲突：不覆盖用户后放的版本。
+ */
+export function copySkill(
+  fromSourceDir: string,
+  dirName: string,
+  toSourceDir: string,
+  rootPath: string | undefined,
+): ToggleResult {
+  const defs = sourceDefs(rootPath);
+  const from = defs.find((d) => sameDir(d.dir, fromSourceDir));
+  const to = defs.find((d) => sameDir(d.dir, toSourceDir));
+  if (from === undefined || to === undefined) {
+    throw Object.assign(new Error(`not a known skill source: ${from === undefined ? fromSourceDir : toSourceDir}`), { code: "unknown_source" });
+  }
+  if (to.readOnly) {
+    throw Object.assign(new Error(`skill source is read-only: ${to.label}`), { code: "read_only_source" });
+  }
+  if (typeof dirName !== "string" || dirName === "" || dirName.startsWith(".") || /[\\/]/.test(dirName)) {
+    throw Object.assign(new Error("dirName must be a plain folder name"), { code: "bad_params" });
+  }
+  // 单技能形态的源不可作为复制源或目标（SKILL.md 直挂，没有可定位的技能子目录）
+  if (existsSync(join(from.dir, "SKILL.md")) || existsSync(join(to.dir, "SKILL.md"))) {
+    throw Object.assign(new Error("单技能形态的源（SKILL.md 直挂源目录）不支持跨源复制"), { code: "single_form_source" });
+  }
+  const srcDir = join(from.dir, dirName);
+  if (!isDirectory(srcDir)) {
+    throw Object.assign(new Error(`skill folder not found: ${dirName}`), { code: "missing_skill" });
+  }
+  const dstDir = join(to.dir, dirName);
+  if (existsSync(dstDir) || existsSync(join(to.dir, DISABLED_DIR, dirName))) {
+    throw Object.assign(new Error(`目标源已有同名技能（${to.label}）：${dirName}`), { code: "conflict" });
+  }
+  mkdirSync(to.dir, { recursive: true });
+  try {
+    cpSync(srcDir, dstDir, { recursive: true });
+  } catch (err: unknown) {
+    const code = (err as NodeJS.ErrnoException | undefined)?.code;
+    if (code === "EPERM" || code === "EACCES" || code === "EBUSY") {
+      throw Object.assign(new Error("复制时目录被占用（编辑器/杀毒扫描中？），请稍后重试"), { code: "locked" });
+    }
+    throw err;
+  }
+  // 源没变化，只需失效目标源的读取方
+  return { readers: to.readers };
 }

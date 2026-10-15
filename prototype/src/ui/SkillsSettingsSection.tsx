@@ -10,7 +10,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { SkillEntryInfo, SkillSourceGroupInfo, SkillsInventory } from "../core/skills.ts";
-import { fetchSkillsInventory, setSkillDisabledRpc } from "../adapters/daemon/client.ts";
+import { copySkillRpc, fetchSkillsInventory, setSkillDisabledRpc } from "../adapters/daemon/client.ts";
 import { useNativeCommands } from "../store/useNativeCommands.ts";
 import { useWorkbench, selectActiveUnit } from "../store/useWorkbench.ts";
 import { Toggle } from "./SettingsPage.tsx";
@@ -32,6 +32,11 @@ export function SkillsSettingsSection() {
   const [pending, setPending] = useState<ReadonlySet<string>>(new Set());
   /** 选中的技能源（组 id）；null = 默认第一个源。切 bot 后项目源变化时自动回落 */
   const [selSource, setSelSource] = useState<string | null>(null);
+  /** 分源查看 / 统合矩阵两种视图；矩阵 = 行=技能 × 列=技能源 的实时投影 */
+  const [view, setView] = useState<"sources" | "matrix">("sources");
+  /** 矩阵搜索词 + 矩阵在途格子（`${name}|${groupId}`） */
+  const [search, setSearch] = useState("");
+  const [cellPending, setCellPending] = useState<ReadonlySet<string>>(new Set());
   /** 请求序号：快速切 bot 连发 load 时只有最新一次允许写状态（旧响应后到不得覆盖新数据） */
   const reqSeq = useRef(0);
 
@@ -123,6 +128,68 @@ export function SkillsSettingsSection() {
   const activeGroup = mainGroups.find((g) => g.id === selSource) ?? mainGroups[0];
   const pluginTabActive = selSource === PLUGIN_TAB || (selSource === null && mainGroups.length === 0 && pluginGroups.length > 0);
 
+  /** 矩阵行：跨源同名聚合（cells 按 groupId 索引该源的条目） */
+  const matrixRows: { name: string; cells: Map<string, SkillEntryInfo> }[] = [];
+  {
+    const byName = new Map<string, { name: string; cells: Map<string, SkillEntryInfo> }>();
+    for (const g of mainGroups) {
+      for (const s of g.skills) {
+        const r = byName.get(s.name) ?? { name: s.name, cells: new Map<string, SkillEntryInfo>() };
+        r.cells.set(g.id, s);
+        byName.set(s.name, r);
+      }
+    }
+    for (const r of byName.values()) matrixRows.push(r);
+    matrixRows.sort((a, b) => a.name.localeCompare(b.name));
+  }
+  const q = search.trim().toLowerCase();
+  const filteredRows = q === "" ? matrixRows : matrixRows.filter((r) => r.name.toLowerCase().includes(q));
+
+  /** 矩阵格子：空 = 从行内任一源复制分发；✓ = 停用进 .disabled；◦ = 恢复 */
+  const matrixCell = (row: { name: string; cells: Map<string, SkillEntryInfo> }, group: SkillSourceGroupInfo): void => {
+    if (group.readOnly) return;
+    const key = `${row.name}|${group.id}`;
+    const markCellPending = (on: boolean): void =>
+      setCellPending((prev) => {
+        const n = new Set(prev);
+        if (on) n.add(key);
+        else n.delete(key);
+        return n;
+      });
+    const cell = row.cells.get(group.id);
+    markCellPending(true);
+    void (async () => {
+      try {
+        if (cell === undefined) {
+          // 分发：从行内任一源复制（源不动，目标多一份实体各自演化）
+          const srcGroupId = [...row.cells.keys()].find((gid) => {
+            const g = mainGroups.find((x) => x.id === gid);
+            return g !== undefined && !g.readOnly;
+          }) ?? [...row.cells.keys()][0];
+          const srcGroup = mainGroups.find((g) => g.id === srcGroupId);
+          const srcEntry = srcGroupId !== undefined ? row.cells.get(srcGroupId) : undefined;
+          if (srcGroup === undefined || srcEntry === undefined) {
+            setErr(`「${row.name}」在可复制的源里没有实体`);
+            return;
+          }
+          await copySkillRpc(srcGroup.dir, srcEntry.dirName, group.dir, activeRoot ?? undefined);
+          useNativeCommands.getState().invalidateAll();
+        } else if (cell.disabled) {
+          await setSkillDisabledRpc(group.dir, cell.dirName, false, activeRoot ?? undefined);
+          useNativeCommands.getState().invalidateAll();
+        } else {
+          await setSkillDisabledRpc(group.dir, cell.dirName, true, activeRoot ?? undefined);
+          useNativeCommands.getState().invalidateAll();
+        }
+      } catch (e) {
+        setErr(e instanceof Error ? e.message : String(e));
+      } finally {
+        markCellPending(false);
+        await load(activeRoot);
+      }
+    })();
+  };
+
   return (
     <div className="space-y-4">
       <p className="-mt-2 text-body-sm leading-relaxed text-graphite">
@@ -130,6 +197,53 @@ export function SkillsSettingsSection() {
         对读取该源的所有执行器立即生效；恢复即搬回，文件一个不丢。
         每组头部的执行器徽标就是影响范围 —— 专属目录只影响一家，公共目录（.agents）影响所有家。
       </p>
+
+      {/* 视图切换：分源查看 / 统合矩阵 */}
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="flex gap-1">
+          {(["sources", "matrix"] as const).map((v) => (
+            <button
+              key={v}
+              onClick={() => {
+                setView(v);
+                setErr(null);
+              }}
+              className={cn(
+                "rounded-chip border px-2.5 py-1 text-caption transition",
+                view === v ? "border-teal bg-teal-tint font-medium text-ink" : "border-line text-graphite hover:bg-line-soft hover:text-ink",
+              )}
+            >
+              {v === "sources" ? "分源查看" : "统合矩阵"}
+            </button>
+          ))}
+        </div>
+        {view === "matrix" && (
+          <>
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="搜索技能名…"
+              className="h-7 w-44 rounded-btn border border-line bg-canvas px-2.5 text-caption text-ink focus:border-teal focus:outline-none"
+            />
+            <span className="text-caption text-ash">
+              {filteredRows.length} 项 · 打钩 = 复制到该源；取消 = 停用进 .disabled；◦ = 已停用可恢复
+            </span>
+          </>
+        )}
+      </div>
+
+      {view === "matrix" ? (
+        <SkillMatrix
+          groups={mainGroups}
+          rows={filteredRows}
+          total={matrixRows.length}
+          pending={cellPending}
+          onCell={matrixCell}
+          hasQuery={q !== ""}
+        />
+      ) : (
+        <>
+
 
       {status === "loading" && <p className="text-body-sm text-ash">正在扫描技能源…</p>}
       {status === "error" && (
@@ -219,12 +333,103 @@ export function SkillsSettingsSection() {
           onBatch={handleBatch}
         />
       ))}
+        </>
+      )}
 
       {activeRoot !== null && (
         <p className="text-caption leading-relaxed text-ash">
           项目级技能源按当前工作区（{activeUnit?.name}）列出；切换侧栏 bot 后此处随之更新。
         </p>
       )}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------- 技能统合矩阵 */
+
+/** 行 = 技能（跨源同名聚合），列 = 可操作技能源。矩阵是文件系统实况的投影，不是账本 */
+function SkillMatrix({
+  groups,
+  rows,
+  total,
+  pending,
+  onCell,
+  hasQuery,
+}: {
+  groups: readonly SkillSourceGroupInfo[];
+  rows: readonly { name: string; cells: Map<string, SkillEntryInfo> }[];
+  total: number;
+  pending: ReadonlySet<string>;
+  onCell: (row: { name: string; cells: Map<string, SkillEntryInfo> }, group: SkillSourceGroupInfo) => void;
+  hasQuery: boolean;
+}) {
+  return (
+    <div className="overflow-x-auto rounded-card border border-line bg-card">
+      <table className="w-full border-collapse">
+        <thead>
+          <tr className="border-b border-line">
+            <th className="sticky left-0 z-[1] bg-card px-3 py-2 text-left text-caption font-medium text-graphite">
+              技能{hasQuery && <span className="ml-1 text-ash">（{rows.length}/{total}）</span>}
+            </th>
+            {groups.map((g) => (
+              <th key={g.id} className="min-w-[72px] px-1 py-2 text-center text-caption font-medium text-graphite" title={g.dir}>
+                <span className="block truncate">{g.label}</span>
+                <span className="tnum block text-[10px] text-ash">{g.skills.filter((s) => !s.disabled).length}</span>
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.length === 0 && (
+            <tr>
+              <td colSpan={groups.length + 1} className="px-4 py-3 text-caption text-ash">
+                {hasQuery ? "没有匹配的技能。" : "还没有技能 —— 在「分源查看」里确认技能源存在。"}
+              </td>
+            </tr>
+          )}
+          {rows.map((row) => {
+            const anyLive = [...row.cells.values()].some((s) => !s.disabled);
+            return (
+              <tr key={row.name} className="border-b border-line-soft last:border-b-0">
+                <td className="sticky left-0 z-[1] max-w-[220px] bg-card px-3 py-1.5">
+                  <span className={cn("block truncate text-body-sm", anyLive ? "text-ink" : "text-ash")} title={row.name}>{row.name}</span>
+                </td>
+                {groups.map((g) => {
+                  const cell = row.cells.get(g.id);
+                  const key = `${row.name}|${g.id}`;
+                  const busy = pending.has(key);
+                  const state = cell === undefined ? "none" : cell.disabled ? "vault" : "live";
+                  const title = g.readOnly
+                    ? "只读源"
+                    : state === "live"
+                      ? `${row.name} 在 ${g.label}（点击停用 → .disabled/）`
+                      : state === "vault"
+                        ? `${row.name} 已停用于 ${g.label}（点击恢复）`
+                        : `复制到 ${g.label}（源实体不动，两处各自演化）`;
+                  return (
+                    <td key={g.id} className="px-1 py-1 text-center">
+                      <button
+                        onClick={() => onCell(row, g)}
+                        disabled={busy || g.readOnly}
+                        title={title}
+                        className={cn(
+                          "h-6 w-6 rounded-chip border text-caption leading-none transition",
+                          state === "live" ? "border-teal bg-teal text-canvas"
+                            : state === "vault" ? "border-line bg-line-soft text-graphite"
+                              : "border-line bg-canvas text-ash hover:border-teal hover:text-teal",
+                          g.readOnly && "opacity-30",
+                        )}
+                      >
+                        {busy ? "…" : state === "live" ? "✓" : state === "vault" ? "◦" : "+"}
+                      </button>
+                    </td>
+                  );
+                })}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }
