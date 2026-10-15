@@ -26,7 +26,7 @@ import { AutomationScheduler } from "../src/automation/scheduler.ts";
 import type { QuotaProbe } from "../src/backlog/probe.ts";
 import type { BacklogConfig, QuotaHeadroom } from "../../prototype/src/core/backlog.ts";
 import { DEFAULT_BACKLOG_CONFIG } from "../../prototype/src/core/backlog.ts";
-import { buildRelativeDelaySchedule, computeScheduleNextRunAt } from "../../prototype/src/core/automation.ts";
+import { buildRelativeDelaySchedule, buildAbsoluteSchedule, computeScheduleNextRunAt, describeSchedule, formatAbsolute, formatAbsoluteHuman } from "../../prototype/src/core/automation.ts";
 
 let failures = 0;
 function check(label: string, ok: boolean, detail?: unknown): void {
@@ -226,15 +226,19 @@ try {
   atThreshold.close();
   off.close();
 
-  // ---- 9. review 修复的回归护栏 ------------------------------------------
+  // ---- 9. 绝对时刻一次性任务 + 可续接会话清单 ------------------------------
+  console.log("\n【9】绝对时刻（runAt）与可续接会话清单");
+  await absoluteTimeChecks();
+
+  // ---- 10. review 修复的回归护栏 ------------------------------------------
   // 这四条都是 review 里查出来的真 bug，每条都要有「改回去就会被抓住」的断言。
-  console.log("\n【9】review 修复的回归护栏");
+  console.log("\n【10】review 修复的回归护栏");
   await regressionChecks(cfg);
 
-  // ---- 10. 真实 daemon 上 RPC 通 ------------------------------------------
+  // ---- 11. 真实 daemon 上 RPC 通 ------------------------------------------
   // 单测只覆盖到 watcher 这一层；界面上真正读的是 quotaResume.state 这个 RPC，
   // 注册漏了 / 字段名对不上，前面的全绿也救不了「界面上什么都不显示」。
-  console.log("\n【10】真实 daemon 上 quotaResume.state 回环");
+  console.log("\n【11】真实 daemon 上 quotaResume.state 回环");
   await liveRpcCheck();
 } finally {
   // 临时目录清不掉不该让测试结论作废（Windows 上 mockperm 起的子进程还占着 cwd，
@@ -244,6 +248,71 @@ try {
   } catch (err: unknown) {
     console.log(`  ⚠️ 临时目录清理失败（不影响结论）: ${err instanceof Error ? err.message : String(err)}`);
   }
+}
+
+/**
+ * 绝对时刻（runAt）与可续接会话清单。
+ *
+ * 这里是用户明确提过的可用性诉求：一次性任务不能只写「N 分钟后」，
+ * 得能落到确切时刻（用量恢复续跑尤其如此 —— 恢复时刻是探针读出来的确切值）。
+ */
+function absoluteTimeChecks(): void {
+  console.log("\n  [1] 引擎认绝对时刻");
+  const runAt = Date.now() + 4 * 3_600_000;
+  const rule = buildAbsoluteSchedule(runAt);
+  check("规则带 runAt", rule.runAt === runAt);
+  check("computeScheduleNextRunAt 原样返回该时刻", computeScheduleNextRunAt(rule, Date.now()) === runAt);
+  check("已过期的 runAt 推不出未来（不静默顺延）", computeScheduleNextRunAt(rule, runAt + 1000) === null);
+  check(
+    "hour/minute 按落点填好（cron 占位与降级路径还要读）",
+    rule.hour === new Date(runAt).getHours() && rule.minute === new Date(runAt).getMinutes(),
+  );
+  // 落点必须是整分：引擎是分钟粒度，带秒会让显示与实际发火差一个进位
+  check("不改变调用方给的时刻（对齐由调用方负责）", rule.runAt === runAt);
+
+  console.log("\n  [2] 与相对延迟互不干扰");
+  const rel = buildRelativeDelaySchedule(30);
+  check("相对延迟规则没有 runAt", rel.runAt === undefined);
+  check("相对延迟仍按锚点推进", computeScheduleNextRunAt(rel) === Math.floor((rel.anchorAt! + 30 * 60_000) / 1000) * 1000 + ((rel.anchorAt! + 30 * 60_000) % 1000));
+
+  console.log("\n  [3] 卡片描述带得出确切时刻");
+  const a = {
+    rule,
+    recurring: false as const,
+    maxRuns: 1,
+    runs: [],
+    enabled: true,
+  };
+  const desc = describeSchedule(a);
+  check("一次性 + runAt 的描述含日期时刻", /^\d{2}-\d{2} \d{2}:\d{2}$/.test(formatAbsolute(runAt)) && desc.includes(formatAbsolute(runAt)), { desc });
+  const human = formatAbsoluteHuman(runAt, runAt - 3_600_000);
+  check(
+    "formatAbsoluteHuman 能说「今天/明天/日期」而不是分钟数",
+    human.startsWith("今天") || human.startsWith("明天") || /^\d{2}-\d{2} \d{2}:\d{2}$/.test(human),
+    { v: human },
+  );
+
+  console.log("\n  [4] 可续接会话清单口径");
+  const store = new Store(mkdtempSync(join(tmpdir(), "agent-workbench-smoke-qr-abs-")));
+  const mkSession = (id: string, runtimeId: string, cliRef: string | null, startedAt: number) => {
+    store.upsertSession({
+      id, unitId: "u1", runtimeId, title: `对话 ${id}`, status: "failed",
+      startedAt, endedAt: startedAt + 1000, cliRef, rootPath: "/tmp",
+      stats: { messages: 1, toolCalls: 0, inputTokens: 1, outputTokens: 1, costUsd: 0, durationMs: 1 },
+    });
+  };
+  mkSession("s-resumable", "zcode", "ref-1", 2_000);
+  mkSession("s-firstturn", "zcode", null, 3_000); // 首轮没跑完 → 接不回来
+  mkSession("s-other-rt", "codex", "ref-2", 1_000);
+  const resumable = store
+    .listSessions()
+    .filter((s) => s.cliRef !== null && s.runtimeId === "zcode")
+    .sort((x, y) => y.startedAt - x.startedAt)
+    .map((s) => s.id);
+  check("只列 cliRef 非空的（首轮没跑完的接不回来，不能列）", !resumable.includes("s-firstturn"), { resumable });
+  check("跨执行器的不串进来", !resumable.includes("s-other-rt"), { resumable });
+  check("可续接的列出来了", resumable[0] === "s-resumable", { resumable });
+  store.close();
 }
 
 /** 四个 review 发现的回归护栏 */
@@ -470,6 +539,30 @@ async function liveRpcCheck(): Promise<void> {
       typeof row2?.lastError === "string" && row2.lastError.includes("已改为新开会话"),
       { lastError: row2?.lastError },
     );
+
+    // runAt 端到端：精确到分钟落点，且不会被降级成「每天 HH:MM」
+    const want = Math.floor((Date.now() + 5 * 3_600_000) / 60_000) * 60_000;
+    const abs = (await rpc(port, "automation.create", {
+      unitId: "u-smoke", unitName: "冒烟", name: "绝对时刻护栏",
+      runtimeId: "mockperm", rootPath: tmpHome, prompt: "继续",
+      runAt: want,
+    })) as { id?: number; nextRunAt?: number | null };
+    check("runAt 建得出任务且 nextRunAt 就是那个时刻", typeof abs.id === "number" && abs.nextRunAt === want, { want, got: abs.nextRunAt });
+    const absList = (await rpc(port, "automation.list", null)) as Array<{ id: number; scheduleRule: { runAt?: number } | null; recurring: boolean; maxRuns: number | null }>;
+    const absRow = Array.isArray(absList) ? absList.find((x) => x.id === abs.id) : undefined;
+    check("落库后 runAt 还在规则里（没被降级成日历推进）", absRow?.scheduleRule?.runAt === want, { rule: absRow?.scheduleRule });
+    check("runAt 建出来的一次性任务确实是一次性", absRow?.recurring === false && absRow?.maxRuns === 1, { recurring: absRow?.recurring, maxRuns: absRow?.maxRuns });
+
+    // 过期时刻必须被拒，不能静默顺延到明天同一钟点
+    const past = await rpc(port, "automation.create", {
+      unitId: "u-smoke", unitName: "冒烟", runtimeId: "mockperm", rootPath: tmpHome,
+      prompt: "x", runAt: Date.now() - 60_000,
+    });
+    check("过去的 runAt 被拒（不静默顺延）", typeof past === "object" && past !== null && "__rpcError" in past, past);
+
+    // 可续接会话清单：临时 home 里一条会话都没有，返回空数组而不是报错
+    const res = (await rpc(port, "session.resumable", { limit: 10 })) as { sessions?: unknown[] };
+    check("session.resumable 返回数组", Array.isArray(res?.sessions), { res });
   } finally {
     // Windows：kill() 只是发信号，进程真正退出前句柄还占着目录，
     // 这时 rmSync 必然 EPERM。等 exit 事件再删（并留兜底，别让清理失败吃掉测试结论）

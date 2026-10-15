@@ -1,13 +1,16 @@
-import { useMemo, useState, type ReactElement, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactElement, type ReactNode } from "react";
 import { CalendarClock, X } from "lucide-react";
 import {
   scheduleRuleToCron,
+  formatAbsoluteHuman,
+  formatRelative,
   type Automation,
   type DispatchTarget,
   type ScheduleRule,
   type Weekday,
 } from "../core/automation.ts";
-import type { AutomationWriteInput } from "../adapters/daemon/client.ts";
+import type { AutomationWriteInput, ResumableSession } from "../adapters/daemon/client.ts";
+import { fetchResumableSessions } from "../adapters/daemon/client.ts";
 import { useWorkbench, visibleModelsFor } from "../store/useWorkbench.ts";
 import { cn } from "./cn.ts";
 
@@ -97,9 +100,35 @@ interface BuilderDraft {
   readonly unit: NonNullable<ScheduleRule["unit"]>;
   /** 一次性：N 分钟后 */
   readonly delayMinutes: number;
+  /**
+   * 一次性：到底用哪种表达。
+   * - relative =「N 分钟后」，相对量要人自己数
+   * - absolute = 指定到某个确切时刻 —— 用量恢复续跑属于后者：
+   *   恢复时刻是探针读出来的**确切时间**，逼用户反推分钟数没有意义
+   */
+  readonly delayMode: "relative" | "absolute";
+  /** absolute 模式下的 "YYYY-MM-DDTHH:MM"（datetime-local 的原生格式） */
+  readonly runAtLocal: string;
   readonly recurring: boolean;
   /** 有限次：跑满即停（recurring=false 时生效；recurring=true 时不限） */
   readonly maxRuns: number;
+}
+
+/** datetime-local 用的 "YYYY-MM-DDTHH:MM" */
+function toLocalInput(at: number): string {
+  const d = new Date(at);
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** datetime-local 字符串 → epoch ms；解析不出来给 null（表单校验会去拦） */
+function fromLocalInput(v: string): number | null {
+  const t = Date.parse(v);
+  return Number.isFinite(t) ? t : null;
+}
+
+/** 引擎是分钟粒度 —— 选出来的秒一律抹平，避免「15:09:30」看着能用其实会进位到 15:10 */
+function floorToMinute(at: number): number {
+  return Math.floor(at / 60_000) * 60_000;
 }
 
 const DEFAULT_DRAFT: BuilderDraft = {
@@ -110,19 +139,41 @@ const DEFAULT_DRAFT: BuilderDraft = {
   interval: 30,
   unit: "minutes",
   delayMinutes: 30,
+  delayMode: "relative",
+  // 默认给「一小时后」，而不是今天某个可能已经过去的钟点
+  runAtLocal: toLocalInput(Date.now() + 3_600_000),
   recurring: true,
   maxRuns: 1,
 };
 
 const pad = (n: number): string => String(n).padStart(2, "0");
 
-/** 规则 → 表单草稿（编辑预填）。「N 分钟后」一次性还原成 delay tab。 */
+/** 规则 → 表单草稿（编辑预填）。「N 分钟后」与「指定时刻」两种一次性各自还原。 */
 function draftOf(a: Automation): BuilderDraft {
   const rule = a.rule;
   const time = `${pad(rule.hour)}:${pad(rule.minute)}`;
   const oneShot = a.recurring === false && (a.maxRuns ?? 1) <= 1;
+  // 绝对时刻优先判定：它和相对延迟共用 custom/minutes 形态，
+  // 先认 anchorAt 会把「10-20 15:09」还原成「1 分钟后」——正是要修的那个毛病
+  if (oneShot && rule.runAt !== undefined) {
+    return {
+      ...DEFAULT_DRAFT,
+      freq: "delay",
+      delayMode: "absolute",
+      runAtLocal: toLocalInput(rule.runAt),
+      recurring: false,
+      maxRuns: a.maxRuns ?? 1,
+    };
+  }
   if (oneShot && rule.frequency === "custom" && rule.unit === "minutes" && rule.anchorAt !== undefined) {
-    return { ...DEFAULT_DRAFT, freq: "delay", delayMinutes: Math.max(1, rule.interval ?? 1), recurring: false, maxRuns: a.maxRuns ?? 1 };
+    return {
+      ...DEFAULT_DRAFT,
+      freq: "delay",
+      delayMode: "relative",
+      delayMinutes: Math.max(1, rule.interval ?? 1),
+      recurring: false,
+      maxRuns: a.maxRuns ?? 1,
+    };
   }
   const freq: FreqTab = rule.frequency === "custom" ? "custom" : rule.frequency;
   return {
@@ -170,6 +221,10 @@ export function AutomationDialog({
   const [mode, setMode] = useState(initial?.mode ?? "");
   const [launchMode, setLaunchMode] = useState<"terminal" | "headless">(initial?.launchMode === "headless" ? "headless" : "terminal");
   const [dispatchTarget, setDispatchTarget] = useState<DispatchTarget>(initial?.dispatchTarget === "existing_session" ? "existing_session" : "new_session");
+  /** 定时发送的收件对话：空串 = 发火时自动挑最近一个能接回来的 */
+  const [targetSessionId, setTargetSessionId] = useState<string>(initial?.targetSessionId ?? "");
+  const [resumable, setResumable] = useState<readonly ResumableSession[]>([]);
+  const [resumableLoading, setResumableLoading] = useState(false);
   const [draft, setDraft] = useState<BuilderDraft>(() =>
     initial !== null
       ? draftOf(initial)
@@ -203,6 +258,28 @@ export function AutomationDialog({
 
   const namespacedRuntime = `daemon:${runtimeBare}`;
   const models = useWorkbench((s) => visibleModelsFor(s, namespacedRuntime));
+
+  // 「发到已有对话」要能选**具体哪个**对话：只写「已有对话」等于让用户猜，
+  // 而发火时才自动挑的那条，未必是他以为的那个。执行器变了必须重拉 ——
+  // 会话是执行器私有的，跨执行器的 id 根本接不回来。
+  useEffect(() => {
+    if (dispatchTarget !== "existing_session") return;
+    let cancelled = false;
+    setResumableLoading(true);
+    void fetchResumableSessions({ runtimeId: runtimeBare, limit: 20 })
+      .then((list) => {
+        if (!cancelled) setResumable(list);
+      })
+      .catch(() => {
+        if (!cancelled) setResumable([]);
+      })
+      .finally(() => {
+        if (!cancelled) setResumableLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [dispatchTarget, runtimeBare]);
 
   // 由草稿构规则（不含 anchorAt —— 提交时按锚点策略补）
   const ruleFromDraft = useMemo((): ScheduleRule | null => {
@@ -259,6 +336,21 @@ export function AutomationDialog({
       setErr("每周任务至少选一个星期（不选按周一算）");
       return;
     }
+    // 绝对时刻要在提交前自己拦一道：daemon 也会拒，但那时用户已经填了一堆别的，
+    // 只回一句「runAt 已经是过去时间」很难对应到哪个框
+    let runAt: number | null = null;
+    if (draft.freq === "delay" && draft.delayMode === "absolute") {
+      const parsed = fromLocalInput(draft.runAtLocal);
+      if (parsed === null) {
+        setErr("指定时间还没填好");
+        return;
+      }
+      runAt = floorToMinute(parsed);
+      if (runAt <= Date.now()) {
+        setErr("指定的时间已经过去了 —— 挑一个将来的时刻");
+        return;
+      }
+    }
 
     // 调度保留策略（编辑且没碰调度控件时，原样回传 daemon 的权威调度）：
     // - 纯 cron 行：回传 cron 原文。表单的 ruleFromCron 是近似还原（复杂表达式直接
@@ -292,10 +384,16 @@ export function AutomationDialog({
       maxRuns: draft.freq === "delay" ? undefined : (draft.recurring ? null : Math.max(1, Math.round(draft.maxRuns))),
       launchMode: dispatchTarget === "existing_session" ? "headless" : launchMode,
       dispatchTarget,
-      // 留空 = 发火时自动挑该执行器最近一个能接回来的对话（daemon 侧回退），
-      // 这正是「用量恢复后续跑」要的行为，不该让用户手填一个会过期的会话 id
-      targetSessionId: null,
-      ...(touched && draft.freq === "delay" ? { delayMinutes: Math.max(1, Math.round(draft.delayMinutes)) } : {}),
+      // 留空 = 发火时自动挑该执行器最近一个能接回来的对话（daemon 侧回退）。
+      // 选了具体某个就钉死它 —— 用户能看见选了谁，才可能发现选错了。
+      targetSessionId: dispatchTarget === "existing_session" && targetSessionId !== "" ? targetSessionId : null,
+      // runAt / delayMinutes 只在「碰过调度」时发；没碰就靠上面的 scheduleRule
+      // 原样回传（回传里带着 runAt，daemon 认得）
+      ...(touched && draft.freq === "delay"
+        ? draft.delayMode === "absolute"
+          ? { runAt: runAt ?? undefined }
+          : { delayMinutes: Math.max(1, Math.round(draft.delayMinutes)) }
+        : {}),
       ...(scheduleRule !== null ? { scheduleRule } : {}),
       ...(cronPassthrough !== undefined ? { cron: cronPassthrough } : {}),
     };
@@ -382,6 +480,45 @@ export function AutomationDialog({
             </select>
           </Field>
 
+          {/* 选了「已有对话」就必须能选具体是哪个 —— 否则「已有对话」等于「猜一个」 */}
+          {dispatchTarget === "existing_session" && (
+            <Field
+              label="发到哪个对话"
+              hint={
+                resumable.length === 0 && !resumableLoading
+                  ? `${runtimeBare} 还没有能续接的对话（只有跑过至少一轮、执行器留了引用的才能续）`
+                  : "到点把提示词发进这个对话；对话已结束会自动接回来"
+              }
+            >
+              {resumableLoading ? (
+                <div className="rounded-input bg-rail px-2.5 py-2 text-caption text-ash">正在读取可续接的对话…</div>
+              ) : resumable.length === 0 ? (
+                <div className="rounded-input bg-rail px-2.5 py-2 text-caption text-loss">
+                  没有可选的对话 —— 到点会退回「新开会话」
+                </div>
+              ) : (
+                <select
+                  value={targetSessionId}
+                  onChange={(e) => setTargetSessionId(e.target.value)}
+                  className={inputCls}
+                >
+                  <option value="">自动选最近一个能续接的（推荐）</option>
+                  {resumable.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.title !== "" ? s.title : s.id} ·{" "}
+                      {new Date(s.lastActiveAt).toLocaleString("zh-CN", {
+                        month: "2-digit",
+                        day: "2-digit",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </Field>
+          )}
+
           {/* 往老对话发消息不需要决定「怎么起会话」—— 这个控件对新对话才有意义 */}
           {dispatchTarget === "new_session" && (
             <Field label="执行方式" hint={LAUNCH_MODE_OPTIONS.find((m) => m.id === launchMode)?.hint}>
@@ -428,16 +565,63 @@ export function AutomationDialog({
               </div>
 
               {draft.freq === "delay" && (
-                <div className="flex items-center gap-2 text-body-sm text-graphite">
-                  <span>现在起</span>
-                  <input
-                    type="number"
-                    min={1}
-                    value={draft.delayMinutes}
-                    onChange={(e) => patchSchedule({ delayMinutes: Number(e.target.value) })}
-                    className={cn(inputCls, "w-24")}
-                  />
-                  <span>分钟后跑一次（以 daemon 时钟为锚，跑完即停）</span>
+                <div className="space-y-2.5">
+                  <div className="flex flex-wrap items-center gap-1">
+                    {(
+                      [
+                        { id: "relative", label: "多少分钟后" },
+                        { id: "absolute", label: "指定到某个时刻" },
+                      ] as const
+                    ).map((m) => (
+                      <button
+                        key={m.id}
+                        type="button"
+                        onClick={() => patchSchedule({ delayMode: m.id })}
+                        className={cn(
+                          "rounded-chip px-2.5 py-1 text-caption transition",
+                          draft.delayMode === m.id ? "bg-teal-tint font-medium text-teal" : "text-ash hover:bg-line-soft hover:text-graphite",
+                        )}
+                      >
+                        {m.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  {draft.delayMode === "relative" ? (
+                    <div className="flex items-center gap-2 text-body-sm text-graphite">
+                      <span>现在起</span>
+                      <input
+                        type="number"
+                        min={1}
+                        value={draft.delayMinutes}
+                        onChange={(e) => patchSchedule({ delayMinutes: Number(e.target.value) })}
+                        className={cn(inputCls, "w-24")}
+                      />
+                      <span>分钟后跑一次（以 daemon 时钟为锚，跑完即停）</span>
+                    </div>
+                  ) : (
+                    <div className="space-y-1.5">
+                      <div className="flex items-center gap-2 text-body-sm text-graphite">
+                        <span>到</span>
+                        <input
+                          type="datetime-local"
+                          value={draft.runAtLocal}
+                          min={toLocalInput(Date.now())}
+                          onChange={(e) => patchSchedule({ runAtLocal: e.target.value })}
+                          className={cn(inputCls, "w-56")}
+                        />
+                        <span>跑一次（到点即发，跑完即停）</span>
+                      </div>
+                      {/* 绝对时刻的意义就在这行：不用反推「3 小时后」到底是几点 */}
+                      <p className="text-caption text-ash">
+                        {(() => {
+                          const t = fromLocalInput(draft.runAtLocal);
+                          if (t === null) return "时间还没填好";
+                          return `将于 ${new Date(t).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })} 发出（${formatAbsoluteHuman(t)}，${formatRelative(t)}）`;
+                        })()}
+                      </p>
+                    </div>
+                  )}
                 </div>
               )}
 

@@ -58,6 +58,7 @@ import { QuotaResumeWatcher } from "./automation/quotaResume.ts";
 import { QuotaProbe } from "./backlog/probe.ts";
 import { cronNextAt, parseCron } from "./automation/cron.ts";
 import {
+  buildAbsoluteSchedule,
   buildRelativeDelaySchedule,
   computeScheduleNextRunAt,
   scheduleRuleToCron,
@@ -1095,13 +1096,17 @@ function parseScheduleRule(raw: unknown): ScheduleRule {
     ...(frequency === "custom" ? { interval: int("interval", 1, 525_600, 1) } : {}),
     ...(unitOk ? { unit: unit as "minutes" | "hours" | "days" | "weeks" | "months" } : {}),
     ...(typeof r["anchorAt"] === "number" && Number.isFinite(r["anchorAt"]) ? { anchorAt: r["anchorAt"] as number } : {}),
+    // 绝对时刻必须原样透传：编辑时表单会把整条规则回传，漏掉这个字段
+    // 等于把「10-20 15:09 只跑一次」悄悄降级成「每天 15:09」
+    ...(typeof r["runAt"] === "number" && Number.isFinite(r["runAt"]) ? { runAt: r["runAt"] as number } : {}),
   };
   return rule;
 }
 
 /**
- * 创建/更新共用的调度入参归一，三选一（对齐 ZCode 的 contract）：
+ * 创建/更新共用的调度入参归一，**四选一**（对齐 ZCode 的 contract）：
  *   delayMinutes ——「N 分钟后」一次性（相对表达以 daemon 时钟为锚，不信客户端换算）
+ *   runAt        ——「2026-10-20 15:09 只跑一次」绝对时刻（同样以 daemon 时钟判定过期）
  *   scheduleRule —— 权威规则（anchorAt 缺省 = 现在，即「改频率即重新锚定」）
  *   cron         —— 纯 cron 兼容（调度走 cronNextAt；cron 的整点语义只有它自己算得准）
  */
@@ -1109,6 +1114,7 @@ function resolveSchedule(p: {
   cron?: unknown;
   scheduleRule?: unknown;
   delayMinutes?: unknown;
+  runAt?: unknown;
 }): { cron: string; rule: ScheduleRule | null; nextRunAt: number | null } {
   if (typeof p.delayMinutes === "number") {
     if (!Number.isFinite(p.delayMinutes) || p.delayMinutes < 1 || p.delayMinutes > 525_600) {
@@ -1117,9 +1123,24 @@ function resolveSchedule(p: {
     const rule = buildRelativeDelaySchedule(p.delayMinutes);
     return { cron: scheduleRuleToCron(rule), rule, nextRunAt: computeScheduleNextRunAt(rule) };
   }
+  // 绝对时刻：过期/不合法直接拒，不静默顺延 —— 「静默改成明天同一时刻」
+  // 是最坏的失败形态（用户以为今天会跑，结果明天才跑）
+  if (p.runAt !== undefined && p.runAt !== null) {
+    if (typeof p.runAt !== "number" || !Number.isFinite(p.runAt)) {
+      throw badAutomation("runAt must be a number (epoch ms)");
+    }
+    const now = Date.now();
+    if (p.runAt <= now) throw badAutomation("runAt 已经是过去时间了");
+    if (p.runAt > now + 365 * 86_400_000) throw badAutomation("runAt 超过一年后，自动化不支持");
+    const rule = buildAbsoluteSchedule(p.runAt);
+    return { cron: scheduleRuleToCron(rule), rule, nextRunAt: p.runAt };
+  }
   if (p.scheduleRule !== undefined && p.scheduleRule !== null) {
     const parsed = parseScheduleRule(p.scheduleRule);
-    const rule: ScheduleRule = parsed.anchorAt === undefined ? { ...parsed, anchorAt: Date.now() } : parsed;
+    // 带 runAt 的规则不再补 anchorAt：那会把「确切落点」和「从某刻起推」
+    // 两套语义混在一条规则里，之后谁读谁懵
+    const rule: ScheduleRule =
+      parsed.runAt !== undefined ? parsed : parsed.anchorAt === undefined ? { ...parsed, anchorAt: Date.now() } : parsed;
     return { cron: scheduleRuleToCron(rule), rule, nextRunAt: computeScheduleNextRunAt(rule) };
   }
   if (typeof p.cron === "string" && p.cron.trim() !== "") {
@@ -1133,7 +1154,7 @@ registerMethod("automation.create", (params) => {
   const p = (params ?? {}) as {
     unitId?: string; unitName?: string; name?: string; runtimeId?: string; rootPath?: string;
     prompt?: string; model?: string; mode?: string;
-    cron?: string; scheduleRule?: unknown; delayMinutes?: number;
+    cron?: string; scheduleRule?: unknown; delayMinutes?: number; runAt?: number | null;
     recurring?: boolean; maxRuns?: number;
     launchMode?: string;
     dispatchTarget?: string;
@@ -1146,14 +1167,24 @@ registerMethod("automation.create", (params) => {
   if (p.dispatchTarget !== undefined && p.dispatchTarget !== "new_session" && p.dispatchTarget !== "existing_session") {
     throw badAutomation("dispatchTarget 只能是 new_session 或 existing_session");
   }
+  // runAt 与 delayMinutes 同为一次性表达，不能同时给（谁优先都是猜）
+  if (typeof p.runAt === "number" && typeof p.delayMinutes === "number") {
+    throw badAutomation("runAt 与 delayMinutes 只能给一个");
+  }
   if (p.launchMode !== undefined && p.launchMode !== "terminal" && p.launchMode !== "headless") {
     throw badAutomation("launchMode 只能是 terminal 或 headless");
   }
-  if (typeof p.delayMinutes === "number" && p.recurring === true) {
-    throw badAutomation("delayMinutes 是一次性任务，不能配 recurring=true");
+  // 绝对时刻与相对延迟同属「一次性」表达：调度/次数口径必须一致，
+  // 否则 runAt 建出来的任务会被当成循环任务，一到点就永远跑下去
+  const oneShot = typeof p.delayMinutes === "number" || typeof p.runAt === "number";
+  if (oneShot && p.recurring === true) {
+    throw badAutomation("一次性任务（delayMinutes / runAt）不能配 recurring=true");
   }
   if (typeof p.delayMinutes === "number" && typeof p.maxRuns === "number") {
     throw badAutomation("delayMinutes 是一次性任务，不能配 maxRuns（跑一次即停）");
+  }
+  if (typeof p.runAt === "number" && typeof p.maxRuns === "number") {
+    throw badAutomation("runAt 是一次性任务，不能配 maxRuns（跑一次即停）");
   }
   if (typeof p.maxRuns === "number" && (!Number.isFinite(p.maxRuns) || p.maxRuns < 1 || p.maxRuns > 10_000)) {
     throw badAutomation("maxRuns 必须是 1..10000");
@@ -1162,7 +1193,7 @@ registerMethod("automation.create", (params) => {
   if (nextRunAt === null) throw badAutomation("当前规则推不出任何未来的触发时间");
   // recurring 缺省 = 循环；显式 false 且未给 maxRuns = 一次性（跑一次收口，ZCode 同口径）。
   // delayMinutes 本质是一次性的相对表达，强制 recurring=false —— 否则它会按间隔永远跑下去。
-  const recurring = typeof p.delayMinutes === "number" ? false : p.recurring !== false;
+  const recurring = oneShot ? false : p.recurring !== false;
   const maxRuns = typeof p.maxRuns === "number" ? p.maxRuns : (recurring ? null : 1);
   const unitName = p.unitName ?? p.unitId;
   const id = store.createAutomation({
@@ -1196,6 +1227,7 @@ registerMethod("automation.update", (params) => {
     launchMode?: string;
     dispatchTarget?: string;
     targetSessionId?: string | null;
+    runAt?: number | null;
   };
   if (typeof p.id !== "number") throw badAutomation("id is required");
   if (p.launchMode !== undefined && p.launchMode !== "terminal" && p.launchMode !== "headless") {
@@ -1226,6 +1258,12 @@ registerMethod("automation.update", (params) => {
   if (typeof p.delayMinutes === "number" && p.recurring === true) {
     throw badAutomation("delayMinutes 是一次性任务，不能配 recurring=true");
   }
+  if (typeof p.runAt === "number" && p.recurring === true) {
+    throw badAutomation("runAt 是一次性任务，不能配 recurring=true");
+  }
+  if (typeof p.runAt === "number" && typeof p.delayMinutes === "number") {
+    throw badAutomation("runAt 与 delayMinutes 只能给一个");
+  }
   if (p.maxRuns !== undefined && p.maxRuns !== null &&
       (!Number.isFinite(p.maxRuns) || p.maxRuns < 1 || p.maxRuns > 10_000)) {
     throw badAutomation("maxRuns 必须是 1..10000（null = 不限次数）");
@@ -1234,13 +1272,14 @@ registerMethod("automation.update", (params) => {
   // delayMinutes 本质是一次性的相对表达 —— 必须连 recurring 一起强制收口，
   // 否则「只改提示词」的一次性任务保存完就悄悄变成永久循环。
   const delay = typeof p.delayMinutes === "number";
-  const wantsRuns = p.recurring !== undefined || p.maxRuns !== undefined || delay;
-  const recurring = delay ? false : (p.recurring ?? prev.recurring);
+  const absolute = typeof p.runAt === "number";
+  const wantsRuns = p.recurring !== undefined || p.maxRuns !== undefined || delay || absolute;
+  const recurring = delay || absolute ? false : (p.recurring ?? prev.recurring);
   const maxRuns = p.maxRuns !== undefined
     ? (p.maxRuns === null ? (recurring ? null : 1) : p.maxRuns)
-    : ((delay || (p.recurring !== undefined && !recurring)) && prev.maxRuns === null ? 1 : prev.maxRuns);
+    : ((delay || absolute || (p.recurring !== undefined && !recurring)) && prev.maxRuns === null ? 1 : prev.maxRuns);
 
-  const scheduleChanged = p.cron !== undefined || p.scheduleRule !== undefined || delay;
+  const scheduleChanged = p.cron !== undefined || p.scheduleRule !== undefined || delay || absolute;
   if (scheduleChanged) {
     const resolved = resolveSchedule(p);
     // create 拒绝「推不出未来」的表达式，update 也必须拒 —— 否则写下去就是
@@ -2356,6 +2395,36 @@ registerMethod("session.cancel", (params) => {
   return host.cancelSession(asSessionId(sessionId));
 });
 registerMethod("session.list", () => host.listSessions());
+
+/**
+ * 可续接的对话清单 —— 「定时发送到已有对话」的下拉数据源。
+ *
+ * 口径必须是 **cli_ref 非空**，不是「所有历史会话」：首轮都没跑完的会话拿不到
+ * 执行器侧引用，resumeSession 会直接抛 no_cli_ref。把它们列进选择器，
+ * 用户选了就是选了个必然失败的项 —— 「能选到的就一定能用」是这个列表唯一
+ * 的承诺。runtimeId 可选，给了只列该执行器的。
+ */
+registerMethod("session.resumable", (params) => {
+  const p = (params ?? {}) as { runtimeId?: string; limit?: number };
+  const limit = Math.min(50, Math.max(1, Math.round(Number(p.limit)) || 20));
+  const only = typeof p.runtimeId === "string" && p.runtimeId !== "" ? p.runtimeId : null;
+  const out = store
+    .listSessions()
+    .filter((s) => s.cliRef !== null && (only === null || s.runtimeId === only))
+    .sort((a, b) => b.startedAt - a.startedAt)
+    .slice(0, limit)
+    .map((s) => ({
+      id: s.id,
+      title: s.title,
+      runtimeId: s.runtimeId,
+      unitId: s.unitId,
+      status: s.status,
+      startedAt: s.startedAt,
+      endedAt: s.endedAt,
+      lastActiveAt: s.endedAt ?? s.startedAt,
+    }));
+  return { sessions: out };
+});
 registerMethod("session.resume", (params) => {
   const { sessionId } = (params ?? {}) as { sessionId?: string };
   if (typeof sessionId !== "string") throw Object.assign(new Error("sessionId is required"), { code: "bad_params" });

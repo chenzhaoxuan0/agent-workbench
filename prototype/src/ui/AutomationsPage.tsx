@@ -17,6 +17,8 @@ import {
   describeSchedule,
   filterByStatus,
   formatRelative,
+  formatAbsolute,
+  formatAbsoluteHuman,
   nextRunAt as estimateNextRunAt,
   resolveStatusKind,
   type Automation,
@@ -25,6 +27,7 @@ import {
 } from "../core/automation.ts";
 import { useWorkbench } from "../store/useWorkbench.ts";
 import { useBacklog } from "../store/useBacklog.ts";
+import { fetchResumableSessions, type ResumableSession } from "../adapters/daemon/client.ts";
 import { AutomationDialog, type AutomationDialogPrefill } from "./AutomationDialog.tsx";
 import { cn } from "./cn.ts";
 
@@ -59,6 +62,7 @@ export function AutomationsPage() {
   const refreshAutomations = useWorkbench((s) => s.refreshAutomations);
   const quotaResume = useBacklog((s) => s.quotaResume);
   const refreshBacklog = useBacklog((s) => s.refresh);
+  const [resumableSessions, setResumableSessions] = useState<readonly ResumableSession[]>([]);
 
   const [filter, setFilter] = useState<StatusFilter>("all");
   const [dialog, setDialog] = useState<DialogState>(null);
@@ -78,6 +82,21 @@ export function AutomationsPage() {
     const timer = setInterval(() => void refreshBacklog(), 30_000);
     return () => clearInterval(timer);
   }, [refreshBacklog]);
+
+  // 卡片要显示「发到哪个对话」，得把可续接会话的标题拉下来做映射
+  useEffect(() => {
+    let cancelled = false;
+    void fetchResumableSessions({ limit: 50 })
+      .then((list) => {
+        if (!cancelled) setResumableSessions(list);
+      })
+      .catch(() => {
+        /* 拿不到就让卡片显示 id，不影响其余功能 */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // 通知 5 秒自动消失
   useEffect(() => {
@@ -99,6 +118,17 @@ export function AutomationsPage() {
     if (qr === null || !qr.enabled) return [];
     return qr.states.filter((s) => s.scheduledAutomationId !== null || s.note !== null);
   }, [quotaResume]);
+
+  /**
+   * 会话 id → 标题。卡片上的「发到已有对话」只存了 id，光有 id 用户判不出那是哪段对话。
+   * 只拉**可续接**的：卡片上出现的目标对话本来就必须是能接回来的那些。
+   * 拉不到就退化成显示 id（仍然诚实，只是不好看），不显示空白。
+   */
+  const sessionTitles = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const s of resumableSessions) m.set(s.id, s.title !== "" ? s.title : s.id);
+    return m;
+  }, [resumableSessions]);
 
   return (
     <div className="h-full min-h-0 overflow-y-auto">
@@ -206,6 +236,7 @@ export function AutomationsPage() {
                 key={a.id}
                 a={a}
                 unitName={unitName(a.unitId, a.unitName)}
+                sessionTitles={sessionTitles}
                 onEdit={() => setDialog({ mode: "edit", automation: a })}
               />
             ))}
@@ -240,7 +271,18 @@ const RUN_STATUS_META = {
   skipped: { icon: CircleAlert, cls: "text-ash", label: "已跳过" },
 } as const;
 
-function AutomationCard({ a, unitName, onEdit }: { a: Automation; unitName: string; onEdit: () => void }) {
+function AutomationCard({
+  a,
+  unitName,
+  sessionTitles,
+  onEdit,
+}: {
+  a: Automation;
+  unitName: string;
+  /** 会话 id → 标题：把 targetSessionId 翻译成人话，否则用户判不出是哪段对话 */
+  sessionTitles: ReadonlyMap<string, string>;
+  onEdit: () => void;
+}) {
   const toggle = useWorkbench((s) => s.toggleAutomation);
   const runNow = useWorkbench((s) => s.runAutomationNowAction);
   const remove = useWorkbench((s) => s.deleteAutomationAction);
@@ -344,8 +386,8 @@ function AutomationCard({ a, unitName, onEdit }: { a: Automation; unitName: stri
         </div>
         <div className="min-w-0">
           <dt className="text-ash">下次运行</dt>
-          <dd className={cn("truncate", next ? "text-graphite" : "text-ash")}>
-            {next ? formatRelative(next) : a.enabled ? "已跑完" : "—"}
+          <dd className={cn("truncate", next ? "text-graphite" : "text-ash")} title={next !== null ? formatAbsolute(next) : undefined}>
+            {next === null ? (a.enabled ? "已跑完" : "—") : `${formatAbsoluteHuman(next)}（${formatRelative(next)}）`}
           </dd>
         </div>
         <div className="min-w-0">
@@ -407,6 +449,17 @@ function AutomationCard({ a, unitName, onEdit }: { a: Automation; unitName: stri
         >
           {a.dispatchTarget === "existing_session" ? "发到已有对话" : "新对话"}
         </span>
+        {/* 钉了具体对话就说清楚是哪一段 —— 「发到已有对话」本身用户无从判断 */}
+        {a.dispatchTarget === "existing_session" && (
+          <span
+            className="max-w-[15rem] truncate rounded-chip bg-line-soft px-1.5 py-px text-caption text-graphite"
+            title={a.targetSessionId ?? undefined}
+          >
+            {a.targetSessionId === null || a.targetSessionId === undefined || a.targetSessionId === ""
+              ? "自动选最近一个"
+              : (sessionTitles.get(a.targetSessionId) ?? a.targetSessionId)}
+          </span>
+        )}
         {/* 自动排的续跑要标出来：否则用户看到一条自己没建过的任务会以为系统乱排 */}
         {a.origin === "quota_resume" && (
           <span

@@ -865,6 +865,8 @@ export interface AutomationWriteInput {
   readonly scheduleRule?: ScheduleRule;
   readonly cron?: string;
   readonly delayMinutes?: number;
+  /** 绝对时刻（epoch ms）「到 2026-10-20 15:09 只跑一次」。与 delayMinutes 互斥 */
+  readonly runAt?: number;
   /** 执行方式：缺省 = terminal（前端可见 TUI） */
   readonly launchMode?: "terminal" | "headless";
   /** 定时发送到已有对话。缺省 targetSessionId = 发火时按最新的可续接会话定 */
@@ -922,6 +924,37 @@ export async function fetchAutomations(endpoint: string = defaultDaemonEndpoint(
   const client = DaemonClient.get(endpoint);
   const raw = await client.rpc<DaemonAutomation[]>("automation.list", null, 15000);
   return raw.map(daemonAutomationToAutomation);
+}
+
+/** 一条「可续接的对话」—— 定时发送的目标选项 */
+export interface ResumableSession {
+  readonly id: string;
+  readonly title: string;
+  readonly runtimeId: string;
+  readonly unitId: string;
+  readonly status: string;
+  readonly startedAt: number;
+  readonly endedAt: number | null;
+  readonly lastActiveAt: number;
+}
+
+/**
+ * 可续接的对话清单（「定时发送到已有对话」的下拉数据源）。
+ *
+ * 只有 cli_ref 非空的才会出现 —— 那些才是真能在发火时接回来的。
+ * 列出来的每个选项都保证能用，不给用户「选了个必然失败」的余地。
+ */
+export async function fetchResumableSessions(
+  params: { runtimeId?: string; limit?: number } = {},
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<readonly ResumableSession[]> {
+  const client = DaemonClient.get(endpoint);
+  const r = await client.rpc<{ sessions: readonly ResumableSession[] }>(
+    "session.resumable",
+    { runtimeId: params.runtimeId ?? null, limit: params.limit ?? 20 },
+    15000,
+  );
+  return r.sessions;
 }
 
 /**

@@ -32,6 +32,16 @@ export interface ScheduleRule {
   readonly rawExpr?: string;
   /** 相对锚点，用于「4 分钟后」这类一次性任务 */
   readonly anchorAt?: number;
+  /**
+   * **绝对时刻**的一次性任务：到 `2026-10-20 15:09` 只跑这一次。
+   *
+   * 为什么单列而不靠 anchorAt + interval 表达：锚点步进是「anchorAt + k·间隔」，
+   * 推出来的永远是一串等间隔时刻，既写不出「10-20 那天」，写出来了界面也只能
+   * 显示成「N 分钟后」—— 用户判断不了那到底是几点。用量恢复续跑尤其吃亏：
+   * 恢复时刻是探针读出来的**确切时间**，却被迫换算成分钟数再让人反推。
+   * 有这个字段就直接对着墙钟落点，不必反推。
+   */
+  readonly runAt?: number;
 }
 
 export type RunStatus = "idle" | "running" | "completed" | "failed" | "paused";
@@ -117,6 +127,32 @@ export function formatClock(hour: number, minute: number): string {
   return `${pad(hour)}:${pad(minute)}`;
 }
 
+/**
+ * 绝对时刻 → 「10-16 15:09」。
+ *
+ * 一次性任务**必须**给人看这个，只给「3 小时后」等于让人反推 ——
+ * 反推不出来的那半小时就会变成「它到底几点跑」的疑问。用量恢复续跑
+ * 尤其如此：恢复时刻本来就是探针读出来的确切时间，没道理藏成一个分钟数。
+ */
+export function formatAbsolute(target: number): string {
+  const d = new Date(target);
+  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** 「今天 15:09」/「明天 09:00」/「10-20 15:09」—— 近的带上星期几式称呼 */
+export function formatAbsoluteHuman(target: number, from = Date.now()): string {
+  const d = new Date(target);
+  const dayMs = 86_400_000;
+  const startOfDay = (t: number): number => {
+    const x = new Date(t);
+    return new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  };
+  const diffDays = Math.round((startOfDay(target) - startOfDay(from)) / dayMs);
+  if (diffDays === 0) return `今天 ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  if (diffDays === 1) return `明天 ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return formatAbsolute(target);
+}
+
 /** 频率描述，不含时刻 —— 对齐 ZCode 的 describeCronBuilder 输出形态 */
 export function describeRule(rule: ScheduleRule): string {
   switch (rule.frequency) {
@@ -158,8 +194,11 @@ function isConsecutiveDays(days: readonly Weekday[]): boolean {
 
 /** 完整的一行描述：频率 + 时刻。对齐 ZCode 卡片上的 schedule 文案 */
 export function describeSchedule(a: Pick<Automation, "rule" | "recurring" | "maxRuns">): string {
-  // 一次性任务没有频率，真实时机由「下次运行」承载 —— 对齐 ZCode 的处理
-  if (a.recurring === false && (a.maxRuns ?? 1) <= 1) return "自定义";
+  // 一次性任务没有频率，真实时机由「下次运行」承载 —— 对齐 ZCode 的处理。
+  // 但绝对时刻是用户直接给的落点，值得写进频率徽章里当标题用。
+  if (a.recurring === false && (a.maxRuns ?? 1) <= 1) {
+    return a.rule.runAt !== undefined ? `一次性 · ${formatAbsolute(a.rule.runAt)}` : "自定义";
+  }
   const { rule } = a;
   if (rule.frequency === "hourly") return describeRule(rule);
   if (rule.frequency === "weekly" && rule.weekdays.length === 0) return describeRule(rule);
@@ -179,6 +218,13 @@ export function describeSchedule(a: Pick<Automation, "rule" | "recurring" | "max
  * computeScheduleNextRunAt），这个占位只在「rule 丢失」的极端兜底里被读到。
  */
 export function scheduleRuleToCron(rule: ScheduleRule): string {
+  // 绝对时刻：cron 表达不了「某年某月某日」，落一个「每天 HH:MM」占位。
+  // 调度永远走 rule（有 runAt 的行 computeScheduleNextRunAt 直接返回它），
+  // 这个占位只喂给「rule 丢失」的极端降级与界面展示。
+  if (rule.runAt !== undefined) {
+    const d = new Date(rule.runAt);
+    return `${d.getMinutes()} ${d.getHours()} * * *`;
+  }
   const m = Math.min(59, Math.max(0, Math.round(rule.minute)));
   const h = Math.min(23, Math.max(0, Math.round(rule.hour)));
   const day = Math.min(31, Math.max(1, Math.round(rule.dayOfMonth)));
@@ -225,6 +271,10 @@ export function scheduleRuleToCron(rule: ScheduleRule): string {
  *   monthly 溢出月（2 月 31 日）跳过。
  */
 export function computeScheduleNextRunAt(rule: ScheduleRule, from = Date.now()): number | null {
+  // 绝对时刻优先于一切日历推进行为：它是用户/探针给的**确切落点**，
+  // 任何推演都只会把它改掉。已经过去就返回 null（不静默顺延到下一次）。
+  if (rule.runAt !== undefined) return rule.runAt > from ? rule.runAt : null;
+
   const anchor = rule.anchorAt ?? from;
 
   // 分钟 / 小时：锚点推进
@@ -315,6 +365,30 @@ export function buildRelativeDelaySchedule(delayMinutes: number, from = Date.now
   };
 }
 
+/**
+ * 「2026-10-20 15:09 只跑一次」—— 以**绝对时刻**为锚的一次性规则。
+ *
+ * 和 buildRelativeDelaySchedule 的分工：前者表达「从现在起 N 分钟」，
+ * 那是人自己数的相对量；后者表达一个确切落点。用量恢复续跑属于后者 ——
+ * 恢复时刻是探针读出来的确切值，换算成分钟再让人反推是白白增加理解成本。
+ *
+ * hour/minute 仍按落点填好：scheduleRuleToCron 的占位、以及任何走日历
+ * 推进的降级路径都还读它们，不能留 0。
+ */
+export function buildAbsoluteSchedule(runAt: number): ScheduleRule {
+  const target = new Date(runAt);
+  return {
+    frequency: "custom",
+    hour: target.getHours(),
+    minute: target.getMinutes(),
+    weekdays: [],
+    dayOfMonth: target.getDate(),
+    interval: 1,
+    unit: "minutes",
+    runAt,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // cron 兜底解析（仅展示与 rule 缺失时的降级，不是调度依据）
 // ---------------------------------------------------------------------------
@@ -389,6 +463,7 @@ export function ruleFromCron(expr: string): ScheduleRule | null {
  */
 export function nextRunAt(a: Automation, from = Date.now()): number | null {
   if (!a.enabled) return null;
+  if (a.rule.runAt !== undefined) return a.rule.runAt > from ? a.rule.runAt : null;
   if (a.recurring === false && (a.maxRuns ?? 1) <= 1) {
     if (a.runs.length >= (a.maxRuns ?? 1)) return null;
     // 「N 分钟后」形态（custom minutes + 锚点）走引擎：下次 = 锚点 + 间隔，
