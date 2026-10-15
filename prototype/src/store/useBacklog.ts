@@ -5,6 +5,7 @@ import type {
   BacklogProposal,
   BacklogStateSnapshot,
   QuotaHeadroom,
+  QuotaResumeConfig,
 } from "../core/backlog.ts";
 import {
   confirmBacklogProposal,
@@ -23,7 +24,9 @@ import {
   sleepBacklogItem,
   updateBacklogItem,
   wakeBacklogItem,
+  fetchQuotaResumeState,
   type BacklogWriteInput,
+  type QuotaResumeStateRow,
 } from "../adapters/daemon/client.ts";
 import { DaemonClient, defaultDaemonEndpoint } from "../adapters/daemon/client.ts";
 
@@ -39,6 +42,11 @@ interface BacklogState {
   state: BacklogStateSnapshot | null;
   config: BacklogConfig | null;
   quotas: readonly QuotaHeadroom[];
+  /**
+   * 用量续跑的判定态（谁用尽了、排没排、为什么没排）。
+   * null = 还没拉到 / 拉取失败 —— 界面据此不显示这一块，而不是显示「正常」。
+   */
+  quotaResume: { readonly enabled: boolean; readonly config: QuotaResumeConfig; readonly states: readonly QuotaResumeStateRow[] } | null;
   /** 页面级通知（操作成败的一行实话），5 秒自动消失由页面处理 */
   notice: { readonly kind: "error" | "info" | "success"; readonly text: string } | null;
   setNotice: (n: { readonly kind: "error" | "info" | "success"; readonly text: string } | null) => void;
@@ -71,6 +79,7 @@ export const useBacklog = create<BacklogState>((set, get) => ({
   state: null,
   config: null,
   quotas: [],
+  quotaResume: null,
   notice: null,
 
   setNotice: (notice) => set({ notice }),
@@ -82,6 +91,12 @@ export const useBacklog = create<BacklogState>((set, get) => ({
     } catch (err: unknown) {
       // daemon 没起是正常态（与 refreshAutomations 同口径）：留痕不打断
       console.info("[backlog] 列表拉取失败", err instanceof Error ? err.message : err);
+    }
+    // 续跑判定态单独拉：它是解释性信息，拿不到不该让整个待办视图降级
+    try {
+      set({ quotaResume: await fetchQuotaResumeState(defaultDaemonEndpoint()) });
+    } catch (err: unknown) {
+      console.info("[backlog] 续跑状态拉取失败", err instanceof Error ? err.message : err);
     }
   },
 

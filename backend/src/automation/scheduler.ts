@@ -10,7 +10,9 @@
  *   3. 错过超过宽限（停机/休眠）→ 记 skipped 不补跑，直接排到下一个未来触发点；
  *      一次性任务错过即终态（completed），不会从延迟规则里推导出后续周期
  *   4. 派发失败 → 指数退避重试（30s 起步、15min 封顶、最多 5 次）；
- *      放弃时循环任务保持已前推的 next_run_at（这一窗丢掉、下一窗正常）
+ *      放弃时循环任务保持已前推的 next_run_at（这一窗丢掉、下一窗正常）；
+ *      一次性任务在首次认领时即被停用（terminal），重试检查排在 enabled 判断
+ *      之前才够得着 —— 见 tickInner 里的注释
  *
  * 会话结束态由 host 的事件流回灌（index.ts），调度器只管「到点没到点」。
  * 调度权威是 scheduleRule（共享引擎 computeScheduleNextRunAt，与 UI 同一份算术），
@@ -107,9 +109,12 @@ export class AutomationScheduler {
   private tickInner(): void {
     const now = Date.now();
     for (const a of this.store.listAutomations()) {
-      if (!a.enabled) continue;
-
-      // 重试窗口：到点就原地再派。run_count 在首次认领时已消耗，重试不再计数。
+      // 重试窗口必须排在 enabled 判断之前。
+      // 一次性任务在 markAutomationFired(terminal) 认领的那一刻就被置成 enabled=0，
+      // 若先判 enabled，退避表里的条目永远等不到执行 —— 派发失败 5 次退避形同虚设，
+      // 而续跑最容易踩（resumeSession 要真拉起一个 CLI 进程）。
+      // 停用是「别再排新的」，不是「把已经认领的那一次撤销」：退避表只在派发失败后
+      // 短暂存在（30s~15min），让这一发跑完是符合直觉的。
       const retry = this.retries.get(a.id);
       if (retry !== undefined) {
         if (now < retry.at) continue;
@@ -117,6 +122,8 @@ export class AutomationScheduler {
         void this.dispatch(a, "schedule");
         continue;
       }
+
+      if (!a.enabled) continue;
 
       // 启用却推不出下次触发点：规则半损坏（手改库 / 旧数据迁移 / 重算失败落了 null）。
       // 不处理就是无声卡死 —— 永远不跑、界面上也没有任何解释。停用 + 亮徽章。

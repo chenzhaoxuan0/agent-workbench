@@ -769,6 +769,7 @@ export function daemonAutomationToAutomation(a: DaemonAutomation): Automation {
     name: a.name,
     description: a.prompt,
     unitId: a.unitId,
+    unitName: a.unitName,
     runtimeId: a.runtimeId,
     // 纯 cron 旧行没有 rule：尽力还原成规则用于展示与本地预估，还原不出给个每日兜底
     rule: a.scheduleRule ??

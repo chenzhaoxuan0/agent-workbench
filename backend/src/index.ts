@@ -505,6 +505,11 @@ async function runAutomation(
   },
   opts: { trigger: "schedule" | "manual" },
 ): Promise<{ runId: number; sessionId: string }> {
+  // 派发过程中要留在徽章上的说明（如「回退成新开会话了」）。
+  // 成功路径默认把 last_error 清空，会把同一次调用里刚写下的说明一起抹掉 ——
+  // 所以统一走这个变量，成功时写它而不是 null。
+  let dispatchNote: string | null = null;
+
   // 定时发送到已有对话：不新开会话，把 prompt 当一条消息投进那个对话。
   // 会话多半已经因为用量耗尽而结束 —— resumeSession 把盘里的会话接回执行器
   // （cli_ref 续命），接回来后再发，agent 在原上下文里接着干。
@@ -536,7 +541,7 @@ async function runAutomation(
     }
     // 接不回任何老会话：记一笔再退回新开会话，别让这条续跑静默消失
     log.warn("existing-session automation found no resumable target, falling back to new session", { automationId: a.id });
-    store.setAutomationError(a.id, "找不到可续接的对话，已改为新开会话", Date.now());
+    dispatchNote = "找不到可续接的对话，已改为新开会话";
   }
 
   // TUI 模式：到点在前端 PTY 里拉起执行器本尊的终端界面（yolo 免审批），
@@ -553,7 +558,7 @@ async function runAutomation(
       });
       store.setAutomationRunSession(runId, terminalId);
       automationRunByTerminal.set(terminalId, { runId, automationId: a.id });
-      store.setAutomationError(a.id, null, null);
+      store.setAutomationError(a.id, dispatchNote, dispatchNote === null ? null : Date.now());
       log.info("automation terminal launched", { automationId: a.id, runId, terminalId, trigger: opts.trigger });
       return { runId, sessionId: terminalId };
     } catch (err: unknown) {
@@ -591,8 +596,9 @@ async function runAutomation(
       automationRunBySession.set(session.id, { runId, automationId: a.id });
     }
     // 失败徽章：这次派发以失败告终就挂上；否则清掉（上一次的失败由这次成功翻篇）
+    // —— 但 dispatchNote（回退说明）要留下，它不是失败徽章，别被当成旧账清掉
     if (endedFailed) store.setAutomationError(a.id, `ended: ${ended!.status}`, Date.now());
-    else store.setAutomationError(a.id, null, null);
+    else store.setAutomationError(a.id, dispatchNote, dispatchNote === null ? null : Date.now());
     log.info("automation session launched", { automationId: a.id, runId, sessionId: session.id, trigger: opts.trigger });
     return { runId, sessionId: session.id };
   } catch (err: unknown) {

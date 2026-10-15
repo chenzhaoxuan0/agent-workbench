@@ -9,6 +9,7 @@ import {
   Plus,
   History,
   Trash2,
+  AlarmClock,
 } from "lucide-react";
 import {
   STATUS_FILTERS,
@@ -23,6 +24,7 @@ import {
   type Weekday,
 } from "../core/automation.ts";
 import { useWorkbench } from "../store/useWorkbench.ts";
+import { useBacklog } from "../store/useBacklog.ts";
 import { AutomationDialog, type AutomationDialogPrefill } from "./AutomationDialog.tsx";
 import { cn } from "./cn.ts";
 
@@ -55,6 +57,8 @@ export function AutomationsPage() {
   const notice = useWorkbench((s) => s.automationNotice);
   const setNotice = useWorkbench((s) => s.setAutomationNotice);
   const refreshAutomations = useWorkbench((s) => s.refreshAutomations);
+  const quotaResume = useBacklog((s) => s.quotaResume);
+  const refreshBacklog = useBacklog((s) => s.refresh);
 
   const [filter, setFilter] = useState<StatusFilter>("all");
   const [dialog, setDialog] = useState<DialogState>(null);
@@ -67,6 +71,14 @@ export function AutomationsPage() {
     return () => clearInterval(timer);
   }, [refreshAutomations]);
 
+  // 续跑判定态跟着同一节奏刷新：它解释「为什么现在有/没有那条续跑任务」，
+  // 属于这个页面的信息，不该让用户跑到别处才知道。
+  useEffect(() => {
+    void refreshBacklog();
+    const timer = setInterval(() => void refreshBacklog(), 30_000);
+    return () => clearInterval(timer);
+  }, [refreshBacklog]);
+
   // 通知 5 秒自动消失
   useEffect(() => {
     if (notice === null) return;
@@ -74,10 +86,19 @@ export function AutomationsPage() {
     return () => clearTimeout(t);
   }, [notice, setNotice]);
 
-  const unitName = (id: string) => units.find((u) => u.id === id)?.name ?? "—";
+  // 自动排的续跑用合成单元（quota:<runtimeId>），units 里查不到 ——
+  // 回落到库里存的 unit_name，好过在卡片上显示一个「—」
+  const unitName = (id: string, fallback?: string) => units.find((u) => u.id === id)?.name ?? fallback ?? "—";
 
   // 口径 1：按 resolveStatusKind 分组，它就是卡片徽章的来源
   const visible = useMemo(() => filterByStatus(automations, filter), [automations, filter]);
+
+  // 续跑提示：只看启用中的执行器，且必须有「值得说一句」的事（排上了 / 有说明）
+  const resumeStates = useMemo(() => {
+    const qr = quotaResume;
+    if (qr === null || !qr.enabled) return [];
+    return qr.states.filter((s) => s.scheduledAutomationId !== null || s.note !== null);
+  }, [quotaResume]);
 
   return (
     <div className="h-full min-h-0 overflow-y-auto">
@@ -122,6 +143,32 @@ export function AutomationsPage() {
           </div>
         )}
 
+        {/* 用量续跑状态：只说「需要用户知道的事」。
+            没排的时候必须说清楚为什么没排 —— 静默不响会让人以为功能坏了。
+            disabled 的执行器不进这里：用户主动关掉的开关不该被反复念叨。 */}
+        {resumeStates.length > 0 && (
+          <div className="mb-4 space-y-1.5">
+            {resumeStates.map((s) => (
+              <div
+                key={s.runtimeId}
+                role="status"
+                className="flex items-start gap-2 rounded-btn bg-amber-500/10 px-3 py-2 text-body-sm text-amber-600"
+              >
+                <AlarmClock size={13} className="mt-0.5 shrink-0" />
+                <span className="min-w-0 break-words">
+                  <span className="font-medium">{s.runtimeId}</span> 用量已用尽
+                  {s.percent !== null && `（剩余 ${s.percent}%）`}
+                  {s.fireAt !== null
+                    ? ` · ${new Date(s.fireAt).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })} 自动发「继续」`
+                    : ""}
+                  {s.targetSessionId !== null && "到刚才中断的那个对话"}
+                  {s.note !== null && ` · ${s.note}`}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* 状态筛选 */}
         <div className="mb-4 flex flex-wrap items-center gap-2">
           <div className="ml-auto flex gap-1">
@@ -158,7 +205,7 @@ export function AutomationsPage() {
               <AutomationCard
                 key={a.id}
                 a={a}
-                unitName={unitName(a.unitId)}
+                unitName={unitName(a.unitId, a.unitName)}
                 onEdit={() => setDialog({ mode: "edit", automation: a })}
               />
             ))}

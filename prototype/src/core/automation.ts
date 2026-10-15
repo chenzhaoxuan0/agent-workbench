@@ -61,6 +61,9 @@ export interface Automation {
   readonly name: string;
   /** 关联的工作单元 id —— bot模式下自动化是「谁」在干活 */
   readonly unitId: string;
+  /** 单元名冗余存一份：合成单元（如用量续跑的 quota:<runtime>）在 units 里查不到，
+   *  只靠 unitId 去查会在界面上显示成「—」 */
+  readonly unitName?: string;
   readonly description?: string;
   /** 跑这条自动化的执行器 */
   readonly runtimeId: string;

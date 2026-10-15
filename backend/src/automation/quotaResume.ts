@@ -159,7 +159,7 @@ export class QuotaResumeWatcher {
         scheduledAutomationId: existing.id,
         fireAt: existing.nextRunAt,
         targetSessionId: existing.targetSessionId,
-        note: null,
+        note: existing.enabled ? null : "已停用 —— 本窗口不会再自动续跑",
         checkedAt: now,
       });
       return;
@@ -168,12 +168,19 @@ export class QuotaResumeWatcher {
     this.schedule(q.runtimeId, fireAt, cfg);
   }
 
-  /** 该执行器是否已经有一条「还没到点的续跑」 */
-  private findPending(runtimeId: string, now: number): { id: number; nextRunAt: number; targetSessionId: string | null } | null {
+  /**
+   * 该执行器在**本窗口**是否已经排过。
+   *
+   * 刻意不看 enabled：用户点「停用」表达的是「这一轮别再续跑」，
+   * 而谓词里带 enabled 的话，停用后下一跳就判定成「没排过」又排一条新的 ——
+   * 停用这个动作对自动排的续跑等于完全失效。
+   * 只看 next_run_at > now：窗口过去后旧行自然失效，下个窗口可以照常排。
+   */
+  private findPending(runtimeId: string, now: number): { id: number; nextRunAt: number; targetSessionId: string | null; enabled: boolean } | null {
     for (const a of this.deps.store.listAutomations()) {
       if (a.origin !== "quota_resume" || a.runtimeId !== runtimeId) continue;
-      if (!a.enabled || a.nextRunAt === null || a.nextRunAt <= now) continue;
-      return { id: a.id, nextRunAt: a.nextRunAt, targetSessionId: a.targetSessionId };
+      if (a.nextRunAt === null || a.nextRunAt <= now) continue;
+      return { id: a.id, nextRunAt: a.nextRunAt, targetSessionId: a.targetSessionId, enabled: a.enabled };
     }
     return null;
   }

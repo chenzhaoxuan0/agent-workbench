@@ -22,6 +22,7 @@ import { spawn } from "node:child_process";
 import WebSocket from "ws";
 import { Store } from "../src/store/db.ts";
 import { QuotaResumeWatcher } from "../src/automation/quotaResume.ts";
+import { AutomationScheduler } from "../src/automation/scheduler.ts";
 import type { QuotaProbe } from "../src/backlog/probe.ts";
 import type { BacklogConfig, QuotaHeadroom } from "../../prototype/src/core/backlog.ts";
 import { DEFAULT_BACKLOG_CONFIG } from "../../prototype/src/core/backlog.ts";
@@ -225,13 +226,142 @@ try {
   atThreshold.close();
   off.close();
 
-  // ---- 9. 真实 daemon 上 RPC 通 ------------------------------------------
+  // ---- 9. review 修复的回归护栏 ------------------------------------------
+  // 这四条都是 review 里查出来的真 bug，每条都要有「改回去就会被抓住」的断言。
+  console.log("\n【9】review 修复的回归护栏");
+  await regressionChecks(cfg);
+
+  // ---- 10. 真实 daemon 上 RPC 通 ------------------------------------------
   // 单测只覆盖到 watcher 这一层；界面上真正读的是 quotaResume.state 这个 RPC，
   // 注册漏了 / 字段名对不上，前面的全绿也救不了「界面上什么都不显示」。
-  console.log("\n【9】真实 daemon 上 quotaResume.state 回环");
+  console.log("\n【10】真实 daemon 上 quotaResume.state 回环");
   await liveRpcCheck();
 } finally {
-  rmSync(tmpHome, { recursive: true, force: true });
+  // 临时目录清不掉不该让测试结论作废（Windows 上 mockperm 起的子进程还占着 cwd，
+  // daemon 退出≠子进程退出）。失败就留给系统 temp 回收。
+  try {
+    rmSync(tmpHome, { recursive: true, force: true });
+  } catch (err: unknown) {
+    console.log(`  ⚠️ 临时目录清理失败（不影响结论）: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/** 四个 review 发现的回归护栏 */
+async function regressionChecks(cfg: BacklogConfig): Promise<void> {
+  const mk = () => {
+    const s = new Store(mkdtempSync(join(tmpdir(), "agent-workbench-smoke-qr-reg-")));
+    s.createAutomation({
+      unitId: "u1", unitName: "u", name: "老任务", runtimeId: "zcode", rootPath: "/tmp",
+      prompt: "p", model: null, mode: null, cron: "0 9 * * *", scheduleRule: null,
+      recurring: false, maxRuns: 1, nextRunAt: Date.now() + 60_000, launchMode: "headless",
+    });
+    return s;
+  };
+
+  // (1) 调度器：一次性任务认领后 enabled=0，派发失败的重试必须仍能执行
+  console.log("\n  [1] 一次性任务的重试不再被 enabled 判断挡住");
+  {
+    const store = mk();
+    const sched = new AutomationScheduler(store, async () => {
+      throw new Error("模拟派发失败（resume 拉不起 CLI）");
+    });
+    const row = store.listAutomations()[0]!;
+    // 认领：终态一次性 → next_run_at 清空 + enabled=0（这正是原先挡住重试的组合）
+    store.markAutomationFired(row.id, null, Date.now(), true);
+    const claimed = store.getAutomation(row.id)!.automation;
+    check("认领后确实 enabled=0（复现前提）", claimed.enabled === false && claimed.nextRunAt === null);
+
+    // 手动灌一次失败，模拟 dispatch 已写进退避表
+    (sched as unknown as { retries: Map<number, { attempts: number; at: number }> }).retries.set(row.id, {
+      attempts: 1,
+      at: Date.now() - 1, // 已到期
+    });
+    const fired: number[] = [];
+    (sched as unknown as { run: unknown }).run = async (a: { id: number }) => {
+      fired.push(a.id);
+      throw new Error("模拟派发失败");
+    };
+    (sched as unknown as { tickInner(): void }).tickInner();
+    await new Promise((r) => setTimeout(r, 50));
+    check("已停用的一次性任务仍会走重试", fired.includes(row.id), { fired });
+
+    // 没有退避条目时，确实不该再发（停用 = 别再排新的）
+    fired.length = 0;
+    const sched2 = new AutomationScheduler(store, async () => ({ runId: 1, sessionId: "s" }));
+    (sched2 as unknown as { run: unknown }).run = async (a: { id: number }) => {
+      fired.push(a.id);
+      return { runId: 1, sessionId: "s" };
+    };
+    (sched2 as unknown as { tickInner(): void }).tickInner();
+    check("没有退避条目时停用后不再发", fired.length === 0, { fired });
+    store.close();
+  }
+
+  // (2) 去重：停用续跑不再被重新排出来
+  console.log("\n  [2] 停用续跑不会被重新排出来");
+  {
+    const store = mk();
+    const resetsAt = Date.now() + 2 * 3_600_000;
+    const quota = {
+      zcode: { runtimeId: "zcode", subscribed: true, percent: 0, resetsAt, summary: "", source: "probe" as const, checkedAt: Date.now() },
+    };
+    const w = new QuotaResumeWatcher({ store, probe: fakeProbe(quota), getConfig: () => cfg });
+    const tick = () => (w as unknown as { tick(): Promise<void> }).tick();
+
+    await tick();
+    const first = store.listAutomations().find((a) => a.origin === "quota_resume");
+    check("先排出一条", first !== undefined);
+    if (first !== undefined) {
+      store.setAutomationEnabled(first.id, false); // 用户点停用
+      await tick();
+      await tick();
+      const all = store.listAutomations().filter((a) => a.origin === "quota_resume");
+      check("停用后不再新增（停用对续跑真的生效）", all.length === 1, { count: all.length });
+      const st = w.snapshot().find((s) => s.runtimeId === "zcode");
+      check("状态里说明「已停用」", st?.note === "已停用 —— 本窗口不会再自动续跑", { note: st?.note });
+    }
+    store.close();
+  }
+
+  // (3) 回退提示不会被同一调用的成功路径擦掉（用 store 语义直接验）
+  console.log("\n  [3] 回退提示不再被成功路径清空");
+  {
+    const store = mk();
+    const id = store.listAutomations()[0]!.id;
+    store.setAutomationError(id, "找不到可续接的对话，已改为新开会话", Date.now());
+    // 旧写法：成功路径无条件清空 → 提示消失
+    store.setAutomationError(id, null, null);
+    check("旧行为：清空会把提示抹掉（复现前提）", store.getAutomation(id)!.automation.lastError === null);
+    // 新写法：写 dispatchNote 而不是 null
+    const note = "找不到可续接的对话，已改为新开会话";
+    store.setAutomationError(id, note, Date.now());
+    check("新行为：提示留存", store.getAutomation(id)!.automation.lastError === note);
+    store.close();
+  }
+
+  // (4) 时间窗过期后旧行不再挡路（下个窗口能正常排）
+  console.log("\n  [4] 窗口过去后旧行不挡下一轮");
+  {
+    const store = mk();
+    const w = new QuotaResumeWatcher({
+      store,
+      probe: fakeProbe({
+        zcode: { runtimeId: "zcode", subscribed: true, percent: 0, resetsAt: Date.now() + 3_600_000, summary: "", source: "probe", checkedAt: Date.now() },
+      }),
+      getConfig: () => cfg,
+    });
+    await (w as unknown as { tick(): Promise<void> }).tick();
+    const row = store.listAutomations().find((a) => a.origin === "quota_resume");
+    check("排出一条", row !== undefined);
+    if (row !== undefined) {
+      // 把 next_run_at 推到过去（模拟这个窗口已经过去）
+      store.updateAutomation(row.id, { nextRunAt: Date.now() - 1000 });
+      await (w as unknown as { tick(): Promise<void> }).tick();
+      const all = store.listAutomations().filter((a) => a.origin === "quota_resume");
+      check("过期后能再排（新窗口不被旧行挡住）", all.length === 2, { count: all.length });
+    }
+    store.close();
+  }
 }
 
 async function liveRpcCheck(): Promise<void> {
@@ -318,6 +448,28 @@ async function liveRpcCheck(): Promise<void> {
       prompt: "x", dispatchTarget: "乱写的", delayMinutes: 60,
     });
     check("非法 dispatchTarget 被拒", typeof bad === "object" && bad !== null && "__rpcError" in bad, bad);
+
+    // Bug2 的真端到端护栏：existing_session 在「找不到可续接的对话」时退回新开会话，
+    // 那句回退说明必须活到派发成功之后 —— 旧写法会被同一次调用的成功路径清空。
+    // 这里临时 home 里一条会话都没有，resolveSendTarget 必然返回 null，走回退分支。
+    const fallback = (await rpc(port, "automation.create", {
+      unitId: "u-smoke", unitName: "冒烟", name: "回退说明护栏",
+      runtimeId: "mockperm", rootPath: tmpHome, prompt: "继续",
+      dispatchTarget: "existing_session", targetSessionId: null, delayMinutes: 600,
+    })) as { id?: number };
+    if (typeof fallback.id !== "number") {
+      check("回退说明护栏：建出任务", false, fallback);
+      return;
+    }
+    await rpc(port, "automation.runNow", { id: fallback.id });
+    await new Promise((r) => setTimeout(r, 1200));
+    const after = (await rpc(port, "automation.list", null)) as Array<{ id: number; lastError: string | null }>;
+    const row2 = Array.isArray(after) ? after.find((a) => a.id === fallback.id) : undefined;
+    check(
+      "回退说明没被成功路径擦掉（端到端）",
+      typeof row2?.lastError === "string" && row2.lastError.includes("已改为新开会话"),
+      { lastError: row2?.lastError },
+    );
   } finally {
     // Windows：kill() 只是发信号，进程真正退出前句柄还占着目录，
     // 这时 rmSync 必然 EPERM。等 exit 事件再删（并留兜底，别让清理失败吃掉测试结论）
