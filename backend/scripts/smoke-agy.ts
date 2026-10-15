@@ -30,8 +30,17 @@ if (probe.state.status !== "ready") {
   process.exit(1);
 }
 
-const syncedModels = await adapter.syncModels();
-check("models declared & synced", syncedModels.length > 0, { count: syncedModels.length, sample: syncedModels[0]?.id });
+const synced = await adapter.syncModels();
+check("models declared & synced", synced.models.length > 0, {
+  count: synced.models.length,
+  source: synced.source,
+  sample: synced.models[0]?.id,
+});
+check(
+  "models 来自实时探测（不是内置兜底）",
+  synced.source === "live",
+  { source: synced.source, reason: synced.reason },
+);
 
 const events: RuntimeEvent[] = [];
 console.log("  .. starting session with prompt: 'Respond with just the word pong'");

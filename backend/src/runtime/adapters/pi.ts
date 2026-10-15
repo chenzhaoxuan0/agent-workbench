@@ -31,6 +31,7 @@ import {
   type AdapterSink,
   type ExecutorAdapter,
   type ExecutorModelInfo,
+  type ModelSyncOutcome,
   type StartRequest,
 } from "./types.ts";
 import type {
@@ -175,7 +176,8 @@ export class PiAdapter implements ExecutorAdapter {
     return this._models;
   }
 
-  async syncModels(): Promise<readonly ExecutorModelInfo[]> {
+  async syncModels(): Promise<ModelSyncOutcome> {
+    const t0 = Date.now();
     try {
       const cmd = await resolveCommand("pi");
       const out = await execLines(cmd, ["--list-models"], 8000);
@@ -204,13 +206,14 @@ export class PiAdapter implements ExecutorAdapter {
       if (parsed.length > 0) {
         this._models = parsed;
         log.info("pi models synced dynamically", { count: parsed.length });
+        return { models: parsed, source: "live", elapsedMs: Date.now() - t0 };
       }
     } catch (err: unknown) {
-      log.debug("pi --list-models failed, using fallback models", {
-        error: err instanceof Error ? err.message : String(err),
-      });
+      const reason = err instanceof Error ? err.message : String(err);
+      log.debug("pi --list-models failed, using fallback models", { error: reason });
+      return { models: this._models, source: "static", reason, elapsedMs: Date.now() - t0 };
     }
-    return this._models;
+    return { models: this._models, source: "static", reason: "--list-models 输出未匹配到条目", elapsedMs: Date.now() - t0 };
   }
   readonly capabilities: RuntimeCapabilities = {
     resumeSession: true,

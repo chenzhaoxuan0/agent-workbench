@@ -20,15 +20,16 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { ChildProcess } from "node:child_process";
 import {
   type AdapterSession,
   type AdapterSink,
   type ExecutorAdapter,
   type ExecutorModelInfo,
+  type ModelSyncOutcome,
   type StartRequest,
 } from "./types.ts";
 import type {
@@ -762,11 +763,142 @@ function parseZcodeCommandFile(name: string, raw: string): Omit<NativeCommandInf
   };
 }
 
+// ---- 模型清单发现（读 CLI 自带目录，零用量）------------------------------------
+
+/** 内置目录里 providerRules 的一条（本机实际 providerId 形如 `account:<providerFamily>-<mode>`） */
+interface ZcodeProviderRule {
+  readonly providerId?: string;
+  readonly config?: {
+    readonly builtinModelIds?: readonly string[];
+    readonly visibility?: string;
+  };
+}
+
+/** 内置目录里 modelRules 的一条：按 modelMatch 正则命中，**先命中先算** */
+interface ZcodeModelRule {
+  readonly modelMatch?: string;
+  readonly config?: {
+    readonly properties?: {
+      readonly contextWindow?: number;
+      readonly inputFormat?: { readonly supportsImage?: boolean };
+    };
+    readonly optionSpecs?: {
+      readonly maxOutputTokens?: { readonly max?: number };
+      readonly reasoningLevel?: { readonly values?: readonly string[] };
+    };
+  };
+}
+
+interface ZcodeBuiltinCatalog {
+  readonly config?: {
+    // ⚠ 实测 0.16.9 里这两个是**对象**不是数组（`{templateRules, providerRules}` /
+    // `{modelRules, modelApiRules, …}`）。早期版本可能是数组，两种都认 ——
+    // 目录格式随 CLI 升级变过，这里写死一种等于给未来的自己埋雷。
+    readonly providerConfigRules?: ZcodeRuleGroup<ZcodeProviderRule> | readonly ZcodeRuleGroup<ZcodeProviderRule>[];
+    readonly modelConfigRules?: ZcodeRuleGroup<ZcodeModelRule> | readonly ZcodeRuleGroup<ZcodeModelRule>[];
+  };
+}
+
+interface ZcodeRuleGroup<T> {
+  readonly providerRules?: readonly T[];
+  readonly modelRules?: readonly T[];
+}
+
+/** 取规则组里的目标数组：对象或单元素数组两种形态都归一成一维数组 */
+function flattenRuleGroups<T>(
+  groups: ZcodeRuleGroup<T> | readonly ZcodeRuleGroup<T>[] | undefined,
+  key: "providerRules" | "modelRules",
+): readonly T[] {
+  if (groups === undefined || groups === null) return [];
+  const list = Array.isArray(groups) ? groups : [groups as ZcodeRuleGroup<T>];
+  const out: T[] = [];
+  for (const g of list) {
+    const arr = g[key];
+    if (Array.isArray(arr)) out.push(...arr);
+  }
+  return out;
+}
+
+/**
+ * 定位 zcode 自带的模型目录 `provider/zcode-builtin.json`。
+ *
+ * 它随 dist 一起发布在 CLI 主脚本旁边（`<dist>/provider/zcode-builtin.json`），
+ * 所以从 resolveCommand 解析出的脚本路径往上找即可，不猜全局安装路径。
+ */
+function locateZcodeCatalog(cmd: ResolvedCommand): string | null {
+  const script = [...cmd.prefixArgs].reverse().find((a) => /\.(?:c|m)?js$/i.test(a));
+  const bases: string[] = [];
+  if (script !== undefined) {
+    const dir = dirname(script);
+    bases.push(join(dir, "provider", "zcode-builtin.json"));
+    bases.push(join(dir, "..", "config", "provider", "zcode-builtin.json"));
+  }
+  const shim = cmd.prefixArgs[3];
+  if (shim !== undefined && shim.toLowerCase().endsWith(".cmd")) {
+    const dir = dirname(shim);
+    bases.push(join(dir, "node_modules", "zcode", "dist", "provider", "zcode-builtin.json"));
+  }
+  for (const p of bases) {
+    const abs = resolve(p);
+    if (existsSync(abs)) return abs;
+  }
+  return null;
+}
+
+/**
+ * 按规则集解析一个模型的属性。
+ *
+ * ## 语义是「按序合并、后者覆盖」，不是「首个命中即返回」
+ *
+ * 目录里的规则**互相重叠**，写成首个命中就返回会拿到错答案 —— 实测：
+ * `GLM-5.3` 同时命中 `[0] .*`（ctx=200000）、`[3] .*glm-5(?:…)?`（200000）、
+ * `[6] .*glm-5\.3(?:-flash)?…`（**1000000**）。首个命中给出 200000，是错的。
+ *
+ * 而且覆盖是**按字段**的：`GLM-5.3-Flash` 命中 `[6]`（有 contextWindow）与
+ * `[7]`（只带别的属性、不带 contextWindow），若后者整体替换前者，窗口就又丢了。
+ * 所以逐条 merge，只让该条**显式给出**的字段覆盖，未给出的字段保留原值。
+ */
+/** 合并后的模型属性（字段与 ZcodeModelRule.config 同形） */
+interface ZcodeResolvedModelConfig {
+  readonly contextWindow?: number;
+  readonly supportsImage?: boolean;
+  readonly maxOutput?: number;
+  readonly reasoningLevels?: readonly string[];
+}
+
+function resolveZcodeModelConfig(rules: readonly ZcodeModelRule[], model: string): ZcodeResolvedModelConfig {
+  let contextWindow: number | undefined;
+  let supportsImage: boolean | undefined;
+  let maxOutput: number | undefined;
+  let reasoningLevels: readonly string[] | undefined;
+  for (const rule of rules) {
+    const pattern = rule.modelMatch;
+    if (typeof pattern !== "string" || pattern === "") continue;
+    let matched: boolean;
+    try {
+      matched = new RegExp(pattern, "i").test(model);
+    } catch {
+      // 目录里的正则写坏了就当这条不匹配，不能让整个同步炸掉
+      continue;
+    }
+    if (!matched) continue;
+    const props = rule.config?.properties;
+    // 逐字段覆盖：该条没给的字段保持原值（undefined 不清空）
+    if (typeof props?.contextWindow === "number") contextWindow = props.contextWindow;
+    if (typeof props?.inputFormat?.supportsImage === "boolean") supportsImage = props.inputFormat.supportsImage;
+    const specs = rule.config?.optionSpecs;
+    if (typeof specs?.maxOutputTokens?.max === "number") maxOutput = specs.maxOutputTokens.max;
+    const values = specs?.reasoningLevel?.values;
+    if (Array.isArray(values)) reasoningLevels = values;
+  }
+  return { contextWindow, supportsImage, maxOutput, reasoningLevels };
+}
+
 export class ZcodeAdapter implements ExecutorAdapter {
   readonly id = "zcode";
   readonly displayName = "ZCode";
   readonly glyph = "Z";
-  readonly models: readonly ExecutorModelInfo[] = [
+  private _models: ExecutorModelInfo[] = [
     {
       id: "GLM-5.3-Flash" as ModelId,
       displayName: "GLM-5.3 Flash（默认）",
@@ -792,6 +924,109 @@ export class ZcodeAdapter implements ExecutorAdapter {
       multimodal: false,
     },
   ];
+
+  get models(): readonly ExecutorModelInfo[] {
+    return this._models;
+  }
+
+  /**
+   * 动态对齐模型清单 —— 读 CLI 自带的 `provider/zcode-builtin.json`，**零用量**（纯读本地文件）。
+   *
+   * ## 为什么是读文件而不是问 CLI
+   *
+   * zcode 0.16.9 的 app-server **没有模型列表接口**：实测 `provider/list`、`model/list`、
+   * `models/list`、`config/list`、`session/models` 全部 `-32601 Method not found`；
+   * CLI 也没有 `zcode models` 子命令（`quota` 只报用量）。但 dist 里那份 180KB 的
+   * 内置目录把该有的全给了：`providerRules[].builtinModelIds`（每个**订阅套餐**能用哪些模型）
+   * + `modelRules[]`（按正则给上下文窗口/输入格式/推理档位）。
+   *
+   * ## 为什么必须按套餐筛
+   *
+   * 目录里列的是**所有套餐**的并集。不同套餐给的模型完全不同 —— 实测本机
+   * `bigmodel-individual-coding-plan` 只给 `GLM-5.3` 与 `GLM-5.3-Flash`，而
+   * `GLM-5-Turbo` 属于 start-plan。把并集直接当清单，用户就会在下拉里选到一个
+   * 自己订阅里根本没有的模型，发起会话才失败。所以这里用 `zcode quota --json` 报的
+   * 真实 providerId 精确取那一条规则（该命令只读额度，不调模型）。
+   */
+  async syncModels(): Promise<ModelSyncOutcome> {
+    const t0 = Date.now();
+    try {
+      const cmd = await resolveCommand("zcode");
+      const catalogPath = locateZcodeCatalog(cmd);
+      if (catalogPath === null) {
+        return {
+          models: this._models,
+          source: "static",
+          reason: "未找到 zcode 内置模型目录 provider/zcode-builtin.json",
+          elapsedMs: Date.now() - t0,
+        };
+      }
+      const catalog = JSON.parse(readFileSync(catalogPath, "utf8")) as ZcodeBuiltinCatalog;
+      const providerRules = flattenRuleGroups(catalog.config?.providerConfigRules, "providerRules");
+      const modelRules = flattenRuleGroups(catalog.config?.modelConfigRules, "modelRules");
+      if (providerRules.length === 0 || modelRules.length === 0) {
+        return { models: this._models, source: "static", reason: "内置模型目录结构不识别", elapsedMs: Date.now() - t0 };
+      }
+
+      // 真实套餐：quota 报的是裸 id（bigmodel-individual-coding-plan），规则键带 account: 前缀
+      let providerId = CODING_PLAN_PROVIDER_ID;
+      let level: string | undefined;
+      try {
+        const q = await execLines(cmd, ["quota", "--json"], 12000);
+        const parsed = JSON.parse(q) as { readonly ok?: boolean; readonly providerId?: string; readonly level?: string };
+        if (parsed.ok === true && typeof parsed.providerId === "string" && parsed.providerId !== "") {
+          providerId = parsed.providerId.startsWith("account:") ? parsed.providerId : `account:${parsed.providerId}`;
+          level = parsed.level;
+        }
+      } catch (err: unknown) {
+        log.debug("zcode quota 取套餐失败，按已知的本机套餐兜底", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+
+      const rule = providerRules.find((r) => r.providerId === providerId);
+      const modelIds = rule?.config?.builtinModelIds ?? [];
+      if (modelIds.length === 0) {
+        return {
+          models: this._models,
+          source: "static",
+          reason: `内置目录里没有套餐 ${providerId} 的模型清单`,
+          elapsedMs: Date.now() - t0,
+        };
+      }
+      if (rule?.config?.visibility === "hidden") {
+        log.debug("zcode 当前套餐在内置目录里标为 hidden，仍按其模型清单展示", { providerId });
+      }
+
+      const prior = new Map<string, ExecutorModelInfo>(this._models.map((m) => [m.id as string, m]));
+      const out: ExecutorModelInfo[] = [];
+      for (const id of modelIds) {
+        const resolved = resolveZcodeModelConfig(modelRules, id);
+        const old = prior.get(id);
+        out.push({
+          id: id as ModelId,
+          displayName: level === undefined ? id : `${id}（${level} 档）`,
+          contextWindow: resolved.contextWindow ?? old?.contextWindow,
+          maxOutput: resolved.maxOutput ?? old?.maxOutput,
+          // 内置目录的推理档是 disabled/enabled 这种开关式，不是 low/medium/high。
+          // 照搬会让界面出现一个看不懂的二值下拉，不如不给。
+          reasoningLevels: old?.reasoningLevels,
+          defaultReasoningLevel: old?.defaultReasoningLevel,
+          multimodal: resolved.supportsImage ?? old?.multimodal,
+        });
+      }
+      if (out.length > 0) {
+        this._models = out;
+        log.info("zcode models synced from builtin catalog", { providerId, count: out.length });
+        return { models: out, source: "live", elapsedMs: Date.now() - t0 };
+      }
+      return { models: this._models, source: "static", reason: "套餐模型清单为空", elapsedMs: Date.now() - t0 };
+    } catch (err: unknown) {
+      const reason = err instanceof Error ? err.message : String(err);
+      log.debug("zcode 模型同步失败，用静态清单", { error: reason });
+      return { models: this._models, source: "static", reason, elapsedMs: Date.now() - t0 };
+    }
+  }
   // 能力声明跟传输状态走（docs/08 WP-4）：app-server = 真流式；print 回退 = 批量。
   // 注册表在 probe 前读到的快照是 app-server 档——probe 返回值才是权威。
   get capabilities(): RuntimeCapabilities {

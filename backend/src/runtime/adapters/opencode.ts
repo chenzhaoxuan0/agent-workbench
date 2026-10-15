@@ -37,6 +37,7 @@ import {
   type AdapterSink,
   type ExecutorAdapter,
   type ExecutorModelInfo,
+  type ModelSyncOutcome,
   type StartRequest,
 } from "./types.ts";
 import type {
@@ -226,8 +227,10 @@ export class OpencodeAdapter implements ExecutorAdapter {
   /** 已开 SSE 的 rootPath（opencode 按目录隔离实例：每个项目一条流，空 header 会路由到错误实例） */
   private readonly sseDirs = new Set<string>();
 
-  async syncModels(): Promise<readonly ExecutorModelInfo[]> {
+  async syncModels(): Promise<ModelSyncOutcome> {
     // 首选 serve 的 GET /model（结构化）；serve 起不来回落 CLI 解析（沿用旧实现）
+    const t0 = Date.now();
+    let serveReason: string | undefined;
     try {
       const base = await this.serve.baseUrl();
       const list = (await this.rest(base, "/model", "GET")).json as OpencodeModelEntry[];
@@ -249,10 +252,12 @@ export class OpencodeAdapter implements ExecutorAdapter {
       if (synced.length > 0) {
         this._models = synced;
         log.info("opencode models synced via serve /model", { count: synced.length });
-        return synced;
+        return { models: synced, source: "live", elapsedMs: Date.now() - t0 };
       }
+      serveReason = "serve /model 返回空清单";
     } catch (err: unknown) {
-      log.debug("opencode /model 同步失败，回落 CLI 解析", { error: err instanceof Error ? err.message : String(err) });
+      serveReason = err instanceof Error ? err.message : String(err);
+      log.debug("opencode /model 同步失败，回落 CLI 解析", { error: serveReason });
     }
     try {
       const cmd = await resolveCommand("opencode");
@@ -261,13 +266,14 @@ export class OpencodeAdapter implements ExecutorAdapter {
       if (parsed.length > 0) {
         this._models = parsed;
         log.info("opencode models synced dynamically", { count: parsed.length });
+        return { models: parsed, source: "live", elapsedMs: Date.now() - t0 };
       }
     } catch (err: unknown) {
-      log.debug("opencode models --verbose failed, using fallback models", {
-        error: err instanceof Error ? err.message : String(err),
-      });
+      const reason = err instanceof Error ? err.message : String(err);
+      log.debug("opencode models --verbose failed, using fallback models", { error: reason });
+      return { models: this._models, source: "static", reason, elapsedMs: Date.now() - t0 };
     }
-    return this._models;
+    return { models: this._models, source: "static", reason: serveReason ?? "models --verbose 输出未匹配到条目", elapsedMs: Date.now() - t0 };
   }
 
   readonly capabilities: RuntimeCapabilities = {

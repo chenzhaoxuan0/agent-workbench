@@ -11,6 +11,7 @@ import {
   KeyRound,
   Pencil,
   RefreshCw,
+  Sparkles,
   SlidersHorizontal,
   Terminal,
   Zap,
@@ -405,6 +406,9 @@ export function ProviderInstancesPanel() {
   const prefs = useWorkbench((s) => s.runtimePrefs);
   const setPref = useWorkbench((s) => s.setRuntimePref);
   const probeAll = useWorkbench((s) => s.probeAll);
+  const syncModelsAll = useWorkbench((s) => s.syncModelsAll);
+  const syncingModels = useWorkbench((s) => s.syncingModels);
+  const modelSync = useWorkbench((s) => s.modelSync);
 
   const [checkedLabel, setCheckedLabel] = useState("刚刚");
   const [checking, setChecking] = useState(false);
@@ -421,6 +425,19 @@ export function ProviderInstancesPanel() {
     setCheckedLabel("刚刚");
   };
 
+  /**
+   * 模型清单刷新 —— 与执行器探测**分成两个按钮**。
+   *
+   * 之前模型刷新寄生在执行器探测里（daemon 的 probe 顺带调 syncModels），两个后果：
+   * 一是点「探测」要等模型 CLI 冷启动才知道装没装；二是刷新结果只留在 daemon 内存里，
+   * 界面永远看不到，用户只能反复点然后怀疑「是不是我该重启一下」。
+   *
+   * 只读元数据探测，零 token 零计费 —— 可以放心按。
+   */
+  const refreshModels = async () => {
+    await syncModelsAll();
+  };
+
   // 打开设置页自动探测一轮：否则上次会话的探测结果（或从未探测）会一直挂着
   // 「已离线」，让人误以为执行器坏了。ref 防重：StrictMode 双挂载只探一次。
   const autoProbedRef = useRef(false);
@@ -432,6 +449,19 @@ export function ProviderInstancesPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  /** 每家的模型同步来源 → 一句话标签。static = 没刷到，用的是内置兜底清单 */
+  const syncLabel = useMemo(() => {
+    const m = new Map<string, { live: boolean; count: number; reason?: string }>();
+    for (const r of modelSync?.report ?? []) {
+      m.set(r.runtimeId, { live: r.source === "live", count: r.count, reason: r.reason });
+    }
+    return m;
+  }, [modelSync]);
+
+  const modelsSyncedLabel = modelSync === null ? "尚未刷新" : `已刷新 ${formatAgo(modelSync.at)}`;
+  const liveCount = (modelSync?.report ?? []).filter((r) => r.source === "live").length;
+  const totalCount = (modelSync?.report ?? []).length;
+
   if (!selected) {
     return <p className="p-4 text-body-sm text-ash">没有已注册的执行器。</p>;
   }
@@ -441,34 +471,63 @@ export function ProviderInstancesPanel() {
 
   return (
     <div className="space-y-3">
-      {/* 顶栏：检查状态 + 全量重新探测 */}
+      {/* 顶栏：两个独立按钮 —— 执行器探测 / 模型探测 */}
       <div className="flex items-center justify-between border-b border-line pb-2.5">
         <div>
           <h2 className="text-body-sm font-medium text-ink">执行器与可用模型</h2>
           <p className="text-caption text-ash">
-            工作台直接调度本地安装的 Agent CLI；模型列表由 CLI 动态探测对齐，可在此自定义主对话底栏的显示项。
+            工作台直接调度本地安装的 Agent CLI；模型清单单独探测，订阅里有新模型点一下就能刷出来。
           </p>
         </div>
         <div className="flex items-center gap-2">
-          {checking ? (
-            <span className="text-caption text-ash">正在探测本地 CLI…</span>
-          ) : (
-            <span className="text-caption text-ash">已探测 {checkedLabel}</span>
-          )}
+          <div className="flex flex-col items-end gap-0.5">
+            {syncingModels ? (
+              <span className="text-caption text-ash">正在读各执行器的模型清单…</span>
+            ) : (
+              <span className="text-caption text-ash">
+                {modelsSyncedLabel}
+                {totalCount > 0 && (
+                  <span className="tnum">
+                    {" "}
+                    · {liveCount}/{totalCount} 家实时
+                  </span>
+                )}
+              </span>
+            )}
+            <span className="text-[11px] text-ash/80">探测执行器：{checking ? "进行中…" : checkedLabel}</span>
+          </div>
           <button
             onClick={() => {
               setChecking(true);
               void refresh();
             }}
-            title="重新探测全部本地执行器与模型"
-            aria-label="重新探测全部本地执行器与模型"
-            className="flex items-center gap-1.5 rounded-btn border border-line bg-canvas px-2.5 py-1 text-caption font-medium text-graphite hover:bg-line-soft hover:text-ink transition"
+            disabled={checking}
+            title="重新检测各执行器的安装状态与版本（不碰模型清单）"
+            aria-label="重新探测执行器"
+            className="flex items-center gap-1.5 rounded-btn border border-line bg-canvas px-2.5 py-1 text-caption font-medium text-graphite hover:bg-line-soft hover:text-ink disabled:opacity-50 transition"
           >
             <RefreshCw size={12} className={cn(checking && "animate-spin text-teal")} />
-            重新探测
+            探测执行器
+          </button>
+          <button
+            onClick={() => void refreshModels()}
+            disabled={syncingModels}
+            title="重新读取各执行器的可用模型（模型 id / 名称 / 上下文窗口）。只读元数据，不发任何请求、不消耗用量。"
+            aria-label="重新探测模型"
+            className="flex items-center gap-1.5 rounded-btn border border-teal/40 bg-teal-tint/50 px-2.5 py-1 text-caption font-medium text-ink hover:bg-teal-tint disabled:opacity-50 transition"
+          >
+            <Sparkles size={12} className={cn(syncingModels && "animate-pulse text-teal")} />
+            探测模型
           </button>
         </div>
       </div>
+
+      {modelSync?.error !== undefined && (
+        <p className="flex items-center gap-1.5 rounded-card border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-caption text-amber-600">
+          <AlertCircle size={12} className="shrink-0" />
+          模型刷新失败：{modelSync.error}
+        </p>
+      )}
 
       <div className="grid grid-cols-[240px_minmax(0,1fr)] gap-4 items-start">
         {/* 左列：实例列表 */}
@@ -555,6 +614,38 @@ export function ProviderInstancesPanel() {
                         </span>
                       )}
                     </span>
+
+                    {/* 第三行：模型清单来源。这是「刷新有没有用」的唯一可见依据 ——
+                        没标的话，用户对着一个从没变过的列表只会怀疑是自己没刷新对 */}
+                    <span className="mt-1 flex items-center gap-1 text-[11px] text-ash min-w-0">
+                      <span className="tnum shrink-0">模型 {r.models.length}</span>
+                      {!r.modelsDiscoverable ? (
+                        <span
+                          className="shrink-0 text-ash/90"
+                          title="该执行器没有模型清单查询接口，只能用内置清单 —— 刷新对它无效"
+                        >
+                          · 静态清单
+                        </span>
+                      ) : modelSync === null ? (
+                        <span className="shrink-0">· 未刷新</span>
+                      ) : (
+                        syncLabel.get(r.id.replace(/^daemon:/, ""))?.live === true ? (
+                          <span className="shrink-0 text-teal" title="已从该执行器的 CLI / 本地目录实时读到">
+                            · 实时
+                          </span>
+                        ) : (
+                          <span
+                            className="shrink-0 text-amber-600"
+                            title={
+                              syncLabel.get(r.id.replace(/^daemon:/, ""))?.reason ??
+                              "没读到实时清单，当前显示的是内置兜底"
+                            }
+                          >
+                            · 兜底
+                          </span>
+                        )
+                      )}
+                    </span>
                   </span>
                   <InstanceSwitch
                     checked={isEnabled}
@@ -594,8 +685,19 @@ export function cleanDisplayName(name: string | undefined): string {
  * 优先提取核心版本号（如 v0.16.9, v0.20.0, v2026.10.2），
  * 剔除冗长的包名前缀或长括号说明，多余内容由右侧卡片与悬浮 title 显示。
  */
-export function formatShortVersion(rawVersion: string | undefined): string | null {
-  if (!rawVersion || rawVersion.trim() === "") return null;
+/** 距今多久（模型刷新时间的展示用）。超过 1 分钟就不再精确到秒 —— 没人关心 3 分钟前的刷新 */
+function formatAgo(at: number): string {
+  const s = Math.max(0, Math.round((Date.now() - at) / 1000));
+  if (s < 10) return "刚刚";
+  if (s < 60) return `${s} 秒前`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m} 分钟前`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h} 小时前`;
+  return `${Math.round(h / 24)} 天前`;
+}
+
+export function formatShortVersion(rawVersion: string | undefined): string | null {  if (!rawVersion || rawVersion.trim() === "") return null;
   const trimmed = rawVersion.trim();
   // 匹配类似 0.16.9 / v0.20.0 / 2026.10.2 / 0.2.0-rc.2 / 1.0.52
   const match = trimmed.match(/v?(\d+\.\d+(?:\.\d+)?(?:-[a-zA-Z0-9.]+)?)/);

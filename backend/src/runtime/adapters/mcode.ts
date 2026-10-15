@@ -35,8 +35,10 @@ import {
   type AdapterSink,
   type ExecutorAdapter,
   type ExecutorModelInfo,
+  type ModelSyncOutcome,
   type StartRequest,
 } from "./types.ts";
+import { pickAcpModelOptions, pickAcpSelectOption, queryAcpSessionNew } from "./acp-models.ts";
 import type {
   ModelId,
   ProbeResult,
@@ -138,6 +140,8 @@ interface McodeSession {
   readonly sessionId: SessionId;
   readonly rootPath: string;
   readonly mode: StartRequest["mode"];
+  /** 用户选的模型（工作台 ModelId = 模型基础名，ACP 侧真实值查 _modelValues） */
+  model: ModelId | null;
   /** mcode 的 ACP sessionId（"mvs_…"），session/new 后才有 */
   ref: string | null;
   sink: AdapterSink | null;
@@ -161,11 +165,51 @@ interface McodeSession {
   turn: TurnAcc | null;
 }
 
+/** `m:minimax:MiniMax-M3:v:thinking` → { base: "MiniMax-M3", variant: "thinking" }；认不出来返回 null */
+function parseMcodeModelValue(value: string): { base: string; variant: string } | null {
+  const parts = value.split(":");
+  if (parts.length >= 5 && parts[0] === "m" && parts[3] === "v") {
+    const base = parts[2];
+    if (base !== undefined && base !== "") return { base, variant: parts[4] ?? "" };
+  }
+  // 不认识的形态：整体当 id，宁可原样透传也不瞎猜（瞎猜出来的 id 会让 setConfigOption 静默失败）
+  return value === "" ? null : { base: value, variant: "" };
+}
+
+/**
+ * 组装一条模型记录。
+ *
+ * live 探测只给得出 id 和名称（ACP 的 configOption 不带窗口/档位），所以
+ * **能力字段从上一份清单按基础名继承** —— 首次同步时继承的是内置兜底清单里的值，
+ * 于是「实时 id + 已知窗口」两件事同时成立，而不是刷新一次把上下文窗口洗成未知。
+ */
+function toMcodeModelInfo(
+  base: string,
+  name: string,
+  parsed: { base: string; variant: string },
+  prior: Map<string, ExecutorModelInfo>,
+): ExecutorModelInfo {
+  const old = prior.get(parsed.base);
+  const hasThinking = parsed.variant === "thinking";
+  const levels = old?.reasoningLevels ?? (hasThinking ? ["medium"] : undefined);
+  return {
+    id: base as ModelId,
+    displayName: name,
+    contextWindow: old?.contextWindow,
+    maxOutput: old?.maxOutput,
+    reasoningLevels: levels === undefined ? undefined : [...levels],
+    defaultReasoningLevel: hasThinking ? (old?.defaultReasoningLevel ?? "medium") : old?.defaultReasoningLevel,
+    multimodal: old?.multimodal,
+    inputPerMTok: old?.inputPerMTok,
+    outputPerMTok: old?.outputPerMTok,
+  };
+}
+
 export class McodeAdapter implements ExecutorAdapter {
   readonly id = "mcode";
   readonly displayName = "MiniMax Code";
   readonly glyph = "M";
-  readonly models: readonly ExecutorModelInfo[] = [
+  private _models: ExecutorModelInfo[] = [
     // 真实 MiniMax Code 官方模型生态（对齐 ~/.minimax/config.yaml）
     {
       id: "MiniMax-M3.1-Flash-Preview" as ModelId,
@@ -199,6 +243,90 @@ export class McodeAdapter implements ExecutorAdapter {
       multimodal: false,
     },
   ];
+
+  get models(): readonly ExecutorModelInfo[] {
+    return this._models;
+  }
+
+  /**
+   * 工作台 ModelId（基础名，如 `MiniMax-M3`）→ ACP 侧真实 configOption 值
+   * （如 `m:minimax:MiniMax-M3:v:thinking`）。syncModels 时建表，start 时查表。
+   */
+  private readonly _modelValues = new Map<string, string>();
+
+  /**
+   * 动态对齐模型清单：`mcode acp` 的 session/new 把当前账号可选模型放在
+   * `configOptions[category=model]` 里，随建会话一起回，**不发 prompt → 零用量**。
+   *
+   * ## 为什么 id 用基础名而不是 ACP 的原始值
+   *
+   * ACP 的 value 是 `m:minimax:MiniMax-M3:v:thinking`，同一个模型带两个变体
+   * （`v:` 与 `v:thinking`）。直接把 value 当 id 会让界面出现「同一个模型两行」，
+   * 且和落盘在 bot.json 里的历史 modelHint 全对不上。所以对外统一暴露基础名，
+   * 变体折叠进 `reasoningLevels`，原始 value 存 _modelValues 供 start 时回填。
+   */
+  async syncModels(): Promise<ModelSyncOutcome> {
+    const t0 = Date.now();
+    try {
+      const cmd = await resolveCommand("mcode");
+      const result = await queryAcpSessionNew(cmd.file, cmd.prefixArgs, ["acp"], { timeoutMs: 30000 });
+      const { current, options } = pickAcpModelOptions(result);
+      if (options.length === 0) {
+        return { models: this._models, source: "static", reason: "session/new 未返回模型选单", elapsedMs: Date.now() - t0 };
+      }
+
+      // 推理档位来自另一个 configOption（thinkingEffort），比模型选单更权威
+      const efforts = pickAcpSelectOption(result, "thinkingEffort").options.map((o) => o.value);
+      const prior = new Map(this._models.map((m) => [m.id, m]));
+      const values = new Map<string, string>();
+      const out: ExecutorModelInfo[] = [];
+      for (const opt of options) {
+        const parsed = parseMcodeModelValue(opt.value);
+        if (parsed === null) continue;
+        const existing = values.get(parsed.base);
+        if (existing !== undefined && existing !== opt.value) {
+          // 同一基础名的另一个变体：当前会话正用的那个优先，否则保留先到的
+          if (current !== existing) continue;
+          const idx = out.findIndex((m) => m.id === parsed.base);
+          if (idx >= 0) {
+            out[idx] = toMcodeModelInfo(parsed.base, opt.name, parsed, prior);
+            values.set(parsed.base, opt.value);
+          }
+          continue;
+        }
+        values.set(parsed.base, opt.value);
+        const info = toMcodeModelInfo(parsed.base, opt.name, parsed, prior);
+        // 推理档位来自另一个 configOption（thinkingEffort），比静态清单里的猜测权威
+        out.push(
+          efforts.length > 0
+            ? {
+                ...info,
+                reasoningLevels: [...efforts],
+                defaultReasoningLevel: info.defaultReasoningLevel ?? efforts[0],
+              }
+            : info,
+        );
+      }
+      if (out.length > 0) {
+        this._models = out;
+        this._modelValues.clear();
+        for (const [k, v] of values) this._modelValues.set(k, v);
+        log.info("mcode models synced via ACP session/new", { count: out.length });
+        return { models: out, source: "live", elapsedMs: Date.now() - t0 };
+      }
+      return { models: this._models, source: "static", reason: "模型选单格式无法解析", elapsedMs: Date.now() - t0 };
+    } catch (err: unknown) {
+      const reason = err instanceof Error ? err.message : String(err);
+      log.debug("mcode 模型同步失败，用静态清单", { error: reason });
+      return { models: this._models, source: "static", reason, elapsedMs: Date.now() - t0 };
+    }
+  }
+
+  /** 把工作台 ModelId 还原成 ACP 的 configOption value（没同步过就返回 null） */
+  private acpModelValue(model: ModelId | null): string | null {
+    if (model === null) return null;
+    return this._modelValues.get(model) ?? null;
+  }
   readonly capabilities: RuntimeCapabilities = {
     resumeSession: true,
     fileDiff: true, // tool_call content 带 {type:"diff",path,oldText,newText}
@@ -243,6 +371,7 @@ export class McodeAdapter implements ExecutorAdapter {
       sessionId: `sess_${randomUUID()}` as SessionId,
       rootPath: req.rootPath,
       mode: req.mode ?? "build",
+      model: req.model,
       ref: null,
       sink,
       child: null,
@@ -284,6 +413,7 @@ export class McodeAdapter implements ExecutorAdapter {
       sessionId,
       rootPath,
       mode: "build",
+      model: null, // 续接的会话沿用它自己当时的模型，不重设
       ref, // session/load 时用；load 失败才回落 session/new
       sink,
       child: null,
@@ -522,6 +652,27 @@ export class McodeAdapter implements ExecutorAdapter {
   private async applyMode(state: McodeSession): Promise<void> {
     if (state.modeApplied || state.ref === null) return;
     state.modeApplied = true;
+
+    // 选中的模型必须真的下发，否则界面上「选了 A 实际跑 B」——比没有下拉更糟。
+    // 失败不挡轮（老版本可能没有该 configId），但要留痕。
+    const modelValue = this.acpModelValue(state.model);
+    if (modelValue !== null) {
+      try {
+        await this.request(state, "session/setConfigOption", {
+          sessionId: state.ref,
+          configId: "model",
+          value: modelValue,
+        });
+      } catch (err: unknown) {
+        log.debug("mcode applyModel failed (continuing with agent default)", {
+          model: state.model,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    } else if (state.model !== null) {
+      log.debug("mcode 选中模型无对应 ACP 值（未同步过模型清单？），沿用 agent 默认", { model: state.model });
+    }
+
     try {
       if (state.mode === "plan") {
         await this.request(state, "session/setMode", { sessionId: state.ref, modeId: "plan" });

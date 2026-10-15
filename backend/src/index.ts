@@ -2074,6 +2074,23 @@ registerMethod("adapter.probe", (params) => {
   if (typeof runtimeId !== "string") throw Object.assign(new Error("runtimeId is required"), { code: "bad_params" });
   return host.probe(runtimeId);
 });
+/**
+ * 模型清单刷新 —— 「重新探测模型」按钮的落点，与 adapter.probe **互不相干**。
+ *
+ * 返回值同时给两份：刷新报告（谁是真探到的、谁退回了兜底）+ 刷新后的完整适配器清单。
+ * 一次往返就能把界面更新到位，不必让前端再补一次 adapter.list（那个接口的 models
+ * 是注册时的快照，正是「后端刷了、界面不更新」这个老 bug 的根源）。
+ *
+ * 零用量：这条路径只跑各 CLI 的只读列清单命令或读本地目录文件，不发 prompt、不起 turn。
+ */
+registerMethod("adapter.models", async (params) => {
+  const { runtimeId } = (params ?? {}) as { runtimeId?: string };
+  if (runtimeId !== undefined && typeof runtimeId !== "string") {
+    throw Object.assign(new Error("runtimeId must be a string when provided"), { code: "bad_params" });
+  }
+  const report = await host.syncModels(runtimeId);
+  return { report, adapters: await host.listAdapters(false) };
+});
 registerMethod("adapter.commands", (params) => {
   const p = (params ?? {}) as { runtimeId?: string; rootPath?: string };
   if (typeof p.runtimeId !== "string" || typeof p.rootPath !== "string") {

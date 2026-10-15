@@ -32,6 +32,7 @@ import {
   type AdapterSink,
   type ExecutorAdapter,
   type ExecutorModelInfo,
+  type ModelSyncOutcome,
   type StartRequest,
 } from "./types.ts";
 import type {
@@ -132,8 +133,11 @@ export class GrokAdapter implements ExecutorAdapter {
     return this._models;
   }
 
-  async syncModels(): Promise<readonly ExecutorModelInfo[]> {
-    // 模型清单随 session/new 下发：起一个临时 ACP 进程问一次（8s 预算，失败保底静态清单）
+  async syncModels(): Promise<ModelSyncOutcome> {
+    // 模型清单随 session/new 下发：起一个临时 ACP 进程问一次（8s 预算，失败保底静态清单）。
+    // ⚠ 零用量：只发 initialize + session/new，读回包里已有的模型清单后立刻 kill，
+    // **不发 session/prompt** —— ACP 的 session/new 本身不消耗 token。
+    const t0 = Date.now();
     try {
       const harvested = await new Promise<ExecutorModelInfo[]>((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error("grok models 探测超时")), 12000);
@@ -192,11 +196,14 @@ export class GrokAdapter implements ExecutorAdapter {
       if (harvested.length > 0) {
         this._models = harvested;
         log.info("grok models synced via ACP session/new", { count: harvested.length });
+        return { models: harvested, source: "live", elapsedMs: Date.now() - t0 };
       }
     } catch (err: unknown) {
-      log.debug("grok 模型同步失败，用静态清单", { error: err instanceof Error ? err.message : String(err) });
+      const reason = err instanceof Error ? err.message : String(err);
+      log.debug("grok 模型同步失败，用静态清单", { error: reason });
+      return { models: this._models, source: "static", reason, elapsedMs: Date.now() - t0 };
     }
-    return this._models;
+    return { models: this._models, source: "static", reason: "ACP session/new 未返回可用模型", elapsedMs: Date.now() - t0 };
   }
 
   readonly capabilities: RuntimeCapabilities = {

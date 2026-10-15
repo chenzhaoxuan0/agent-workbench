@@ -180,8 +180,10 @@ import {
   type AdapterSink,
   type ExecutorAdapter,
   type ExecutorModelInfo,
+  type ModelSyncOutcome,
   type StartRequest,
 } from "./types.ts";
+import { pickAcpModelOptions, queryAcpSessionNew } from "./acp-models.ts";
 import type {
   ModelId,
   ProbeResult,
@@ -670,6 +672,38 @@ export class KimiAdapter implements ExecutorAdapter {
     if (parsed.length > 0) {
       this._models = parsed;
       log.info("kimi models synced from session/new", { count: parsed.length });
+    }
+  }
+
+  /**
+   * 主动刷新模型清单：起临时 ACP 进程问一次 session/new 拿 availableModels。
+   *
+   * 与 hermes 同理：原来只能被动等会话启动才更新，「订阅里新出了模型」在界面上
+   * 看不见。零用量 —— session/new 是建会话不是发消息。
+   */
+  async syncModels(): Promise<ModelSyncOutcome> {
+    const t0 = Date.now();
+    try {
+      const cmd = await resolveCommand("kimi");
+      const result = await queryAcpSessionNew(cmd.file, cmd.prefixArgs, ["acp"], { timeoutMs: 30000 });
+      const { options } = pickAcpModelOptions(result);
+      if (options.length === 0) {
+        return { models: this._models, source: "static", reason: "session/new 未返回模型清单", elapsedMs: Date.now() - t0 };
+      }
+      const parsed: ExecutorModelInfo[] = options.map((o) => ({
+        id: o.value as ModelId,
+        displayName: o.name,
+        contextWindow: o.contextWindow,
+        reasoningLevels: o.reasoningLevels,
+        multimodal: true,
+      }));
+      this._models = parsed;
+      log.info("kimi models synced via ACP session/new", { count: parsed.length });
+      return { models: parsed, source: "live", elapsedMs: Date.now() - t0 };
+    } catch (err: unknown) {
+      const reason = err instanceof Error ? err.message : String(err);
+      log.debug("kimi 模型同步失败，用静态清单", { error: reason });
+      return { models: this._models, source: "static", reason, elapsedMs: Date.now() - t0 };
     }
   }
 

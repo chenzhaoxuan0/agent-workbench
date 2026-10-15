@@ -19,11 +19,15 @@
 
 import { randomUUID } from "node:crypto";
 import type { Options, Query, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import {
   type AdapterSession,
   type AdapterSink,
   type ExecutorAdapter,
   type ExecutorModelInfo,
+  type ModelSyncOutcome,
   type StartRequest,
 } from "./types.ts";
 import type {
@@ -131,11 +135,32 @@ function toNativeCommands(list: readonly SdkSlashCommand[]): readonly NativeComm
   return out;
 }
 
+/** 别名 → 环境变量后缀。Claude Code 的四个档位别名，各网关可用环境变量改写其背后模型。 */
+const CLAUDE_MODEL_ALIASES: readonly (readonly [string, string])[] = [
+  ["fable", "FABLE"],
+  ["opus", "OPUS"],
+  ["sonnet", "SONNET"],
+  ["haiku", "HAIKU"],
+];
+
+/**
+ * 网关用模型名后缀标长上下文（`…[1M]`），这是本机网关与 zcode 内置目录共同的约定。
+ * 只认这个明确写法，不按模型名猜窗口 —— 猜出来的数字比「未知」更坏。
+ */
+function contextWindowFromSuffix(model: string): number | undefined {
+  const m = /\[(\d+(?:\.\d+)?)\s*([MKmk])\]$/.exec(model.trim());
+  if (m?.[1] === undefined || m[2] === undefined) return undefined;
+  const n = Number(m[1]);
+  if (!Number.isFinite(n) || n <= 0) return undefined;
+  const unit = m[2].toLowerCase();
+  return unit === "m" ? Math.round(n * 1_000_000) : Math.round(n * 1000);
+}
+
 export class ClaudeAdapter implements ExecutorAdapter {
   readonly id = "claude";
   readonly displayName = "Claude Code";
   readonly glyph = "C";
-  readonly models: readonly ExecutorModelInfo[] = [
+  private _models: ExecutorModelInfo[] = [
     {
       id: "sonnet" as ModelId,
       displayName: "Sonnet（网关别名）",
@@ -146,6 +171,98 @@ export class ClaudeAdapter implements ExecutorAdapter {
     { id: "opus" as ModelId, displayName: "Opus（网关别名）", contextWindow: 200000, multimodal: true },
     { id: "haiku" as ModelId, displayName: "Haiku（网关别名）", contextWindow: 200000, multimodal: false },
   ];
+
+  get models(): readonly ExecutorModelInfo[] {
+    return this._models;
+  }
+
+  /**
+   * 动态对齐模型清单 —— 读 `~/.claude/settings.json` 的别名映射，**零用量**（纯读本地文件）。
+   *
+   * ## 为什么读配置而不是问 CLI
+   *
+   * Claude Code 没有 `--list-models` 也没有 models 子命令（实测 0.6.x：`unknown option`）。
+   * 它「订阅里有哪些模型」这件事在配置里是**显式**的：
+   * `ANTHROPIC_DEFAULT_{FABLE,OPUS,SONNET,HAIKU}_MODEL` 各写一个别名背后的真实模型。
+   * 走第三方网关（本机就是 `ANTHROPIC_BASE_URL` 指向网关）时，官方那套 opus/sonnet
+   * 名字背后早就换成别家模型了 —— 只有读这份映射才知道真正会跑什么。
+   *
+   * ## id 用真实模型名而不是别名
+   *
+   * 四个别名背后常常是同一个模型（实测本机 opus/sonnet/fable 全指向同一款）。
+   * 按别名列会得到四行一模一样的条目，白占下拉框。这里按**解析后的真实模型去重**，
+   * id 用真实模型名（`--model` 同时接受别名和全名，两者都合法），别名收进 displayName。
+   */
+  async syncModels(): Promise<ModelSyncOutcome> {
+    const t0 = Date.now();
+    try {
+      const settingsPath = join(homedir(), ".claude", "settings.json");
+      if (!existsSync(settingsPath)) {
+        return { models: this._models, source: "static", reason: "未找到 ~/.claude/settings.json", elapsedMs: Date.now() - t0 };
+      }
+      const parsed = JSON.parse(readFileSync(settingsPath, "utf8")) as {
+        readonly env?: Readonly<Record<string, string>>;
+      };
+      const env = parsed.env ?? {};
+
+      // 别名 → 背后真实模型；再按真实模型归并别名
+      const byModel = new Map<string, { aliases: string[]; isDefault: boolean }>();
+      for (const [alias, suffix] of CLAUDE_MODEL_ALIASES) {
+        const target = env[`ANTHROPIC_DEFAULT_${suffix}_MODEL`];
+        if (typeof target !== "string" || target === "") continue;
+        const hit = byModel.get(target) ?? { aliases: [], isDefault: false };
+        hit.aliases.push(alias);
+        byModel.set(target, hit);
+      }
+      const fallback = env["ANTHROPIC_MODEL"];
+      if (typeof fallback === "string" && fallback !== "") {
+        const hit = byModel.get(fallback) ?? { aliases: [], isDefault: true };
+        hit.isDefault = true;
+        byModel.set(fallback, hit);
+      }
+      if (byModel.size === 0) {
+        return {
+          models: this._models,
+          source: "static",
+          reason: "settings.json 未配置任何 ANTHROPIC_*_MODEL 映射",
+          elapsedMs: Date.now() - t0,
+        };
+      }
+
+      // 上一份清单按别名继承能力字段（多模态等）：配置里查不到
+      const priorByAlias = new Map<string, ExecutorModelInfo>();
+      for (const m of this._models) priorByAlias.set(m.id, m);
+
+      const out: ExecutorModelInfo[] = [];
+      for (const [model, meta] of byModel) {
+        const prior = meta.aliases.map((a) => priorByAlias.get(a)).find((p): p is ExecutorModelInfo => p !== undefined);
+        const suffixHint = meta.aliases
+          .map((a) => env[`ANTHROPIC_DEFAULT_${a.toUpperCase()}_MODEL_NAME`])
+          .find((n): n is string => typeof n === "string" && n !== "");
+        const label = [model, meta.aliases.length > 0 ? `别名 ${meta.aliases.join("/")}` : "", meta.isDefault ? "默认" : "", suffixHint ?? ""]
+          .filter((s) => s !== "")
+          .join(" · ");
+        out.push({
+          id: model as ModelId,
+          displayName: label,
+          contextWindow: contextWindowFromSuffix(model) ?? prior?.contextWindow,
+          reasoningLevels: prior?.reasoningLevels,
+          defaultReasoningLevel: prior?.defaultReasoningLevel,
+          multimodal: prior?.multimodal,
+        });
+      }
+      // 默认模型排最前（它是不带 --model 时的实际取值）
+      out.sort((a, b) => Number(b.displayName.includes("默认")) - Number(a.displayName.includes("默认")));
+
+      this._models = out;
+      log.info("claude models synced from ~/.claude/settings.json", { count: out.length });
+      return { models: out, source: "live", elapsedMs: Date.now() - t0 };
+    } catch (err: unknown) {
+      const reason = err instanceof Error ? err.message : String(err);
+      log.debug("claude 模型同步失败，用静态清单", { error: reason });
+      return { models: this._models, source: "static", reason, elapsedMs: Date.now() - t0 };
+    }
+  }
 
   readonly capabilities: RuntimeCapabilities = {
     resumeSession: true,

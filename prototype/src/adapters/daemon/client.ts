@@ -42,9 +42,22 @@ export interface DaemonExecutorInfo {
   readonly displayName: string;
   readonly glyph: string;
   readonly models: readonly DaemonModelInfo[];
+  /** daemon 侧能否动态发现模型清单。false = 模型按钮对它无效，界面要标出来 */
+  readonly modelsDiscoverable?: boolean;
   readonly capabilities: RuntimeCapabilities;
   /** daemon 侧标了 = 这是测试夹具（mockperm），不是真的 CLI 工具 */
   readonly testOnly?: true;
+}
+
+/** 单家执行器的模型同步结果（daemon 返回） */
+export interface ModelSyncReport {
+  readonly runtimeId: string;
+  readonly displayName: string;
+  readonly count: number;
+  /** live = 真从 CLI/本地目录探到的；static = 退回内置兜底清单 */
+  readonly source: "live" | "static";
+  readonly reason?: string;
+  readonly elapsedMs: number;
 }
 
 /**
@@ -352,6 +365,30 @@ export async function listDaemonExecutors(endpoint: string = defaultDaemonEndpoi
   const client = DaemonClient.get(endpoint);
   const list = await client.rpc<DaemonExecutorInfo[]>("adapter.list", null, 10000);
   return list;
+}
+
+/**
+ * 重新探测模型清单（设置页「重新探测模型」按钮的落点）。
+ *
+ * 一次往返同时拿回**刷新报告**和**刷新后的完整执行器清单** —— 前端拿到就能就地
+ * 更新注册表，不必再补一次 `adapter.list`。后者正是老 bug 的根源：`adapter.list`
+ * 返回的是 daemon 注册时的清单快照，所以「后端刷新了、界面不更新」。
+ *
+ * 零用量：daemon 侧只跑各 CLI 的只读列清单命令或读本地目录文件，不发 prompt。
+ */
+export async function syncDaemonModels(
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<{
+  readonly report: readonly ModelSyncReport[];
+  readonly adapters: readonly DaemonExecutorInfo[];
+}> {
+  const client = DaemonClient.get(endpoint);
+  return await client.rpc<{ report: ModelSyncReport[]; adapters: DaemonExecutorInfo[] }>(
+    "adapter.models",
+    null,
+    // 各家 CLI 冷启动不便宜（grok 要起 ACP 进程、agy 35s 预算），给足预算
+    120000,
+  );
 }
 
 /**

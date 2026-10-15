@@ -45,6 +45,8 @@ export interface AdapterInfo {
   readonly displayName: string;
   readonly glyph: string;
   readonly models: readonly ExecutorModelInfo[];
+  /** 该执行器能否动态发现模型清单（没实现的界面要标出来，别让人对着静态清单空按刷新） */
+  readonly modelsDiscoverable: boolean;
   readonly capabilities: ExecutorAdapter["capabilities"];
   /**
    * 这是**测试夹具**，不是真的 CLI 工具。
@@ -54,6 +56,21 @@ export interface AdapterInfo {
    * 界面上必须标出来，否则用户会以为那是个没听说过的厂商工具。
    */
   readonly testOnly?: true;
+}
+
+/**
+ * 一次模型同步的单家结果（`adapter.models` 的返回项）。
+ *
+ * `source` 是这套机制的核心：不带它的话，「实时清单」和「内置兜底清单」在界面上
+ * 完全无法区分，用户看到列表没变只能猜是刷新失败还是本来就这样。
+ */
+export interface ModelSyncReport {
+  readonly runtimeId: string;
+  readonly displayName: string;
+  readonly count: number;
+  readonly source: "live" | "static";
+  readonly reason?: string;
+  readonly elapsedMs: number;
 }
 
 interface HostSession {
@@ -292,17 +309,46 @@ export class RuntimeHost {
    * 单家失败或超时不会抛错阻断其余适配器。
    */
   async syncAllModels(): Promise<void> {
-    await Promise.allSettled(
-      [...this.adapters.values()].map(async (a) => {
-        if (typeof a.syncModels === "function") {
-          try {
-            await a.syncModels();
-          } catch (err: unknown) {
-            log.warn("syncModels failed for adapter", { id: a.id, error: err instanceof Error ? err.message : String(err) });
-          }
+    await this.syncModels();
+  }
+
+  /**
+   * 刷新模型清单 —— 模型按钮的落点。
+   *
+   * @param runtimeId 只刷这一家；省略则刷全部（各家并发，互不阻塞）
+   *
+   * 返回每家的同步结果，**必须带来源标记**：界面要能区分「刚从 CLI 问到的实时清单」
+   * 和「实时源不可用、退回内置兜底」。两者长得一模一样，不标出来用户就没法判断
+   * 「我到底刷到没有」——而这正是模型列表最常见的困惑来源。
+   */
+  async syncModels(runtimeId?: string): Promise<readonly ModelSyncReport[]> {
+    const targets =
+      runtimeId === undefined
+        ? [...this.adapters.values()]
+        : [this.getAdapter(runtimeId)];
+
+    return await Promise.all(
+      targets.map(async (a): Promise<ModelSyncReport> => {
+        const base = { runtimeId: a.id, displayName: a.displayName, count: a.models.length };
+        if (typeof a.syncModels !== "function") {
+          return { ...base, source: "static", reason: "该执行器未实现动态模型探测", elapsedMs: 0 };
+        }
+        try {
+          const r = await a.syncModels();
+          return { ...base, count: r.models.length, source: r.source, reason: r.reason, elapsedMs: r.elapsedMs };
+        } catch (err: unknown) {
+          // 适配器里已经各自兜底过了，走到这里说明它连兜底都没兜住 —— 如实报，不假装成功
+          const reason = err instanceof Error ? err.message : String(err);
+          log.warn("syncModels 抛出未捕获异常", { id: a.id, error: reason });
+          return { ...base, source: "static", reason, elapsedMs: 0 };
         }
       }),
     );
+  }
+
+  /** 模型清单发现能力：有实现 syncModels 的才算「刷新得动」 */
+  private supportsModelDiscovery(a: ExecutorAdapter): boolean {
+    return typeof a.syncModels === "function";
   }
 
   async listAdapters(sync = false): Promise<AdapterInfo[]> {
@@ -314,6 +360,7 @@ export class RuntimeHost {
       displayName: a.displayName,
       glyph: a.glyph,
       models: [...a.models],
+      modelsDiscoverable: this.supportsModelDiscovery(a),
       capabilities: a.capabilities,
       // 只在真标了的时候才带这个键，省得每个执行器都多一个 testOnly: undefined
       ...(a.testOnly === true ? { testOnly: true as const } : {}),
@@ -366,13 +413,10 @@ export class RuntimeHost {
 
   async probe(runtimeId: string): Promise<ProbeResult> {
     const adapter = this.getAdapter(runtimeId);
-    if (typeof adapter.syncModels === "function") {
-      try {
-        await adapter.syncModels();
-      } catch (err: unknown) {
-        log.warn("syncModels failed during probe", { id: adapter.id, error: err instanceof Error ? err.message : String(err) });
-      }
-    }
+    // ⚠ 这里**故意不再**顺带刷新模型。探测只回答「装没装、能不能连、什么版本」；
+    // 顺带刷模型的历史包袱是：结果只留在 daemon 进程内存里回不到界面，
+    // 而探测按钮的耗时被模型拉长，用户点一下等半天还不知道在等什么。
+    // 两个职责各自独立，模型刷新走 adapter.models。
     return adapter.probe();
   }
 

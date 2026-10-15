@@ -47,8 +47,10 @@ import {
   type AdapterSink,
   type ExecutorAdapter,
   type ExecutorModelInfo,
+  type ModelSyncOutcome,
   type StartRequest,
 } from "./types.ts";
+import { pickAcpModelOptions, queryAcpSessionNew } from "./acp-models.ts";
 import type {
   ModelId,
   ProbeResult,
@@ -384,6 +386,41 @@ export class HermesAdapter implements ExecutorAdapter {
     if (parsed.length > 0) {
       this._models = parsed;
       log.info("hermes models synced from session/new", { count: parsed.length });
+    }
+  }
+
+  /**
+   * 主动刷新模型清单：起临时 ACP 进程问一次 session/new 拿 availableModels。
+   *
+   * 原来这条路径只能**被动**触发 —— 必须先有用户真的开一轮会话，模型清单才会更新。
+   * 于是「订阅里新出了个模型」在界面上永远看不见，直到你恰好用了一次。
+   * 改成可主动调用后，模型按钮就能独立于会话刷新。
+   *
+   * 零用量：session/new 是建会话不是发消息，不烧 token。
+   */
+  async syncModels(): Promise<ModelSyncOutcome> {
+    const t0 = Date.now();
+    try {
+      const cmd = await resolveCommand("hermes");
+      const result = await queryAcpSessionNew(cmd.file, cmd.prefixArgs, ["acp"], { timeoutMs: 30000 });
+      const { options } = pickAcpModelOptions(result);
+      if (options.length === 0) {
+        return { models: this._models, source: "static", reason: "session/new 未返回模型清单", elapsedMs: Date.now() - t0 };
+      }
+      const parsed: ExecutorModelInfo[] = options.map((o) => ({
+        id: o.value as ModelId,
+        displayName: o.name,
+        contextWindow: o.contextWindow ?? 1000000, // ACP 面不带 contextWindow；hermes 默认 1M 档
+        reasoningLevels: o.reasoningLevels,
+        multimodal: true,
+      }));
+      this._models = parsed;
+      log.info("hermes models synced via ACP session/new", { count: parsed.length });
+      return { models: parsed, source: "live", elapsedMs: Date.now() - t0 };
+    } catch (err: unknown) {
+      const reason = err instanceof Error ? err.message : String(err);
+      log.debug("hermes 模型同步失败，用静态清单", { error: reason });
+      return { models: this._models, source: "static", reason, elapsedMs: Date.now() - t0 };
     }
   }
 

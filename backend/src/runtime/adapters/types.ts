@@ -39,6 +39,25 @@ export interface ExecutorModelInfo {
   readonly outputPerMTok?: number;
 }
 
+/**
+ * 一次模型同步的结果。
+ *
+ * ## 为什么要带 source
+ *
+ * `models` 光秃秃一个数组没法回答用户最常问的那句「它到底刷新了没」——
+ * 拿回来的既可能是刚从 CLI 问到的实时清单，也可能是一份从没动过的静态兜底，
+ * 两者长得一模一样。所以同步必须**如实标记来源**，界面照实显示，别让人
+ * 对着一个没刷新的列表以为「刷新过了就是这样」。
+ */
+export interface ModelSyncOutcome {
+  readonly models: readonly ExecutorModelInfo[];
+  /** live = 这次真的问过 CLI；static = 实时源不可用，用的是内置兜底清单 */
+  readonly source: "live" | "static";
+  /** source=static 时的原因（超时/未安装/命令不存在…）。UI 拿它当 tooltip */
+  readonly reason?: string;
+  readonly elapsedMs: number;
+}
+
 export interface StartRequest {
   readonly unitId: UnitId;
   readonly unitName: string;
@@ -87,8 +106,18 @@ export interface ExecutorAdapter {
   /** 非空硬要求（契约原文）：空清单的执行器注册即拒 */
   readonly models: readonly ExecutorModelInfo[];
   readonly capabilities: RuntimeCapabilities;
-  /** 动态对齐/刷新模型清单与上下文参数（支持的 CLI 会实时查询，失败时保留 fallback） */
-  syncModels?(): Promise<readonly ExecutorModelInfo[]>;
+  /**
+   * 动态对齐/刷新模型清单与上下文参数（支持的 CLI 会实时查询，失败时保留 fallback）。
+   *
+   * ## 零用量硬约束
+   *
+   * 这条路径**绝不允许**发 prompt、起 turn 或调用任何会话创建接口去「试一下模型好不好用」。
+   * 合法实现只有两类：跑 CLI 的只读列清单命令，或读 CLI 自带的本地目录/配置文件。
+   * 违反这条约束 = 用户点一下刷新按钮就烧掉一次订阅额度，比不刷新还糟。
+   */
+  syncModels?(): Promise<ModelSyncOutcome>;
+  /** 该执行器是否实现了 syncModels（没实现的界面要标「无动态探测源」，别让人空按） */
+  readonly modelsDiscoverable?: boolean;
   /**
    * 列出该执行器在 rootPath 下的**原生斜杠命令**（可选能力）。
    *

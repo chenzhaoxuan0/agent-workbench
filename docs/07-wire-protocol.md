@@ -75,8 +75,9 @@
 |---|---|---|
 | `health` | **已实现** | params 无；result 同 `GET /healthz` 响应体 |
 | `daemon.stop` | **已实现** | ack `{ stopping: true }` 后优雅退出（退出码 0） |
-| `adapter.list` | **已实现** | 已注册执行器摘要 `{id, displayName, glyph, models[], capabilities}` |
-| `adapter.probe` | **已实现** | params `{runtimeId}`；result 为契约 ProbeResult |
+| `adapter.list` | **已实现** | 已注册执行器摘要 `{id, displayName, glyph, models[], modelsDiscoverable, capabilities}` |
+| `adapter.probe` | **已实现** | params `{runtimeId}`；result 为契约 ProbeResult。**只探测安装/认证/版本，不碰模型清单** |
+| `adapter.models` | **已实现** | params `{runtimeId?}`（省略 = 全部）；result `{report[], adapters[]}`。刷新模型清单，与 probe 互不相干。**零用量**：只跑各 CLI 只读列清单命令或读本地目录文件，不发 prompt、不起 turn |
 | `session.start` | **已实现** | params `{runtimeId, unitId, unitName?, rootPath, prompt, model?, mode?}`；result 为契约 Session；后续事件经事件流推送 |
 | `session.send` | **已实现** | params `{sessionId, text}`；多轮续聊 |
 | `session.cancel` | **已实现** | params `{sessionId}` |

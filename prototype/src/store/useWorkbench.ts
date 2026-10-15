@@ -11,6 +11,7 @@ import type {
 import type { RuntimeEvent } from "../core/events.ts";
 import {
   asModelId,
+  asRuntimeId,
   asSessionId,
   asUnitId,
   type Deliverable,
@@ -31,7 +32,11 @@ import {
   type ProviderModelPrefs,
 } from "../core/modelPrefs.ts";
 import { runtimeRegistry, type RuntimeEntry } from "../core/registry.ts";
-import type { ChannelIdentityMap, LarkBotIdentity } from "../adapters/daemon/client.ts";
+import type {
+  ChannelIdentityMap,
+  LarkBotIdentity,
+  ModelSyncReport,
+} from "../adapters/daemon/client.ts";
 
 // 注册执行器：见文件末尾的 bootstrap（优先本地 daemon，回退 mock）。
 // [BISECT] sync mock disabled
@@ -127,6 +132,18 @@ interface WorkbenchState {
   setRuntimePref: (id: string, patch: Partial<Omit<RuntimePref, "enabled">> & { enabled?: boolean }) => void;
   /** 全量重探测（T3 的 Checked 刷新） */
   probeAll: () => Promise<void>;
+  /**
+   * 重新探测模型清单（设置页第二个按钮）。
+   *
+   * 与 probeAll 分开是刻意的：执行器探测只回答「装没装、版本多少」，模型刷新只回答
+   * 「能用哪些模型、上下文窗口多少」。两者耗时差一个量级（后者要起 CLI），
+   * 混在一个按钮里用户既不知道在等什么，也说不清列表为什么变了。
+   */
+  syncModelsAll: () => Promise<void>;
+  /** 模型刷新进行中（按钮转圈 / 禁重复点） */
+  syncingModels: boolean;
+  /** 最近一次模型刷新的结果。report 里 source=static 的那些 = 没刷到，用的是内置兜底 */
+  modelSync: { readonly at: number; readonly report: readonly ModelSyncReport[]; readonly error?: string } | null;
   /**
    * `lark-cli profile → 那个 profile 是哪个飞书机器人`（应用名 + 头像）。
    *
@@ -308,6 +325,8 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
   activeRuntimeId: "zcode",
   // 注册表订阅到位后由下方 subscribe 补齐各执行器的默认模型
   runtimeModels: {},
+  syncingModels: false,
+  modelSync: null,
   modelPrefs: readPrefs(),
   modelPrefsVersion: 0,
   sessions: [],
@@ -762,6 +781,51 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
     await Promise.resolve();
   },
 
+  /**
+   * 重新探测模型清单 —— 与 probeAll **完全独立**的一条路。
+   *
+   * 原先模型刷新寄生在执行器探测里（daemon 的 probe 顺带调 syncModels），
+   * 刷新结果只留在 daemon 进程内存里回不到界面，于是「订阅里新出了模型」永远看不见。
+   * 现在一次 RPC 同时拿回报告和刷新后的完整清单，就地更新注册表，界面立刻变。
+   *
+   * 零用量：daemon 侧只跑只读列清单命令或读本地目录文件。
+   */
+  syncModelsAll: async () => {
+    if (get().syncingModels) return;
+    set({ syncingModels: true });
+    try {
+      const { syncDaemonModels } = await import("../adapters/daemon/client.ts");
+      const { report, adapters } = await syncDaemonModels();
+      const byId = new Map(adapters.map((a) => [a.id, a]));
+      const changed: string[] = [];
+      for (const entry of runtimeRegistry.list()) {
+        const bare = entry.id.replace(/^daemon:/, "");
+        const fresh = byId.get(bare) ?? byId.get(entry.id);
+        if (fresh === undefined) continue;
+        // daemon 侧模型 id 是裸 string，注册表要的是带品牌的 ModelId —— 在这里归一，
+        // 别让类型品牌泄漏成「每个调用点各写一遍 asModelId」
+        const raw = fresh.models.map((m) => ({ ...m, id: asModelId(m.id) }));
+        if (runtimeRegistry.updateModels(entry.id, raw, fresh.modelsDiscoverable !== false)) {
+          changed.push(fresh.displayName);
+        }
+      }
+      set({
+        modelSync: { at: Date.now(), report: [...report] },
+      });
+      // 已选模型的悬空校验交给 runtimeRegistry.subscribe —— updateModels 内部会 emit，
+      // 那里统一处理「选中的模型已不在新清单里」的回落，这里不再重复一份逻辑。
+      console.info(
+        `[workbench] 模型清单已刷新：${report.filter((r) => r.source === "live").length}/${report.length} 家来自实时探测` +
+          (changed.length > 0 ? `，更新：${changed.join("、")}` : "，清单无变化"),
+      );
+    } catch (err: unknown) {
+      console.info("[workbench] 模型刷新失败（执行器不可达？）", err instanceof Error ? err.message : err);
+      set({ modelSync: { at: Date.now(), report: [], error: err instanceof Error ? err.message : String(err) } });
+    } finally {
+      set({ syncingModels: false });
+    }
+  },
+
 }));
 
 
@@ -829,9 +893,19 @@ runtimeRegistry.subscribe((runtimes) => {
   // 给还没选过模型的执行器补上它的默认模型。
   // 缺了这一步，用户第一次打开模型下拉会看到「未选模型」，
   // 而模型在 StartSessionRequest 里是必填的 —— 就成了个死路。
+  //
+  // ⚠ 补默认值之外还要**校验**已选模型是否还在新清单里：刷新后执行器可能下线了
+  // 某个模型（换订阅、模型下线），选中的 id 变成空气 —— 界面上还显示着，
+  // 等用户点发送才失败。发现悬空就地改回默认，别把错误留到最后一刻。
+  const cur = useWorkbench.getState().runtimeModels;
   const patch: Record<string, ModelId> = {};
   for (const r of runtimes) {
-    if (useWorkbench.getState().runtimeModels[r.id] === undefined) patch[r.id] = r.defaultModel;
+    const selected = cur[r.id];
+    if (selected === undefined) {
+      patch[r.id] = r.defaultModel;
+    } else if (!r.models.some((m) => m.id === selected)) {
+      patch[r.id] = r.defaultModel;
+    }
   }
   if (Object.keys(patch).length > 0) {
     useWorkbench.setState((s) => ({ runtimeModels: { ...s.runtimeModels, ...patch } }));
@@ -932,6 +1006,11 @@ void (async () => {
   try {
     const factories = infos.map((info) => createDaemonFactory(info, defaultDaemonEndpoint()));
     runtimeRegistry.registerAll(factories);
+    // 登记各家能否动态发现模型：没实现的执行器，模型按钮对它无效 —— 界面要照实标，
+    // 否则用户对着一个从不变的列表反复按刷新，还以为是自己没刷新对
+    for (const info of infos) {
+      runtimeRegistry.markModelDiscovery(asRuntimeId(`daemon:${info.id}`), info.modelsDiscoverable !== false);
+    }
     runtimeRegistry.setState(factories[0]!.id, { status: "stopped" });
     useWorkbench.setState({ activeRuntimeId: factories[0]!.id });
     console.info(`[workbench] 已连接本地 daemon：${infos.map((i) => i.id).join(", ")}`);

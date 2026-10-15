@@ -24,6 +24,7 @@ import {
   type AdapterSink,
   type ExecutorAdapter,
   type ExecutorModelInfo,
+  type ModelSyncOutcome,
   type StartRequest,
 } from "./types.ts";
 import type {
@@ -311,11 +312,14 @@ export class OpenclawAdapter implements ExecutorAdapter {
   };
 
   /** 动态对齐/刷新模型清单：实时调用 `openclaw models list` */
-  async syncModels(): Promise<readonly ExecutorModelInfo[]> {
+  async syncModels(): Promise<ModelSyncOutcome> {
+    const t0 = Date.now();
     try {
       const cmd = await resolveOpenclawCommand();
       const stdout = await execLines(cmd, ["models", "list"], 30000);
-      if (!stdout || stdout.trim() === "") return this.models;
+      if (!stdout || stdout.trim() === "") {
+        return { models: this.models, source: "static", reason: "openclaw models list 无输出", elapsedMs: Date.now() - t0 };
+      }
 
       const list: ExecutorModelInfo[] = [];
       const lines = stdout.split(/\r?\n/);
@@ -358,14 +362,14 @@ export class OpenclawAdapter implements ExecutorAdapter {
       if (list.length > 0) {
         this.dynamicModels = list;
         log.info("openclaw models synced dynamically", { count: list.length });
-        return list;
+        return { models: list, source: "live", elapsedMs: Date.now() - t0 };
       }
     } catch (err: unknown) {
-      log.debug("openclaw models list failed, using fallback models", {
-        error: err instanceof Error ? err.message : String(err),
-      });
+      const reason = err instanceof Error ? err.message : String(err);
+      log.debug("openclaw models list failed, using fallback models", { error: reason });
+      return { models: this.models, source: "static", reason, elapsedMs: Date.now() - t0 };
     }
-    return this.models;
+    return { models: this.models, source: "static", reason: "models list 输出未匹配到条目", elapsedMs: Date.now() - t0 };
   }
 
   async probe(): Promise<ProbeResult> {

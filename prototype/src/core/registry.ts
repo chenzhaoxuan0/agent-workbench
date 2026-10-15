@@ -9,6 +9,7 @@
  */
 
 import type { AdapterFactory, ConnectionState, RuntimeAdapter } from "./adapter.ts";
+import type { RawExecutorModel } from "./adapter.ts";
 import { defaultModelFor, modelById, scaffoldModel, sortModels, type ModelId, type ModelSpec } from "./models.ts";
 import { asRuntimeId, type RuntimeId } from "./units.ts";
 
@@ -22,6 +23,8 @@ export interface RuntimeEntry {
   readonly transportKind: string;
   /** 该执行器能用的模型（按菜单序排好），UI 靠它建模型下拉 */
   readonly models: readonly ModelSpec[];
+  /** 该执行器能否动态发现模型清单。false = 刷新按钮对它无效，UI 要照实标 */
+  readonly modelsDiscoverable: boolean;
   /** 相对该执行器的默认模型。非 null —— 注册时就不允许空清单 */
   readonly defaultModel: ModelId;
   readonly state: ConnectionState;
@@ -34,6 +37,21 @@ export class RuntimeRegistry {
   readonly #adapters = new Map<RuntimeId, RuntimeAdapter>();
   readonly #states = new Map<RuntimeId, ConnectionState>();
   readonly #listeners = new Set<Listener>();
+  /**
+   * 模型清单覆盖层：执行器 id → 最近一次刷新拿到的 daemon 原生清单。
+   *
+   * ## 为什么需要这一层
+   *
+   * `AdapterFactory` 是**注册那一刻**的快照（`rawModels` 来自 bootstrap 那次
+   * `adapter.list`）。订阅里新出了模型，daemon 侧刷新了，工厂里的数组却还是旧的，
+   * 于是「刷新了但界面不变」。
+   *
+   * 工厂本身是 readonly 的（不想让它变成可变状态袋），所以刷新结果记在这里，
+   * `#entry` 优先读覆盖层。两边都能对上时（刷新回来的清单与注册快照一致）行为不变。
+   */
+  readonly #modelOverrides = new Map<RuntimeId, readonly RawExecutorModel[]>();
+  /** 该执行器能否动态发现模型清单（daemon 侧能力标记） */
+  readonly #modelDiscoverable = new Map<RuntimeId, boolean>();
 
   // ---- 注册 ----
 
@@ -59,9 +77,11 @@ export class RuntimeRegistry {
   #entry(id: RuntimeId): RuntimeEntry | null {
     const f = this.#factories.get(id);
     if (!f) return null;
+    const rawOverride = this.#modelOverrides.get(id);
+    const raw = rawOverride && rawOverride.length > 0 ? rawOverride : f.rawModels;
     let models: ModelSpec[];
-    if (f.rawModels && f.rawModels.length > 0) {
-      models = f.rawModels.map((m) => {
+    if (raw && raw.length > 0) {
+      models = raw.map((m) => {
         const known = modelById(m.id);
         if (known) {
           return {
@@ -97,6 +117,7 @@ export class RuntimeRegistry {
       testOnly: f.testOnly === true,
       transportKind: f.transport.kind,
       models,
+      modelsDiscoverable: this.#modelDiscoverable.get(id) ?? true,
       defaultModel: first,
       state: this.#states.get(id) ?? { status: "unprobed" },
     };
@@ -128,6 +149,30 @@ export class RuntimeRegistry {
   setState(id: RuntimeId, state: ConnectionState): void {
     this.#states.set(id, state);
     this.#emit();
+  }
+
+  // ---- 模型清单刷新 ----
+
+  /**
+   * 用刷新回来的 daemon 原生清单替换该执行器的模型清单，并标记它能否动态发现。
+   *
+   * @returns 是否真的换了清单（换了才 emit，避免空刷新把整个界面重渲一遍）
+   */
+  updateModels(id: RuntimeId, raw: readonly RawExecutorModel[], discoverable: boolean): boolean {
+    this.#modelDiscoverable.set(id, discoverable);
+    const prev = this.#modelOverrides.get(id);
+    // 清单没变就别 emit —— 每家执行器都刷新一次的话，全量 emit 会让下拉框反复重建
+    if (prev !== undefined && prev.length === raw.length && prev.every((m, i) => m.id === raw[i]?.id)) {
+      return false;
+    }
+    this.#modelOverrides.set(id, raw);
+    this.#emit();
+    return true;
+  }
+
+  /** bootstrap 阶段登记该执行器的发现能力（还没拿到模型清单，只标能力） */
+  markModelDiscovery(id: RuntimeId, discoverable: boolean): void {
+    this.#modelDiscoverable.set(id, discoverable);
   }
 
   // ---- 实例化 ----

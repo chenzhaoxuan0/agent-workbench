@@ -46,8 +46,10 @@ import {
   type AdapterSink,
   type ExecutorAdapter,
   type ExecutorModelInfo,
+  type ModelSyncOutcome,
   type StartRequest,
 } from "./types.ts";
+import { pickAcpModelOptions, pickAcpSelectOption, queryAcpSessionNew } from "./acp-models.ts";
 import type {
   ModelId,
   ProbeResult,
@@ -171,11 +173,28 @@ interface DshSession {
   turn: TurnAcc | null;
 }
 
+/** `["deepseek-official","deepseek-v4-flash"]` → `deepseek-official/deepseek-v4-flash`；认不出来返回 null */
+function parseDshModelValue(value: string): string | null {
+  if (value.startsWith("[")) {
+    try {
+      const arr = JSON.parse(value) as unknown;
+      if (Array.isArray(arr)) {
+        const parts = arr.filter((x): x is string => typeof x === "string" && x !== "");
+        if (parts.length > 0) return parts.join("/");
+      }
+    } catch {
+      return null;
+    }
+    return null;
+  }
+  return value === "" ? null : value;
+}
+
 export class DshAdapter implements ExecutorAdapter {
   readonly id = "dsh";
   readonly displayName = "DeepSeek Harness";
   readonly glyph = "D";
-  readonly models: readonly ExecutorModelInfo[] = [
+  private _models: ExecutorModelInfo[] = [
     // DeepSeek Harness 官方长程架构（ACP 管道直连官方端点，支持 1M 上下文调度）
     {
       id: "deepseek-official/deepseek-v4-flash" as ModelId,
@@ -198,6 +217,64 @@ export class DshAdapter implements ExecutorAdapter {
       multimodal: false,
     },
   ];
+
+  get models(): readonly ExecutorModelInfo[] {
+    return this._models;
+  }
+
+  /**
+   * 动态对齐模型清单：`dsh acp`（= `dsh --profile acp`）的 session/new 把可选模型
+   * 放在 `configOptions[category=model]` 里随建会话一起回，**不发 prompt → 零用量**。
+   *
+   * ## dsh 的两个特别之处
+   *
+   * 1. 选项是**分组**的（`[{group:"deepseek-official", options:[...]}, {group:"deepseek-account",…}]`），
+   *    拍平后同名的 `deepseek-flash` 会在两个分组各出现一次 —— 按 id 去重，
+   *    保留先到的（官方组在前）。
+   * 2. value 是个 **JSON 串** `["deepseek-official","deepseek-v4-flash"]`，
+   *    还原成工作台惯用的 `provider/model` 形态。
+   */
+  async syncModels(): Promise<ModelSyncOutcome> {
+    const t0 = Date.now();
+    try {
+      const launch = await resolveDshLaunch();
+      const result = await queryAcpSessionNew(launch.file, launch.prefixArgs, ["acp"], {
+        timeoutMs: 30000,
+        env: launch.env,
+      });
+      const { options } = pickAcpModelOptions(result);
+      if (options.length === 0) {
+        return { models: this._models, source: "static", reason: "session/new 未返回模型选单", elapsedMs: Date.now() - t0 };
+      }
+      const efforts = pickAcpSelectOption(result, "reasoning_effort").options.map((o) => o.value);
+      const prior = new Map<string, ExecutorModelInfo>(this._models.map((m) => [m.id as string, m]));
+      const out: ExecutorModelInfo[] = [];
+      for (const opt of options) {
+        const id = parseDshModelValue(opt.value);
+        if (id === null || out.some((m) => m.id === id)) continue;
+        const old = prior.get(id);
+        out.push({
+          id: id as ModelId,
+          displayName: opt.name,
+          // 上下文窗口 ACP 不报（只有模型选单），按基础名从上一份清单继承，
+          // 首次同步继承的是内置兜底 —— 刷新一次不会把窗口洗成未知
+          contextWindow: old?.contextWindow,
+          reasoningLevels: old?.reasoningLevels ?? (efforts.length > 0 ? efforts : undefined),
+          multimodal: old?.multimodal,
+        });
+      }
+      if (out.length > 0) {
+        this._models = out;
+        log.info("dsh models synced via ACP session/new", { count: out.length });
+        return { models: out, source: "live", elapsedMs: Date.now() - t0 };
+      }
+      return { models: this._models, source: "static", reason: "模型选单格式无法解析", elapsedMs: Date.now() - t0 };
+    } catch (err: unknown) {
+      const reason = err instanceof Error ? err.message : String(err);
+      log.debug("dsh 模型同步失败，用静态清单", { error: reason });
+      return { models: this._models, source: "static", reason, elapsedMs: Date.now() - t0 };
+    }
+  }
   readonly capabilities: RuntimeCapabilities = {
     resumeSession: true, // session/resume（要求 cwd 与原会话一致）
     fileDiff: false, // tool_call_update 只有 content 包装块，无结构化 diff（源码走查）

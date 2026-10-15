@@ -31,6 +31,7 @@ import {
   type AdapterSink,
   type ExecutorAdapter,
   type ExecutorModelInfo,
+  type ModelSyncOutcome,
   type StartRequest,
 } from "./types.ts";
 import type {
@@ -321,7 +322,8 @@ export class CodexAdapter implements ExecutorAdapter {
     return this._models;
   }
 
-  async syncModels(): Promise<readonly ExecutorModelInfo[]> {
+  async syncModels(): Promise<ModelSyncOutcome> {
+    const t0 = Date.now();
     try {
       const cmd = await resolveCommand("codex");
       const out = await execLines(cmd, ["debug", "models"], 8000);
@@ -356,14 +358,16 @@ export class CodexAdapter implements ExecutorAdapter {
         if (synced.length > 0) {
           this._models = synced;
           log.info("codex models synced dynamically", { count: synced.length });
+          return { models: synced, source: "live", elapsedMs: Date.now() - t0 };
         }
       }
     } catch (err: unknown) {
-      log.debug("codex debug models failed, using fallback models", {
-        error: err instanceof Error ? err.message : String(err),
-      });
+      const reason = err instanceof Error ? err.message : String(err);
+      log.debug("codex debug models failed, using fallback models", { error: reason });
+      return { models: this._models, source: "static", reason, elapsedMs: Date.now() - t0 };
     }
-    return this._models;
+    // 命令跑通了但没给出可用条目 —— 也是「没刷到」，不能谎报 live
+    return { models: this._models, source: "static", reason: "codex debug models 未返回可用条目", elapsedMs: Date.now() - t0 };
   }
 
   readonly capabilities: RuntimeCapabilities = {
