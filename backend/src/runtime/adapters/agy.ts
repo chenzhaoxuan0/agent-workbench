@@ -305,6 +305,11 @@ export class AgyAdapter implements ExecutorAdapter {
 
 
   private readonly commandCache = new Map<string, { commands: readonly NativeCommandInfo[]; at: number }>();
+
+  /** 技能停用/恢复后由 host 调用：清空命令清单内存缓存，防止旧世界被原样返回并重新落盘 */
+  invalidateCommands(): void {
+    this.commandCache.clear();
+  }
   private static readonly COMMAND_TTL_MS = 10 * 60 * 1000;
 
   /**

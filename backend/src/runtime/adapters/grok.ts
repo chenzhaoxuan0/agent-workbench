@@ -45,7 +45,7 @@ import type {
 } from "../../contract.ts";
 import { execLines, resolveCommand } from "../exec.ts";
 import { builtinCommandsFor } from "./builtin-catalogs.ts";
-import { readStandardAgentsWorkspace } from "./discovery.ts";
+import { hasDotSegment, readStandardAgentsWorkspace } from "./discovery.ts";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -233,6 +233,11 @@ export class GrokAdapter implements ExecutorAdapter {
 
   /** 命令缓存（内置目录 + 文件级发现合并结果；TTL 同其他适配器口径） */
   private readonly commandCache = new Map<string, { commands: readonly NativeCommandInfo[]; at: number }>();
+
+  /** 技能停用/恢复后由 host 调用：清空命令清单内存缓存，防止旧世界被原样返回并重新落盘 */
+  invalidateCommands(): void {
+    this.commandCache.clear();
+  }
   private static readonly COMMAND_TTL_MS = 10 * 60 * 1000;
 
   /**
@@ -680,7 +685,7 @@ function readGrokAgents(rootPath: string): readonly NativeCommandInfo[] {
     if (!existsSync(dir)) continue;
     let files: string[];
     try {
-      files = readdirSync(dir, { recursive: true }).filter((f) => String(f).toLowerCase().endsWith(".md")).map((f) => join(dir, String(f)));
+      files = readdirSync(dir, { recursive: true }).filter((f) => String(f).toLowerCase().endsWith(".md") && !hasDotSegment(String(f))).map((f) => join(dir, String(f)));
     } catch {
       continue;
     }

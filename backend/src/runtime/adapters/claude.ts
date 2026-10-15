@@ -40,7 +40,7 @@ import type {
 } from "../../contract.ts";
 import { execLines, resolveCommand } from "../exec.ts";
 import { builtinCommandsFor } from "./builtin-catalogs.ts";
-import { readStandardAgentsWorkspace } from "./discovery.ts";
+import { hasDotSegment, readStandardAgentsWorkspace } from "./discovery.ts";
 import { log } from "../../log.ts";
 
 // ---- SDK 消息宽松视图（顶层判别用 SDK 类型，字段按宽容记录取） -------------------
@@ -191,7 +191,7 @@ function readSkillDirs(dir: string): Array<{ name: string; description?: string 
 function readMarkdownDefs(dir: string): Array<{ name: string; description?: string; argumentHint?: string }> {
   let files: string[];
   try {
-    files = readdirSync(dir, { recursive: true }).filter((f) => String(f).toLowerCase().endsWith(".md")).map((f) => join(dir, String(f)));
+    files = readdirSync(dir, { recursive: true }).filter((f) => String(f).toLowerCase().endsWith(".md") && !hasDotSegment(String(f))).map((f) => join(dir, String(f)));
   } catch {
     return [];
   }
@@ -414,6 +414,11 @@ export class ClaudeAdapter implements ExecutorAdapter {
 
   /** 原生命令缓存：rootPath → { 命令清单, 拉取时间 }。TTL 内菜单直接命中。 */
   private readonly commandCache = new Map<string, { commands: readonly NativeCommandInfo[]; at: number }>();
+
+  /** 技能停用/恢复后由 host 调用：清空命令清单内存缓存，防止旧世界被原样返回并重新落盘 */
+  invalidateCommands(): void {
+    this.commandCache.clear();
+  }
   /** listCommands 在途去重（菜单抖动/多视图并发打开时只拉一次） */
   private readonly commandFetches = new Map<string, Promise<readonly NativeCommandInfo[]>>();
   private static readonly COMMAND_TTL_MS = 10 * 60 * 1000;

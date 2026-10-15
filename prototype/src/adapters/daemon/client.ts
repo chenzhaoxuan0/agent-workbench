@@ -24,6 +24,13 @@ import type { RuntimeEvent } from "../../core/events.ts";
 import { ruleFromCron, type Automation, type AutomationRun, type ScheduleRule } from "../../core/automation.ts";
 import type { BacklogConfig, BacklogItem, BacklogProposal, BacklogSignal, BacklogStateSnapshot, QuotaHeadroom, QuotaResumeConfig } from "../../core/backlog.ts";
 import type { WorkUnit } from "../../core/units.ts";
+import type { SkillsInventory } from "../../core/skills.ts";
+import type {
+  McpCopyOutcome,
+  McpInventory,
+  McpMutationResult,
+  McpServerEntry,
+} from "../../core/mcp.ts";
 
 export interface DaemonModelInfo {
   readonly id: string;
@@ -406,6 +413,108 @@ export async function fetchExecutorCommands(
 ): Promise<readonly NativeCommandInfo[]> {
   const client = DaemonClient.get(endpoint);
   return client.rpc<readonly NativeCommandInfo[]>("adapter.commands", { runtimeId, rootPath }, 30000);
+}
+
+/**
+ * 拉技能清单（设置页「技能」分区）：按技能源分组、每组带读取它的执行器。
+ * rootPath 可选 —— 给了才纳入项目级技能源（公共库之外的项目目录跟随工作区）。
+ */
+export async function fetchSkillsInventory(
+  rootPath?: string,
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<SkillsInventory> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<SkillsInventory>("skills.inventory", { rootPath: rootPath ?? null }, 15000);
+}
+
+/**
+ * 技能停用/恢复 —— daemon 在技能源内把文件夹搬进/搬出 `.disabled/`。
+ * 成功返回受影响的执行器 id（调用方据此清本地命令缓存）。
+ */
+export async function setSkillDisabledRpc(
+  sourceDir: string,
+  dirName: string,
+  disabled: boolean,
+  rootPath?: string,
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<{ ok: boolean; readers: string[] }> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<{ ok: boolean; readers: string[] }>(
+    "skills.setDisabled",
+    { sourceDir, dirName, disabled, rootPath: rootPath ?? null },
+    15000,
+  );
+}
+
+// ---- MCP 管理（ADR 0004：expectedSha 是乐观锁指纹，冲突时 daemon 报 code=conflict）----
+
+/** 全量清单：五家文件状态 + 按名聚行的服务实例（live + 停用库） */
+export async function mcpInventoryRpc(endpoint: string = defaultDaemonEndpoint()): Promise<McpInventory> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<McpInventory>("mcp.inventory", null, 15000);
+}
+
+/** 新增/编辑一条（回执带变更后文件全文 —— 「落盘后的内容」预览） */
+export async function mcpSaveRpc(
+  executorId: string,
+  entry: McpServerEntry,
+  expectedSha?: string,
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<McpMutationResult> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<McpMutationResult>("mcp.save", { executorId, entry, expectedSha: expectedSha ?? null }, 15000);
+}
+
+/** 删除：toVault=true（默认）移入停用库；false 彻底删除 */
+export async function mcpRemoveRpc(
+  executorId: string,
+  name: string,
+  opts: { toVault?: boolean; expectedSha?: string } = {},
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<McpMutationResult> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<McpMutationResult>(
+    "mcp.remove",
+    { executorId, name, toVault: opts.toVault !== false, expectedSha: opts.expectedSha ?? null },
+    15000,
+  );
+}
+
+/** 启停：false = live→停用库；true = 停用库→live */
+export async function mcpSetEnabledRpc(
+  executorId: string,
+  name: string,
+  enabled: boolean,
+  expectedSha?: string,
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<McpMutationResult> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<McpMutationResult>(
+    "mcp.setEnabled",
+    { executorId, name, enabled, expectedSha: expectedSha ?? null },
+    15000,
+  );
+}
+
+/** 跨执行器复制（读源 → 转换 → 写目标；同名跳过不覆盖），逐目标独立成败 */
+export async function mcpCopyRpc(
+  fromExecutorId: string,
+  name: string,
+  toExecutorIds: readonly string[],
+  expectedShas: Record<string, string> = {},
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<McpCopyOutcome[]> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<McpCopyOutcome[]>("mcp.copy", { fromExecutorId, name, toExecutorIds, expectedShas }, 30000);
+}
+
+/** 读配置文件原文（真相源就是它） */
+export async function mcpReadFileRpc(
+  executorId: string,
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<{ text: string; sha: string } | { missing: true }> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<{ text: string; sha: string } | { missing: true }>("mcp.read", { executorId }, 15000);
 }
 
 /**

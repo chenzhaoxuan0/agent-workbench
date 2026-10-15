@@ -32,6 +32,7 @@ import {
   type ModelSyncOutcome,
   type StartRequest,
 } from "./types.ts";
+import { hasDotSegment } from "./discovery.ts";
 import type {
   ModelId,
   NativeCommandInfo,
@@ -714,7 +715,7 @@ function readZcodeCustomCommands(rootPath: string): readonly NativeCommandInfo[]
       const dir = join(base, ns, "commands");
       let files: string[];
       try {
-        files = readdirSync(dir, { recursive: true }).filter((f) => String(f).toLowerCase().endsWith(".md")).map((f) => join(dir, String(f)));
+        files = readdirSync(dir, { recursive: true }).filter((f) => String(f).toLowerCase().endsWith(".md") && !hasDotSegment(String(f))).map((f) => join(dir, String(f)));
       } catch {
         continue;
       }
@@ -823,7 +824,7 @@ function readZcodeAgents(rootPath: string): readonly NativeCommandInfo[] {
       const dir = join(base, ns, "agents");
       let files: string[];
       try {
-        files = readdirSync(dir, { recursive: true }).filter((f) => String(f).toLowerCase().endsWith(".md")).map((f) => join(dir, String(f)));
+        files = readdirSync(dir, { recursive: true }).filter((f) => String(f).toLowerCase().endsWith(".md") && !hasDotSegment(String(f))).map((f) => join(dir, String(f)));
       } catch {
         continue;
       }
@@ -1140,6 +1141,11 @@ export class ZcodeAdapter implements ExecutorAdapter {
 
   /** 原生命令缓存（readPresentation 结果；TTL 与其他适配器同口径） */
   private readonly commandCache = new Map<string, { commands: readonly NativeCommandInfo[]; at: number }>();
+
+  /** 技能停用/恢复后由 host 调用：清空命令清单内存缓存，防止旧世界被原样返回并重新落盘 */
+  invalidateCommands(): void {
+    this.commandCache.clear();
+  }
   private static readonly COMMAND_TTL_MS = 10 * 60 * 1000;
 
   /**

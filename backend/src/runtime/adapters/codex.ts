@@ -394,6 +394,11 @@ export class CodexAdapter implements ExecutorAdapter {
 
   /** 原生命令缓存（prompts 目录读盘结果，TTL 同 claude 口径） */
   private readonly commandCache = new Map<string, { commands: readonly NativeCommandInfo[]; at: number }>();
+
+  /** 技能停用/恢复后由 host 调用：清空命令清单内存缓存，防止旧世界被原样返回并重新落盘 */
+  invalidateCommands(): void {
+    this.commandCache.clear();
+  }
   private static readonly COMMAND_TTL_MS = 10 * 60 * 1000;
 
   /** 自定义提示词、技能与子智能体清单（菜单数据）。读盘很便宜，TTL 只是为了少抖。 */

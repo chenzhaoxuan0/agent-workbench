@@ -9,9 +9,11 @@ import {
   History,
   ImagePlus,
   Keyboard,
+  Layers,
   Minus,
   Package,
   Palette,
+  Plug,
   Plus,
   Settings2,
   Shield,
@@ -29,6 +31,8 @@ import type { WorkUnit } from "../core/units.ts";
 import { useMemorySettings } from "../store/useMemoryPrefs.ts";
 import { getGuardianConfigRpc, readProjectMemory, runDigestDryRun, setGuardianConfigRpc, type DigestResult } from "../store/useMemoryPanel.ts";
 import { ProviderInstancesPanel } from "./ProviderInstancesPanel.tsx";
+import { SkillsSettingsSection } from "./SkillsSettingsSection.tsx";
+import { McpSettingsSection } from "./McpSettingsSection.tsx";
 import { ImageSettingsSection } from "./ImageSettingsSection.tsx";
 import { AppearanceSettingsSection } from "./AppearanceSettingsSection.tsx";
 import { useHistoryPrefs } from "../store/useHistoryPrefs.ts";
@@ -47,6 +51,8 @@ const ICONS: Record<string, typeof Settings2> = {
   shield: Shield,
   chart: ChartBar,
   history: History,
+  layers: Layers,
+  plug: Plug,
 };
 
 /** 居中内容列：max-w-5xl 给予多列执行器与模型管理更充裕的呼吸空间 */
@@ -227,6 +233,10 @@ function SectionBody({ section }: { section: SettingsSectionDef }) {
       return <ShortcutsSection />;
     case "history":
       return <HistorySettingsSection />;
+    case "skills":
+      return <SkillsSettingsSection />;
+    case "mcp":
+      return <McpSettingsSection />;
     case "memory":
       return <MemorySettingsSection />;
     case "image":

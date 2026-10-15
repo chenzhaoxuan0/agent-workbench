@@ -502,6 +502,8 @@ export class RuntimeHost {
   /** key = `${adapter.id}|${rootPath}` → 清单 + 拉取时间 */
   private readonly commandsDisk = new Map<string, { commands: readonly NativeCommandInfo[]; at: number }>();
   private commandsDiskLoaded = false;
+  /** 命令缓存世代：invalidateCommandsFor 递增；在途后台刷新完成时校验，防止旧清单回写 */
+  private commandsEpoch = 0;
   /** 在途后台刷新（同 key 只跑一个） */
   private readonly commandsRefreshes = new Set<string>();
 
@@ -525,8 +527,43 @@ export class RuntimeHost {
     // 瞬时失败常表现为空清单：非空旧缓存不该被一次空结果抹掉
     if (commands.length === 0 && this.commandsDisk.has(key)) return;
     this.commandsDisk.set(key, { commands, at: Date.now() });
+    this.persistCommandsDisk();
+  }
+
+  /**
+   * 失效给定执行器的全部命令缓存（所有 rootPath）—— 技能停用/恢复后调用：
+   * 磁盘清单马上作废（否则最长 10 分钟内斜杠菜单还显示已停用的技能），
+   * 下一次 listCommands 自然重扫。
+   *
+   * 三件事缺一不可：
+   * 1. 先载盘 —— daemon 刚重启、还没人打开过菜单时，盘上旧数据尚未进内存，
+   *    不先 loadCommandsDiskOnce 的话失效是 no-op，旧数据随后照样命中；
+   * 2. 清适配器内存缓存 —— 适配器各自有 10 分钟 TTL，不清会把旧清单原样
+   *    返回并**重新落盘**，失效等于没做；
+   * 3. epoch++ —— 在途的后台刷新（stale-while-revalidate）完成时要校验
+   *    epoch 没变才允许落盘，否则停用前一瞬间启动的刷新会把旧世界写回来。
+   */
+  invalidateCommandsFor(runtimeIds: readonly string[]): void {
+    this.loadCommandsDiskOnce();
+    this.commandsEpoch++;
+    const ids = new Set(runtimeIds);
+    let changed = false;
+    for (const key of [...this.commandsDisk.keys()]) {
+      const id = key.split("|")[0] ?? "";
+      if (ids.has(id)) {
+        this.commandsDisk.delete(key);
+        changed = true;
+      }
+    }
+    if (changed) this.persistCommandsDisk();
+    for (const adapter of this.adapters.values()) {
+      if (ids.has(adapter.id)) adapter.invalidateCommands?.();
+    }
+  }
+
+  private persistCommandsDisk(): void {
     try {
-      const out: Record<string, { commands: readonly NativeCommandInfo[]; at: number }> = {};
+      const out: Record<string, { commands?: unknown; at?: number }> = {};
       for (const [k, v] of this.commandsDisk) out[k] = v;
       const path = join(this.homeDir, "commands-cache.json");
       const tmp = `${path}.tmp`;
@@ -537,11 +574,12 @@ export class RuntimeHost {
     }
   }
 
-  /** 后台刷新（stale-while-revalidate 的后台半边）：成功才覆写磁盘 */
+  /** 后台刷新（stale-while-revalidate 的后台半边）：成功才覆写磁盘；跨世代结果丢弃 */
   private async refreshCommands(adapter: ExecutorAdapter, rootPath: string, key: string): Promise<void> {
     if (adapter.listCommands === undefined) return;
     if (this.commandsRefreshes.has(key)) return;
     this.commandsRefreshes.add(key);
+    const epochAtStart = this.commandsEpoch;
     try {
       const commands = await Promise.race([
         adapter.listCommands(rootPath),
@@ -549,6 +587,8 @@ export class RuntimeHost {
           setTimeout(() => resolve([]), LIST_COMMANDS_HARD_TIMEOUT_MS).unref?.(),
         ),
       ]);
+      // 刷新期间发生过缓存失效（技能停用/恢复）→ 这份结果属于旧世界，丢弃
+      if (epochAtStart !== this.commandsEpoch) return;
       this.putCommandsDisk(key, [...commands]);
     } catch (err: unknown) {
       log.debug("commands-cache 后台刷新失败（保留旧清单）", { key, error: err instanceof Error ? err.message : String(err) });

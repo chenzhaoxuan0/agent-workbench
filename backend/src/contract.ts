@@ -37,6 +37,24 @@ export type {
   WorkUnit,
 } from "../../prototype/src/core/units.ts";
 
+export type {
+  SkillEntryInfo,
+  SkillReaderRef,
+  SkillSourceGroupInfo,
+  SkillsInventory,
+} from "../../prototype/src/core/skills.ts";
+
+export type {
+  McpCopyOutcome,
+  McpFileStatus,
+  McpInventory,
+  McpMutationResult,
+  McpServerEntry,
+  McpServerInstance,
+  McpServerRow,
+  McpTransport,
+} from "../../prototype/src/core/mcp.ts";
+
 import { isShellTool as coreIsShellTool } from "../../prototype/src/core/events.ts";
 
 /**

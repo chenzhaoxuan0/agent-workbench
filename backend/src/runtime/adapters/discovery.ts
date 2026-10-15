@@ -140,6 +140,16 @@ export function discoverSkillsInDir(
 }
 
 /**
+ * 递归扫描的点目录防线：相对路径中任何一段以 `.` 开头（如 `.disabled/x.md`、
+ * `.git/hooks.md`）都不算内容。技能的停用载体 `.disabled/` 只进 skills 目录，
+ * 但 agents/commands 目录同样递归 —— 不滤点目录的话，被搬进 `.disabled/` 的
+ * 子智能体会从这里泄漏回斜杠菜单（技能侧一层扫描天然不命中，此处的两层防线）。
+ */
+export function hasDotSegment(relPath: string): boolean {
+  return relPath.split(/[\\/]/).some((seg) => seg.startsWith("."));
+}
+
+/**
  * 扫描指定目录下的子智能体（`*.md` 规范）。
  * 过滤掉 primary 模式（主对话形态），只保留子智能体形态。
  */
@@ -152,7 +162,7 @@ export function discoverAgentsInDir(
   try {
     files = readdirSync(dir, { recursive: true })
       .map((f) => String(f))
-      .filter((f) => f.toLowerCase().endsWith(".md"));
+      .filter((f) => f.toLowerCase().endsWith(".md") && !hasDotSegment(f));
   } catch {
     return [];
   }
@@ -199,7 +209,7 @@ export function discoverCommandsInDir(
   try {
     files = readdirSync(dir, { recursive: true })
       .map((f) => String(f))
-      .filter((f) => f.toLowerCase().endsWith(".md"));
+      .filter((f) => f.toLowerCase().endsWith(".md") && !hasDotSegment(f));
   } catch {
     return [];
   }

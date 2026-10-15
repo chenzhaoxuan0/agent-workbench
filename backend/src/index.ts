@@ -39,7 +39,17 @@ import { AgyAdapter } from "./runtime/adapters/agy.ts";
 import { GrokAdapter } from "./runtime/adapters/grok.ts";
 import { CursorAdapter } from "./runtime/adapters/cursor.ts";
 import { OpenclawAdapter } from "./runtime/adapters/openclaw.ts";
-
+import { buildSkillsInventory, setSkillDisabled } from "./skills/inventory.ts";
+import {
+  mcpCopy,
+  mcpInventory,
+  mcpReadFile,
+  mcpRemove,
+  mcpSave,
+  mcpSetEnabled,
+  sanitizeEntry,
+  type McpServiceDeps,
+} from "./mcpadmin/service.ts";
 import { TerminalManager } from "./terminal/terminals.ts";
 import { Store } from "./store/db.ts";
 import { listNativeSessions, readNativeSession } from "./history/index.ts";
@@ -1613,6 +1623,7 @@ registerMethod("history.native.detail", async (params) => {
   return { detail };
 });
 
+
 // ---- 待办 / GTD 方法（backlog.*）----------------------------------------------
 //
 // 确认门语义：backlog.proposal.confirm / backlog.runNow 都是**用户动作**（弹窗按钮、
@@ -1806,6 +1817,8 @@ registerMethod("backlog.consolidate.run", (params) => {
   const p = (params ?? {}) as { force?: boolean };
   return requireEngine().consolidate(p.force !== false);
 });
+
+
 
 // ---- 记忆方法（docs/10）-----------------------------------------------------
 //
@@ -2209,6 +2222,83 @@ registerMethod("adapter.commands", (params) => {
   return host.listCommands(p.runtimeId, p.rootPath);
 });
 
+/**
+ * 技能清单（设置页「技能」分区）—— 按技能源分组返回全部技能（含已停用），
+ * 每组带「读取该源的执行器」作影响范围提示。rootPath 可选：给了才纳入项目级源。
+ */
+registerMethod("skills.inventory", async (params) => {
+  const p = (params ?? {}) as { rootPath?: string };
+  const rootPath = typeof p.rootPath === "string" && p.rootPath.trim() !== "" ? p.rootPath : undefined;
+  const adapters = await host.listAdapters(false);
+  const names = new Map(adapters.map((a) => [a.id, a.displayName]));
+  return buildSkillsInventory(rootPath, (id) => names.get(id) ?? id);
+});
+
+/**
+ * 技能停用/恢复 —— 在已知技能源内把文件夹搬进/搬出 `.disabled/`。
+ * 原生配置文件是唯一真相源：搬完即生效（发现层与 ZCode 原生都不扫点目录），
+ * 这里只补一件事——立刻失效受影响执行器的命令缓存，别让斜杠菜单显示旧世界。
+ */
+registerMethod("skills.setDisabled", (params) => {
+  const p = (params ?? {}) as { sourceDir?: string; dirName?: string; disabled?: boolean; rootPath?: string };
+  if (typeof p.sourceDir !== "string" || typeof p.dirName !== "string" || typeof p.disabled !== "boolean") {
+    throw Object.assign(new Error("sourceDir, dirName and disabled are required"), { code: "bad_params" });
+  }
+  const rootPath = typeof p.rootPath === "string" && p.rootPath.trim() !== "" ? p.rootPath : undefined;
+  const result = setSkillDisabled(p.sourceDir, p.dirName, p.disabled, rootPath);
+  host.invalidateCommandsFor(result.readers);
+  return { ok: true, readers: result.readers };
+});
+
+// ---- MCP 管理（ADR 0004：原生配置文件是唯一真相源，这里只做外科手术式读写） ----
+
+const mcpDeps: McpServiceDeps = { configHome: os.homedir(), stateHome: config.homeDir };
+
+registerMethod("mcp.inventory", () => mcpInventory(mcpDeps));
+
+registerMethod("mcp.save", (params) => {
+  const p = (params ?? {}) as { executorId?: string; entry?: unknown; expectedSha?: string };
+  if (typeof p.executorId !== "string") throw Object.assign(new Error("executorId is required"), { code: "bad_params" });
+  const entry = sanitizeEntry(p.entry);
+  const expectedSha = typeof p.expectedSha === "string" && p.expectedSha !== "" ? p.expectedSha : undefined;
+  return mcpSave(mcpDeps, p.executorId, entry, expectedSha);
+});
+
+registerMethod("mcp.remove", (params) => {
+  const p = (params ?? {}) as { executorId?: string; name?: string; toVault?: boolean; expectedSha?: string };
+  if (typeof p.executorId !== "string" || typeof p.name !== "string") {
+    throw Object.assign(new Error("executorId and name are required"), { code: "bad_params" });
+  }
+  const expectedSha = typeof p.expectedSha === "string" && p.expectedSha !== "" ? p.expectedSha : undefined;
+  return mcpRemove(mcpDeps, p.executorId, p.name, { toVault: p.toVault !== false, expectedSha });
+});
+
+registerMethod("mcp.setEnabled", (params) => {
+  const p = (params ?? {}) as { executorId?: string; name?: string; enabled?: boolean; expectedSha?: string };
+  if (typeof p.executorId !== "string" || typeof p.name !== "string" || typeof p.enabled !== "boolean") {
+    throw Object.assign(new Error("executorId, name and enabled are required"), { code: "bad_params" });
+  }
+  const expectedSha = typeof p.expectedSha === "string" && p.expectedSha !== "" ? p.expectedSha : undefined;
+  return mcpSetEnabled(mcpDeps, p.executorId, p.name, p.enabled, expectedSha);
+});
+
+registerMethod("mcp.copy", (params) => {
+  const p = (params ?? {}) as {
+    fromExecutorId?: string; name?: string; toExecutorIds?: unknown; expectedShas?: Record<string, string>;
+  };
+  if (typeof p.fromExecutorId !== "string" || typeof p.name !== "string" || !Array.isArray(p.toExecutorIds)) {
+    throw Object.assign(new Error("fromExecutorId, name and toExecutorIds are required"), { code: "bad_params" });
+  }
+  const targets = p.toExecutorIds.filter((x): x is string => typeof x === "string");
+  const expectedShas = p.expectedShas !== null && typeof p.expectedShas === "object" ? p.expectedShas : {};
+  return mcpCopy(mcpDeps, p.fromExecutorId, p.name, targets, expectedShas);
+});
+
+registerMethod("mcp.read", (params) => {
+  const p = (params ?? {}) as { executorId?: string };
+  if (typeof p.executorId !== "string") throw Object.assign(new Error("executorId is required"), { code: "bad_params" });
+  return mcpReadFile(mcpDeps, p.executorId);
+});
 registerMethod("session.start", (params) => {
   // params 在协议里是可选的（wsd 的信封声明 params?: unknown）——
   // 缺了要当 bad_params 报，不能 `params as {...}` 后直接读属性（TypeError → internal）

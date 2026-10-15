@@ -77,6 +77,8 @@ agent-workbench/
 │       ├── memory/          记忆三柱、守护、每日精炼
 │       ├── automation/      定时任务调度
 │       ├── backlog/         待办（GTD）：总状态/心跳/余量探针/收件箱统合
+│       ├── skills/          技能清单与停用开关（技能源内 .disabled/ 搬运）
+│       ├── mcpadmin/        MCP 管理：五家原生配置的外科手术式读写（ADR 0004）
 │       └── appearance/      外观文件存取（appearance.json + 壁纸）
 └── prototype/               前端（5280：Vite + React 19）
     ├── public/icons/        应用与执行器品牌图标
@@ -152,7 +154,7 @@ agent-workbench/
 
 | 仓库 | 许可证 | 参照内容与主要落点 |
 |---|---|---|
-| **ZCode**（`zocdeusually/ZCode`） | Apache-2.0 | 外壳骨架总蓝本：Shell 布局「收起即归零」、设置覆盖层、命令中心、自动化页两条口径、空态原则（功能不因空而消失） |
+| **ZCode**（`zocdeusually/ZCode`） | Apache-2.0 | 外壳骨架总蓝本：Shell 布局「收起即归零」、设置覆盖层、命令中心、自动化页两条口径、空态原则（功能不因空而消失）；MCP 配置同步的原子写与坏文件 fail-stop 规范、技能扫描策略（点目录跳过）→ MCP / 技能管理 |
 | **t3code**（T3） | MIT | 供应商实例管理（ProviderInstancesPanel）、模型偏好系统（隐藏/排序/自定义模型）、harness 品牌图标、opencode 接入形态（serve + SSE） |
 | **deepseek-harness**（dsh） | MIT | 轨迹账本与轮次头、会话内页签、StatsPills/ModelsSection；其 ACP 协议实现是 dsh/mcode/hermes/kimi 四家 acp 接入的参照 |
 | **waku / waku-agent**（Sean Chen / ShenSeanChen） | MIT | 记忆三柱（语义事实/情节事件/程序性技能）与编排、管家（steward）机制 |
@@ -160,6 +162,7 @@ agent-workbench/
 | **pi-hermes-memory**（Chandra Teja） | MIT | 记忆安全扫描器的威胁模式移植（prompt 注入 / 角色劫持拦截）→ `backend/src/memory/scanner.ts` |
 | **Codex-Dream-Skin**（Codex Dream Skin Studio） | MIT | 外观系统契约：theme.json 十组色、safe-css 变量域、透明度方向与「只染背景不染文字」的钉死行为 |
 | **gpt_image_playground**（CookSleep） | MIT | 出图工作台全链路移植（images/responses 双模式、SSE 解析、供应商映射） |
+| **cc-switch** | MIT | MCP 多执行器管理的操作参照：单键外科手术式写入、首写字节备份、Codex TOML 字段分侧与 opencode local/remote 转换、Windows `cmd /c` 包装等写安全规范与交互（预设库 / 粘贴导入 / 落盘预览）→ MCP 管理 |
 | **cherry-studio** | GPL | **只看思路未抄码**：dsh SDK 进程内嵌形态的对比参照，最终选了 ACP；借鉴「resume token 事件化」 |
 | **VS Code** | MIT | 终端集成模式（terminalInstance / xtermTerminal 的会话持久化与分屏） |
 | **OpenClaw**（OpenClaw Foundation） | MIT | 渠道插件抽象（ChannelPlugin）与渠道编排 |

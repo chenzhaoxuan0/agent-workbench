@@ -30,15 +30,31 @@ interface NativeCommandsState {
    * force = 无视 TTL 强刷（用户明确点了刷新时用）。
    */
   ensure: (runtimeId: string, rootPath: string, opts?: { force?: boolean; freshMs?: number }) => Promise<void>;
+  /**
+   * 全量失效（技能停用/恢复后调用）：盘上世界变了，前端 10 分钟 TTL 缓存
+   * 也得跟着作废，下次菜单打开自然重拉。不在这里就地重拉——受影响的
+   * (执行器 × rootPath) 组合未知，逐个拉一遍纯属浪费。
+   * 同时必须清在途 ensure 的登记并推进代际：否则在途 job 完成时会把
+   * **变更前**拉到的旧清单打上新鲜时间戳登记回来，旧世界就此复活。
+   */
+  invalidateAll: () => void;
 }
 
 /** 与后端适配器缓存 TTL 同口径（10 分钟）；菜单每次打开都可能命中前端缓存 */
 const DEFAULT_FRESH_MS = 10 * 60 * 1000;
 
 const inflight = new Map<string, Promise<void>>();
+/** 失效代际：invalidateAll 递增；旧代际的在途结果到达后丢弃，不登记 */
+let generation = 0;
 
 export const useNativeCommands = create<NativeCommandsState>((set, get) => ({
   entries: {},
+
+  invalidateAll: () => {
+    generation++;
+    inflight.clear();
+    set({ entries: {} });
+  },
 
   ensure: async (runtimeId, rootPath, opts) => {
     const key = `${runtimeId}|${rootPath}`;
@@ -52,6 +68,7 @@ export const useNativeCommands = create<NativeCommandsState>((set, get) => ({
     const pending = inflight.get(key);
     if (pending !== undefined) return pending;
 
+    const genAtStart = generation;
     set((s) => ({
       entries: {
         ...s.entries,
@@ -63,8 +80,10 @@ export const useNativeCommands = create<NativeCommandsState>((set, get) => ({
       try {
         const { fetchExecutorCommands } = await import("../adapters/daemon/client.ts");
         const commands = await fetchExecutorCommands(runtimeId, rootPath);
+        if (genAtStart !== generation) return; // 期间发生过失效：这份属于旧世界
         set((s) => ({ entries: { ...s.entries, [key]: { commands, status: "ready", at: Date.now() } } }));
       } catch (err: unknown) {
+        if (genAtStart !== generation) return;
         // 失败保留旧清单：菜单退化但不空转（旧数据好过没有数据）
         set((s) => ({
           entries: {

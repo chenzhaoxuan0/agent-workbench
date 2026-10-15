@@ -46,7 +46,9 @@ export type SettingsSectionId =
   | "history"
   | "image"
   | "shortcuts"
-  | "memory";
+  | "memory"
+  | "skills"
+  | "mcp";
 
 export type SettingsGroupId = "basics" | "agentCapabilities";
 
@@ -78,6 +80,8 @@ export const SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
   { id: "shortcuts", title: "快捷键", desc: "全局与工作区级键位", groupId: "basics", icon: "keyboard" },
 
   { id: "memory", title: "记忆", desc: "语义事实 / 情节事件 / 程序性技能 三层记忆（对齐 waku）", groupId: "agentCapabilities", icon: "brain" },
+  { id: "skills", title: "技能", desc: "按技能源分组的技能清单与停用开关（.disabled/ 搬运）", groupId: "agentCapabilities", icon: "layers" },
+  { id: "mcp", title: "MCP 服务", desc: "分执行器管理各家原生配置里的 MCP：增删改、停用库、跨执行器复制", groupId: "agentCapabilities", icon: "plug" },
   { id: "image", title: "出图", desc: "图像供应商 profile 管理（gpt_image_playground 字段全集）", groupId: "agentCapabilities", icon: "image" },
 ];
 

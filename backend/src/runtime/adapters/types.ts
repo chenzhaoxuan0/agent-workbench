@@ -131,6 +131,13 @@ export interface ExecutorAdapter {
    */
   listCommands?(rootPath: string): Promise<readonly NativeCommandInfo[]>;
   /**
+   * 使 listCommands 的适配器内部缓存全部失效（可选能力）。
+   * 技能停用/恢复后 host 会调用它 —— 只清 host 侧落盘缓存不够：适配器自己
+   * 还有 10 分钟 TTL 的内存缓存，不清的话旧清单会被原样返回并**重新落盘**，
+   * 斜杠菜单最长 10 分钟还显示已停用的技能。实现方应清空全部 rootPath 条目。
+   */
+  invalidateCommands?(): void;
+  /**
    * 交互式 TUI 的启动命令名（可选）。终端「一键直启」拼 pwsh 命令时用它
    * 替换裸 id —— 适用于「TUI 由另一个 shim 拉起」的执行器（dsh 的 TUI 走
    * dst shim，裸 dsh 是 automation/web 入口不是 TUI）。缺省 = 裸 id 即命令。
