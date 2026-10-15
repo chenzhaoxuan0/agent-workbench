@@ -27,6 +27,8 @@ import {
   type ModelSyncOutcome,
   type StartRequest,
 } from "./types.ts";
+import { builtinCommandsFor } from "./builtin-catalogs.ts";
+import type { NativeCommandInfo } from "../../contract.ts";
 import type {
   ModelId,
   ProbeResult,
@@ -370,6 +372,16 @@ export class OpenclawAdapter implements ExecutorAdapter {
       return { models: this.models, source: "static", reason, elapsedMs: Date.now() - t0 };
     }
     return { models: this.models, source: "static", reason: "models list 输出未匹配到条目", elapsedMs: Date.now() - t0 };
+  }
+
+
+  /**
+   * 内置命令目录（官方文档/包内注册表为事实源，见 builtin-catalogs.ts）。
+   * 执行语义：透传 —— 协议层没有命令发现面，清单保证菜单可见性；
+   * 分发由执行器/模型自己决定。
+   */
+  async listCommands(_rootPath: string): Promise<readonly NativeCommandInfo[]> {
+    return builtinCommandsFor("openclaw");
   }
 
   async probe(): Promise<ProbeResult> {
