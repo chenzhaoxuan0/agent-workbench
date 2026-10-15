@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowUp, Command, Square } from "lucide-react";
 import { useWorkbench, selectActiveUnit, visibleModelsFor } from "../store/useWorkbench.ts";
 import { nativeCommandsFor, useNativeCommands } from "../store/useNativeCommands.ts";
@@ -49,8 +49,9 @@ export function Composer() {
     if (draft) taRef.current?.focus();
   }, [draft]);
 
-  // 监听是否呈现斜杠命令菜单（支持 / 以及带有子参数的实时前缀过滤，如 /model, /mem 等）
-  const isSlashActive = draft.startsWith("/") && !draft.includes("\n") && !slashMenuDismissed;
+  // 监听是否呈现斜杠命令菜单（用户在输入命令本体、尚未输入参数空格时触发）
+  const hasSpace = draft.includes(" ");
+  const isSlashActive = draft.startsWith("/") && !draft.includes("\n") && !hasSpace && !slashMenuDismissed;
   const slashFilter = isSlashActive ? draft.slice(1) : "";
 
   // ---- 执行器原生斜杠命令 --------------------------------------------------
@@ -64,6 +65,18 @@ export function Composer() {
   const nativeEntry = useNativeCommands((s) => nativeCommandsFor(s, bareRuntimeId, commandsRoot));
   const executorName =
     useWorkbench((s) => s.runtimes.find((r) => r.id === s.activeRuntimeId)?.presentation.displayName) ?? bareRuntimeId;
+
+  // 当草稿为 "/name ..."（带有空格且指令已就位）时，展示当前选定命令的原生参数提示
+  const activeCommandHint = useMemo(() => {
+    if (!draft.startsWith("/") || !hasSpace) return null;
+    const firstWord = draft.slice(1).split(/\s+/)[0]?.toLowerCase();
+    if (!firstWord) return null;
+    return (
+      nativeEntry.commands.find(
+        (c) => c.name.toLowerCase() === firstWord || (c.aliases?.some((a) => a.toLowerCase() === firstWord) ?? false),
+      ) ?? null
+    );
+  }, [draft, hasSpace, nativeEntry.commands]);
 
   useEffect(() => {
     if (bareRuntimeId) void useNativeCommands.getState().ensure(bareRuntimeId, commandsRoot);
@@ -102,6 +115,26 @@ export function Composer() {
             "focus-within:border-teal/50 focus-within:ring-2 focus-within:ring-teal/20",
           )}
         >
+          {/* 斜杠指令参数提示条（命令已选定、输入参数阶段） */}
+          {activeCommandHint && !slashMenuDismissed && (
+            <div className="absolute bottom-full left-0 mb-2 px-3 py-1.5 rounded-lg border border-line bg-card/95 shadow-md backdrop-blur-md flex items-center gap-2 text-xs animate-in fade-in duration-100 max-w-[calc(100vw-3rem)] overflow-hidden z-40">
+              <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded bg-ink text-canvas font-mono text-[10px] font-bold leading-none">
+                /
+              </span>
+              <span className="font-mono font-bold text-ink shrink-0">/{activeCommandHint.name}</span>
+              {activeCommandHint.argumentHint ? (
+                <span className="font-mono text-[11px] text-teal px-1.5 py-0.5 rounded bg-teal-tint font-medium shrink-0">
+                  {activeCommandHint.argumentHint}
+                </span>
+              ) : null}
+              {activeCommandHint.description ? (
+                <span className="text-graphite text-[11px] truncate max-w-[320px]">
+                  {activeCommandHint.description}
+                </span>
+              ) : null}
+            </div>
+          )}
+
           {/* 斜杠指令弹出菜单（执行器原生命令） */}
           {isSlashActive && (
             <SlashCommandMenu

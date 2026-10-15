@@ -45,12 +45,29 @@ export function filterNativeCommands(
 ): readonly NativeCommandInfo[] {
   const q = query.trim().toLowerCase();
   if (!q) return commands;
-  return commands.filter(
+  const filtered = commands.filter(
     (c) =>
       c.name.toLowerCase().includes(q) ||
       (c.aliases?.some((a) => a.toLowerCase().includes(q)) ?? false) ||
       (c.description?.toLowerCase().includes(q) ?? false),
   );
+  return filtered.sort((a, b) => {
+    const aName = a.name.toLowerCase();
+    const bName = b.name.toLowerCase();
+    const aExact = aName === q ? 0 : 1;
+    const bExact = bName === q ? 0 : 1;
+    if (aExact !== bExact) return aExact - bExact;
+
+    const aStarts = aName.startsWith(q) ? 0 : 1;
+    const bStarts = bName.startsWith(q) ? 0 : 1;
+    if (aStarts !== bStarts) return aStarts - bStarts;
+
+    const aAliasStarts = a.aliases?.some((al) => al.toLowerCase().startsWith(q)) ? 0 : 1;
+    const bAliasStarts = b.aliases?.some((al) => al.toLowerCase().startsWith(q)) ? 0 : 1;
+    if (aAliasStarts !== bAliasStarts) return aAliasStarts - bAliasStarts;
+
+    return 0;
+  });
 }
 
 /**
@@ -132,6 +149,19 @@ export function SlashCommandMenu({ filter, onSelect, onClose, native }: SlashCom
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [flat, activeIndex, onSelect, onClose]);
 
+  // 点击外部收起菜单
+  useEffect(() => {
+    const handlePointerDown = (e: PointerEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+      if (listRef.current?.closest(".slash-command-menu")?.contains(target)) return;
+      if (target.closest("textarea[aria-label='任务输入']")) return;
+      onClose();
+    };
+    window.addEventListener("pointerdown", handlePointerDown);
+    return () => window.removeEventListener("pointerdown", handlePointerDown);
+  }, [onClose]);
+
   // 滚动跟随：键盘选中项滚进可视区
   useEffect(() => {
     listRef.current?.querySelector<HTMLElement>(`[data-idx="${activeIndex}"]`)?.scrollIntoView({ block: "nearest" });
@@ -143,7 +173,7 @@ export function SlashCommandMenu({ filter, onSelect, onClose, native }: SlashCom
   let runningIndex = -1; // 扁平下标（键盘导航与渲染行一一对应）
 
   return (
-    <div className="absolute bottom-full left-0 mb-3 w-[480px] max-w-[calc(100vw-3rem)] rounded-xl border border-line bg-card/95 shadow-2xl backdrop-blur-md z-50 animate-in fade-in zoom-in-95 duration-100 overflow-hidden">
+    <div className="slash-command-menu absolute bottom-full left-0 mb-3 w-[480px] max-w-[calc(100vw-3rem)] rounded-xl border border-line bg-card/95 shadow-2xl backdrop-blur-md z-50 animate-in fade-in zoom-in-95 duration-100 overflow-hidden">
       {/* 头部：执行器 + 入口标识 */}
       <div className="px-3.5 py-2 border-b border-line-soft flex items-center justify-between bg-canvas/60">
         <span className="text-[12px] font-medium text-ink flex items-center gap-2">

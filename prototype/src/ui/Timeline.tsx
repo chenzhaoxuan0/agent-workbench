@@ -212,6 +212,57 @@ function groupTimelineEvents(events: readonly { id: number | string; event: Runt
 
 /* ------------------------------------------------------------- 行渲染 */
 
+function parseSlashCommand(text: string): { isCommand: boolean; name: string; args: string } {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith("/") || trimmed.startsWith("//") || trimmed.includes("\n")) {
+    return { isCommand: false, name: "", args: "" };
+  }
+  const spaceIdx = trimmed.indexOf(" ");
+  if (spaceIdx === -1) {
+    return { isCommand: true, name: trimmed.slice(1), args: "" };
+  }
+  return {
+    isCommand: true,
+    name: trimmed.slice(1, spaceIdx),
+    args: trimmed.slice(spaceIdx + 1).trim(),
+  };
+}
+
+function UserMessageBubble({ text }: { text: string }) {
+  const parsed = parseSlashCommand(text);
+
+  if (parsed.isCommand) {
+    return (
+      <div className="flex flex-col items-end">
+        <div className="max-w-[85%] rounded-[16px] rounded-tr-[4px] border border-line bg-card px-3.5 py-2.5 shadow-xs flex items-center gap-2.5">
+          <div className="flex h-5 w-5 shrink-0 items-center justify-center rounded bg-ink text-canvas font-mono text-[11px] font-bold leading-none">
+            /
+          </div>
+          <span className="font-mono text-body font-bold text-ink">
+            /{parsed.name}
+          </span>
+          {parsed.args ? (
+            <span className="font-mono text-body-sm text-graphite rounded-md bg-line-soft/80 px-2 py-0.5 border border-line-soft max-w-[420px] truncate">
+              {parsed.args}
+            </span>
+          ) : null}
+          <span className="ml-1 font-mono text-[10px] text-graphite/70 border border-line-soft rounded px-1.5 py-px shrink-0">
+            斜杠指令
+          </span>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col items-end">
+      <div className="max-w-[85%] rounded-[16px] rounded-tr-[4px] border border-line bg-card px-4 py-3 shadow-xs">
+        <p className="whitespace-pre-wrap text-body leading-relaxed text-ink">{text}</p>
+      </div>
+    </div>
+  );
+}
+
 function TimelineItemRow({ item, unitName, busy }: { item: GroupedItem; unitName: string; busy: boolean }) {
   switch (item.kind) {
     case "session.start":
@@ -227,13 +278,7 @@ function TimelineItemRow({ item, unitName, busy }: { item: GroupedItem; unitName
       );
 
     case "user.message":
-      return (
-        <div className="flex flex-col items-end">
-          <div className="max-w-[85%] rounded-[16px] rounded-tr-[4px] border border-line bg-card px-4 py-3 shadow-xs">
-            <p className="whitespace-pre-wrap text-body leading-relaxed text-ink">{item.data.text}</p>
-          </div>
-        </div>
-      );
+      return <UserMessageBubble text={item.data.text} />;
 
     case "thinking":
       return <ThinkingBlock text={item.data.text} busy={busy} />;
