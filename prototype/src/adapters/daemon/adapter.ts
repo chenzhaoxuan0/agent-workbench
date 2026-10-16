@@ -71,6 +71,9 @@ export function createDaemonFactory(info: DaemonExecutorInfo, endpoint: string):
       outputPerMTok: m.outputPerMTok,
     })),
     testOnly: info.testOnly,
+    // 兜底标记必须跟着 rawModels 一起冻结进工厂：注册那一刻拿到的快照
+    // 若来自 daemon 的 models-cache.json，不标出来界面就会把它当成刚探到的。
+    ...(info.modelsCachedAt === undefined ? {} : { modelsCachedAt: info.modelsCachedAt }),
     create: async () => new DaemonRuntimeAdapter(runtimeId, info, client),
   };
 }

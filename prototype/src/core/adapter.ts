@@ -254,6 +254,13 @@ export interface AdapterFactory {
   readonly models: readonly ModelId[];
   /** 从 daemon 传来的原生模型元数据（含 displayName 与上下文限制等动态对齐参数） */
   readonly rawModels?: readonly RawExecutorModel[];
+  /**
+   * 上面那份 rawModels 是从 daemon 的兜底缓存来的，写于何时；缺省 = 本次真探到。
+   *
+   * 注册时冻结的是**那一刻**的快照，所以这个标记必须一起冻进来 ——
+   * 否则页面刷新后界面会说「已刷新」而其实拿的是上次的结果。
+   */
+  readonly modelsCachedAt?: number;
   /** 真正的适配器实例化在这里做（可能需要 spawn 进程） */
   create(): Promise<RuntimeAdapter>;
 }

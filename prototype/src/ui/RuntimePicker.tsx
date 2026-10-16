@@ -4,7 +4,7 @@ import { formatContext, formatPrice, type ModelSpec } from "../core/models.ts";
 import { prefsOf, resolveVisibleModels } from "../core/modelPrefs.ts";
 import type { RuntimeEntry } from "../core/registry.ts";
 import { useShell } from "../store/useShell.ts";
-import { selectVisibleModels, useWorkbench, visibleModelsFor } from "../store/useWorkbench.ts";
+import { modelSpecFor, selectVisibleModels, useWorkbench, visibleModelsFor } from "../store/useWorkbench.ts";
 import { cn } from "./cn.ts";
 import { RuntimeIcon } from "./RuntimeIcon.tsx";
 
@@ -232,7 +232,11 @@ export function RuntimePicker() {
     };
   }, [open]);
 
-  const activeModel = active ? activeModels.find((m) => m.id === (activeModelId ?? "")) : undefined;
+  // 选中的模型不在可见清单里时，先去失效留档里找 —— 找不到才叫「未选模型」。
+  // 以前直接落进 "未选模型"：模型一被下线，顶栏就变成「执行器 · 未选模型」，
+  // 用户既看不到自己原来选的是什么，也完全不知道出了什么事。
+  const activeModel = active ? modelSpecFor(active, activeModelId ?? undefined) : undefined;
+  const modelStale = activeModelId !== null && activeModelId !== undefined && !activeModels.some((m) => m.id === activeModelId);
   const label = active ? (activeModel?.displayName ?? "未选模型") : "执行器";
 
   return (
@@ -241,7 +245,13 @@ export function RuntimePicker() {
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
         aria-haspopup="dialog"
-        title={active ? `${active.presentation.displayName}${active.testOnly ? " · 测试夹具" : ""} · ${label}\n${active.presentation.tagline}` : "选择执行器与模型"}
+        title={
+          active
+            ? `${active.presentation.displayName}${active.testOnly ? " · 测试夹具" : ""} · ${label}` +
+              (modelStale ? "\n⚠ 该模型已不在可选清单里（多半是下线了），发消息仍会照它发，换不换由你决定" : "") +
+              `\n${active.presentation.tagline}`
+            : "选择执行器与模型"
+        }
         className={cn(
           "flex items-center gap-1.5 rounded-btn px-2 py-1.5 text-body-sm",
           open ? "bg-line-soft text-ink" : "text-graphite hover:bg-line-soft hover:text-ink",
@@ -252,7 +262,9 @@ export function RuntimePicker() {
         {activeModel && (
           <>
             <span className="text-ash" aria-hidden>·</span>
-            <span className="max-w-[92px] truncate text-graphite">{activeModel.displayName}</span>
+            <span className={cn("max-w-[92px] truncate", modelStale ? "text-amber-600 line-through" : "text-graphite")}>
+              {activeModel.displayName}
+            </span>
           </>
         )}
         <ChevronDown size={12} className="shrink-0 text-ash" />

@@ -54,6 +54,14 @@ export interface AdapterInfo {
   readonly models: readonly ExecutorModelInfo[];
   /** 该执行器能否动态发现模型清单（没实现的界面要标出来，别让人对着静态清单空按刷新） */
   readonly modelsDiscoverable: boolean;
+  /**
+   * 本次吐出来的 models 是不是从 models-cache.json 兜底来的，以及那份缓存写于何时。
+   *
+   * 缺省 = 这是本次进程真探到（或适配器自带）的清单。
+   * 界面上必须照实标「来自上次探测 · X 前」—— 用户分不清
+   * 「没刷新」和「真的刷新到了」这两件事，模型列表就成了玄学。
+   */
+  readonly modelsCachedAt?: number;
   readonly capabilities: ExecutorAdapter["capabilities"];
   /**
    * 这是**测试夹具**，不是真的 CLI 工具。
@@ -78,6 +86,43 @@ export interface ModelSyncReport {
   readonly source: "live" | "static";
   readonly reason?: string;
   readonly elapsedMs: number;
+  /**
+   * 本次返回的清单是从兜底缓存沿用来的，写于何时。缺省 = 本轮真探到了。
+   *
+   * 界面据此显示「来自上次探测 · X 前」。它同时是「本轮没探到」的**唯一信号**：
+   * 界面只在 source === "live" 时才敢认定「某个模型真的失效了」，
+   * 探失败那轮一律沿用旧清单、隐藏逻辑不生效。
+   */
+  readonly cachedAt?: number;
+}
+
+/**
+ * 一家执行器的模型兜底缓存（models-cache.json 的一条）。
+ *
+ * ## 它是缓存，不是账本
+ *
+ * 真相源永远是各 CLI 的原生配置（~/.claude/settings.json、`codex debug models`
+ * 的输出、ACP session/new 返回的模型选单……），每次启动现场重读。磁盘这一份
+ * 只在**本轮探测没探成**时顶一下，让冷启动不至于退回各适配器内置的种子清单
+ * （那 3 条 sonnet/opus/haiku 之类，用户一眼就看出是「初始化状态」）。
+ *
+ * 所以它可以随时整个删掉，删了只是下次冷启动重新探一遍，不会丢任何用户数据 ——
+ * 这也是它与「中央注册表/镜像账本」的根本区别。
+ */
+interface ModelCacheEntry {
+  readonly models: readonly ExecutorModelInfo[];
+  /** 写入时刻（成功探测的那一刻），界面按它显示「X 前」 */
+  readonly at: number;
+  /**
+   * 这一份还是**启动时从盘上读的**吗？
+   *
+   * 这条区分不能省。缓存里躺着的东西有两种：进程启动时从 models-cache.json
+   * 读进来的，和本进程刚刚实时探测成功的。两者都是「好结果」，但对界面意义相反 ——
+   * 后者该显示「· 实时」，前者该显示「· 来自上次探测 X 前」。
+   * 只看「缓存里有没有」的话，一次实时成功之后界面仍会喊「来自上次探测 0 秒前」，
+   * 等于把最新的结果说成旧的。
+   */
+  readonly fromDisk: boolean;
 }
 
 interface HostSession {
@@ -194,6 +239,15 @@ export class RuntimeHost {
   private readonly adapters = new Map<string, ExecutorAdapter>();
   private readonly sessions = new Map<SessionId, HostSession>();
 
+  /**
+   * 模型兜底缓存：执行器 id → 上一次**成功探测**拿到的清单。
+   *
+   * 与 commandsDisk 同构但语义更硬：commandsDisk 是加速（过期就后台重拉），
+   * 这一份是「本轮探失败时唯一能给用户看的东西」。`listAdapters` 优先读它，
+   * 所以冷启动那一下界面拿到的就已经是上次的清单，而不是适配器的内置种子。
+   */
+  private readonly modelCache = new Map<string, ModelCacheEntry>();
+
   constructor(
     private readonly broadcast: (event: RuntimeEvent, seq: number) => void,
     private readonly trace: TraceSink,
@@ -205,7 +259,13 @@ export class RuntimeHost {
      * 派发行为与引入记忆之前逐字节一致。所有既有冒烟因此不受影响。
      */
     private readonly memory?: MemoryInjector,
-  ) {}
+  ) {
+    // 同步读盘（文件很小，几 KB）。**必须**在构造函数里做完而不是懒加载：
+    // 启动预热 `void host.syncAllModels()` 是 fire-and-forget，界面的
+    // adapter.list 完全可能抢在探测之前到达 —— 那一刻 #modelCache 还是空的，
+    // 用户就会看到适配器内置的种子清单。这正是「每次进去都是初始化态」的由来。
+    this.loadModelCacheDisk();
+  }
 
   /** 挂起中的权限上下文（"always" 落规则时取 kind/detail 用） */
   private readonly pendingPerms = new Map<string, { kind: string; detail: string }>();
@@ -327,6 +387,16 @@ export class RuntimeHost {
    * 返回每家的同步结果，**必须带来源标记**：界面要能区分「刚从 CLI 问到的实时清单」
    * 和「实时源不可用、退回内置兜底」。两者长得一模一样，不标出来用户就没法判断
    * 「我到底刷到没有」——而这正是模型列表最常见的困惑来源。
+   *
+   * ## 失败那轮为什么还能给出有用的清单
+   *
+   * 每个适配器的 syncModels 失败时都返回 `{ models: this._models, source: "static" }`，
+   * 也就是**它自己上次成功的清单**。这个兜底在进程内有效，一重启就退化成内置种子
+   * （sonnet/opus/haiku 那 3 条）。所以这里在宿主层再兜一层：本轮没探成时改用
+   * #modelCache（启动时从 models-cache.json 载进来的那份），并如实标上 cachedAt，
+   * 让界面显示「来自上次探测 · X 前」而不是假装这是新探到的。
+   *
+   * 只有 source === "live" 才允许覆写缓存 —— 失败结果绝不能污染盘上那份好的。
    */
   async syncModels(runtimeId?: string): Promise<readonly ModelSyncReport[]> {
     const targets =
@@ -336,21 +406,129 @@ export class RuntimeHost {
 
     return await Promise.all(
       targets.map(async (a): Promise<ModelSyncReport> => {
-        const base = { runtimeId: a.id, displayName: a.displayName, count: a.models.length };
         if (typeof a.syncModels !== "function") {
-          return { ...base, source: "static", reason: "该执行器未实现动态模型探测", elapsedMs: 0 };
+          return {
+            runtimeId: a.id,
+            displayName: a.displayName,
+            count: a.models.length,
+            source: "static",
+            reason: "该执行器未实现动态模型探测",
+            elapsedMs: 0,
+          };
         }
         try {
           const r = await a.syncModels();
-          return { ...base, count: r.models.length, source: r.source, reason: r.reason, elapsedMs: r.elapsedMs };
+          if (r.source === "live") {
+            this.putModelCache(a.id, r.models);
+            return {
+              runtimeId: a.id,
+              displayName: a.displayName,
+              count: r.models.length,
+              source: "live",
+              reason: r.reason,
+              elapsedMs: r.elapsedMs,
+            };
+          }
+          // 本轮没探成。先看有没有一份好的兜底。
+          const cached = this.modelCache.get(a.id);
+          if (cached !== undefined) {
+            log.info("模型探测未成功，沿用兜底缓存", {
+              id: a.id,
+              cachedAt: new Date(cached.at).toISOString(),
+              reason: r.reason,
+            });
+            return {
+              runtimeId: a.id,
+              displayName: a.displayName,
+              count: cached.models.length,
+              source: "static",
+              reason: `${r.reason ?? "实时源不可用"}；沿用上次探测结果（${relativeTime(cached.at)}）`,
+              elapsedMs: r.elapsedMs,
+              cachedAt: cached.at,
+            };
+          }
+          // 连兜底都没有（首装、或磁盘上从没写过）—— 如实退回适配器自带的清单
+          return {
+            runtimeId: a.id,
+            displayName: a.displayName,
+            count: r.models.length,
+            source: "static",
+            reason: r.reason,
+            elapsedMs: r.elapsedMs,
+          };
         } catch (err: unknown) {
           // 适配器里已经各自兜底过了，走到这里说明它连兜底都没兜住 —— 如实报，不假装成功
           const reason = err instanceof Error ? err.message : String(err);
           log.warn("syncModels 抛出未捕获异常", { id: a.id, error: reason });
-          return { ...base, source: "static", reason, elapsedMs: 0 };
+          const cached = this.modelCache.get(a.id);
+          return {
+            runtimeId: a.id,
+            displayName: a.displayName,
+            count: cached?.models.length ?? a.models.length,
+            source: "static",
+            reason: cached === undefined ? reason : `${reason}；沿用上次探测结果（${relativeTime(cached.at)}）`,
+            elapsedMs: 0,
+            ...(cached === undefined ? {} : { cachedAt: cached.at }),
+          };
         }
       }),
     );
+  }
+
+  // ---- 模型兜底缓存（models-cache.json）----
+
+  /** 读盘。构造函数里同步调一次；坏文件只丢数据不阻断启动（顶多是退回种子清单） */
+  private loadModelCacheDisk(): void {
+    try {
+      const raw = readFileSync(join(this.homeDir, "models-cache.json"), "utf8");
+      const parsed = JSON.parse(raw) as Record<string, { models?: unknown; at?: unknown }>;
+      for (const [id, entry] of Object.entries(parsed)) {
+        if (Array.isArray(entry?.models) && typeof entry?.at === "number") {
+          this.modelCache.set(id, {
+            models: entry.models as readonly ExecutorModelInfo[],
+            at: entry.at,
+            fromDisk: true,
+          });
+        }
+      }
+      if (this.modelCache.size > 0) {
+        log.info("models-cache 已载入", { executors: this.modelCache.size });
+      }
+    } catch {
+      // 没有这个文件 = 首次运行，或用户手动删了。都属正常，不记警告。
+    }
+  }
+
+  /** 成功探测才写。写盘失败只影响下次冷启动，不影响本次会话。 */
+  private putModelCache(id: string, models: readonly ExecutorModelInfo[]): void {
+    const prev = this.modelCache.get(id);
+    const unchanged = prev !== undefined && sameExecutorModels(prev.models, models);
+    // ⚠ 早退条件里**必须**看 fromDisk，不能只看内容是否相同。
+    //
+    // 冷启动时从盘上读进来的是 `{内容相同, at=一小时前, fromDisk:true}`。
+    // 本轮实时探测回来的内容一模一样 —— 若此时早退，fromDisk 就一直是 true：
+    // ① listAdapters 会报一个陈旧的 modelsCachedAt，界面在**刚刚实时探到**之后
+    //    仍挂「· 来自上次探测 1 小时前」，等于把最新结果说成旧的；
+    // ② 前端 syncModelsAll 拿这个标记当「本轮不是实时」的判据，会跳过失效模型
+    //    对齐 —— 于是清单稳定的执行器（大多数执行器大多数时候都稳定）永远
+    //    检测不到模型下线，这是决策 5 整个机制的静默失效。
+    //
+    // fromDisk 为 true 时即便内容没变也要写：这一轮**确实验证过**，
+    // at 该记成现在，而不是留着一小时前的时间戳。
+    if (unchanged && prev?.fromDisk === false) return;
+    this.modelCache.set(id, { models, at: Date.now(), fromDisk: false });
+    try {
+      const out: Record<string, { models: readonly ExecutorModelInfo[]; at: number }> = {};
+      for (const [k, v] of this.modelCache) out[k] = v;
+      const path = join(this.homeDir, "models-cache.json");
+      const tmp = `${path}.tmp`;
+      writeFileSync(tmp, JSON.stringify(out), "utf8");
+      renameSync(tmp, path);
+    } catch (err: unknown) {
+      log.debug("models-cache 写盘失败（本次会话不受影响，下次冷启动要重探）", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   /** 模型清单发现能力：有实现 syncModels 的才算「刷新得动」 */
@@ -362,16 +540,25 @@ export class RuntimeHost {
     if (sync) {
       await this.syncAllModels();
     }
-    return [...this.adapters.values()].map((a) => ({
-      id: a.id,
-      displayName: a.displayName,
-      glyph: a.glyph,
-      models: [...a.models],
-      modelsDiscoverable: this.supportsModelDiscovery(a),
-      capabilities: a.capabilities,
-      // 只在真标了的时候才带这个键，省得每个执行器都多一个 testOnly: undefined
-      ...(a.testOnly === true ? { testOnly: true as const } : {}),
-    }));
+    return [...this.adapters.values()].map((a) => {
+      // 兜底缓存优先于适配器内置种子清单。启动预热还没跑完的那一刻，
+      // 适配器手里只有 3 条内置兜底，缓存里却是上次真探到的完整清单 ——
+      // 界面拿到哪个，决定了用户看到的是「上次结果」还是「初始化态」。
+      const cached = this.modelCache.get(a.id);
+      return {
+        id: a.id,
+        displayName: a.displayName,
+        glyph: a.glyph,
+        models: [...(cached?.models ?? a.models)],
+        modelsDiscoverable: this.supportsModelDiscovery(a),
+        // 只在这一份**确实是从盘上沿用**时才标兜底。本进程刚实时探到的
+        // 同样躺在 modelCache 里，但那是新鲜结果，该让界面显示「· 实时」。
+        ...(cached?.fromDisk === true ? { modelsCachedAt: cached.at } : {}),
+        capabilities: a.capabilities,
+        // 只在真标了的时候才带这个键，省得每个执行器都多一个 testOnly: undefined
+        ...(a.testOnly === true ? { testOnly: true as const } : {}),
+      };
+    });
   }
 
   /**
@@ -1178,4 +1365,49 @@ export class RuntimeHost {
     }
     log.info("session forgotten", { sessionId });
   }
+}
+
+/**
+ * 「X 前」的人话时间戳，给兜底缓存的标记用。
+ *
+ * 刻意**不引第三方格式化库**：这里要的是「大概多久」而不是精确到秒，
+ * 一旦写成 `2026-10-16T01:23:45Z` 用户根本不会去算那是多久以前。
+ */
+function relativeTime(at: number, now = Date.now()): string {
+  const sec = Math.max(0, Math.round((now - at) / 1000));
+  if (sec < 60) return `${sec} 秒前`;
+  const min = Math.round(sec / 60);
+  if (min < 60) return `${min} 分钟前`;
+  const hour = Math.round(min / 60);
+  if (hour < 24) return `${hour} 小时前`;
+  const day = Math.round(hour / 24);
+  return day < 30 ? `${day} 天前` : `${Math.round(day / 30)} 个月前`;
+}
+
+/**
+ * 两份执行器模型清单是否实质相同 —— 逐字段比。
+ *
+ * 只比 id 是不够的：执行器给同一个模型改了上下文窗口或显示名而 id 没动时，
+ * 会把一次真实变化判成「没变」，于是既不更新缓存也不重写盘，
+ * 用户按了刷新却什么都没发生。
+ */
+function sameExecutorModels(
+  a: readonly ExecutorModelInfo[],
+  b: readonly ExecutorModelInfo[],
+): boolean {
+  if (a.length !== b.length) return false;
+  return a.every((m, i) => {
+    const o = b[i];
+    if (o === undefined) return false;
+    return (
+      m.id === o.id &&
+      m.displayName === o.displayName &&
+      m.contextWindow === o.contextWindow &&
+      m.maxOutput === o.maxOutput &&
+      m.multimodal === o.multimodal &&
+      m.defaultReasoningLevel === o.defaultReasoningLevel &&
+      m.inputPerMTok === o.inputPerMTok &&
+      m.outputPerMTok === o.outputPerMTok
+    );
+  });
 }

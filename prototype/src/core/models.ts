@@ -628,7 +628,16 @@ const TIER_ORDER: Record<ModelTier, number> = { frontier: 0, balanced: 1, fast: 
  * 用量统计不读这里的数字，所以这里填 0 不会让统计出错。
  *
  * 档位缺省 `balanced`：与「用户添加的自定义模型」同一处理 —— 我们不知道它多强，
- * 就别默认它是旗舰。
+ * 就别默认它是旗舰。正因如此它**不能当默认模型**：默认模型要在已收录模型里挑
+ * （见 registry.ts 的 #entry）。
+ *
+ * ## 文案为什么是「CLI 提供」而不是「未收录」
+ *
+ * 原来的 `vendorLabel: "未收录"` 有个真实的误导：用户看到一片「未收录」，
+ * 会读成「模型列表没刷新成功」，于是把一次**正确的新鲜探测**当成 bug 报回来 ——
+ * 而本地目录（32 条，asOf 2026-09-27）永远追不上各家 CLI 新出的模型，
+ * 这片「未收录」是常态，不是异常。文案要说清真相：**它是我们探到的真实模型，
+ * 只是我们本地没有它的价格资料**。
  */
 export function scaffoldModel(
   id: ModelId,
@@ -648,7 +657,7 @@ export function scaffoldModel(
     id,
     displayName: displayName ?? id,
     vendor: "custom",
-    vendorLabel: hasDynamicCtx ? "CLI 动态发现" : "未收录",
+    vendorLabel: hasDynamicCtx ? "CLI 动态发现" : "CLI 提供",
     tier: "balanced",
     contextWindow: overrides?.contextWindow ?? 0,
     inputPerMTok: overrides?.inputPerMTok ?? 0,
@@ -659,7 +668,7 @@ export function scaffoldModel(
     defaultReasoningLevel: overrides?.defaultReasoningLevel,
     note: hasDynamicCtx
       ? `由本机 Agent CLI 动态对齐（上下文 ${formatContext(overrides!.contextWindow!)}）`
-      : "本地没有这条模型的价格与窗口资料（由 daemon 报告，目录未收录）",
+      : "执行器报上来的真实模型，本地模型元数据目录没有它的价格与窗口资料",
     asOf: "",
     source: hasDynamicCtx ? "daemon adapter.list" : "",
   };

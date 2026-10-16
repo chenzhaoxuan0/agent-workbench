@@ -29,6 +29,7 @@ import {
 } from "../core/backlog.ts";
 import { useBacklog } from "../store/useBacklog.ts";
 import { useWorkbench, visibleModelsFor } from "../store/useWorkbench.ts";
+import { ModelSelect } from "./ModelSelect.tsx";
 import { BacklogDialog } from "./BacklogDialog.tsx";
 import { cn } from "./cn.ts";
 
@@ -503,7 +504,6 @@ function BacklogSettings({ onClose }: { onClose: () => void }): ReactElement {
   };
 
   const hbRuntimes = ["", ...runtimes.map((r) => r.id.replace(/^daemon:/, ""))];
-  const hbModels = hb.runtimeId === "" ? [] : visibleModelsFor(useWorkbench.getState(), `daemon:${hb.runtimeId}`);
 
   const runtimeIds = [...new Set([...Object.keys(config.runtimes), ...runtimes.map((r) => r.id.replace(/^daemon:/, ""))])];
 
@@ -565,19 +565,13 @@ function BacklogSettings({ onClose }: { onClose: () => void }): ReactElement {
               </div>
               <div className="space-y-1">
                 <span className="text-caption text-ash">模型（缺省跟随执行器）</span>
-                <select
+                <ModelSelect
+                  runtimeId={`daemon:${hb.runtimeId}`}
                   value={hb.model ?? ""}
-                  disabled={busy || hb.runtimeId === ""}
-                  onChange={(e) => void save({ heartbeat: { ...hb, model: e.target.value === "" ? null : e.target.value } })}
+                  onChange={(v: string) => void save({ heartbeat: { ...hb, model: v === "" ? null : v } })}
                   className={inputCls}
-                >
-                  <option value="">跟随默认</option>
-                  {hbModels.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.displayName}
-                    </option>
-                  ))}
-                </select>
+                  disabled={busy || hb.runtimeId === ""}
+                />
               </div>
             </div>
           </section>

@@ -51,6 +51,12 @@ export interface DaemonExecutorInfo {
   readonly models: readonly DaemonModelInfo[];
   /** daemon 侧能否动态发现模型清单。false = 模型按钮对它无效，界面要标出来 */
   readonly modelsDiscoverable?: boolean;
+  /**
+   * models 是从 daemon 的 models-cache.json 兜底来的，写于何时。
+   * 缺省 = 本次进程真探到的。界面据此显示「来自上次探测 · X 前」——
+   * 分不清「没刷新」和「刷新到了」，模型列表就成了玄学。
+   */
+  readonly modelsCachedAt?: number;
   readonly capabilities: RuntimeCapabilities;
   /** daemon 侧标了 = 这是测试夹具（mockperm），不是真的 CLI 工具 */
   readonly testOnly?: true;
@@ -65,6 +71,8 @@ export interface ModelSyncReport {
   readonly source: "live" | "static";
   readonly reason?: string;
   readonly elapsedMs: number;
+  /** 本轮返回的清单是从兜底缓存沿用来的，写于何时。缺省 = 本轮真探到了 */
+  readonly cachedAt?: number;
 }
 
 /**

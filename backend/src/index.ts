@@ -252,7 +252,13 @@ host.register(new OpenclawAdapter());
 host.register(new MockPermAdapter());
 host.loadPersisted();
 memoryScheduler?.start();
-// 后台并发预热动态模型查询（不阻断启动）
+// 后台并发预热动态模型查询（不阻断启动）。
+//
+// 这里**保持 fire-and-forget 是安全的**，前提是宿主构造时就已从 models-cache.json
+// 载入上次的成功清单（RuntimeHost 构造函数里同步做）：于是无论界面的 adapter.list
+// 抢在预热之前还是之后到达，拿到的都是「上次的真结果」，不会退化成适配器内置的
+// 3 条种子清单。反过来，若这里改成 await 才让 daemon 监听端口，每次开页面都要先干等
+// 8–15 秒探测 —— 用「显示的是不是真的」换「开得快不快」，方向反了。
 void host.syncAllModels();
 
 // 总管 bot：初始化即就位（docs/10 §4.6）。失败不阻断启动 ——
