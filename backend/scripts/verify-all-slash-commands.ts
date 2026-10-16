@@ -63,3 +63,7 @@ for (const adapter of adapters) {
   }
 }
 console.log(`===================================================================\n`);
+for (const a of adapters) {
+  await a.disconnect?.().catch(() => {});
+}
+process.exit(0);
