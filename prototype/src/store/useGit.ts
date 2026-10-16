@@ -76,8 +76,23 @@ export const useGit = create<GitState>((set, get) => ({
     if (rootPath === null) return;
     set({ loading: true });
     try {
-      const [status, branches, worktreesRes] = await Promise.all([
-        fetchGitStatus(rootPath),
+      // 非 git 仓库是正常态（诚实缺席），不是错误：status 先行判定，
+      // 不再让后续 branches/worktrees 的 not_a_repo 把整个面板打成错误横幅
+      const status = await fetchGitStatus(rootPath);
+      if (get().rootPath !== rootPath) return;
+      if (!status.isRepo) {
+        set({
+          status,
+          branches: { current: null, detached: true, branches: [] },
+          worktrees: [],
+          loading: false,
+          error: null,
+          branchByRoot: { ...get().branchByRoot, [rootPath]: null },
+        });
+        badgeFetchedAt.set(rootPath, Date.now());
+        return;
+      }
+      const [branches, worktreesRes] = await Promise.all([
         fetchGitBranches(rootPath),
         fetchGitWorktrees(rootPath),
       ]);
@@ -91,7 +106,7 @@ export const useGit = create<GitState>((set, get) => ({
         error: null,
         branchByRoot: {
           ...get().branchByRoot,
-          [rootPath]: status.isRepo ? status.branch : null,
+          [rootPath]: status.branch,
         },
       });
       badgeFetchedAt.set(rootPath, Date.now());
@@ -104,16 +119,18 @@ export const useGit = create<GitState>((set, get) => ({
   refreshBranchBadge: async (rootPath) => {
     const last = badgeFetchedAt.get(rootPath) ?? 0;
     if (Date.now() - last < BADGE_TTL_MS) return;
-    badgeFetchedAt.set(rootPath, Date.now());
     try {
       const status = await fetchGitStatus(rootPath);
+      // 只在成功后占坑：冷启动时 UnitRow 先于 daemon WS 就绪挂载，第一次调用
+      // 会静默失败 —— 失败若也记时间戳，这个会话期内的重试全被 TTL 挡死
+      badgeFetchedAt.set(rootPath, Date.now());
       if (status.isRepo && get().rootPath === rootPath) {
         set({ status, branchByRoot: { ...get().branchByRoot, [rootPath]: status.branch } });
         return;
       }
       set({ branchByRoot: { ...get().branchByRoot, [rootPath]: status.isRepo ? status.branch : null } });
     } catch {
-      // daemon 不在 / 目录消失：徽章静默缺席，不弹错（侧栏标记是锦上添花）
+      badgeFetchedAt.delete(rootPath); // daemon 不在 / 目录消失：留空位给下次重试
     }
   },
 

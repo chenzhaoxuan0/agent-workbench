@@ -118,6 +118,15 @@ export function Sidebar() {
 
   const allUnits = units;
 
+  // 侧栏分支标记的自愈轮询：冷启动时 UnitRow 挂载可能早于 daemon WS 就绪，
+  // 首次拉取静默失败 —— 每 60s 补一轮（TTL 内的单元不会重复起 git 进程）
+  useEffect(() => {
+    const timer = setInterval(() => {
+      for (const u of useWorkbench.getState().units) void useGit.getState().refreshBranchBadge(u.rootPath);
+    }, 60_000);
+    return () => clearInterval(timer);
+  }, []);
+
   // 常驻 / 普通两节：常驻节顺序跟定义走（总管最前）；普通节保持既有
   // steward 置顶习惯（历史 unitOrder 可能引用它）+ 用户拖拽排序
   const { residentUnits, normalUnits } = useMemo(() => {
