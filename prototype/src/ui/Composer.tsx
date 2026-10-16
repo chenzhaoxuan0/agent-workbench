@@ -19,7 +19,8 @@ import { PermissionModePicker } from "./PermissionModePicker.tsx";
 import { SlashCommandMenu, filterNativeCommands } from "./SlashCommandMenu.tsx";
 import { AttachmentsBar } from "./AttachmentsBar.tsx";
 import type { ChatAttachment } from "../core/attachments.ts";
-import { createAttachmentFromFile, MAX_ATTACHMENTS } from "../core/attachments.ts";
+import { MAX_ATTACHMENTS } from "../core/attachments.ts";
+import { createAttachmentFromFile } from "./attachmentFile.ts";
 import { useIsMobile } from "./mobile/useIsMobile.ts";
 import { cn } from "./cn.ts";
 
