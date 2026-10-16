@@ -22,7 +22,9 @@ import { GroupCard, SettingsRow, Toggle } from "./SettingsPage.tsx";
 export function BrowserControlSection() {
   const [state, setState] = useState<BrowserControlState | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  // 计数而非布尔：重叠操作时第一个 finally 不该提前解锁（评审收敛）
+  const [busyCount, setBusyCount] = useState(0);
+  const busy = busyCount > 0;
 
   const refresh = useCallback(() => {
     getBrowserControl()
@@ -38,12 +40,12 @@ export function BrowserControlSection() {
   }, [refresh]);
 
   const run = (label: string, fn: () => Promise<BrowserControlState>): void => {
-    setBusy(true);
+    setBusyCount((c) => c + 1);
     setErr(null);
     fn()
       .then(setState)
       .catch((e) => setErr(`${label}失败：${e instanceof Error ? e.message : String(e)}`))
-      .finally(() => setBusy(false));
+      .finally(() => setBusyCount((c) => Math.max(0, c - 1)));
   };
 
   const cfg = state?.config;
@@ -61,7 +63,7 @@ export function BrowserControlSection() {
         <SettingsRow
           label="启用浏览器控制"
           description="一键扇出到全部受支持执行器（12 家写原生配置；dsh 随会话动态注入）。停用 = 条目移入停用库，可随时恢复。"
-          control={<Toggle on={cfg?.enabled === true} onChange={(v) => run("启用切换", () => setBrowserEnabled(v))} />}
+          control={<Toggle on={cfg?.enabled === true} disabled={busy} onChange={(v) => run("启用切换", () => setBrowserEnabled(v))} />}
         />
         <SettingsRow
           label="模式"
@@ -101,9 +103,11 @@ export function BrowserControlSection() {
             description={
               shared?.running === true
                 ? `运行中 @127.0.0.1:${shared.port}（${shared.kind === "edge" ? "Edge 兜底" : "Chrome"}，调试端点已就绪）`
-                : shared?.exitReason != null
-                  ? `已停止：${shared.exitReason}`
-                  : "未运行（接管模式需要它活着，各执行器才连得上）"
+                : shared?.lastError != null
+                  ? `未运行：${shared.lastError}`
+                  : shared?.exitReason != null
+                    ? `已停止：${shared.exitReason}`
+                    : "未运行（接管模式需要它活着，各执行器才连得上）"
             }
             control={
               <div className="flex gap-2">

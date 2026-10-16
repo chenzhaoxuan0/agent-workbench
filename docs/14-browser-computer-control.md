@@ -75,7 +75,11 @@
 - 启动参数：`--remote-debugging-port=<空闲端口> --user-data-dir=<homeDir>/browser-shared-profile
   --no-first-run --no-default-browser-check`；子进程由 daemon 持有，daemon 退出即终止。
 - daemon 启动时若「接管模式 + 已启用」自动拉起；端口变化在启用/切换模式时重写条目。
-- 生命周期动作（启动 / 停止 / 状态）记入动作日志。
+- 生命周期动作（启动 / 停止 / 状态）记入动作日志；启动/停止失败原因经
+  `SharedChromeStatus.lastError` 透出到设置页。**生命周期单飞**：boot 自动拉起
+  与 UI 手动启停经同一条互斥链（并发启动会触发 Chrome 单实例委派，留下杀不掉
+  的活实例）。停止走 taskkill /T /F 并**验尸**（调试端口真熄灭才算停）。收编
+  存量实例前校验 `/json/version` 自报 Chromium 系，防止误收用户日常浏览器。
 
 ### 2.4 dsh 注入（无落盘配置的特例）
 
@@ -121,12 +125,27 @@ stdio MCP 桥 `src/mcp.ts` 同级信任）。各执行器条目：
 - **总闸**：`<homeDir>/computer-control.json` 的 `enabled:false`（默认）→ server
   对一切 tools/call 回「电脑控制未启用」。设置页开关 + RPC `computerControl.panic`
   可即时关闸。
+- **端点双闸**（复审 P0 补强）：`/mcp/computer` 除回环豁免 token 外，工具层还
+  强制 ①`Origin` 若存在必须是本地源（403）——否则任意网页的跨源 simple request
+  （text/plain POST，无需预检）都能借端点操作真实桌面；②`content-type` 必须
+  `application/json`（415）——浏览器想伪造它就必须过 CORS 预检，而预检只放行
+  本地源。两层与 authorize 的回环判定构成纵深防御。
 - **输入租约**：单一 controller（按 MCP 会话头 `mcp-session-id` 识别，无头则按
   匿名全局）。他者持有时返回 `CONTROLLER_BUSY`（借 ZCode 错误码语义：不可重试，
-  需当前持有方退出或急停）。租约空闲 TTL 120s 自动释放。
+  需当前持有方退出或急停）。租约空闲 TTL 120s 自动释放；**执行失败（参数错 /
+  运行时坏 / 被作废）当场弃权**，不占满 TTL。
+- **急停取消语义**（复审 P0 补强）：`computer_stop` / `panic` 递增**输入代际**，
+  已在队列中等待的动作按旧代际拒绝执行——急停拦下的是整批待执行动作。
+  正在执行中的那一个原生调用无法中断，这是已记录的硬边界（回执文案如实说明）。
 - **动作日志**：每次 tools/call 记（会话、工具、参数摘要、成败、耗时），环形
   缓冲 500 条，RPC 可查——观测与追责，不是审批。
 - 高危确认门（删除 / 发送 / 支付类挂起等人放行）：二期。
+
+**已知边界**（复审记录）：mcp-session-id 由客户端自报、不做登记校验（信任模型
+= 回环本机进程，与 stdio MCP 桥同级）；未发会话头的客户端合并为同一「anonymous」
+租约身份；正在执行的原生输入不可中断；同执行器两个会话并发会抢隔离模式的同一
+profile（playwright-mcp 官方限制，docs/14 §2.1）；daemon 重启后端口变化由 boot
+对齐兜底（电脑条目重写、共享 Chrome 端口持久化）。
 
 ### 3.4 运行时（@nut-tree-fork/nut-js）
 

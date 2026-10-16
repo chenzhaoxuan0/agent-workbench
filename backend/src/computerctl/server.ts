@@ -15,6 +15,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { isLocalOrigin } from "../httpd.ts";
 import type {
   AcpMcpServer,
   ComputerControlState,
@@ -42,6 +43,9 @@ import {
 
 /** 输入租约空闲 TTL：超过即视为持有方已弃，自动让位 */
 const LEASE_TTL_MS = 120_000;
+
+/** 我们唯一实现并回应的 MCP 协议版本（客户端要别的也回这个——不假装支持） */
+const MCP_PROTOCOL_VERSION = "2025-06-18";
 
 // ---- 工具面 -----------------------------------------------------------------------
 
@@ -154,6 +158,8 @@ export interface ComputerControlService {
   readonly setEnabled: (enabled: boolean) => Promise<ComputerControlState>;
   readonly panic: () => Promise<ComputerControlState>;
   readonly acpEntries: () => AcpMcpServer[];
+  /** daemon 启动时调：已启用则重写条目对齐当前端口（端口变了条目就成了死 url） */
+  readonly boot: () => Promise<void>;
   /** 冒烟用：注入 fake 运行时 */
   readonly setRuntime: (rt: DesktopRuntime | null) => void;
 }
@@ -166,6 +172,13 @@ export function createComputerControl(
   const lease: { holder: string | null; since: number | null; lastActive: number | null } = {
     holder: null, since: null, lastActive: null,
   };
+
+  /**
+   * 输入代际：急停/panic 时递增。已在队列里等着的动作按旧代际拒绝——
+   * 否则「急停」放行的正是用户想拦下的整批待执行动作（in-flight 的那一个
+   * 原生调用无法中断，是已知边界，docs/14 §3.3）。
+   */
+  let inputEpoch = 0;
 
   function releaseLease(): void {
     lease.holder = null;
@@ -228,12 +241,14 @@ export function createComputerControl(
     if (def === undefined) {
       return { content: [{ type: "text", text: `未知工具：${name}` }], isError: true };
     }
-    // 急停是逃生口：不占租约、不受总闸限制（总闸关着它也只是再释放一次租约）
+    // 急停是逃生口：不占租约、不受总闸限制（总闸关着它也只是再释放一次租约），
+    // 并递增代际把排队中的动作全部作废
     if (name === "computer_stop") {
       const wasHeld = lease.holder !== null;
       releaseLease();
-      logControlAction("computer", "tool.computer_stop", `会话 ${session} 急停（${wasHeld ? "释放了租约" : "本就空闲"}）`);
-      return { content: [{ type: "text", text: "已急停：输入租约已释放，队列中的动作已拒绝。" }] };
+      inputEpoch += 1;
+      logControlAction("computer", "tool.computer_stop", `会话 ${session} 急停（${wasHeld ? "释放了租约" : "本就空闲"}，排队动作已作废）`);
+      return { content: [{ type: "text", text: "已急停：输入租约已释放，排队中的动作已作废（正在执行的那一个无法中断，但不会再有后续）。" }] };
     }
     if (!readComputerControlConfig().enabled) {
       return { content: [{ type: "text", text: "电脑控制未启用（总闸关闭）。请在工作台「设置 → 电脑控制」开启。" }], isError: true };
@@ -249,9 +264,14 @@ export function createComputerControl(
     }
 
     const t0 = Date.now();
+    const epoch = inputEpoch;
     try {
       const rt = await loadRuntime();
       const result = await serialize(async () => {
+        // 排队期间发生急停（代际已变）：拒绝执行，模型收到明确的取消语义
+        if (epoch !== inputEpoch) {
+          throw new Error("已急停：该动作在队列中等待时被急停作废，未执行。重新 computer_screenshot 观察现状后再决定下一步。");
+        }
         switch (name) {
           case "computer_screenshot": {
             const shot = await rt.screenshot();
@@ -298,6 +318,8 @@ export function createComputerControl(
       return result as { content: unknown[] };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+      // 失败即弃权：参数错 / 依赖坏 / 被作废，都不该把租约锁满 120s
+      if (lease.holder === session) releaseLease();
       logControlAction("computer", `tool.${name}`, `会话 ${session} · ${argSummary(args)} · 失败：${msg}`);
       return { content: [{ type: "text", text: `执行失败：${msg}` }], isError: true };
     }
@@ -305,6 +327,24 @@ export function createComputerControl(
 
   // ---- MCP over HTTP ----
   const handleHttp = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    // 双闸（评审 P0，与 index.ts authorize 的回环豁免构成纵深防御）：
+    // - Origin：浏览器跨源 simple request（text/plain POST，无需预检）也能把请求
+    //   送到回环端口。CLI 客户端不发 Origin；有 Origin 就必须是本地源，否则任意
+    //   网页都能借这条端点点击真实桌面。
+    // - Content-Type：MCP 规定 application/json；浏览器想伪造它就必须先过预检，
+    //   而 httpd 的预检只放行本地源。
+    const origin = req.headers.origin;
+    if (origin !== undefined && !isLocalOrigin(origin)) {
+      res.writeHead(403, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: { code: -32050, message: "cross-origin requests are not allowed" } }));
+      return;
+    }
+    const contentType = String(req.headers["content-type"] ?? "");
+    if (!contentType.toLowerCase().startsWith("application/json")) {
+      res.writeHead(415, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: { code: -32051, message: "content-type must be application/json" } }));
+      return;
+    }
     // 只服务 POST（Streamable HTTP 的请求通道）；GET/SSE 首版不提供
     const chunks: Buffer[] = [];
     let size = 0;
@@ -361,7 +401,9 @@ export function createComputerControl(
         return {
           jsonrpc: "2.0", id,
           result: {
-            protocolVersion: typeof msg.params?.protocolVersion === "string" ? msg.params.protocolVersion : "2025-06-18",
+            // 只认自己实现的版本：客户端要别的版本也不回声假装支持（MCP 规定
+            // 服务器可不支持请求版本，回应自己支持的即可）
+            protocolVersion: MCP_PROTOCOL_VERSION,
             capabilities: { tools: {} },
             serverInfo: { name: "workbench-computer", version: "0.1.0" },
           },
@@ -413,7 +455,10 @@ export function createComputerControl(
 
   const applyEnabled = async (enabled: boolean, viaPanic: boolean): Promise<ComputerControlState> => {
     writeComputerControlConfig({ enabled });
-    if (!enabled) releaseLease();
+    if (!enabled) {
+      releaseLease();
+      inputEpoch += 1; // 关闸同时作废排队动作（panic 语义的一部分）
+    }
     logControlAction("computer", viaPanic ? "panic" : enabled ? "enabled" : "disabled", viaPanic
       ? "急停：总闸关闭 + 租约释放"
       : enabled ? "电脑控制启用（总闸开）" : "电脑控制停用（总闸关 + 租约释放）");
@@ -462,6 +507,14 @@ export function createComputerControl(
     acpEntries: () => {
       if (!readComputerControlConfig().enabled) return [];
       return [{ name: COMPUTER_ENTRY_NAME, type: "http" as const, url: computerMcpUrl() }];
+    },
+    boot: async () => {
+      // daemon 重启后端口可能变（随机端口冒烟 / 配置改动），已启用的条目会指向死 url：
+      // 启动时静默重写对齐当前端点
+      if (readComputerControlConfig().enabled) {
+        lastFanout = await fanout(true);
+        logControlAction("computer", "reconcile", `daemon 启动对齐：条目已重写 → ${computerMcpUrl()}`);
+      }
     },
     setRuntime: (rt) => {
       injected = rt;

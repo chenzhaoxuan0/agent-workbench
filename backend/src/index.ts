@@ -910,8 +910,12 @@ const authorize = (req: IncomingMessage, url: URL): boolean => {
     if (isLoopbackAddr(req.socket.remoteAddress)) return true;
   }
   // 电脑控制 MCP 端点（docs/14 §3.1）：执行器的 MCP 客户端带不了 x-awb-token，
-  // 与 stdio MCP 桥（src/mcp.ts）同级信任——只认回环来源
+  // 与 stdio MCP 桥（src/mcp.ts）同级信任——只认回环来源，且 Origin 若存在必须
+  // 是本地源（跨源网页的 simple request 不带预检就能打到回环端口；工具层
+  // handleHttp 里还有同款检查 + content-type 闸，这里是网络层第一道）
   if (url.pathname === COMPUTER_MCP_PATH) {
+    const origin = req.headers.origin;
+    if (origin !== undefined && !isLocalOrigin(origin)) return false;
     return isLoopbackAddr(req.socket.remoteAddress);
   }
   if (url.pathname === "/webhook/bot") return true; // per-bot secret 在路由内自验
@@ -931,7 +935,7 @@ setControlContext(config.homeDir, config.port);
 const browserControl = createBrowserControlService(controlDeps);
 const computerControl = createComputerControl(controlDeps);
 registerAcpEntriesProvider(() => [...browserControl.acpEntries(), ...computerControl.acpEntries()]);
-void browserControl.boot(); // 接管模式已启用 → 自动拉起共享 Chrome（异步，不挡启动）
+void browserControl.boot(); // 接管模式已启用 → 自动拉起共享 Chrome（内部自带 catch，不掀翻启动）
 
 const { server, port } = await startHttp(config, startedAt, httpRoutes, authorize, [
   { method: "POST", path: "/api/image/call", handle: handleImageCall(imageProfiles) },
@@ -941,6 +945,10 @@ const { server, port } = await startHttp(config, startedAt, httpRoutes, authoriz
 ]);
 // 实际绑定端口（传 0 时由系统分配）同步给控制层——条目 url / dsh 注入都用它
 setControlContext(config.homeDir, port);
+// 端口落定后对齐：电脑控制若已启用，重写 12 家条目里的 url（端口变了旧条目就是死链）
+void computerControl.boot().catch((e: unknown) => {
+  log.error("computer control boot reconcile failed", { error: e instanceof Error ? e.message : String(e) });
+});
 const wss = attachWs(server, { config, startedAt, authorize });
 
 // ---- 待办 / GTD（backlog）—— 引擎需要 wss 广播，必须在 attachWs 之后构造 ----------

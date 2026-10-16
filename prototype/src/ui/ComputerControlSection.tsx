@@ -13,7 +13,9 @@ import { GroupCard, SettingsRow, Toggle } from "./SettingsPage.tsx";
 export function ComputerControlSection() {
   const [state, setState] = useState<ComputerControlState | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  // 计数而非布尔：重叠操作时第一个 finally 不该提前解锁（评审收敛）
+  const [busyCount, setBusyCount] = useState(0);
+  const busy = busyCount > 0;
   const [confirmPanic, setConfirmPanic] = useState(false);
 
   const refresh = useCallback(() => {
@@ -29,12 +31,12 @@ export function ComputerControlSection() {
   }, [refresh]);
 
   const run = (label: string, fn: () => Promise<ComputerControlState>): void => {
-    setBusy(true);
+    setBusyCount((c) => c + 1);
     setErr(null);
     fn()
       .then(setState)
       .catch((e) => setErr(`${label}失败：${e instanceof Error ? e.message : String(e)}`))
-      .finally(() => setBusy(false));
+      .finally(() => setBusyCount((c) => Math.max(0, c - 1)));
   };
 
   const lease = state?.lease;
@@ -55,7 +57,7 @@ export function ComputerControlSection() {
         <SettingsRow
           label="总闸（启用电脑控制）"
           description="开 = 各执行器获得 computer_* 工具（12 家写原生配置；dsh 随会话动态注入）；关 = 一切工具调用被拒绝。启用同时会预载桌面运行时（nut.js），依赖问题在开闸这一刻暴露。"
-          control={<Toggle on={state?.config.enabled === true} onChange={(v) => run("总闸切换", () => setComputerEnabled(v))} />}
+          control={<Toggle on={state?.config.enabled === true} disabled={busy} onChange={(v) => run("总闸切换", () => setComputerEnabled(v))} />}
         />
         <SettingsRow
           label="急停（Kill Switch）"

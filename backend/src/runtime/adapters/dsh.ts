@@ -486,8 +486,8 @@ export class DshAdapter implements ExecutorAdapter {
     if (state.ref === null) {
       // mcpServers 动态注入（docs/14 §2.4）：dsh 无落盘 MCP 配置，浏览器/电脑控制的
       // 条目由 ctrl/store 的 provider 给出（两个能力都停用时为空数组）。
-      // dsh 若拒收某形态（session/new 直接报错），降级为无 MCP 重试一次——注入是
-      // 增强，不能把会话本身搞死。
+      // dsh 若拒收，按「全量 → 仅 stdio → 空」三级降级重试——注入是增强，
+      // 不能把会话本身搞死；中间级保住浏览器条目不被 http 条目连坐。
       const injected = acpMcpServers();
       let res: { sessionId?: string };
       try {
@@ -495,13 +495,24 @@ export class DshAdapter implements ExecutorAdapter {
           sessionId?: string;
         };
       } catch (err: unknown) {
-        if (injected.length === 0) throw err;
-        log.warn("dsh session/new rejected mcpServers, retrying without", {
-          error: err instanceof Error ? err.message : String(err),
-        });
-        res = (await this.request(state, "session/new", { cwd: state.rootPath, mcpServers: [] }, 60000)) as {
-          sessionId?: string;
-        };
+        const stdioOnly = injected.filter((e) => e.command !== undefined);
+        if (injected.length === 0 || stdioOnly.length === injected.length) throw err;
+        try {
+          log.warn("dsh session/new rejected full mcpServers, retrying stdio-only", {
+            dropped: injected.filter((e) => e.command === undefined).map((e) => e.name),
+            error: err instanceof Error ? err.message : String(err),
+          });
+          res = (await this.request(state, "session/new", { cwd: state.rootPath, mcpServers: stdioOnly }, 60000)) as {
+            sessionId?: string;
+          };
+        } catch (err2: unknown) {
+          log.warn("dsh session/new rejected stdio mcpServers too, starting without MCP", {
+            error: err2 instanceof Error ? err2.message : String(err2),
+          });
+          res = (await this.request(state, "session/new", { cwd: state.rootPath, mcpServers: [] }, 60000)) as {
+            sessionId?: string;
+          };
+        }
       }
       if (typeof res.sessionId !== "string" || res.sessionId === "") {
         throw adapterError("acp_no_session", "dsh acp session/new returned no sessionId");

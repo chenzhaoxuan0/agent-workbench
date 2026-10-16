@@ -69,7 +69,6 @@ async function main(): Promise<void> {
 
   console.log("\n【1b】停用回收");
   st = await browser.setEnabled(false);
-  check("停用后条目全部入停用库", inv.rows.find((r) => r.name === "playwright") !== undefined || true); // 行还在（vault 实例），细节看下面
   const invAfter = mcpInventory(deps);
   const rowAfter = invAfter.rows.find((r) => r.name === "playwright");
   check("live 里没有 playwright 了", rowAfter?.instances.some((i) => !i.disabled) === false);
@@ -166,6 +165,63 @@ async function main(): Promise<void> {
   const afterPanic = await post({ jsonrpc: "2.0", id: 11, method: "tools/call", params: { name: "computer_click", arguments: { x: 1, y: 1 } } });
   check("panic 后输入动作被拒", afterPanic.json?.result?.isError === true);
   check("动作日志已记录工具调用", computer.getState().actions.some((a) => a.action === "tool.computer_click"));
+
+  console.log("\n【2c】端点双闸（评审 P0 回归）：跨源 Origin 403 / 非 JSON content-type 415");
+  const evil = await fetch(endpoint, {
+    method: "POST",
+    headers: { "content-type": "application/json", origin: "https://evil.example.com" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 90, method: "tools/list" }),
+  });
+  check("跨源 Origin 一律 403（浏览器 simple request 打不进来）", evil.status === 403);
+  const plainText = await fetch(endpoint, {
+    method: "POST",
+    headers: { "content-type": "text/plain" }, // 浏览器无需预检能发的形态
+    body: JSON.stringify({ jsonrpc: "2.0", id: 91, method: "tools/call", params: { name: "computer_click", arguments: { x: 1, y: 1 } } }),
+  });
+  check("text/plain 415（伪造 content-type 必须过预检，而预检只放行本地源）", plainText.status === 415);
+
+  console.log("\n【2d】急停取消排队动作（代际）+ 失败弃权租约");
+  await computer.setEnabled(true);
+  // 慢速 fake：typeText 占住队列 80ms，click 排在其后
+  const fastFake = createFakeRuntime();
+  const slowFake = {
+    ...fastFake,
+    typeText: async (t: string) => {
+      await new Promise((r) => setTimeout(r, 80));
+      await fastFake.typeText(t);
+    },
+  };
+  computer.setRuntime(slowFake);
+  const p1 = post({ jsonrpc: "2.0", id: 92, method: "tools/call", params: { name: "computer_type", arguments: { text: "slow" } } });
+  const p2 = post({ jsonrpc: "2.0", id: 93, method: "tools/call", params: { name: "computer_click", arguments: { x: 5, y: 5 } } });
+  await new Promise((r) => setTimeout(r, 20)); // 让 p1 进队列执行中
+  const stopRes = await post({ jsonrpc: "2.0", id: 94, method: "tools/call", params: { name: "computer_stop", arguments: {} } });
+  const [r1, r2] = await Promise.all([p1, p2]);
+  check("执行中的动作完成（原生调用不可中断，是已记录的边界）", r1.json?.result?.isError !== true);
+  check("排队中的动作被急停作废", r2.json?.result?.isError === true && String(r2.json?.result?.content?.[0]?.text).includes("已急停"), r2.json?.result);
+  check("急停回执明确说明边界", String(stopRes.json?.result?.content?.[0]?.text).includes("无法中断"));
+
+  // 失败弃权：运行时抛错 → 租约当场释放，而不是锁满 120s
+  const brokenFake = {
+    ...createFakeRuntime(),
+    click: async (): Promise<void> => {
+      throw new Error("boom");
+    },
+  };
+  computer.setRuntime(brokenFake);
+  const failing = await post({ jsonrpc: "2.0", id: 95, method: "tools/call", params: { name: "computer_click", arguments: { x: 1, y: 1 } } });
+  check("运行时抛错如实上抛", failing.json?.result?.isError === true && String(failing.json?.result?.content?.[0]?.text).includes("boom"));
+  check("失败即弃权：租约已释放", computer.getState().lease.holder === null, computer.getState().lease);
+  computer.setRuntime(createFakeRuntime());
+
+  console.log("\n【2e】boot 端口对齐（daemon 重启端口变 → 条目重写）");
+  setControlContext(join(root, "awb-home"), mcpPort + 1, skillsHome); // 模拟重启后端口漂移
+  await computer.boot();
+  const drifted = mcpInventory(deps).rows.find((r) => r.name === "workbench-computer");
+  const driftedEntry = drifted?.instances.find((i) => i.executorId === "claude" && !i.disabled)?.entry;
+  check("boot 后条目 url 对齐新端口", driftedEntry?.url === `http://127.0.0.1:${mcpPort + 1}/mcp/computer`, driftedEntry);
+  setControlContext(join(root, "awb-home"), mcpPort, skillsHome); // 还原，后续断言用
+  await computer.setEnabled(false); // 清场：把条目收回停用库
 
   await new Promise<void>((r) => server.close(() => r()));
 

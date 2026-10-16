@@ -9,7 +9,7 @@
  *
  * 本模块不 import mcpadmin / browserctl / computerctl —— 方向永远是别人 import 它。
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type {
@@ -77,7 +77,10 @@ function readJson<T>(name: string, fallback: T): T {
   const path = configPath(name);
   if (!existsSync(path)) return fallback;
   try {
-    return { ...fallback, ...(JSON.parse(readFileSync(path, "utf8")) as object) } as T;
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
+    // 只认纯对象：数组/标量落进来会被 spread 成垃圾字段（评审收敛）
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return fallback;
+    return { ...fallback, ...(parsed as object) } as T;
   } catch {
     // 坏文件 fail-open 回默认（显示层照常）；下次显式保存时覆写修复
     return fallback;
@@ -87,7 +90,11 @@ function readJson<T>(name: string, fallback: T): T {
 function writeJson(name: string, value: unknown): void {
   const path = configPath(name);
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify(value, null, 2) + "\n", "utf8");
+  // 临时文件 + rename 的原子写（对齐 mcpadmin 的写安全纪律）：半截 JSON 只会
+  // 留在 .tmp 里，正式文件要么旧要么新
+  const tmp = `${path}.tmp`;
+  writeFileSync(tmp, JSON.stringify(value, null, 2) + "\n", "utf8");
+  renameSync(tmp, path);
 }
 
 export function readBrowserControlConfig(): BrowserControlConfig {

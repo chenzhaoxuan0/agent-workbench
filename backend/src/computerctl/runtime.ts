@@ -15,7 +15,10 @@
  * - Window 句柄无公开访问器，防御性读 windowHandle 私有字段，读不到
  *   就只剩按标题激活的降级路径。
  */
-import { deflateSync } from "node:zlib";
+import { deflate } from "node:zlib";
+import { promisify } from "node:util";
+
+const deflateAsync = promisify(deflate);
 
 export interface WindowInfo {
   readonly handle: number;
@@ -105,7 +108,7 @@ export async function createNutRuntime(): Promise<DesktopRuntime> {
   return {
     async screenshot() {
       const img = await grabFresh();
-      const png = encodePngBgra(img.data, img.width, img.height);
+      const png = await encodePngBgra(img.data, img.width, img.height);
       return { pngBase64: png.toString("base64"), width: img.width, height: img.height };
     },
     async screenSize() {
@@ -273,7 +276,11 @@ function chunk(type: string, data: Buffer): Buffer {
   return Buffer.concat([len, body, crc]);
 }
 
-function encodePngBgra(bgra: Buffer, width: number, height: number): Buffer {
+/**
+ * 异步编码（deflate 让出事件循环）：1920x1080 的 raw 是 ~6MB，同步压缩一次
+ * 卡 daemon 200-400ms，终端流和 WS 都会抖。
+ */
+async function encodePngBgra(bgra: Buffer, width: number, height: number): Promise<Buffer> {
   // 每行：filter 字节 0 + RGB 三通道（win grab 实测 BGRA 通道序）
   const stride = width * 3;
   const raw = Buffer.alloc((stride + 1) * height);
@@ -293,10 +300,11 @@ function encodePngBgra(bgra: Buffer, width: number, height: number): Buffer {
   ihdr.writeUInt32BE(height, 4);
   ihdr[8] = 8; // bit depth
   ihdr[9] = 2; // color type: truecolor RGB
+  const compressed = await deflateAsync(raw, { level: 3 });
   return Buffer.concat([
     Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
     chunk("IHDR", ihdr),
-    chunk("IDAT", deflateSync(raw, { level: 3 })),
+    chunk("IDAT", compressed),
     chunk("IEND", Buffer.alloc(0)),
   ]);
 }
@@ -315,7 +323,8 @@ export function createFakeRuntime(log: ((line: string) => void) | null = null): 
       rec("screenshot");
       // 1x1 灰 PNG（合法文件，MCP 客户端可解码）
       const px = Buffer.from([0x80, 0x80, 0x80, 0xff]);
-      return { pngBase64: encodePngBgra(px, 1, 1).toString("base64"), width: 1, height: 1 };
+      const png = await encodePngBgra(px, 1, 1);
+      return { pngBase64: png.toString("base64"), width: 1, height: 1 };
     },
     async screenSize() {
       rec("screenSize");

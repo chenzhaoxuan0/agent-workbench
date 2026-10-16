@@ -34,6 +34,8 @@ export interface SharedChromeStatus {
   readonly port: number | null;
   /** 进程意外退出时的原因；null = 正常 / 未运行 */
   readonly exitReason: string | null;
+  /** 最近一次启动/停止失败的说明（UI 展示用）；null = 无 */
+  readonly lastError: string | null;
 }
 
 /** 单家执行器的扇出结果 */

@@ -60,7 +60,7 @@ interface ChromeState {
   /** 上次健康检查结果（running 的判定口径：进程活着或已收编，且端口有响应） */
   alive: boolean;
   exitReason: string | null;
-  /** 端口已写进条目，但 Chrome 迟迟没起来时的错误说明 */
+  /** 启动/停止失败的最近一次错误说明（UI 直接展示，别让用户盲点「启动」） */
   lastError: string | null;
 }
 
@@ -148,6 +148,19 @@ export function createBrowserControlService(
 
   // ---- 共享 Chrome --------------------------------------------------------------
 
+  /**
+   * 生命周期单飞链（vaultChain 同款）：boot() 自动拉起与 UI 手动启停并发时，
+   * 不加锁会 spawn 两个 Chrome——第二个要么被单实例委派吞掉留下死句柄
+   * （stop 杀的是死 pid，真 Chrome 还活着），要么起在第二个端口并把
+   * 第一次的活句柄覆盖丢。
+   */
+  let chromeChain: Promise<unknown> = Promise.resolve();
+  function withChrome<T>(fn: () => Promise<T>): Promise<T> {
+    const run = chromeChain.then(fn, fn);
+    chromeChain = run.catch(() => undefined);
+    return run;
+  }
+
   function sharedChromeStatus(): SharedChromeStatus {
     const handle = chrome.handle;
     return {
@@ -156,10 +169,11 @@ export function createBrowserControlService(
       kind: handle?.kind ?? null,
       port: handle?.port ?? readBrowserControlConfig().sharedPort ?? null,
       exitReason: chrome.exitReason,
+      lastError: chrome.lastError,
     };
   }
 
-  async function startSharedChrome(): Promise<BrowserControlState> {
+  async function startChromeLocked(): Promise<BrowserControlState> {
     const cfg = readBrowserControlConfig();
     if (chrome.handle !== null && (await cdpAlive(chrome.handle.port))) {
       chrome.alive = true;
@@ -199,12 +213,24 @@ export function createBrowserControlService(
     return state(readBrowserControlConfig());
   }
 
-  async function stopSharedChrome(): Promise<BrowserControlState> {
+  async function stopChromeLocked(): Promise<BrowserControlState> {
     const handle = chrome.handle;
     if (handle?.child?.pid !== undefined) {
-      killTree(handle.child.pid);
-      logControlAction("browser", "sharedChrome.stop", `已终止（端口 ${handle.port}）`);
-    } else {
+      const killed = await killTree(handle.child.pid);
+      // 验尸：taskkill 可能因权限失败——端口真熄灭才算停，否则下次「启动」
+      // 会收编一个 UI 声称已停止、实际还占着 profile 锁的实例
+      let stillAlive = await cdpAlive(handle.port);
+      for (let i = 0; i < 10 && stillAlive; i++) {
+        await new Promise((r) => setTimeout(r, 300));
+        stillAlive = await cdpAlive(handle.port);
+      }
+      if (!killed || stillAlive) {
+        chrome.exitReason = `停止未完全生效（taskkill ${killed ? "已执行" : "失败"}，调试端口${stillAlive ? "仍存活" : "已熄灭"}）——可能有残留进程占住 profile`;
+        logControlAction("browser", "sharedChrome.stop", chrome.exitReason);
+      } else {
+        logControlAction("browser", "sharedChrome.stop", `已终止（端口 ${handle.port} 熄灭）`);
+      }
+    } else if (handle !== null) {
       // 收编的存量进程（child=null）无从杀起：只记状态，端口留给用户手关
       logControlAction("browser", "sharedChrome.stop", "实例为收编存量（daemon 无进程句柄），未终止");
     }
@@ -212,6 +238,9 @@ export function createBrowserControlService(
     chrome.alive = false;
     return state(readBrowserControlConfig());
   }
+
+  const startSharedChrome = (): Promise<BrowserControlState> => withChrome(startChromeLocked);
+  const stopSharedChrome = (): Promise<BrowserControlState> => withChrome(stopChromeLocked);
 
   // ---- 状态组装 -----------------------------------------------------------------
 
@@ -280,10 +309,15 @@ export function createBrowserControlService(
       }
     },
     boot: async () => {
-      const cfg = readBrowserControlConfig();
-      if (cfg.enabled && cfg.mode === "takeover") {
-        log.info("browser control: takeover enabled, starting shared chrome");
-        await startSharedChrome();
+      try {
+        const cfg = readBrowserControlConfig();
+        if (cfg.enabled && cfg.mode === "takeover") {
+          log.info("browser control: takeover enabled, starting shared chrome");
+          await startSharedChrome();
+        }
+      } catch (e) {
+        // boot 是 void 火后不管的：任何抛错在这里终结，绝不让 daemon 启动崩
+        log.error("browser control boot failed", { error: e instanceof Error ? e.message : String(e) });
       }
     },
   };

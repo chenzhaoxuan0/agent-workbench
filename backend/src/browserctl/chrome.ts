@@ -62,6 +62,24 @@ export async function cdpAlive(port: number): Promise<boolean> {
   }
 }
 
+/**
+ * 收编前校验：端口上的调试端点必须自报 Chromium 系（Browser 字段含 Chrome/Edg）。
+ * 否则那可能是用户日常浏览器或别的工具的调试端口——收编它等于把真实登录态
+ * 交给所有执行器，且 executable/kind 会描述一个完全不同的二进制。
+ */
+async function cdpIsChromium(port: number): Promise<boolean> {
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/json/version`, {
+      signal: AbortSignal.timeout(1200),
+    });
+    if (!res.ok) return false;
+    const v = (await res.json()) as { Browser?: unknown };
+    return typeof v.Browser === "string" && /Chrome|Edg\//.test(v.Browser);
+  } catch {
+    return false;
+  }
+}
+
 /** 预定一个空闲 TCP 端口（listen(0) 拿系统分配，随即关掉——有极小的抢占窗口，可接受） */
 export function reservePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -112,24 +130,32 @@ export async function launchSharedChrome(
     return { error: "找不到 Chrome / Edge 可执行文件（未安装或路径非标准）" };
   }
   let port = preferPort ?? (await pickSharedPort());
-  if (await cdpAlive(port)) {
-    // 收编存量（上一代 daemon 崩溃残留 / 用户手动同参数启动）
+  if (await cdpIsChromium(port)) {
+    // 收编存量（上一代 daemon 崩溃残留 / 用户手动同参数启动）——只认自报
+    // Chromium 的端点（cdpIsChromium），防止误收用户日常浏览器的调试端口
     log.info("shared chrome adopted on existing debug port", { port });
     return { child: null, port, executable: candidate.executable, kind: candidate.kind };
   }
   if (await portInUse(port)) port = await pickSharedPort();
 
-  const child = spawn(
-    candidate.executable,
-    [
-      `--remote-debugging-port=${port}`,
-      `--user-data-dir=${userDataDir}`,
-      "--no-first-run",
-      "--no-default-browser-check",
-      "--restore-last-session=false",
-    ],
-    { stdio: "ignore", detached: false, windowsHide: false },
-  );
+  let child: ChildProcess;
+  try {
+    child = spawn(
+      candidate.executable,
+      [
+        `--remote-debugging-port=${port}`,
+        `--user-data-dir=${userDataDir}`,
+        "--no-first-run",
+        "--no-default-browser-check",
+        // 注意：不传 --restore-last-session —— Chromium 的 kRestoreLastSession 是
+        // 存在性开关，带 =false 反而强制恢复上次全部标签页，跨会话越积越多
+      ],
+      { stdio: "ignore", detached: false, windowsHide: false },
+    );
+  } catch (e) {
+    // spawn 同步抛（ENOENT/EACCES 等）——收窄成 {error}，别让调用方的 void boot() 变 unhandledRejection
+    return { error: `拉起 ${candidate.executable} 失败：${e instanceof Error ? e.message : String(e)}` };
+  }
   // Chrome 单实例委派：若同 profile 已有进程，新进程会把命令行交给旧进程后立刻退出。
   // 我们启动前已确认端口无人监听，正常路径不会走到这；防御性记录退出码。
   child.once("exit", (code) => {
@@ -148,16 +174,22 @@ export async function launchSharedChrome(
   return { child, port, executable: candidate.executable, kind: candidate.kind };
 }
 
-/** Windows 杀进程树；非 Windows 或无 pid 静默放过 */
-export function killTree(pid: number | undefined): void {
-  if (pid === undefined) return;
-  if (process.platform === "win32") {
-    execFile("taskkill", ["/pid", String(pid), "/T", "/F"], () => undefined);
-  } else {
-    try {
-      process.kill(pid, "SIGTERM");
-    } catch {
-      /* 已退出 */
+/**
+ * Windows 杀进程树；非 Windows 或无 pid 静默放过。
+ * 返回 taskkill/kill 是否成功——调用方据此决定要不要验尸（端口是否真熄灭）。
+ */
+export function killTree(pid: number | undefined): Promise<boolean> {
+  if (pid === undefined) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    if (process.platform === "win32") {
+      execFile("taskkill", ["/pid", String(pid), "/T", "/F"], (err) => resolve(err === null));
+    } else {
+      try {
+        process.kill(pid, "SIGTERM");
+        resolve(true);
+      } catch {
+        resolve(false);
+      }
     }
-  }
+  });
 }
