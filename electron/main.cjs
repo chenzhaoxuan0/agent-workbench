@@ -56,8 +56,8 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1520,
     height: 940,
-    minWidth: 1024,
-    minHeight: 680,
+    minWidth: 360,
+    minHeight: 480,
     title: "Agent Workbench",
     icon: path.join(__dirname, "icon.png"),
     backgroundColor: "#f7f7f4",

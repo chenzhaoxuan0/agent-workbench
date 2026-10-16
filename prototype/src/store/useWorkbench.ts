@@ -118,6 +118,7 @@ interface WorkbenchState {
   permissionDecisions: Readonly<Record<string, string>>;
   /** 本次运行的权限模式（composer 右侧常驻） */
   permissionMode: PermissionMode;
+  setPermissionMode: (mode: PermissionMode) => void;
   /** 本次/后续会话记忆注入范围（默认仅注入长期记忆 ["semantic"]） */
   memoryScopes: readonly ("semantic" | "daily")[];
   setMemoryScopes: (scopes: readonly ("semantic" | "daily")[]) => void;
@@ -183,9 +184,14 @@ interface WorkbenchState {
   /** 批量入口：给一组动作依次应用，任一步失败则整组不动 */
   applyModelPrefs: (runtimeId: string, steps: readonly ((p: ProviderModelPrefs) => ProviderModelPrefs)[]) => void;
   setDraft: (v: string) => void;
-  setPermissionMode: (m: PermissionMode) => void;
   /** 发一条消息：活跃会话续聊，否则 startSession 开新会话（详见实现注释） */
-  run: (prompt: string, opts?: { memoryOptions?: MemoryInjectionOptions }) => Promise<void>;
+  run: (
+    prompt: string,
+    opts?: {
+      memoryOptions?: MemoryInjectionOptions;
+      attachments?: readonly import("../core/attachments.ts").ChatAttachment[];
+    },
+  ) => Promise<void>;
   /** 停止当前运行 */
   cancelRun: () => void;
   resolvePermission: (requestId: string, decision: PermissionDecision) => void;
@@ -787,6 +793,22 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
         ? (asModelId(hint!) as ModelId)
         : (visible[0]?.id ?? asModelId(""));
 
+    const attachments = opts?.attachments;
+    let fullPrompt = prompt;
+    if (attachments && attachments.length > 0) {
+      const parts: string[] = [];
+      for (const att of attachments) {
+        if (att.category === "image") {
+          parts.push(`[图片附件: ${att.name}${att.localPath ? ` (本地路径: ${att.localPath})` : ""}]`);
+        } else if (att.textContent) {
+          parts.push(`\n--- 附件文件: ${att.name} ---\n${att.textContent}\n---`);
+        } else {
+          parts.push(`[附件文件: ${att.name}${att.localPath ? ` (本地路径: ${att.localPath})` : ""}]`);
+        }
+      }
+      fullPrompt = prompt.trim() ? `${prompt}\n\n${parts.join("\n")}` : parts.join("\n");
+    }
+
     const pushUserBubble = (sessionId: SessionId) => {
       set((s) => ({
         timeline: [
@@ -799,6 +821,7 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
               messageId: `u${++seq}`,
               role: "user" as const,
               text: prompt,
+              attachments,
             } as const,
             at: Date.now(),
           },
@@ -814,7 +837,8 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
       try {
         await adapter.sendMessage({
           sessionId: active.id,
-          text: prompt,
+          text: fullPrompt,
+          attachments,
           loop: {
             ...(loop.reasoningLevel ? { reasoningLevel: loop.reasoningLevel } : {}),
           },
@@ -832,11 +856,12 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
     try {
       session = await adapter.startSession({
         unit,
-        prompt,
+        prompt: fullPrompt,
         model,
         worktree: unit.kind === "project" ? { path: `${unit.rootPath}/.wt/session`, branch: "feat/session" } : undefined,
         loop,
         memoryOptions: opts?.memoryOptions ?? { scopes: get().memoryScopes },
+        attachments,
       });
     } catch (err: unknown) {
       fail(err);

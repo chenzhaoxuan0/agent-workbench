@@ -10,6 +10,7 @@
  */
 
 import type { SessionId, SessionSource, UnitId } from "./units.ts";
+import type { ChatAttachment } from "./attachments.ts";
 
 /**
  * 计划步骤的状态机。
@@ -61,6 +62,7 @@ export type RuntimeEvent =
       readonly messageId: string;
       readonly role: "user" | "assistant" | "system";
       readonly text: string;
+      readonly attachments?: readonly ChatAttachment[];
     }
   | {
       readonly type: "message.completed";

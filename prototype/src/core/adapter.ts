@@ -177,12 +177,14 @@ export interface StartSessionRequest {
   readonly loop?: LoopParams;
   /** 记忆注入配置（可选指定 semantic / daily / procedural 作用域） */
   readonly memoryOptions?: MemoryInjectionOptions;
+  /** 关联的附件列表 */
+  readonly attachments?: readonly import("./attachments.ts").ChatAttachment[];
 }
 
 export interface SendMessageRequest {
   readonly sessionId: SessionId;
   readonly text: string;
-  readonly attachments?: readonly { readonly path: string; readonly mimeType: string }[];
+  readonly attachments?: readonly import("./attachments.ts").ChatAttachment[];
   /** 下一轮的 loop 参数覆盖（会话级 mode 不变，reasoning 可逐轮调） */
   readonly loop?: Omit<LoopParams, "mode">;
 }

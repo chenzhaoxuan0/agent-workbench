@@ -1,0 +1,149 @@
+/**
+ * 附件模型与格式工具 —— 对齐 ZCode 附件系统规范 (chatAttachments.ts / chatAttachmentMetadata.ts)。
+ *
+ * 支持格式：
+ * - 图片：png, jpg, jpeg, gif, webp, svg, bmp, ico (最大 20MB)
+ * - 源码与文本：ts, tsx, js, jsx, py, rs, go, java, c, cpp, h, cs, html, css, sql, sh, yaml, yml, toml, json, xml, md, txt, log, diff, patch 等
+ * - 常见文档：pdf, csv
+ */
+
+export const MAX_ATTACHMENTS = 8;
+export const INLINE_IMAGE_MAX_BYTES = 20 * 1024 * 1024; // 20 MB
+
+export type AttachmentCategory = "image" | "code" | "document" | "other";
+
+export interface ChatAttachment {
+  id: string;
+  name: string;
+  size: number;
+  mimeType: string;
+  category: AttachmentCategory;
+  url?: string; // 浏览器本地预览 URL (URL.createObjectURL)
+  localPath?: string; // 桌面端原生路径 (如果有)
+  textContent?: string; // 纯文本/代码类附件文本内容
+  base64?: string; // 图片或文件的 base64 编码
+}
+
+const TEXT_LIKE_REGEX =
+  /^(cjs|conf|cpp|cs|css|csv|diff|env|go|h|hpp|html|ini|java|js|json|jsx|log|md|mjs|patch|py|rs|sh|sql|toml|ts|tsx|txt|xml|yaml|yml)$/i;
+
+const CODE_EXT_REGEX =
+  /^(ts|tsx|js|jsx|mjs|cjs|py|rs|go|java|c|cpp|h|hpp|cs|html|css|sql|sh|bash|json|yaml|yml|toml|xml)$/i;
+
+export function isTextLikeExtension(ext: string): boolean {
+  return TEXT_LIKE_REGEX.test(ext);
+}
+
+export function inferAttachmentMimeType(filename: string): string {
+  const ext = filename.split(".").pop()?.toLowerCase() ?? "";
+  switch (ext) {
+    case "md":
+      return "text/markdown";
+    case "json":
+      return "application/json";
+    case "csv":
+      return "text/csv";
+    case "txt":
+    case "log":
+      return "text/plain";
+    case "png":
+      return "image/png";
+    case "jpg":
+    case "jpeg":
+      return "image/jpeg";
+    case "gif":
+      return "image/gif";
+    case "webp":
+      return "image/webp";
+    case "svg":
+      return "image/svg+xml";
+    case "bmp":
+      return "image/bmp";
+    case "ico":
+      return "image/x-icon";
+    case "pdf":
+      return "application/pdf";
+    default:
+      if (isTextLikeExtension(ext)) return "text/plain";
+      return "application/octet-stream";
+  }
+}
+
+export function categorizeAttachment(filename: string, mimeType: string): AttachmentCategory {
+  if (mimeType.startsWith("image/")) return "image";
+  const ext = filename.split(".").pop()?.toLowerCase() ?? "";
+  if (CODE_EXT_REGEX.test(ext)) return "code";
+  if (mimeType.startsWith("text/") || ext === "pdf" || ext === "md" || ext === "txt" || ext === "csv") {
+    return "document";
+  }
+  return "other";
+}
+
+export function formatAttachmentSize(bytes: number): string {
+  if (bytes <= 0) return "0 B";
+  const mib = bytes / (1024 * 1024);
+  if (mib >= 1) return `${mib.toFixed(mib >= 10 ? 0 : 1)} MB`;
+  const kib = Math.ceil(bytes / 1024);
+  return `${kib} KB`;
+}
+
+export async function createAttachmentFromFile(file: File): Promise<ChatAttachment> {
+  const id = `att_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const mimeType = file.type || inferAttachmentMimeType(file.name);
+  const category = categorizeAttachment(file.name, mimeType);
+
+  let url: string | undefined;
+  let textContent: string | undefined;
+  let base64: string | undefined;
+
+  // 1. 如果是图片，创建 objectUrl 供缩略图与大图预览
+  if (category === "image") {
+    try {
+      url = URL.createObjectURL(file);
+      // 转 base64 备用
+      base64 = await readFileAsBase64(file);
+    } catch {
+      // 容错降级
+    }
+  } else if (category === "code" || category === "document") {
+    // 2. 如果是文本/代码文件（且小于 2MB），尝试直接读纯文本
+    if (file.size <= 2 * 1024 * 1024 && !mimeType.includes("pdf")) {
+      try {
+        textContent = await file.text();
+      } catch {
+        // 二进制或读取失败
+      }
+    }
+  }
+
+  // 读取桌面端 Electron 挂在 File 上的 path 属性 (若有)
+  const localPath = (file as unknown as { path?: string }).path || undefined;
+
+  return {
+    id,
+    name: file.name,
+    size: file.size,
+    mimeType,
+    category,
+    url,
+    localPath,
+    textContent,
+    base64,
+  };
+}
+
+function readFileAsBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === "string") {
+        const marker = reader.result.indexOf(",");
+        resolve(marker !== -1 ? reader.result.slice(marker + 1) : reader.result);
+      } else {
+        reject(new Error("读取 Base64 失败"));
+      }
+    };
+    reader.onerror = () => reject(reader.error ?? new Error("读取文件失败"));
+    reader.readAsDataURL(file);
+  });
+}

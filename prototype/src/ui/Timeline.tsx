@@ -23,6 +23,8 @@ import { useWorkbench, selectActiveUnit } from "../store/useWorkbench.ts";
 import { useAppearance } from "../store/useAppearance.ts";
 import { botAvatarStyle } from "./Sidebar.tsx";
 import { MarkdownContent } from "./MarkdownContent.tsx";
+import { AttachmentsBar } from "./AttachmentsBar.tsx";
+import type { ChatAttachment } from "../core/attachments.ts";
 import { cn } from "./cn.ts";
 
 /**
@@ -110,7 +112,12 @@ function groupTimelineEvents(events: readonly { id: number | string; event: Runt
 
       case "message.delta":
         if (event.role === "user") {
-          result.push({ id, kind: "user.message", at, data: { text: event.text } });
+          result.push({
+            id,
+            kind: "user.message",
+            at,
+            data: { text: event.text, attachments: event.attachments },
+          });
         }
         break;
 
@@ -228,12 +235,21 @@ function parseSlashCommand(text: string): { isCommand: boolean; name: string; ar
   };
 }
 
-function UserMessageBubble({ text }: { text: string }) {
+function UserMessageBubble({
+  text,
+  attachments,
+}: {
+  text: string;
+  attachments?: readonly ChatAttachment[];
+}) {
   const parsed = parseSlashCommand(text);
 
   if (parsed.isCommand) {
     return (
-      <div className="flex flex-col items-end">
+      <div className="flex flex-col items-end gap-1.5">
+        {attachments && attachments.length > 0 && (
+          <AttachmentsBar attachments={[...attachments]} readOnly />
+        )}
         <div className="max-w-[85%] rounded-[16px] rounded-tr-[4px] border border-line bg-card px-3.5 py-2.5 shadow-xs flex items-center gap-2.5">
           <div className="flex h-5 w-5 shrink-0 items-center justify-center rounded bg-ink text-canvas font-mono text-[11px] font-bold leading-none">
             /
@@ -255,10 +271,15 @@ function UserMessageBubble({ text }: { text: string }) {
   }
 
   return (
-    <div className="flex flex-col items-end">
-      <div className="max-w-[85%] rounded-[16px] rounded-tr-[4px] border border-line bg-card px-4 py-3 shadow-xs">
-        <p className="whitespace-pre-wrap text-body leading-relaxed text-ink">{text}</p>
-      </div>
+    <div className="flex flex-col items-end gap-1.5">
+      {attachments && attachments.length > 0 && (
+        <AttachmentsBar attachments={[...attachments]} readOnly />
+      )}
+      {text.trim() && (
+        <div className="max-w-[85%] rounded-[16px] rounded-tr-[4px] border border-line bg-card px-4 py-3 shadow-xs">
+          <p className="whitespace-pre-wrap text-body leading-relaxed text-ink">{text}</p>
+        </div>
+      )}
     </div>
   );
 }
@@ -278,7 +299,7 @@ function TimelineItemRow({ item, unitName, busy }: { item: GroupedItem; unitName
       );
 
     case "user.message":
-      return <UserMessageBubble text={item.data.text} />;
+      return <UserMessageBubble text={item.data.text} attachments={item.data.attachments} />;
 
     case "thinking":
       return <ThinkingBlock text={item.data.text} busy={busy} />;
