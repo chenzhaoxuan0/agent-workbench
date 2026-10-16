@@ -1,10 +1,11 @@
 import { useState } from "react";
-import { Check, FolderOpen, History, MessageSquare, Radio, SquareTerminal } from "lucide-react";
+import { Check, FolderOpen, History, MessageSquare, Radio, Smartphone, SquareTerminal } from "lucide-react";
 import { useShell } from "../store/useShell.ts";
 import { useWorkbench, selectActiveUnit } from "../store/useWorkbench.ts";
 import { useBacklog } from "../store/useBacklog.ts";
 import { openFolder } from "../adapters/daemon/client.ts";
 import { HistoryDialog } from "./HistoryDialog.tsx";
+import { RemoteControlDialog } from "./RemoteControlDialog.tsx";
 import { cn } from "./cn.ts";
 
 /** 图标按钮的统一规格：28px 命中区（ZCode 的 icon-md），14px 图标 */
@@ -16,6 +17,7 @@ export function WorkspaceHeader() {
   const conversationView = useShell((s) => s.conversationView);
   const setConversationView = useShell((s) => s.setConversationView);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [remoteOpen, setRemoteOpen] = useState(false);
 
   const unit = useWorkbench(selectActiveUnit);
   const isSteward = unit?.id === "steward";
@@ -100,11 +102,29 @@ export function WorkspaceHeader() {
             <History size={14} />
           </button>
         )}
+        <button
+          onClick={() => setRemoteOpen(true)}
+          aria-label="移动端远控中心：扫码直连手机 Web 触控界面与查看 IM 渠道守护状态"
+          title="移动端远控中心&#10;扫码直连手机 Web 触控界面（100dvh 抗畸变 + 底部抽屉审批 + 虚拟键终端）与查看 IM 渠道守护状态"
+          className={cn(
+            "flex h-7 items-center gap-1.5 rounded-btn px-2 text-caption font-medium transition",
+            remoteOpen
+              ? "bg-teal text-white shadow-xs"
+              : "text-graphite hover:bg-line-soft hover:text-ink border border-line/60"
+          )}
+        >
+          <Smartphone size={13} className={remoteOpen ? "text-white" : "text-teal"} />
+          <span className="hidden sm:inline">移动端远控</span>
+        </button>
         <BackgroundGuardianBadge />
       </div>
 
       {historyOpen && unit !== undefined && (
         <HistoryDialog unitId={unit.id} unitName={unit.name} onClose={() => setHistoryOpen(false)} />
+      )}
+
+      {remoteOpen && (
+        <RemoteControlDialog onClose={() => setRemoteOpen(false)} />
       )}
     </header>
   );

@@ -1301,6 +1301,15 @@ export class RuntimeHost {
       log.info("permission rule added (always)", { id, runtimeId: h.runtimeId, pattern });
     }
     await h.impl.resolvePermission(requestId, decision);
+    const resolvedEvent: RuntimeEvent = {
+      type: "permission.resolved",
+      sessionId,
+      requestId,
+      decision,
+    };
+    this.emitStamped(h, resolvedEvent);
+    this.track(h, resolvedEvent);
+    this.persistOnEvent(h, resolvedEvent);
   }
 
   async shutdown(): Promise<void> {

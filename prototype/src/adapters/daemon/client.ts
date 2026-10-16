@@ -171,6 +171,15 @@ export class DaemonClient {
   async #ensureToken(): Promise<string | null> {
     if (this.#token !== null) return this.#token;
     try {
+      if (typeof window !== "undefined") {
+        const urlParams = new URLSearchParams(window.location.search);
+        const qToken = urlParams.get("token");
+        if (qToken) {
+          localStorage.setItem("agent-workbench:daemon-token", qToken);
+          this.#token = qToken;
+          return qToken;
+        }
+      }
       const stored = localStorage.getItem("agent-workbench:daemon-token");
       if (stored !== null && stored !== "") {
         this.#token = stored;
@@ -657,7 +666,13 @@ export async function ensureBotGitignore(
 }
 
 export interface ChannelStatus {
-  readonly gateways: { readonly feishu: number; readonly telegram: number };
+  readonly gateways: {
+    readonly feishu: number;
+    readonly telegram: number;
+    readonly weixin?: number;
+    readonly discord?: number;
+    readonly [kind: string]: number | undefined;
+  };
   readonly bots: readonly {
     readonly id: string;
     readonly channels: readonly { readonly kind: string; readonly enabled: boolean; readonly accounts: number }[];
@@ -1318,4 +1333,135 @@ export async function runBacklogConsolidate(
     45000,
   );
 }
+
+// ---- 远程控制与多渠道网关 RPC ----------------------------------------------
+
+export interface NetworkInterfaceInfo {
+  readonly name: string;
+  readonly address: string;
+  readonly family: "IPv4" | "IPv6";
+  readonly type: "lan" | "tailscale" | "virtual" | "loopback" | "unknown";
+  readonly priority: number;
+}
+
+export async function fetchNetworkInterfaces(
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<readonly NetworkInterfaceInfo[]> {
+  try {
+    const res = await fetch(`${httpUrlOf(endpoint)}/api/network/interfaces`);
+    if (res.ok) {
+      const data = (await res.json()) as { ok: boolean; interfaces: NetworkInterfaceInfo[] };
+      return data.interfaces ?? [];
+    }
+  } catch (err) {
+    console.warn("[client] fetchNetworkInterfaces failed:", err);
+  }
+  const client = DaemonClient.get(endpoint);
+  const result = await client.rpc<{ interfaces: NetworkInterfaceInfo[] }>("network.interfaces", null, 10000);
+  return result.interfaces ?? [];
+}
+
+export interface GatewayStatus {
+  readonly kind: string;
+  readonly running: boolean;
+  readonly accounts: number;
+  readonly details?: Record<string, unknown>;
+}
+
+export type ChannelStatusResult = ChannelStatus;
+export const getChannelStatusRpc = fetchChannelStatus;
+
+export interface WeixinQrCodeResult {
+  readonly qrCode: string;
+  readonly qrUrl: string;
+}
+
+export async function beginWeixinQrLogin(
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<WeixinQrCodeResult> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<WeixinQrCodeResult>("channel.weixin.qr.begin", null, 15000);
+}
+
+export interface WeixinLoginPollResult {
+  readonly status: "wait_scan" | "scanned" | "success" | "expired" | "canceled";
+  readonly botToken?: string;
+  readonly botId?: string;
+  readonly message?: string;
+}
+
+export async function pollWeixinQrLogin(
+  qrCode: string,
+  botId?: string,
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<WeixinLoginPollResult> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<WeixinLoginPollResult>("channel.weixin.qr.poll", { qrCode, botId }, 15000);
+}
+
+export type TunnelStatus = "stopped" | "starting" | "running" | "error";
+export type TunnelProvider = "cloudflared" | "custom";
+
+export interface TunnelState {
+  readonly status: TunnelStatus;
+  readonly provider: TunnelProvider;
+  readonly url: string | null;
+  readonly error: string | null;
+  readonly cloudflaredAvailable: boolean;
+  readonly customUrl: string | null;
+}
+
+export async function fetchTunnelState(
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<TunnelState> {
+  try {
+    const res = await fetch(`${httpUrlOf(endpoint)}/api/tunnel/status`);
+    if (res.ok) {
+      return (await res.json()) as TunnelState;
+    }
+  } catch (err) {
+    console.warn("[client] fetchTunnelState HTTP fallback:", err);
+  }
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<TunnelState>("tunnel.status", null, 10000);
+}
+
+export async function startTunnel(
+  params: { provider?: TunnelProvider; customUrl?: string } = {},
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<TunnelState> {
+  try {
+    const res = await fetch(`${httpUrlOf(endpoint)}/api/tunnel/start`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(params),
+    });
+    if (res.ok) {
+      return (await res.json()) as TunnelState;
+    }
+  } catch (err) {
+    console.warn("[client] startTunnel HTTP fallback:", err);
+  }
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<TunnelState>("tunnel.start", params, 20000);
+}
+
+export async function stopTunnel(
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<TunnelState> {
+  try {
+    const res = await fetch(`${httpUrlOf(endpoint)}/api/tunnel/stop`, {
+      method: "POST",
+    });
+    if (res.ok) {
+      return (await res.json()) as TunnelState;
+    }
+  } catch (err) {
+    console.warn("[client] stopTunnel HTTP fallback:", err);
+  }
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<TunnelState>("tunnel.stop", null, 10000);
+}
+
+
 

@@ -537,12 +537,16 @@ export class TerminalSession {
     this.term.focus();
   }
 
-  clear(): void {
-    this.term.clear();
+  sendData(data: string): void {
     const client = DaemonClient.get(defaultDaemonEndpoint());
     void client
-      .rpc("terminal.input", { terminalId: this.terminalId, data: "\x0c" }, 3000)
+      .rpc("terminal.input", { terminalId: this.terminalId, data }, 3000)
       .catch(() => {});
+  }
+
+  clear(): void {
+    this.term.clear();
+    this.sendData("\x0c");
   }
 
   async restart(): Promise<void> {

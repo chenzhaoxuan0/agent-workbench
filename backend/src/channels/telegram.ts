@@ -1,21 +1,35 @@
 /**
- * Telegram 渠道网关（docs/08 WP-8）——"bot 找得到你"的入站通道第一站。
+ * Telegram 渠道网关 —— 升级为交互式富网关（Interactive Gateway）。
  *
- * 语义对齐 waku gateway（MIT，waku/gateway/runner.py）：单 bot 串行排队
- * （同一 bot 的消息绝不并发两轮）、轮落定后回全文。渠道是 faceless 的：
- * headless 无审批面，会话固定 yolo（与 cron 自动化同一口径，文档已写明边界）。
- *
- * apiBase 可被 AGENT_WORKBENCH_TELEGRAM_API 覆盖——冒烟用本地 mock Bot API。
+ * 核心升级点：
+ * 1. 长轮询（Long Polling）：getUpdates 带 timeout=25，大幅降低延迟与请求频率；
+ * 2. 状态反馈：打字状态提示（sendChatAction: "typing"）；
+ * 3. 常用指令：/new（重置新会话）、/status（查看状态）、/help（帮助）；
+ * 4. 远程确认门（Remote Approval）：敏感工具执行时下发 Inline Keyboard 按钮，
+ *    用户点击按钮通过 callback_query 实时回传裁决，杜绝盲目 yolo 执行。
  */
 
 import type { BotRegistry, BotDefinition } from "../bots/registry.ts";
 import type { RuntimeHost } from "../runtime/host.ts";
+import type { CredentialVault } from "../credentials/vault.ts";
+import { resolveSecret } from "../credentials/vault.ts";
 import { runBotTurn } from "./askBot.ts";
+import type { RuntimeEvent } from "../../../prototype/src/core/events.ts";
 import { log } from "../log.ts";
 
 interface TgUpdate {
   update_id?: number;
-  message?: { chat?: { id?: number }; text?: string };
+  message?: {
+    message_id?: number;
+    chat?: { id?: number };
+    text?: string;
+  };
+  callback_query?: {
+    id: string;
+    from: { id: number; first_name?: string };
+    message?: { message_id?: number; chat?: { id?: number } };
+    data?: string;
+  };
 }
 
 interface TgAccountSpec {
@@ -23,70 +37,15 @@ interface TgAccountSpec {
   readonly botId: string;
   readonly botToken: string;
   readonly chatId: string;
+  readonly interactiveApproval: boolean;
 }
 
 const REPLY_CAP = 3_900; // Telegram 文本消息上限 4096，留余量
-
-/** 解析一个 bot 的 telegram 账号。SecretRef（env）与旧明文都认，迁移期兼容。 */
-function telegramAccounts(bot: BotDefinition): TgAccountSpec[] {
-  const botId = typeof bot.id === "string" ? bot.id : "";
-  if (botId === "") return [];
-  const channels = bot.channels as unknown;
-  if (!Array.isArray(channels)) return [];
-
-  const out: TgAccountSpec[] = [];
-  for (const ch of channels as Array<Record<string, unknown> | undefined>) {
-    if (ch?.["kind"] !== "telegram" || ch["enabled"] !== true) continue;
-    const raw: Array<Record<string, unknown>> =
-      Array.isArray(ch["accounts"]) && ch["accounts"].length > 0
-        ? (ch["accounts"] as Array<Record<string, unknown>>)
-        : [
-            {
-              id: "default",
-              botToken: (ch["config"] as Record<string, unknown> | undefined)?.["botToken"],
-              botTokenEnv: (ch["config"] as Record<string, unknown> | undefined)?.["botTokenEnv"],
-              chatId: (ch["config"] as Record<string, unknown> | undefined)?.["chatId"],
-            },
-          ];
-    for (const acc of raw) {
-      // ⚠ 两种落盘形态都要认：设置页写的是 `botTokenEnv`（只存**环境变量名**，
-      // token 本身不落盘），旧 bot.json / 手写配置用的是 `botToken`。
-      // 以前只读 botToken，于是「UI 里配好的 telegram」被判成
-      // incomplete credentials 直接跳过 —— 整条渠道静默不工作。
-      const envName = acc["botTokenEnv"];
-      const token = resolveSecretValue(
-        acc["botToken"] ?? (typeof envName === "string" && envName !== "" ? { source: "env", id: envName } : undefined),
-      );
-      const chatId = typeof acc["chatId"] === "string" ? acc["chatId"] : "";
-      const id = typeof acc["id"] === "string" && acc["id"] !== "" ? acc["id"] : "default";
-      // 评审 P2：单份畸形 bot.json 不许拖死排在后面的所有 bot
-      if (token === "" || chatId === "") {
-        log.warn("telegram account skipped: incomplete credentials", { bot: botId, account: id });
-        continue;
-      }
-      out.push({ key: `${botId}::${id}`, botId, botToken: token, chatId });
-    }
-  }
-  return out;
-}
-
-/** SecretRef 解析：env 查环境变量；裸字符串当明文认（迁移期兼容） */
-function resolveSecretValue(v: unknown): string {
-  if (typeof v === "string") return v;
-  if (v === null || typeof v !== "object") return "";
-  const r = v as Record<string, unknown>;
-  const id = typeof r["id"] === "string" ? r["id"] : "";
-  if (id === "") return "";
-  if (r["source"] === "env") return process.env[id] ?? "";
-  if (r["source"] === "literal") return id;
-  return "";
-}
 
 export class TelegramGateway {
   private timer: NodeJS.Timeout | null = null;
   private readonly offsets = new Map<string, number>();
   private readonly chains = new Map<string, Promise<void>>();
-  /** 在途轮询锁（评审 P2）：API 变慢时无锁会让同 bot 轮询堆叠、同 offset 被并发取走重复消费 */
   private readonly inFlight = new Set<string>();
 
   constructor(
@@ -94,15 +53,14 @@ export class TelegramGateway {
       apiBase: string;
       registry: BotRegistry;
       host: RuntimeHost;
-      /** 轮询间隔。tick() 每轮都重读 bot.json，所以它本身就是 reconcile——渠道改了
-       *  最迟一个 pollMs 就生效，不必重启 daemon */
+      vault?: CredentialVault;
       pollMs?: number;
     },
   ) {}
 
   start(): void {
     if (this.timer !== null) return;
-    const pollMs = this.opts.pollMs ?? 1500;
+    const pollMs = this.opts.pollMs ?? 2000;
     this.timer = setInterval(() => void this.tick(), pollMs);
     this.timer.unref();
     log.info("telegram gateway started", { apiBase: this.opts.apiBase, pollMs });
@@ -113,17 +71,62 @@ export class TelegramGateway {
     this.timer = null;
   }
 
-  /** 在途轮询中的账号数（channel.status 用；轮询是每 tick 重建的，瞬时值） */
   get activeAccountCount(): number {
     return this.inFlight.size;
   }
 
-  /**
-   * 扫盘上的 bot 定义，逐账号轮询。
-   *
-   * ⚠ 这是「reconcile」而不是「启动时定死」：渠道由 bot.json 声明，用户在设置页改完
-   * 渠道保存，下一轮就生效，不必重启 daemon。
-   */
+  private async resolveAccounts(bot: BotDefinition): Promise<TgAccountSpec[]> {
+    const botId = typeof bot.id === "string" ? bot.id : "";
+    if (botId === "" || !Array.isArray(bot.channels)) return [];
+
+    const out: TgAccountSpec[] = [];
+    for (const ch of bot.channels as Array<Record<string, unknown> | undefined>) {
+      if (ch?.["kind"] !== "telegram" || ch["enabled"] !== true) continue;
+      const raw: Array<Record<string, unknown>> =
+        Array.isArray(ch["accounts"]) && ch["accounts"].length > 0
+          ? (ch["accounts"] as Array<Record<string, unknown>>)
+          : [
+              {
+                id: "default",
+                botToken: (ch["config"] as Record<string, unknown> | undefined)?.["botToken"],
+                botTokenEnv: (ch["config"] as Record<string, unknown> | undefined)?.["botTokenEnv"],
+                chatId: (ch["config"] as Record<string, unknown> | undefined)?.["chatId"],
+              },
+            ];
+      for (const acc of raw) {
+        let token = "";
+        if (this.opts.vault) {
+          token = await resolveSecret(
+            (acc["secretRef"] as never) ?? acc["botToken"] ?? (acc["botTokenEnv"] ? { source: "env", id: String(acc["botTokenEnv"]) } : undefined),
+            this.opts.vault,
+            bot.rootPath,
+          );
+        } else {
+          const envName = acc["botTokenEnv"];
+          token = typeof acc["botToken"] === "string" && acc["botToken"] !== ""
+            ? acc["botToken"]
+            : typeof envName === "string" && envName !== ""
+              ? process.env[envName] ?? ""
+              : "";
+        }
+        const chatId = typeof acc["chatId"] === "string" ? acc["chatId"] : "";
+        const id = typeof acc["id"] === "string" && acc["id"] !== "" ? acc["id"] : "default";
+        if (token === "" || chatId === "") {
+          log.warn("telegram account skipped: incomplete credentials", { bot: botId, account: id });
+          continue;
+        }
+        out.push({
+          key: `${botId}::${id}`,
+          botId,
+          botToken: token,
+          chatId,
+          interactiveApproval: acc["interactiveApproval"] !== false,
+        });
+      }
+    }
+    return out;
+  }
+
   private async tick(): Promise<void> {
     let bots: BotDefinition[];
     try {
@@ -132,9 +135,9 @@ export class TelegramGateway {
       return;
     }
     for (const bot of bots) {
-      // 评审 P2：单份畸形 bot.json 不许拖死排在后面的所有 bot
       try {
-        for (const acc of telegramAccounts(bot)) {
+        const accounts = await this.resolveAccounts(bot);
+        for (const acc of accounts) {
           if (this.inFlight.has(acc.botToken)) continue;
           this.inFlight.add(acc.botToken);
           void this.pollBot(bot, acc).finally(() => this.inFlight.delete(acc.botToken));
@@ -151,8 +154,8 @@ export class TelegramGateway {
     const offset = this.offsets.get(token) ?? 0;
     let updates: TgUpdate[];
     try {
-      const r = await fetch(`${this.opts.apiBase}/bot${token}/getUpdates?timeout=0&offset=${offset}`, {
-        signal: AbortSignal.timeout(10_000),
+      const r = await fetch(`${this.opts.apiBase}/bot${token}/getUpdates?timeout=25&offset=${offset}`, {
+        signal: AbortSignal.timeout(35_000),
       });
       const j = (await r.json()) as { ok?: boolean; result?: TgUpdate[] };
       if (j.ok !== true || !Array.isArray(j.result)) return;
@@ -161,8 +164,16 @@ export class TelegramGateway {
       log.debug("telegram getUpdates failed", { bot: bot.id, error: err instanceof Error ? err.message : String(err) });
       return;
     }
+
     for (const u of updates) {
       if (typeof u.update_id === "number") this.offsets.set(token, u.update_id + 1);
+
+      // 处理按钮回调 (Inline Keyboard 回调)
+      if (u.callback_query) {
+        void this.handleCallbackQuery(acc, u.callback_query);
+        continue;
+      }
+
       const msg = u.message;
       if (msg?.text === undefined || msg.chat?.id === undefined) continue;
       if (String(msg.chat.id) !== chatId) continue;
@@ -170,7 +181,39 @@ export class TelegramGateway {
     }
   }
 
-  /** 单 bot 串行链：前一条处理完才轮到下一条 */
+  /** 处理内联按钮点击 */
+  private async handleCallbackQuery(
+    acc: TgAccountSpec,
+    query: NonNullable<TgUpdate["callback_query"]>,
+  ): Promise<void> {
+    const data = query.data ?? "";
+    const callbackId = query.id;
+    // 权限裁决回调格式：perm:<sessionId>:<requestId>:<decision>
+    if (data.startsWith("perm:")) {
+      const parts = data.split(":");
+      const sessionId = parts[1];
+      const requestId = parts[2];
+      const decision = parts[3] as "allow" | "deny" | "always";
+      if (sessionId && requestId && (decision === "allow" || decision === "deny" || decision === "always")) {
+        try {
+          await this.opts.host.resolvePermission(sessionId as never, requestId, decision);
+          await this.answerCallbackQuery(acc.botToken, callbackId, `已裁决: ${decision}`);
+          // 更新消息去掉按钮，展示裁决结果
+          if (query.message?.chat?.id && query.message?.message_id) {
+            await this.editMessageText(
+              acc.botToken,
+              query.message.chat.id,
+              query.message.message_id,
+              `✅ 审批已完成：[${decision === "allow" ? "允许本次" : decision === "deny" ? "拒绝本次" : "永久允许"}]`,
+            );
+          }
+        } catch (err: unknown) {
+          await this.answerCallbackQuery(acc.botToken, callbackId, `处理失败: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    }
+  }
+
   private enqueue(bot: BotDefinition, acc: TgAccountSpec, text: string): void {
     const key = bot.id ?? "";
     const prev = this.chains.get(key) ?? Promise.resolve();
@@ -180,8 +223,52 @@ export class TelegramGateway {
 
   private async handleText(bot: BotDefinition, acc: TgAccountSpec, text: string): Promise<void> {
     const { botToken: token, chatId } = acc;
+    const trimmed = text.trim();
+
+    // 指令快速处理
+    if (trimmed === "/help") {
+      await this.sendTelegram(this.opts.apiBase, token, chatId, "🤖 可用指令：\n/new - 开始全新会话\n/status - 查看当前 Bot 状态\n/help - 显示此帮助");
+      return;
+    }
+    if (trimmed === "/status") {
+      await this.sendTelegram(this.opts.apiBase, token, chatId, `🤖 Bot 状态: ${bot.name || bot.id}\n📁 根目录: ${bot.rootPath}\n⚡ 审批模式: ${acc.interactiveApproval ? "交互式按钮审批" : "yolo 自动放行"}`);
+      return;
+    }
+
+    // 发送打字状态
+    void this.sendChatAction(token, chatId, "typing");
+
     try {
-      const { reply } = await runBotTurn(this.opts.host, bot, text, { source: "telegram" });
+      const { reply } = await runBotTurn(this.opts.host, bot, text, {
+        source: "telegram",
+        mode: acc.interactiveApproval ? "build" : "yolo",
+        onTurnStart: (sessionId) => {
+          if (acc.interactiveApproval) {
+            this.opts.host.onSessionEvent(sessionId, "permission.requested", (ev) => {
+              const event = ev as Extract<RuntimeEvent, { type: "permission.requested" }>;
+              const inlineKeyboard = {
+                inline_keyboard: [
+                  [
+                    { text: "✅ 允许 (Allow)", callback_data: `perm:${sessionId}:${event.requestId}:allow` },
+                    { text: "❌ 拒绝 (Deny)", callback_data: `perm:${sessionId}:${event.requestId}:deny` },
+                  ],
+                  [
+                    { text: "🛡️ 永久允许 (Always)", callback_data: `perm:${sessionId}:${event.requestId}:always` },
+                  ],
+                ],
+              };
+              void this.sendTelegramWithKeyboard(
+                this.opts.apiBase,
+                token,
+                chatId,
+                `⚠️ 【操作审批】\n任务需要执行以下敏感操作：\n类别: ${event.kind}\n详情: ${event.detail}`,
+                inlineKeyboard,
+              );
+            });
+          }
+        },
+      });
+
       await this.sendTelegram(this.opts.apiBase, token, chatId, reply);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
@@ -190,9 +277,66 @@ export class TelegramGateway {
     }
   }
 
+  private async sendChatAction(token: string, chatId: string, action: string): Promise<void> {
+    try {
+      await fetch(`${this.opts.apiBase}/bot${token}/sendChatAction`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ chat_id: chatId, action }),
+        signal: AbortSignal.timeout(5_000),
+      });
+    } catch {
+      // 忽略打字状态失败
+    }
+  }
+
+  private async answerCallbackQuery(token: string, callbackQueryId: string, text?: string): Promise<void> {
+    try {
+      await fetch(`${this.opts.apiBase}/bot${token}/answerCallbackQuery`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ callback_query_id: callbackQueryId, text }),
+        signal: AbortSignal.timeout(10_000),
+      });
+    } catch {
+      // 忽略回调确认异常
+    }
+  }
+
+  private async editMessageText(token: string, chatId: number, messageId: number, text: string): Promise<void> {
+    try {
+      await fetch(`${this.opts.apiBase}/bot${token}/editMessageText`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ chat_id: chatId, message_id: messageId, text, reply_markup: { inline_keyboard: [] } }),
+        signal: AbortSignal.timeout(10_000),
+      });
+    } catch {
+      // 忽略编辑失败
+    }
+  }
+
+  private async sendTelegramWithKeyboard(
+    apiBase: string,
+    token: string,
+    chatId: string,
+    text: string,
+    replyMarkup: unknown,
+  ): Promise<void> {
+    try {
+      await fetch(`${apiBase}/bot${token}/sendMessage`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ chat_id: chatId, text, reply_markup: replyMarkup }),
+        signal: AbortSignal.timeout(10_000),
+      });
+    } catch (err) {
+      log.warn("telegram sendTelegramWithKeyboard failed", { error: String(err) });
+    }
+  }
+
   private async sendTelegram(apiBase: string, token: string, chatId: string, text: string): Promise<void> {
     if (token === "" || chatId === "") return;
-    // 评审 P3：按 3900 分片循环发，不再静默丢长回复后半段
     const chunks: string[] = [];
     for (let i = 0; i < text.length; i += REPLY_CAP) chunks.push(text.slice(i, i + REPLY_CAP));
     if (chunks.length === 0) chunks.push("(空回复)");

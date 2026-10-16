@@ -101,6 +101,11 @@ import { draftPromptOf, type BacklogConfig, type BacklogSignal } from "../../pro
 import { BotRegistry } from "./bots/registry.ts";
 import { TelegramGateway } from "./channels/telegram.ts";
 import { FeishuGateway, diagnoseLarkAccount, larkIdentities, larkProfileList, addLarkProfile } from "./channels/feishu.ts";
+import { WeixinGateway, beginWeixinLogin, pollWeixinLogin } from "./channels/weixin.ts";
+import { DiscordGateway } from "./channels/discord.ts";
+import { CredentialVault } from "./credentials/vault.ts";
+import { getNetworkInterfaces } from "./network.ts";
+import { TunnelManager } from "./tunnel/manager.ts";
 import { askBot } from "./channels/askBot.ts";
 import { asModelId, asSessionId, asUnitId } from "../../prototype/src/core/units.ts";
 
@@ -711,19 +716,41 @@ const quotaResumeWatcher = new QuotaResumeWatcher({
 });
 quotaResumeWatcher.start();
 
+// 凭证保险库（Credential Vault）：管理微信等扫码产生的动态敏感令牌
+const credentialVault = new CredentialVault(config.homeDir);
+
 // 渠道网关（docs/08 WP-8）：bot 的 IM 入站通道。
 //
 // ⚠ 2026-10-02：Telegram 从「启动时无条件 start 的全局单例」改成 reconciler。
 // 旧写法的问题是渠道状态与 bot.json 无关——用户在设置页改完渠道保存，daemon 里的
-// 连接纹丝不动，必须重启才生效。现在两家网关都定期比对盘上定义与在跑实例。
+// 连接纹丝不动，必须重启才生效。现在各网关都定期比对盘上定义与在跑实例。
 // apiBase 可指向 mock（冒烟）。
 const telegramGateway = new TelegramGateway({
   apiBase: process.env["AGENT_WORKBENCH_TELEGRAM_API"] ?? "https://api.telegram.org",
   registry: botRegistry,
   host,
-  pollMs: 1500,
+  vault: credentialVault,
+  pollMs: 2000,
 });
 telegramGateway.start();
+
+// 微信：腾讯官方 iLink Bot 协议长连接
+const weixinGateway = new WeixinGateway({
+  registry: botRegistry,
+  host,
+  vault: credentialVault,
+  pollMs: 3000,
+});
+weixinGateway.start();
+
+// Discord：官方 WebSocket Gateway v10 + REST 原生轻量接入
+const discordGateway = new DiscordGateway({
+  registry: botRegistry,
+  host,
+  vault: credentialVault,
+  pollMs: 5000,
+});
+discordGateway.start();
 
 // 飞书：每 bot 一个飞书机器人（一个飞书应用 = 一个账号 = 一个 bot 身份）。
 // 入站拦截器：配置的确认会话里发「确认/拒绝 <待办id>」直接落到待办引擎（v1 关键词口径），
@@ -747,6 +774,9 @@ feishuGateway.start();
 // ---- 记忆编排（Phase 7）-----------------------------------------------------
 
 const memory = new MemoryService(store, config.homeDir);
+
+// ---- 公网穿透管理器 ---------------------------------------------------------
+let tunnelManager: TunnelManager;
 
 // ---- REST 管理面（权限闸的决策入口，docs/07 §六）----------------------------
 
@@ -845,6 +875,47 @@ const httpRoutes: HttpRoute[] = [
       }
       return launchFileManager(targetPath);
     },
+  },
+  {
+    method: "GET",
+    path: "/api/network/interfaces",
+    handle: () => ({ ok: true, interfaces: getNetworkInterfaces() }),
+  },
+  {
+    method: "POST",
+    path: "/api/channels/weixin/qr/begin",
+    handle: () => beginWeixinLogin(),
+  },
+  {
+    method: "POST",
+    path: "/api/channels/weixin/qr/poll",
+    handle: async ({ body }) => {
+      const p = (body ?? {}) as { qrCode?: string; botId?: string };
+      if (!p.qrCode) throw Object.assign(new Error("qrCode is required"), { code: "bad_params" });
+      const result = await pollWeixinLogin(p.qrCode);
+      if (result.status === "success" && p.botId) {
+        await credentialVault.save(`weixin:${p.botId}`, result.botToken, {
+          botId: p.botId,
+          ilinkBotId: result.botId,
+        });
+      }
+      return result;
+    },
+  },
+  {
+    method: "GET",
+    path: "/api/tunnel/status",
+    handle: () => tunnelManager.getState(),
+  },
+  {
+    method: "POST",
+    path: "/api/tunnel/start",
+    handle: async ({ body }) => tunnelManager.start(body as never),
+  },
+  {
+    method: "POST",
+    path: "/api/tunnel/stop",
+    handle: () => tunnelManager.stop(),
   },
 ];
 
@@ -963,6 +1034,7 @@ setControlContext(config.homeDir, port);
 void computerControl.boot().catch((e: unknown) => {
   log.error("computer control boot reconcile failed", { error: e instanceof Error ? e.message : String(e) });
 });
+tunnelManager = new TunnelManager(config.homeDir, port);
 const wss = attachWs(server, { config, startedAt, authorize });
 
 // ---- 待办 / GTD（backlog）—— 引擎需要 wss 广播，必须在 attachWs 之后构造 ----------
@@ -2219,7 +2291,12 @@ registerMethod("channel.status", async () => {
   const bots = await botRegistry.listBots();
   return {
     // 各网关当前真正持有的账号数
-    gateways: { feishu: feishuGateway.activeAccounts, telegram: telegramGateway.activeAccountCount },
+    gateways: {
+      feishu: feishuGateway.activeAccounts,
+      telegram: telegramGateway.activeAccountCount,
+      weixin: weixinGateway.activeAccountCount,
+      discord: discordGateway.activeAccountCount,
+    },
     bots: bots.map((b) => {
       const declared = Array.isArray(b.channels) ? (b.channels as Array<Record<string, unknown>>) : [];
       return {
@@ -2232,6 +2309,24 @@ registerMethod("channel.status", async () => {
       };
     }),
   };
+});
+
+// 网卡拓扑探测（配对码与远程控制用）
+registerMethod("network.interfaces", () => ({ interfaces: getNetworkInterfaces() }));
+
+// 微信 iLink 扫码登录流程
+registerMethod("channel.weixin.qr.begin", () => beginWeixinLogin());
+registerMethod("channel.weixin.qr.poll", async (params) => {
+  const p = (params ?? {}) as { qrCode?: string; botId?: string };
+  if (!p.qrCode) throw Object.assign(new Error("qrCode is required"), { code: "bad_params" });
+  const result = await pollWeixinLogin(p.qrCode);
+  if (result.status === "success" && p.botId) {
+    await credentialVault.save(`weixin:${p.botId}`, result.botToken, {
+      botId: p.botId,
+      ilinkBotId: result.botId,
+    });
+  }
+  return result;
 });
 // 「这个 bot 接的是哪个飞书机器人」——名字 + 头像，不是 profile 字符串。
 // profile 形如 cli_a94d…，界面上没人认得出那是哪个机器人。
@@ -2633,6 +2728,13 @@ registerMethod("workspace.openFolder", async (params) => {
 
 registerMethod("health", () => healthPayload(config, startedAt));
 
+registerMethod("tunnel.status", () => tunnelManager.getState());
+registerMethod("tunnel.start", (params) => {
+  const p = (params ?? {}) as { provider?: "cloudflared" | "custom"; customUrl?: string };
+  return tunnelManager.start(p);
+});
+registerMethod("tunnel.stop", () => tunnelManager.stop());
+
 /**
  * 协议原生的关闭通道。Windows 上跨进程 SIGTERM 不可投递（冒烟脚本实证），
  * 程序化退出一律走这里；SIGINT/SIGTERM 处理器保留给终端 Ctrl+C 与 Unix。
@@ -2679,9 +2781,12 @@ async function shutdown(signal: string): Promise<void> {
   backlogEngine?.stop();
   memoryScheduler?.stop(); // 之前漏了：60s interval 会活到 process.exit，正在跑的日报/curator 被从中间砍断
   telegramGateway.stop();
+  weixinGateway.stop();
+  discordGateway.stop();
   // 飞书也停：它有一个 15s reconcile interval 和每账号的长连接/子进程，
   // 漏掉它就会在 host.shutdown() 关掉 store 之后还能起新活（评审 P1 同类）
   feishuGateway.stop();
+  tunnelManager?.stop();
   // 杀光终端 → ConPTY 排空窗口 → terminate pty worker（顺序敏感，见 stop 注释）
   await terminals.stop();
   const force = setTimeout(() => process.exit(0), 2000).unref(); // 挂起写兜底：2s 强制退

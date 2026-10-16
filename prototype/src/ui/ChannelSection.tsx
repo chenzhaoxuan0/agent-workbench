@@ -40,13 +40,16 @@ import {
 import { defaultDaemonEndpoint, type DiagnosisResult } from "../adapters/daemon/client.ts";
 import type { BotChannel, ChannelAccount } from "../core/units.ts";
 import { FeishuSetup } from "./FeishuSetup.tsx";
+import { WeixinSetup } from "./WeixinSetup.tsx";
 import { Toggle } from "./SettingsPage.tsx";
 import { cn } from "./cn.ts";
 
-/** 渠道种类 → 人话。Discord 不在列：零实现，放进选项就是骗人。 */
+/** 渠道种类 → 人话。支持四大 IM 渠道与 Webhook。 */
 const KINDS = [
-  { kind: "feishu" as const, label: "飞书", hint: "每 bot 一个飞书机器人 · 长连接 · 本机可用" },
-  { kind: "telegram" as const, label: "Telegram", hint: "长轮询 · 纯文本" },
+  { kind: "feishu" as const, label: "飞书", hint: "每 bot 一个飞书机器人 · WebSocket 长连接 · 本机可用" },
+  { kind: "weixin" as const, label: "微信 (iLink Bot)", hint: "腾讯官方 iLink 协议 · 微信扫码即连 · 极速安全免封号" },
+  { kind: "telegram" as const, label: "Telegram", hint: "长轮询 · 内联键盘按钮实时审批 · 指令直控" },
+  { kind: "discord" as const, label: "Discord", hint: "Gateway v10 WebSocket · 交互式组件按钮实时审批" },
   { kind: "webhook" as const, label: "Webhook", hint: "自建服务推给这个 bot · 最简单" },
 ];
 
@@ -323,12 +326,57 @@ function ImBody({
               </button>
             )}
           </div>
-          {isFeishu ? (
+          {channel.kind === "feishu" ? (
             <>
               <FeishuSetup botId={botId} account={acc} onChange={(next) => setAccount(i, next)} />
               <label className="flex items-center gap-1.5 text-caption text-graphite">
                 <input type="checkbox" checked={acc.mentionOnly !== false} onChange={(e) => setAccount(i, { mentionOnly: e.target.checked })} />
                 群里只在被 @ 时应答
+              </label>
+            </>
+          ) : channel.kind === "weixin" ? (
+            <WeixinSetup botId={botId} account={acc} onChange={(next) => setAccount(i, next)} />
+          ) : channel.kind === "discord" ? (
+            <>
+              <Field label="Bot Token（环境变量名）" hint="Discord Bot 凭证的环境变量名">
+                <input
+                  value={acc.botTokenEnv ?? ""}
+                  onChange={(e) => setAccount(i, { botTokenEnv: e.target.value })}
+                  placeholder="例如: DISCORD_BOT_TOKEN"
+                  spellCheck={false}
+                  aria-label="Discord Bot Token 环境变量名"
+                  className="w-full rounded-input border border-transparent bg-rail px-2 py-1 font-mono text-caption text-ink outline-none focus:border-teal"
+                />
+              </Field>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <Field label="Guild ID (服务器 ID，可选)" hint="限定所属 Discord 服务器">
+                  <input
+                    value={acc.discordGuildId ?? ""}
+                    onChange={(e) => setAccount(i, { discordGuildId: e.target.value })}
+                    placeholder="例如: 123456789012345678"
+                    spellCheck={false}
+                    aria-label="Discord Guild ID"
+                    className="w-full rounded-input border border-transparent bg-rail px-2 py-1 font-mono text-caption text-ink outline-none focus:border-teal"
+                  />
+                </Field>
+                <Field label="Channel ID (目标文字频道)" hint="指定响应与交互的频道">
+                  <input
+                    value={acc.discordChannelId ?? acc.chatId ?? ""}
+                    onChange={(e) => setAccount(i, { discordChannelId: e.target.value, chatId: e.target.value })}
+                    placeholder="例如: 987654321098765432"
+                    spellCheck={false}
+                    aria-label="Discord Channel ID"
+                    className="w-full rounded-input border border-transparent bg-rail px-2 py-1 font-mono text-caption text-ink outline-none focus:border-teal"
+                  />
+                </Field>
+              </div>
+              <label className="flex items-center gap-1.5 text-caption text-graphite">
+                <input
+                  type="checkbox"
+                  checked={acc.interactiveApproval !== false}
+                  onChange={(e) => setAccount(i, { interactiveApproval: e.target.checked })}
+                />
+                启用 Discord 组件按钮实时审批确认门
               </label>
             </>
           ) : (
@@ -351,6 +399,16 @@ function ImBody({
                   className="w-full rounded-input border border-transparent bg-rail px-2 py-1 font-mono text-caption text-ink outline-none focus:border-teal"
                 />
               </Field>
+              {channel.kind === "telegram" && (
+                <label className="flex items-center gap-1.5 text-caption text-graphite">
+                  <input
+                    type="checkbox"
+                    checked={acc.interactiveApproval !== false}
+                    onChange={(e) => setAccount(i, { interactiveApproval: e.target.checked })}
+                  />
+                  启用 Telegram 内联键盘按钮实时审批确认门
+                </label>
+              )}
             </>
           )}
           <ImBehavior account={acc} onPatch={(patch) => setAccount(i, patch)} />
@@ -530,10 +588,11 @@ export function ChannelStatusHint({ botId }: { botId: string }) {
         if (!alive) return;
         const mine = s.bots.find((b) => b.id === botId);
         const enabled = mine?.channels.filter((c) => c.enabled) ?? [];
-        if (mine !== undefined && enabled.length > 0 && (s.gateways.feishu > 0 || s.gateways.telegram > 0)) {
+        const totalActiveGateways = (s.gateways.feishu ?? 0) + (s.gateways.telegram ?? 0) + (s.gateways.weixin ?? 0) + (s.gateways.discord ?? 0);
+        if (mine !== undefined && enabled.length > 0 && totalActiveGateways > 0) {
           const kinds = [...new Set(enabled.map((c) => c.kind))].join(" / ");
           setState("taken");
-          setInfo(`已接管（${kinds}，飞书网关 ${s.gateways.feishu} 账号 · Telegram ${s.gateways.telegram}）`);
+          setInfo(`已接管（${kinds}，活跃连接：飞书 ${s.gateways.feishu} · TG ${s.gateways.telegram} · 微信 ${s.gateways.weixin ?? 0} · Discord ${s.gateways.discord ?? 0}）`);
           return;
         }
         if (attempts < 5) {

@@ -21,6 +21,7 @@
     "smoke:phase11": "tsx scripts/smoke-phase11.ts",
     "dev": "tsx watch src/index.ts",
     "smoke": "tsx scripts/smoke-health.ts",
+    "smoke:remote": "tsx scripts/smoke-remote-channels.ts",
     "smoke:feishu": "tsx scripts/smoke-feishu.ts",
     "smoke:inspect": "tsx scripts/smoke-inspect.ts",
     "smoke:exec": "tsx scripts/smoke-exec.ts",

@@ -61,9 +61,9 @@ export interface UnitSchedule {
  * 从「安全前提」降级为「仍值得做的兜底」。
  */
 export interface SecretRef {
-  /** env = 进程环境变量；file = 相对 rootPath 的文件 */
-  readonly source: "env" | "file";
-  /** env 模式下的变量名 / file 模式下的相对路径 */
+  /** env = 进程环境变量；file = 相对 rootPath 的文件；vault = 本地受限凭证库；literal = 直接值 */
+  readonly source: "env" | "file" | "vault" | "literal";
+  /** env 模式下的变量名 / file 模式下的相对路径 / vault 模式下的凭证 ID */
   readonly id: string;
 }
 
@@ -92,12 +92,30 @@ export interface ChannelAccount {
   /** 群聊里只在被 @ 时响应。默认 true；单聊不受影响 */
   readonly mentionOnly?: boolean;
   /**
-   * Telegram：**Bot Token 的环境变量名**（只存变量名，token 本身不落盘）。
+   * Telegram / Discord：**Bot Token 的环境变量名**（只存变量名，token 本身不落盘）。
    * daemon 侧同时认这个字段与旧的明文 `botToken`。
    */
   readonly botTokenEnv?: string;
+  /** Telegram / Discord：明文 Token（仅用于测试或迁移，建议优先 botTokenEnv / SecretRef） */
+  readonly botToken?: string;
+  /** 关联的安全凭证引用（如微信扫码产出的 vault:weixin:<botId>） */
+  readonly secretRef?: SecretRef;
   /** Telegram：只应答这个会话 id */
   readonly chatId?: string;
+  /** 微信 iLink Bot ID */
+  readonly ilinkBotId?: string;
+  /** Discord：限定的 Guild ID（服务器） */
+  readonly discordGuildId?: string;
+  /** Discord：限定的 Channel ID */
+  readonly discordChannelId?: string;
+  /** 远程交互式确认门审批（按钮回传）。开启时敏感操作在 IM 弹按钮，不自动 yolo 放行 */
+  readonly interactiveApproval?: boolean;
+  /** 收到消息时加的表情：飞书/IM 表情枚举名 */
+  readonly ackEmoji?: string;
+  /** 答完时加的表情 */
+  readonly doneEmoji?: string;
+  /** 是否流式刷新输出 */
+  readonly streaming?: boolean;
   /** 渠道自身的能力位（对齐 openclaw ChannelPlugin 的可选槽，只实现用得上的） */
   readonly options?: Readonly<Record<string, string>>;
 }
@@ -109,7 +127,7 @@ export interface ChannelAccount {
  * 新写入一律走 `accounts`。
  */
 export interface BotChannel {
-  readonly kind: "telegram" | "feishu" | "webhook";
+  readonly kind: "telegram" | "feishu" | "weixin" | "discord" | "webhook";
   readonly enabled: boolean;
   readonly accounts?: readonly ChannelAccount[];
   /** @deprecated 单账号旧形态。读时若 accounts 缺省则由它归一出一个 default 账号 */
@@ -234,13 +252,25 @@ export type SessionStatus =
  * 会话来源。四个端是同一个 bot 的四扇窗口，来源不同**只**体现在这个字段上
  * （docs/09 §二推论 1：会话归属 bot，不归属端）——不产生第二套会话体系。
  */
-export type SessionSource = "workbench" | "feishu" | "telegram" | "webhook" | "mcp" | "automation";
+export type SessionSource =
+  | "workbench"
+  | "mobile"
+  | "feishu"
+  | "telegram"
+  | "weixin"
+  | "discord"
+  | "webhook"
+  | "mcp"
+  | "automation";
 
 /** 来源徽标文案 —— Timeline / 历史弹窗共用（docs/13 结构化聊天恢复） */
 export const SESSION_SOURCE_LABEL: Record<SessionSource, string> = {
   workbench: "工作台",
+  mobile: "手机端",
   feishu: "飞书",
   telegram: "Telegram",
+  weixin: "微信",
+  discord: "Discord",
   webhook: "webhook",
   mcp: "MCP",
   automation: "自动化",
