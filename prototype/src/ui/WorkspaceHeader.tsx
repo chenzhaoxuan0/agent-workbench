@@ -4,6 +4,7 @@ import { useShell } from "../store/useShell.ts";
 import { useWorkbench, selectActiveUnit } from "../store/useWorkbench.ts";
 import { useBacklog } from "../store/useBacklog.ts";
 import { openFolder } from "../adapters/daemon/client.ts";
+import { useIsMobile } from "./mobile/useIsMobile.ts";
 import { HistoryDialog } from "./HistoryDialog.tsx";
 import { RemoteControlDialog } from "./RemoteControlDialog.tsx";
 import { cn } from "./cn.ts";
@@ -19,6 +20,7 @@ export function WorkspaceHeader() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [remoteOpen, setRemoteOpen] = useState(false);
 
+  const { preference, setPreference, windowIsMobile } = useIsMobile();
   const unit = useWorkbench(selectActiveUnit);
   const isSteward = unit?.id === "steward";
 
@@ -92,6 +94,21 @@ export function WorkspaceHeader() {
       <div className="ml-auto flex shrink-0 items-center gap-2">
         <WorkPhaseBadge />
         <div className="h-3.5 w-px bg-line/80" aria-hidden />
+
+        {/* 电脑/手机视图切换通道（解决切到电脑模式后无法切回手机视图的问题） */}
+        {(preference === "desktop" || windowIsMobile) && (
+          <button
+            onClick={() => setPreference(windowIsMobile ? "auto" : "mobile")}
+            aria-label="切回手机视图"
+            title="当前处于电脑视图，点击切回手机触控布局"
+            className="flex h-7 items-center gap-1.5 rounded-btn px-2 text-caption font-medium transition text-teal border border-teal/40 bg-teal-tint/40 hover:bg-teal hover:text-white"
+          >
+            <Smartphone size={13} />
+            <span className="hidden xs:inline">切回手机视图</span>
+            <span className="xs:hidden">手机</span>
+          </button>
+        )}
+
         {unit !== undefined && (
           <button
             onClick={() => setHistoryOpen(true)}

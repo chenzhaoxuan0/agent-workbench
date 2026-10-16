@@ -47,7 +47,7 @@ export function Timeline() {
       <div
         className={cn(
           "mx-auto max-w-[900px] px-6 py-6 sm:px-8 sm:py-8",
-          items.length === 0 && "flex min-h-full flex-col justify-center pb-24",
+          items.length === 0 && "flex min-h-full flex-col justify-center pb-10 sm:pb-20 transition-all duration-200",
         )}
       >
         {items.length === 0 ? (

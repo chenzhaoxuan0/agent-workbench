@@ -188,7 +188,7 @@ export function SlashCommandMenu({ filter, onSelect, onClose, native }: SlashCom
             </span>
           )}
         </div>
-        <div className="flex items-center gap-3 text-[10px] text-graphite/80 font-sans">
+        <div className="hidden sm:flex items-center gap-3 text-[10px] text-graphite/80 font-sans">
           <span className="flex items-center gap-1">
             <kbd className="font-mono text-[9px] px-1 py-0.5 rounded bg-line-soft border border-line text-graphite">↑</kbd>
             <kbd className="font-mono text-[9px] px-1 py-0.5 rounded bg-line-soft border border-line text-graphite">↓</kbd>

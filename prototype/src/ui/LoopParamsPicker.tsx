@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, ChevronDown, Sparkles } from "lucide-react";
+import { createPortal } from "react-dom";
+import { Check, ChevronDown, Sparkles, X } from "lucide-react";
 import { useWorkbench, type LoopParamsState } from "../store/useWorkbench.ts";
 import { cn } from "./cn.ts";
 
@@ -52,11 +53,11 @@ export function ReasoningEffortPanel({ onDone }: { onDone?: () => void }) {
     : REASONING_LEVELS;
 
   return (
-    <div role="listbox" aria-label="推理力度" className="py-1">
-      <div className="px-3 py-1.5 border-b border-line-soft mb-1">
-        <p className="text-caption font-medium text-ink">推理力度 (Reasoning Effort)</p>
+    <div role="listbox" aria-label="推理力度" className="py-1 overflow-y-auto overscroll-contain touch-pan-y">
+      <div className="px-3.5 py-2 border-b border-line-soft mb-1">
+        <p className="text-caption font-semibold text-ink">推理力度设置 (Reasoning Effort)</p>
         <p className="text-[11px] text-ash">
-          {activeModel ? `${activeModel.displayName} · 随下一轮生效` : "按执行器记忆 · 随下一轮生效"}
+          {activeModel ? `${activeModel.displayName} · 随下一轮会话生效` : "按执行器记忆 · 随下一轮会话生效"}
         </p>
       </div>
       {availableLevels.map((r) => {
@@ -71,17 +72,17 @@ export function ReasoningEffortPanel({ onDone }: { onDone?: () => void }) {
               onDone?.();
             }}
             className={cn(
-              "flex w-full items-start gap-2.5 px-3 py-2 text-left transition",
-              active ? "bg-teal-tint" : "hover:bg-line-soft",
+              "flex w-full items-start gap-3 px-4 py-3 text-left min-h-[48px] touch-pan-y transition",
+              active ? "bg-teal-tint" : "hover:bg-line-soft active:bg-line-soft/80",
             )}
           >
             <span className="flex flex-1 min-w-0 flex-col gap-0.5">
-              <span className={cn("text-body-sm", active ? "font-medium text-ink" : "text-graphite")}>
+              <span className={cn("text-body-sm", active ? "font-semibold text-teal" : "text-graphite")}>
                 {r.label}
               </span>
-              <span className="text-[11px] leading-tight text-ash">{r.desc}</span>
+              <span className="text-caption leading-relaxed text-ash">{r.desc}</span>
             </span>
-            {active && <Check size={14} className="mt-0.5 shrink-0 text-teal" />}
+            {active && <Check size={16} className="mt-0.5 shrink-0 text-teal" />}
           </button>
         );
       })}
@@ -89,7 +90,13 @@ export function ReasoningEffortPanel({ onDone }: { onDone?: () => void }) {
   );
 }
 
-export function ReasoningEffortPicker() {
+export function ReasoningEffortPicker({
+  compact = false,
+  align = "right",
+}: {
+  compact?: boolean;
+  align?: "left" | "right";
+} = {}) {
   const activeRuntimeId = useWorkbench((s) => s.activeRuntimeId);
   const loop = useWorkbench((s) => s.loopParams[s.activeRuntimeId] ?? EMPTY_LOOP);
   const [open, setOpen] = useState(false);
@@ -98,6 +105,7 @@ export function ReasoningEffortPicker() {
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
+      if (compact) return;
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => {
@@ -109,7 +117,7 @@ export function ReasoningEffortPicker() {
       document.removeEventListener("mousedown", onDown);
       document.removeEventListener("keydown", onKey);
     };
-  }, [open]);
+  }, [open, compact]);
 
   const label = summaryOfLoop(loop);
   const isCustom = loop.reasoningLevel !== undefined && loop.reasoningLevel !== "";
@@ -122,23 +130,70 @@ export function ReasoningEffortPicker() {
         aria-haspopup="listbox"
         title="设置执行器推理思考力度（默认跟随执行器原生设定）"
         className={cn(
-          "flex items-center gap-1.5 rounded-btn px-2 py-1.5 text-body-sm transition",
+          "flex items-center justify-center rounded-lg transition",
+          "h-7 sm:h-8 px-1.5 sm:px-2 gap-1 sm:gap-1.5 text-xs sm:text-body-sm",
+          compact ? "border border-line-soft bg-card/60 active:scale-95" : "hover:bg-line-soft",
           open
-            ? "bg-line-soft text-ink"
+            ? "bg-line-soft text-ink ring-1 ring-teal/30"
             : isCustom
-              ? "bg-teal-tint text-teal font-medium"
+              ? "bg-teal-tint text-teal font-medium border-teal/40"
               : "text-graphite hover:bg-line-soft hover:text-ink",
         )}
       >
-        <Sparkles size={13} className={cn("shrink-0", isCustom ? "text-teal" : "text-ash")} />
-        <span className="max-w-[100px] truncate">{label}</span>
-        <ChevronDown size={12} className="shrink-0 opacity-60" />
+        <Sparkles size={14} className={cn("shrink-0", isCustom ? "text-teal" : "text-ash")} />
+        <span className="hidden sm:inline max-w-[90px] truncate font-medium sm:font-normal">{label}</span>
+        <ChevronDown size={11} className="hidden sm:inline shrink-0 opacity-60" />
       </button>
 
       {open && (
-        <div className="absolute bottom-full right-0 z-40 mb-1.5 w-64 overflow-hidden rounded-input border border-line bg-canvas shadow-[0_8px_24px_rgb(0_0_0/0.14)]">
-          <ReasoningEffortPanel onDone={() => setOpen(false)} />
-        </div>
+        compact && typeof window !== "undefined" && window.innerWidth < 640 ? (
+          createPortal(
+            <div
+              className="fixed inset-0 z-50 flex flex-col justify-end bg-black/65 backdrop-blur-xs animate-in fade-in duration-200 select-none"
+              onClick={(e) => {
+                if (e.target === e.currentTarget) setOpen(false);
+              }}
+            >
+              <div
+                style={{ height: "65dvh", maxHeight: "75dvh" }}
+                className="mx-auto w-full max-w-[500px] flex flex-col overflow-hidden rounded-t-3xl border-t border-line bg-canvas shadow-2xl animate-in slide-in-from-bottom-6 duration-250"
+              >
+                {/* 顶部拉手条 */}
+                <div className="flex h-5 shrink-0 items-center justify-center pt-2">
+                  <span className="h-1 w-10 rounded-full bg-zinc-650/40" />
+                </div>
+
+                {/* 抽屉头部 */}
+                <div className="flex items-center justify-between border-b border-line px-4 py-2.5 bg-card/70 shrink-0">
+                  <span className="text-body-sm font-semibold text-ink">推理思考力度 (Reasoning Effort)</span>
+                  <button
+                    type="button"
+                    onClick={() => setOpen(false)}
+                    aria-label="关闭选择器"
+                    className="flex h-7 w-7 items-center justify-center rounded-full text-ash hover:bg-line-soft hover:text-ink active:scale-90 transition"
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
+
+                {/* 抽屉主体：纵向自由触控滚动 */}
+                <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain touch-pan-y">
+                  <ReasoningEffortPanel onDone={() => setOpen(false)} />
+                </div>
+              </div>
+            </div>,
+            document.body,
+          )
+        ) : (
+          <div
+            className={cn(
+              "absolute bottom-full z-40 mb-1.5 w-64 max-w-[calc(100vw-32px)] overflow-hidden rounded-input border border-line bg-canvas shadow-[0_8px_24px_rgb(0_0_0/0.14)]",
+              align === "left" ? "left-0" : "right-0",
+            )}
+          >
+            <ReasoningEffortPanel onDone={() => setOpen(false)} />
+          </div>
+        )
       )}
     </div>
   );

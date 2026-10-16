@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Check, ChevronDown, Search, Star } from "lucide-react";
+import { createPortal } from "react-dom";
+import { Check, ChevronDown, Search, Star, X } from "lucide-react";
 import { formatContext, formatPrice, type ModelSpec } from "../core/models.ts";
 import { prefsOf, resolveVisibleModels } from "../core/modelPrefs.ts";
 import type { RuntimeEntry } from "../core/registry.ts";
@@ -37,7 +38,7 @@ interface PickerRow {
  * 也可以就地展开成手风琴段。**同一份 rail / 搜索 / 键盘导航逻辑**，
  * 不做第二套实现。
  */
-export function RuntimePanel({ onDone }: { onDone?: () => void }) {
+export function RuntimePanel({ onDone, fillHeight = false }: { onDone?: () => void; fillHeight?: boolean }) {
   const runtimes = useWorkbench((s) => s.runtimes);
   // 已停用的执行器不出现在 rail / 列表（T3：Disabled 实例仍列在设置里，但选择器不出现）
   const runtimePrefs = useWorkbench((s) => s.runtimePrefs);
@@ -124,12 +125,15 @@ export function RuntimePanel({ onDone }: { onDone?: () => void }) {
           if (row) pick(row);
         }
       }}
-      style={{ height: panelH }}
-      className="flex w-full overflow-hidden rounded-card border border-line bg-canvas"
+      style={fillHeight ? undefined : { height: panelH }}
+      className={cn(
+        "flex w-full overflow-hidden bg-canvas",
+        fillHeight ? "flex-1 min-h-0 h-full border-0" : "rounded-card border border-line",
+      )}
     >
       {/* 左 rail：★ 收藏视图 + 执行器图标（T3 的 ModelPickerSidebar）；行高恒定，超高时内部滚动。
           宽 48px = 36px 按钮 + 8px 竖向滚动条刚好放满，横向绝不出现滚动条 */}
-      <div className="flex w-12 shrink-0 flex-col items-center gap-1 overflow-y-auto overflow-x-hidden border-r border-line-soft bg-rail py-2">
+      <div className="flex w-12 shrink-0 flex-col items-center gap-1 overflow-y-auto overscroll-contain touch-pan-y border-r border-line-soft bg-rail py-2 h-full">
         <RailButton selected={rail === "favorites"} title="收藏的模型" onClick={() => setRail("favorites")}>
           <Star size={16} className={cn(rail === "favorites" && "fill-current")} />
         </RailButton>
@@ -148,7 +152,7 @@ export function RuntimePanel({ onDone }: { onDone?: () => void }) {
       </div>
 
       {/* 右区：搜索 + 模型列表 + 设置入口 */}
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-w-0 flex-1 flex-col h-full">
         <div className="px-2 pt-2">
           <div className="flex h-7 items-center gap-1.5 border-b border-line-soft px-1 pb-1.5 transition-colors focus-within:border-teal">
             <Search size={12} className="shrink-0 text-ash" />
@@ -162,7 +166,7 @@ export function RuntimePanel({ onDone }: { onDone?: () => void }) {
           </div>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-1 py-1">
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain touch-pan-y px-1.5 py-1">
           {filtered.length === 0 ? (
             <p className="px-3 py-6 text-center text-body-sm text-ash">
               {rail === "favorites" ? "还没有收藏的模型 —— 列表行右侧的星标可以收藏" : "没有匹配的模型"}
@@ -205,7 +209,13 @@ export function RuntimePanel({ onDone }: { onDone?: () => void }) {
   );
 }
 
-export function RuntimePicker() {
+export function RuntimePicker({
+  compact = false,
+  align = "left",
+}: {
+  compact?: boolean;
+  align?: "left" | "right";
+} = {}) {
   const activeId = useWorkbench((s) => s.activeRuntimeId);
   const activeModels = useWorkbench(selectVisibleModels(activeId));
   const runtimes = useWorkbench((s) => s.runtimes);
@@ -219,6 +229,7 @@ export function RuntimePicker() {
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
+      if (compact) return;
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => {
@@ -230,7 +241,7 @@ export function RuntimePicker() {
       document.removeEventListener("mousedown", onDown);
       document.removeEventListener("keydown", onKey);
     };
-  }, [open]);
+  }, [open, compact]);
 
   // 选中的模型不在可见清单里时，先去失效留档里找 —— 找不到才叫「未选模型」。
   // 以前直接落进 "未选模型"：模型一被下线，顶栏就变成「执行器 · 未选模型」，
@@ -259,27 +270,97 @@ export function RuntimePicker() {
             : "选择执行器与模型"
         }
         className={cn(
-          "flex items-center gap-1.5 rounded-btn px-2 py-1.5 text-body-sm",
-          open ? "bg-line-soft text-ink" : "text-graphite hover:bg-line-soft hover:text-ink",
+          "flex items-center justify-center rounded-lg transition",
+          "h-7 sm:h-8 px-1.5 sm:px-2 gap-1 sm:gap-1.5 text-xs sm:text-body-sm",
+          compact
+            ? "border border-line-soft bg-card/60 text-graphite hover:bg-line-soft hover:text-ink active:scale-95"
+            : "text-graphite hover:bg-line-soft hover:text-ink",
+          open ? "bg-line-soft text-ink ring-1 ring-teal/30" : "",
         )}
       >
-        {active && <RuntimeIcon runtime={active} size={16} className="rounded-[3px]" />}
-        <span className="max-w-[84px] truncate">{active?.presentation.displayName ?? "执行器"}</span>
+        {active ? (
+          <RuntimeIcon runtime={active} size={16} className="rounded-[3px] shrink-0" />
+        ) : (
+          <span className="text-caption font-bold text-teal">CLI</span>
+        )}
+        {/* 执行器名称：仅在宽屏 PC (lg:) 显示 */}
+        <span className="hidden lg:inline max-w-[80px] xl:max-w-[100px] truncate">
+          {active?.presentation.displayName ?? "执行器"}
+        </span>
         {activeModel && (
           <>
-            <span className="text-ash" aria-hidden>·</span>
-            <span className={cn("max-w-[92px] truncate", modelStale ? "text-amber-600 line-through" : "text-graphite")}>
+            <span className="hidden lg:inline text-ash" aria-hidden>·</span>
+            {/* 模型名称：在平板 (sm:) 及以上显示 */}
+            <span
+              className={cn(
+                "hidden sm:inline max-w-[84px] md:max-w-[110px] truncate font-medium sm:font-normal",
+                modelStale ? "text-amber-600 line-through" : "text-graphite",
+              )}
+            >
               {activeModel.displayName}
             </span>
           </>
         )}
-        <ChevronDown size={12} className="shrink-0 text-ash" />
+        <ChevronDown size={11} className="hidden sm:inline shrink-0 text-ash" />
       </button>
 
       {open && (
-        <div className="absolute bottom-full left-0 z-40 mb-1.5 w-[360px] shadow-subtle">
-          <RuntimePanel onDone={() => setOpen(false)} />
-        </div>
+        compact && typeof window !== "undefined" && window.innerWidth < 640 ? (
+          createPortal(
+            <div
+              className="fixed inset-0 z-50 flex flex-col justify-end bg-black/65 backdrop-blur-xs animate-in fade-in duration-200 select-none"
+              onClick={(e) => {
+                if (e.target === e.currentTarget) setOpen(false);
+              }}
+            >
+              <div
+                style={{ height: "78dvh", maxHeight: "85dvh" }}
+                className="mx-auto w-full max-w-[500px] flex flex-col overflow-hidden rounded-t-3xl border-t border-line bg-canvas shadow-2xl animate-in slide-in-from-bottom-6 duration-250"
+              >
+                {/* 顶部拉手条 (指示可滑动抽屉) */}
+                <div className="flex h-5 shrink-0 items-center justify-center pt-2">
+                  <span className="h-1 w-10 rounded-full bg-zinc-650/40" />
+                </div>
+
+                {/* 抽屉头部 */}
+                <div className="flex items-center justify-between border-b border-line px-4 py-2.5 bg-card/70 shrink-0">
+                  <div className="flex items-center gap-2">
+                    {active && <RuntimeIcon runtime={active} size={16} className="rounded-[3px]" />}
+                    <span className="text-body-sm font-semibold text-ink">选择执行器与模型</span>
+                    {activeModel && (
+                      <span className="rounded-full bg-teal-tint px-2 py-0.5 text-[11px] font-medium text-teal truncate max-w-[140px]">
+                        {activeModel.displayName}
+                      </span>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setOpen(false)}
+                    aria-label="关闭选择器"
+                    className="flex h-7 w-7 items-center justify-center rounded-full text-ash hover:bg-line-soft hover:text-ink active:scale-90 transition"
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
+
+                {/* 抽屉主体：高度撑满 78dvh，列表上下自由滚动 */}
+                <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+                  <RuntimePanel onDone={() => setOpen(false)} fillHeight />
+                </div>
+              </div>
+            </div>,
+            document.body,
+          )
+        ) : (
+          <div
+            className={cn(
+              "absolute bottom-full z-40 mb-1.5 w-[360px] shadow-subtle",
+              align === "right" ? "right-0" : "left-0",
+            )}
+          >
+            <RuntimePanel onDone={() => setOpen(false)} />
+          </div>
+        )
       )}
     </div>
   );
@@ -364,7 +445,7 @@ function ModelRow({
               : spec.note
       }
       className={cn(
-        "group/row flex w-full cursor-pointer items-center gap-2 rounded-btn px-2 py-1.5",
+        "group/row flex w-full cursor-pointer items-center gap-2 rounded-btn px-2.5 py-2 min-h-[46px] touch-pan-y active:scale-[0.99] transition",
         highlighted ? "bg-teal-tint" : "hover:bg-line-soft",
         selected && !highlighted && "bg-teal-tint/60",
         (blocked || notInstalled) && "cursor-not-allowed opacity-50",

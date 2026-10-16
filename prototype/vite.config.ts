@@ -19,7 +19,31 @@ export default defineConfig(({ mode }) => {
       alias: { "@": src },
     },
     // host: true = 绑全部网卡：Windows 上同时覆盖 ::1 与 0.0.0.0，
-    // 本地工具与手机（http://<pc-ip>:<uiPort>）都可达（daemon 侧需 AGENT_WORKBENCH_HOST=0.0.0.0 配合）
-    server: { host: true, port: uiPort, strictPort: true },
+    // 本地工具与手机（http://<pc-ip>:<uiPort>）都可达
+    // 配置 proxy 将 /ws, /bootstrap, /api 转发至 daemon 5281，避免手机端防火墙/跨端口访问失败
+    server: {
+      host: true,
+      port: uiPort,
+      strictPort: true,
+      proxy: {
+        "/ws": {
+          target: "ws://127.0.0.1:5281",
+          ws: true,
+          changeOrigin: true,
+        },
+        "/bootstrap": {
+          target: "http://127.0.0.1:5281",
+          changeOrigin: true,
+        },
+        "/api": {
+          target: "http://127.0.0.1:5281",
+          changeOrigin: true,
+        },
+        "/healthz": {
+          target: "http://127.0.0.1:5281",
+          changeOrigin: true,
+        },
+      },
+    },
   };
 });

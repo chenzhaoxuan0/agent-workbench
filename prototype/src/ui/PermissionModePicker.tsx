@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   ChevronDown,
   Check,
@@ -6,6 +7,7 @@ import {
   NotepadText,
   ShieldAlert,
   ShieldCheck,
+  X,
   type LucideIcon,
 } from "lucide-react";
 import { PERMISSION_MODES, getMode, type PermissionMode } from "../core/permission.ts";
@@ -52,7 +54,7 @@ export function PermissionModePanel({ onDone }: { onDone?: () => void }) {
   const setMode = useWorkbench((s) => s.setPermissionMode);
 
   return (
-    <div role="listbox" aria-label="权限模式">
+    <div role="listbox" aria-label="权限模式" className="overflow-y-auto overscroll-contain touch-pan-y">
       {PERMISSION_MODES.map((m) => {
         const active = m.id === mode;
         const Icon = modeIcon(m.id);
@@ -66,15 +68,15 @@ export function PermissionModePanel({ onDone }: { onDone?: () => void }) {
               onDone?.();
             }}
             className={cn(
-              "flex min-h-[52px] w-full items-start gap-3 py-2 pl-2 pr-8 text-left",
+              "flex min-h-[56px] w-full items-start gap-3 px-3.5 py-3 text-left transition active:bg-line-soft/80",
               active ? "bg-teal-tint" : "hover:bg-line-soft",
             )}
           >
             <Icon
-              size={17}
+              size={18}
               className={cn("mt-0.5 shrink-0", m.danger ? "text-loss" : "text-ink")}
             />
-            <span className="flex min-w-0 flex-col gap-0.5">
+            <span className="flex min-w-0 flex-col gap-1">
               <span
                 className={cn(
                   "truncate text-body-sm",
@@ -83,9 +85,9 @@ export function PermissionModePanel({ onDone }: { onDone?: () => void }) {
               >
                 {m.label}
               </span>
-              <span className="line-clamp-2 text-caption leading-relaxed text-ash">{m.desc}</span>
+              <span className="text-caption leading-relaxed text-ash">{m.desc}</span>
             </span>
-            {active && <Check size={12} className="ml-auto mt-1 shrink-0 text-teal" />}
+            {active && <Check size={16} className="ml-auto mt-0.5 shrink-0 text-teal" />}
           </button>
         );
       })}
@@ -93,7 +95,13 @@ export function PermissionModePanel({ onDone }: { onDone?: () => void }) {
   );
 }
 
-export function PermissionModePicker() {
+export function PermissionModePicker({
+  compact = false,
+  align = "right",
+}: {
+  compact?: boolean;
+  align?: "left" | "right";
+} = {}) {
   const mode = useWorkbench((s) => s.permissionMode);
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -101,6 +109,7 @@ export function PermissionModePicker() {
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
+      if (compact) return;
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => {
@@ -112,7 +121,7 @@ export function PermissionModePicker() {
       document.removeEventListener("mousedown", onDown);
       document.removeEventListener("keydown", onKey);
     };
-  }, [open]);
+  }, [open, compact]);
 
   const def = getMode(mode);
   const TriggerIcon = modeIcon(mode);
@@ -125,23 +134,70 @@ export function PermissionModePicker() {
         aria-haspopup="listbox"
         title={`${def.label} · ${def.desc}`}
         className={cn(
-          "flex items-center gap-1.5 rounded-btn px-2 py-1.5 text-body-sm",
+          "flex items-center justify-center transition rounded-lg",
+          "h-7 sm:h-8 px-1.5 sm:px-2 gap-1 sm:gap-1.5 text-xs sm:text-body-sm",
+          compact ? "border border-line-soft bg-card/60 active:scale-95" : "hover:bg-line-soft",
           open
-            ? "bg-line-soft text-ink"
+            ? "bg-line-soft text-ink ring-1 ring-teal/30"
             : def.danger
-              ? "text-loss hover:bg-loss/5"
+              ? "text-loss hover:bg-loss/5 border-loss/30"
               : "text-graphite hover:bg-line-soft hover:text-ink",
         )}
       >
-        <TriggerIcon size={13} className="shrink-0" />
-        <span className="max-w-[84px] truncate">{def.label}</span>
-        <ChevronDown size={12} className="shrink-0 opacity-60" />
+        <TriggerIcon size={14} className={cn("shrink-0", def.danger ? "text-loss" : "text-ink")} />
+        <span className="hidden sm:inline max-w-[84px] truncate font-medium sm:font-normal">{def.label}</span>
+        <ChevronDown size={11} className="hidden sm:inline shrink-0 opacity-60" />
       </button>
 
       {open && (
-        <div className="absolute bottom-full right-0 z-40 mb-1.5 w-64 overflow-hidden rounded-input border border-line bg-canvas py-1">
-          <PermissionModePanel onDone={() => setOpen(false)} />
-        </div>
+        compact && typeof window !== "undefined" && window.innerWidth < 640 ? (
+          createPortal(
+            <div
+              className="fixed inset-0 z-50 flex flex-col justify-end bg-black/65 backdrop-blur-xs animate-in fade-in duration-200 select-none"
+              onClick={(e) => {
+                if (e.target === e.currentTarget) setOpen(false);
+              }}
+            >
+              <div
+                style={{ height: "65dvh", maxHeight: "75dvh" }}
+                className="mx-auto w-full max-w-[500px] flex flex-col overflow-hidden rounded-t-3xl border-t border-line bg-canvas shadow-2xl animate-in slide-in-from-bottom-6 duration-250"
+              >
+                {/* 顶部拉手条 */}
+                <div className="flex h-5 shrink-0 items-center justify-center pt-2">
+                  <span className="h-1 w-10 rounded-full bg-zinc-650/40" />
+                </div>
+
+                {/* 抽屉头部 */}
+                <div className="flex items-center justify-between border-b border-line px-4 py-2.5 bg-card/70 shrink-0">
+                  <span className="text-body-sm font-semibold text-ink">运行模式设置</span>
+                  <button
+                    type="button"
+                    onClick={() => setOpen(false)}
+                    aria-label="关闭选择器"
+                    className="flex h-7 w-7 items-center justify-center rounded-full text-ash hover:bg-line-soft hover:text-ink active:scale-90 transition"
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
+
+                {/* 抽屉主体：纵向自由触控滚动 */}
+                <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain touch-pan-y">
+                  <PermissionModePanel onDone={() => setOpen(false)} />
+                </div>
+              </div>
+            </div>,
+            document.body,
+          )
+        ) : (
+          <div
+            className={cn(
+              "absolute bottom-full z-40 mb-1.5 w-64 max-w-[calc(100vw-32px)] overflow-hidden rounded-input border border-line bg-canvas py-1 shadow-lg",
+              align === "left" ? "left-0" : "right-0",
+            )}
+          >
+            <PermissionModePanel onDone={() => setOpen(false)} />
+          </div>
+        )
       )}
     </div>
   );

@@ -1,25 +1,37 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowUp, Command, Square } from "lucide-react";
-import { useWorkbench, selectActiveUnit, visibleModelsFor } from "../store/useWorkbench.ts";
+import {
+  ArrowUp,
+  ChevronDown,
+  Command,
+  FolderGit2,
+  GitBranch,
+  Paperclip,
+  Plus,
+  Square,
+} from "lucide-react";
+import { useWorkbench, selectActiveUnit } from "../store/useWorkbench.ts";
+import { useShell } from "../store/useShell.ts";
 import { nativeCommandsFor, useNativeCommands } from "../store/useNativeCommands.ts";
 import type { NativeCommandInfo } from "../core/adapter.ts";
-import { asModelId } from "../core/units.ts";
 import { RuntimePicker } from "./RuntimePicker.tsx";
 import { ReasoningEffortPicker } from "./LoopParamsPicker.tsx";
 import { PermissionModePicker } from "./PermissionModePicker.tsx";
-import { MemoryScopePicker } from "./MemoryScopePicker.tsx";
 import { SlashCommandMenu, filterNativeCommands } from "./SlashCommandMenu.tsx";
+import { useIsMobile } from "./mobile/useIsMobile.ts";
 import { cn } from "./cn.ts";
 
 /**
  * 输入区 —— 全页焦点元素。
  *
- * 对齐 DESIGN.md 的 Search Input + Filled Action Button + Pill Chip：
- * - 羊皮纸底 + 12px 圆角 + 聚焦时青色光晕
- * - 斜杠命令 = 当前执行器的**原生命令**（菜单发现 + 参数提示），"/" 文本
- *   原样透传给执行器分发，工作台不内置任何本地命令
+ * 移动端结构：
+ * - 顶部卡片栏：工作空间文件夹名称 + 分支 (Branch) + 角色徽标
+ * - 核心文本输入框 (自动高度)
+ * - 底部工具栏：
+ *   - 左侧：[+] 扩展菜单（斜杠指令/附件/技能） + 运行模式形式（计划模式/变更确认/自主模式/完全访问）
+ *   - 右侧：执行器与模型（单图标） + 推理思考力度（单图标） + 发送/停止按钮
  */
-export function Composer() {
+export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
+  const { isMobile } = useIsMobile();
   const draft = useWorkbench((s) => s.draft);
   const setDraft = useWorkbench((s) => s.setDraft);
   const run = useWorkbench((s) => s.run);
@@ -27,22 +39,60 @@ export function Composer() {
   const unit = useWorkbench(selectActiveUnit);
   const activeRuntime = useWorkbench((s) => s.activeRuntimeId);
   const taRef = useRef<HTMLTextAreaElement>(null);
-  const [inputHeight, setInputHeight] = useState(46);
-  const [slashMenuDismissed, setSlashMenuDismissed] = useState(false);
+  const plusMenuRef = useRef<HTMLDivElement>(null);
 
-  // 当文字被填入时自适应加高：平时显示 2 行（约 46px），内容输入增加后向上撑高，最多容纳 5 行（约 116px）
+  const [viewportH, setViewportH] = useState(() =>
+    typeof window !== "undefined" ? (window.visualViewport?.height ?? window.innerHeight) : 800,
+  );
+  const baseH = isMobile ? 64 : 76;
+  const maxH = Math.max(baseH, Math.floor(viewportH - 170));
+
+  const [inputHeight, setInputHeight] = useState(baseH);
+  const [slashMenuDismissed, setSlashMenuDismissed] = useState(false);
+  const [plusMenuOpen, setPlusMenuOpen] = useState(false);
+
+  // 监听可视视口尺寸变化（支持手机端软键盘弹出缩减视口、窗口缩放）
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onResize = () => {
+      const h = window.visualViewport?.height ?? window.innerHeight;
+      setViewportH(h);
+    };
+    window.addEventListener("resize", onResize);
+    window.visualViewport?.addEventListener("resize", onResize);
+    return () => {
+      window.removeEventListener("resize", onResize);
+      window.visualViewport?.removeEventListener("resize", onResize);
+    };
+  }, []);
+
+  // 点击外部关闭 [+] 菜单
+  useEffect(() => {
+    if (!plusMenuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (plusMenuRef.current && !plusMenuRef.current.contains(e.target as Node)) {
+        setPlusMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [plusMenuOpen]);
+
+  // 当文字被填入时自适应加高：
+  // 默认高度容纳 3~4 行；输入多行内容时持续长高，上限直顶 header 的下底边，绝不在 5 行截断或回缩
   useEffect(() => {
     const ta = taRef.current;
     if (!ta) return;
     if (!draft) {
-      setInputHeight(46);
+      setInputHeight(baseH);
       return;
     }
-    ta.style.height = "auto";
+    ta.style.height = `${baseH}px`;
     const scrollH = ta.scrollHeight;
-    const targetH = Math.min(Math.max(scrollH, 46), 116);
+    const targetH = Math.min(Math.max(scrollH, baseH), maxH);
+    ta.style.height = `${targetH}px`;
     setInputHeight(targetH);
-  }, [draft]);
+  }, [draft, isMobile, baseH, maxH]);
 
   // 草稿被外部填入时，把焦点交给输入框
   useEffect(() => {
@@ -55,12 +105,7 @@ export function Composer() {
   const slashFilter = isSlashActive ? draft.slice(1) : "";
 
   // ---- 执行器原生斜杠命令 --------------------------------------------------
-  // 菜单数据源：切换执行器/工作单元时预取（TTL 内不重拉），菜单打开时兜底确保。
-  // daemon: 前缀是界面侧命名空间，daemon RPC 要裸执行器 id。
   const bareRuntimeId = activeRuntime.startsWith("daemon:") ? activeRuntime.slice("daemon:".length) : activeRuntime;
-  // 无工作单元（落地页）也要能开面板：rootPath 用 "/"，适配器按「仅用户级」
-  // 处理（项目级目录 join 出来不存在，自然缺席）—— 与占位文案的承诺一致。
-  // ⚠ 选择器与 ensure 必须同一个键（commandsRoot），否则存取错位永远 miss。
   const commandsRoot = unit?.rootPath ?? "/";
   const nativeEntry = useNativeCommands((s) => nativeCommandsFor(s, bareRuntimeId, commandsRoot));
   const executorName =
@@ -82,8 +127,7 @@ export function Composer() {
     if (bareRuntimeId) void useNativeCommands.getState().ensure(bareRuntimeId, commandsRoot);
   }, [bareRuntimeId, commandsRoot]);
 
-  /** 选中原生命令：只把 "/name " 放进草稿（参数留给用户补），收起菜单，Enter 发送。
-   *  不在本地做任何语义 —— 分发/展开/输出回显都是执行器自己的事。 */
+  /** 选中原生命令：只把 "/name " 放进草稿（参数留给用户补），收起菜单，Enter 发送。 */
   const handleSelectNativeCommand = (cmd: NativeCommandInfo) => {
     setDraft(`/${cmd.name} `);
     setSlashMenuDismissed(true);
@@ -96,6 +140,7 @@ export function Composer() {
     if (!v) return;
     setDraft("");
     setSlashMenuDismissed(false);
+    setPlusMenuOpen(false);
     void run(v);
   };
 
@@ -107,14 +152,48 @@ export function Composer() {
 
   return (
     <div className="shrink-0">
-      <div className="mx-auto max-w-[900px] px-8 pb-4 pt-2">
+      <div className={cn("mx-auto max-w-[900px]", isMobile ? "px-3 pb-2 pt-1" : "px-8 pb-4 pt-2")}>
         <div
           className={cn(
-            "relative rounded-input border bg-canvas px-4 py-3 shadow-subtle",
-            "border-line",
+            "relative rounded-2xl border bg-canvas shadow-subtle transition",
+            isMobile ? "p-2.5 border-line/80 shadow-xs" : "px-4 py-3 border-line",
             "focus-within:border-teal/50 focus-within:ring-2 focus-within:ring-teal/20",
           )}
         >
+          {/* 对话卡片顶栏：工作空间文件夹名称 + 分支 (Branch) */}
+          <div className="mb-2 flex items-center justify-between border-b border-line-soft pb-1.5 px-0.5 select-none">
+            <div className="flex items-center gap-2 min-w-0">
+              <button
+                type="button"
+                onClick={() => {
+                  if (isMobile) {
+                    onOpenDrawer?.();
+                  } else {
+                    useShell.getState().setCommandOpen(true);
+                  }
+                }}
+                className={cn(
+                  "flex items-center gap-1.5 rounded-lg bg-line-soft/80 px-2.5 py-1 text-xs text-ink font-semibold truncate hover:bg-line-soft active:scale-95 transition",
+                  "max-w-[150px] sm:max-w-[240px]",
+                )}
+                title="点击切换工作空间或 Agent"
+              >
+                <FolderGit2 size={13} className="text-teal shrink-0" />
+                <span className="truncate">{unit?.name || "agent-workbench"}</span>
+                <ChevronDown size={10} className="text-ash shrink-0" />
+              </button>
+
+              {/* 分支（先行实现页面展示效果） */}
+              <div
+                className="flex items-center gap-1 rounded-md border border-line/60 bg-line-soft/60 px-2 py-0.5 text-[11px] font-mono text-graphite hover:text-ink transition select-none cursor-default"
+                title="代码仓库分支 (当前为 main 分支)"
+              >
+                <GitBranch size={11} className="text-teal shrink-0" />
+                <span>main</span>
+              </div>
+            </div>
+          </div>
+
           {/* 斜杠指令参数提示条（命令已选定、输入参数阶段） */}
           {activeCommandHint && !slashMenuDismissed && (
             <div className="absolute bottom-full -left-px -right-px mb-2 px-3.5 py-2 rounded-xl border border-line bg-card/95 shadow-md backdrop-blur-md flex items-center gap-2.5 text-xs animate-in fade-in duration-100 z-40">
@@ -158,15 +237,8 @@ export function Composer() {
               setSlashMenuDismissed(false);
             }}
             onKeyDown={(e) => {
-              // ⚠ 输入法组字中的 Enter 是「选词」，不是「发送」。
-              // 中文/日文输入法下按 Enter 上屏候选词时，keydown 的 key 同样是
-              // "Enter"、isComposing 为 true —— 不挡就会把半截拼音（或未上屏的
-              // 内容）当消息发出去。
               if (e.nativeEvent.isComposing) return;
               if (e.key === "Enter" && !e.shiftKey) {
-                // 菜单开着且有可选项 → Enter 交给菜单选命令；否则照常发送
-                // （菜单无匹配/拉取中/已收起时不能把 Enter 吞掉 —— 命令文本
-                // 透传给执行器本来就是合法输入）。
                 const menuHasItems =
                   isSlashActive && filterNativeCommands(nativeEntry.commands, slashFilter).length > 0;
                 if (!menuHasItems) {
@@ -177,37 +249,108 @@ export function Composer() {
                 setSlashMenuDismissed(true);
               }
             }}
-            placeholder={placeholder}
+            placeholder={
+              isMobile
+                ? unit
+                  ? `向「${unit.name}」发消息… (输入 / 调出快捷命令)`
+                  : "输入任务或指令… (输入 / 调出快捷命令)"
+                : placeholder
+            }
             aria-label="任务输入"
-            className="w-full min-h-[46px] max-h-[116px] resize-none overflow-y-auto bg-transparent text-body leading-relaxed text-ink !outline-none focus:!outline-none focus-visible:!outline-none focus-visible:!ring-0 placeholder:text-graphite transition-[height] duration-150"
-            style={{ height: `${inputHeight}px`, outline: "none", boxShadow: "none" }}
+            className={cn(
+              "w-full resize-none overflow-y-auto bg-transparent leading-relaxed text-ink !outline-none focus:!outline-none focus-visible:!outline-none focus-visible:!ring-0 placeholder:text-graphite",
+              isMobile ? "text-body-sm min-h-[64px]" : "text-body min-h-[76px]",
+            )}
+            style={{ height: `${inputHeight}px`, maxHeight: `${maxH}px`, outline: "none", boxShadow: "none" }}
           />
 
           {/* 底部工具栏 */}
-          <div className="mt-2 flex items-center gap-2">
-            {/* 「/ 指令」按钮 */}
-            <button
-              type="button"
-              onClick={() => {
-                setDraft("/");
-                setSlashMenuDismissed(false);
-                taRef.current?.focus();
-              }}
-              aria-label="快捷指令"
-              title="查看与运行快捷指令 · 输入 /"
-              className="shrink-0 flex items-center gap-1 rounded-btn px-2 py-1 text-xs text-graphite hover:bg-line-soft hover:text-ink font-mono transition"
-            >
-              <Command size={13} className="text-teal" />
-              <span className="font-bold text-teal">/</span>
-            </button>
+          <div className="mt-2 flex items-center justify-between gap-1.5">
+            {/* 左侧操作：+ 添加命令/附件 + 快捷 / + 模式形式 (plan / accept edits / ask / bypass) */}
+            <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
+              <div className="relative" ref={plusMenuRef}>
+                <button
+                  type="button"
+                  onClick={() => setPlusMenuOpen((v) => !v)}
+                  aria-expanded={plusMenuOpen}
+                  aria-label="添加指令或附件"
+                  title="添加快捷指令、@附件与技能"
+                  className={cn(
+                    "flex shrink-0 items-center justify-center rounded-lg border border-line-soft bg-card/60 text-teal hover:bg-line-soft active:scale-95 transition",
+                    "h-7 w-7 sm:h-8 sm:w-8",
+                    plusMenuOpen && "bg-teal-tint text-teal ring-1 ring-teal/30",
+                  )}
+                >
+                  <Plus size={isMobile ? 14 : 16} strokeWidth={2.5} />
+                </button>
 
-            {/* 「记忆注入选择胶囊」 */}
-            <MemoryScopePicker />
+                {/* [+] 弹出菜单：斜杠指令 / @ 附件提示 */}
+                {plusMenuOpen && (
+                  <div className="absolute bottom-full left-0 mb-2 w-56 rounded-xl border border-line bg-canvas p-1.5 shadow-xl backdrop-blur-md z-50 text-ink animate-in fade-in zoom-in-95 duration-100">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPlusMenuOpen(false);
+                        setDraft("/");
+                        setSlashMenuDismissed(false);
+                        taRef.current?.focus();
+                      }}
+                      className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs text-graphite hover:bg-line-soft hover:text-ink transition"
+                    >
+                      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded bg-ink text-canvas font-mono text-[10px] font-bold">
+                        /
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <span className="block font-medium text-ink">快捷斜杠命令与技能</span>
+                        <span className="block text-[10px] text-ash">呼出 / 命令面板</span>
+                      </div>
+                    </button>
 
-            <div className="ml-auto flex flex-wrap items-center gap-1.5">
-              <RuntimePicker />
-              <ReasoningEffortPicker />
-              <PermissionModePicker />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPlusMenuOpen(false);
+                        setDraft(draft ? `${draft} @` : "@");
+                        taRef.current?.focus();
+                      }}
+                      className="mt-0.5 flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs text-graphite hover:bg-line-soft hover:text-ink transition"
+                    >
+                      <Paperclip size={14} className="shrink-0 text-teal" />
+                      <div className="min-w-0 flex-1">
+                        <span className="block font-medium text-ink">添加文件与上下文 (@)</span>
+                        <span className="block text-[10px] text-ash">文件引用功能即将上线</span>
+                      </div>
+                      <span className="rounded bg-teal-tint px-1 py-0.2 text-[9px] font-medium text-teal shrink-0">
+                        后续
+                      </span>
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setDraft("/");
+                  setSlashMenuDismissed(false);
+                  taRef.current?.focus();
+                }}
+                aria-label="快捷指令"
+                title="查看与运行快捷指令 · 输入 /"
+                className="hidden sm:flex shrink-0 items-center gap-1 rounded-btn px-2 py-1 text-xs text-graphite hover:bg-line-soft hover:text-ink font-mono transition h-7 sm:h-8"
+              >
+                <Command size={13} className="text-teal" />
+                <span className="font-bold text-teal">/</span>
+              </button>
+
+              {/* 权限模式选择器（计划模式 / 变更确认 / 自主模式 / 完全访问） */}
+              <PermissionModePicker compact={isMobile} align="left" />
+            </div>
+
+            {/* 右侧操作：执行器与模型（单图标） + 推理力度（单图标） + 发送/停止按钮 */}
+            <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
+              <RuntimePicker compact={isMobile} align="right" />
+              <ReasoningEffortPicker compact={isMobile} align="right" />
 
               {busy ? (
                 <button
@@ -215,9 +358,9 @@ export function Composer() {
                   onClick={() => useWorkbench.getState().cancelRun()}
                   aria-label="停止"
                   title="停止"
-                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-btn bg-ink text-canvas hover:opacity-90 active:scale-95 transition"
+                  className="flex shrink-0 items-center justify-center rounded-lg bg-ink text-canvas hover:opacity-90 active:scale-95 transition h-7 w-7 sm:h-8 sm:w-8"
                 >
-                  <Square size={12} fill="currentColor" />
+                  <Square size={isMobile ? 10 : 12} fill="currentColor" />
                 </button>
               ) : (
                 <button
@@ -226,9 +369,9 @@ export function Composer() {
                   disabled={!draft.trim()}
                   aria-label="发送"
                   title="发送 · Enter"
-                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-btn bg-ink text-canvas hover:opacity-90 active:scale-95 disabled:opacity-30 transition"
+                  className="flex shrink-0 items-center justify-center rounded-lg bg-teal text-canvas hover:opacity-90 active:scale-95 disabled:opacity-30 disabled:bg-ink transition shadow-xs h-7 w-7 sm:h-8 sm:w-8"
                 >
-                  <ArrowUp size={16} />
+                  <ArrowUp size={isMobile ? 14 : 16} strokeWidth={2.5} />
                 </button>
               )}
             </div>

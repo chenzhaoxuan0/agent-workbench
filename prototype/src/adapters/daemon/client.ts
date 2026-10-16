@@ -101,9 +101,11 @@ export function defaultDaemonEndpoint(): string {
     if (stored !== null && stored !== "") return stored;
   } catch { /* 私有模式 */ }
   if (typeof window !== "undefined") {
-    const host = window.location.hostname;
-    if (host !== "127.0.0.1" && host !== "localhost" && host !== "") {
-      return `http://${host}:${DAEMON_PORT}`;
+    // 无论是本机还是移动端局域网，前端开发服务器已将 /ws, /bootstrap, /api 代理转发至 daemon。
+    // 使用同源 origin 既无需开放防火墙二级端口，又能跨网卡保证移动端直连。
+    const origin = window.location.origin;
+    if (origin && !origin.startsWith("file:")) {
+      return origin;
     }
   }
   return `http://127.0.0.1:${DAEMON_PORT}`;

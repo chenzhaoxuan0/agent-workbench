@@ -1,5 +1,6 @@
-import { PanelLeftOpen } from "lucide-react";
+import { PanelLeftOpen, Smartphone } from "lucide-react";
 import { useShell } from "../store/useShell.ts";
+import { useIsMobile } from "./mobile/useIsMobile.ts";
 
 /**
  * 左上浮层 —— 仅在侧边栏折叠时常驻左上角，提供侧栏展开入口。
@@ -7,6 +8,7 @@ import { useShell } from "../store/useShell.ts";
  */
 export function DesktopTopOverlay() {
   const sidebarCollapsed = useShell((s) => s.sidebarCollapsed);
+  const { preference, setPreference, windowIsMobile } = useIsMobile();
 
   if (!sidebarCollapsed) {
     return null;
@@ -33,6 +35,17 @@ export function DesktopTopOverlay() {
           />
         </button>
 
+        {(preference === "desktop" || windowIsMobile) && (
+          <button
+            onClick={() => setPreference(windowIsMobile ? "auto" : "mobile")}
+            aria-label="切回手机视图"
+            title="切回手机视图"
+            className="flex h-7 items-center gap-1 rounded-btn px-2 text-caption font-medium text-teal border border-teal/40 bg-card/90 shadow-xs hover:bg-teal hover:text-white transition"
+          >
+            <Smartphone size={13} />
+            <span className="text-[11px]">手机视图</span>
+          </button>
+        )}
       </div>
     </div>
   );

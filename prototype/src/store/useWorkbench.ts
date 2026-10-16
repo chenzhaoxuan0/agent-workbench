@@ -204,6 +204,8 @@ interface WorkbenchState {
   updateAutomationAction: (id: string, patch: AutomationWriteInput) => Promise<boolean>;
   deleteAutomationAction: (id: string) => Promise<void>;
   runAutomationNowAction: (id: string) => Promise<void>;
+  /** 从 daemon 重新拉取并合并全量 Agent 机器人列表 */
+  refreshUnits: () => Promise<void>;
 }
 
 /* ------------------------------------------------------------------ 模型偏好 */
@@ -315,11 +317,26 @@ function applyPutResult(
 /** 时间线序号 —— 全局递增，pushUserBubble / pushNotice / 事件泵共用 */
 let seq = 0;
 
+function getInitialActiveUnit(): UnitId {
+  if (typeof window !== "undefined") {
+    try {
+      const q = new URLSearchParams(window.location.search).get("unit");
+      if (q) {
+        localStorage.setItem("agent-workbench:active-unit", q);
+        return asUnitId(q);
+      }
+      const stored = localStorage.getItem("agent-workbench:active-unit");
+      if (stored) return asUnitId(stored);
+    } catch {}
+  }
+  return asUnitId("");
+}
+
 export const useWorkbench = create<WorkbenchState>((set, get) => ({
   // 评审后清 mock（用户指示）：初始全空，一切数据来自真实 daemon——
   // 空态是设计的一部分（ZCode 原则：功能不因空而消失），不再用样例数据撑门面
   units: [],
-  activeUnitId: asUnitId(""),
+  activeUnitId: getInitialActiveUnit(),
   view: "bot",
   runtimes: [],
   activeRuntimeId: "zcode",
@@ -337,7 +354,7 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
   busy: false,
   draft: "",
   permissionDecisions: {},
-  permissionMode: "ask",
+  permissionMode: "bypass",
   memoryScopes: ["semantic"] as readonly ("semantic" | "daily")[],
 
   setDraft: (draft) => set({ draft }),
@@ -457,7 +474,7 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
     }
   },
 
-  deleteAutomationAction: async (id) => {
+  deleteAutomationAction: async (id: string) => {
     const { deleteAutomation, defaultDaemonEndpoint } = await import("../adapters/daemon/client.ts");
     try {
       await deleteAutomation(Number(id), defaultDaemonEndpoint());
@@ -510,7 +527,37 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
     set({ view, activeUnitId: first?.id ?? get().activeUnitId });
   },
 
-  selectUnit: (activeUnitId) => set({ activeUnitId, activeSessionId: null }),
+  selectUnit: (activeUnitId) => {
+    set({ activeUnitId, activeSessionId: null });
+    try {
+      localStorage.setItem("agent-workbench:active-unit", activeUnitId);
+    } catch {}
+  },
+
+  refreshUnits: async () => {
+    try {
+      const { listBotDefinitions, defaultDaemonEndpoint } = await import("../adapters/daemon/client.ts");
+      const defs = (await listBotDefinitions(defaultDaemonEndpoint())) as WorkUnit[];
+      const valid = defs.filter(
+        (d) =>
+          typeof d.id === "string" &&
+          typeof d.rootPath === "string" &&
+          typeof d.name === "string" &&
+          Array.isArray(d.bindings) &&
+          (d.kind === "bot" || d.kind === "project"),
+      );
+      if (valid.length > 0) {
+        const curActive = get().activeUnitId;
+        const defaultActive = valid.some((u) => u.id === curActive && u.id !== "")
+          ? curActive
+          : (valid.find((u) => u.id === "steward")?.id ?? valid[0]?.id ?? asUnitId(""));
+        set({ units: valid, activeUnitId: defaultActive });
+        void get().refreshChannelIdentity();
+      }
+    } catch (err: unknown) {
+      console.warn("[workbench] 刷新 Agent 列表失败", err);
+    }
+  },
 
   addUnit: async (u) => {
     set((s) => ({

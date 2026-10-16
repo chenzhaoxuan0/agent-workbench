@@ -95,8 +95,10 @@ export function RemoteControlDialog({ onClose }: { onClose: () => void }) {
       ? window.location.port
       : "3000";
 
+  const unitParam = activeUnit?.id ? `&unit=${encodeURIComponent(activeUnit.id)}` : "";
+
   const mobileUrl = selectedIp
-    ? `http://${selectedIp}:${port}${token ? `?token=${encodeURIComponent(token)}` : ""}`
+    ? `http://${selectedIp}:${port}${token ? `?token=${encodeURIComponent(token)}` : ""}${unitParam}`
     : "";
 
   useEffect(() => {
@@ -115,7 +117,7 @@ export function RemoteControlDialog({ onClose }: { onClose: () => void }) {
 
   // 公网穿透直连 URL 并生成二维码
   const tunnelMobileUrl = tunnelState?.url
-    ? `${tunnelState.url}${token ? `?token=${encodeURIComponent(token)}` : ""}`
+    ? `${tunnelState.url}${token ? `?token=${encodeURIComponent(token)}` : ""}${unitParam}`
     : "";
 
   useEffect(() => {

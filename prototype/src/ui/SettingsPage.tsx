@@ -273,6 +273,8 @@ function MemorySettingsSection() {
   const units = useWorkbench((s) => s.units);
   const updateUnit = useWorkbench((s) => s.updateUnit);
   const activeRoot = useWorkbench(selectActiveUnit)?.rootPath ?? null;
+  const memoryScopes = useWorkbench((s) => s.memoryScopes);
+  const toggleMemoryScope = useWorkbench((s) => s.toggleMemoryScope);
 
   const [usage, setUsage] = useState<{ chars: number; limit: number; exists: boolean } | null>(null);
   const [digest, setDigest] = useState<DigestResult | null>(null);
@@ -394,6 +396,38 @@ function MemorySettingsSection() {
             )
           }
         />
+      </GroupCard>
+
+      {/* 会话记忆注入范围 */}
+      <GroupCard>
+        <div className="px-4 pb-1 pt-3">
+          <p className="text-caption font-medium text-graphite">会话记忆注入范围</p>
+          <p className="mt-0.5 text-caption leading-relaxed text-ash">
+            控制发送任务时要自动注入到执行器上下文中的记忆类型。
+          </p>
+        </div>
+        <div className="divide-y divide-line-soft">
+          <div className="flex items-center justify-between gap-4 px-4 py-3">
+            <div>
+              <p className="text-body-sm font-medium text-ink">长期事实记忆 (MEMORY.md)</p>
+              <p className="text-caption text-ash">自动注入项目根目录 MEMORY.md 沉淀的关键设定与业务事实</p>
+            </div>
+            <Toggle
+              on={memoryScopes.includes("semantic")}
+              onChange={() => toggleMemoryScope("semantic")}
+            />
+          </div>
+          <div className="flex items-center justify-between gap-4 px-4 py-3">
+            <div>
+              <p className="text-body-sm font-medium text-ink">当日会话精炼 (Daily Digest)</p>
+              <p className="text-caption text-ash">自动注入当天多轮会话提炼出的关键进展与临时上下文</p>
+            </div>
+            <Toggle
+              on={memoryScopes.includes("daily")}
+              onChange={() => toggleMemoryScope("daily")}
+            />
+          </div>
+        </div>
       </GroupCard>
 
       {/* 跨项目检索：逐 bot 授权 */}

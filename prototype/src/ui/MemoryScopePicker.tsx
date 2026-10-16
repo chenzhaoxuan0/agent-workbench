@@ -4,7 +4,7 @@ import { useWorkbench, selectActiveUnit } from "../store/useWorkbench.ts";
 import { useMemoryPanel } from "../store/useMemoryPanel.ts";
 import { cn } from "./cn.ts";
 
-export function MemoryScopePicker() {
+export function MemoryScopePicker({ compact }: { compact?: boolean } = {}) {
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const unit = useWorkbench(selectActiveUnit);
@@ -48,24 +48,44 @@ export function MemoryScopePicker() {
   const isEnabled = hasSemantic || hasDaily;
 
   return (
-    <div className="relative inline-block" ref={containerRef}>
-      <button
-        type="button"
-        onClick={() => setOpen(!open)}
-        title="选择本轮对话要注入的记忆类型（长期记忆 MEMORY.md 与当日会话精炼独立注入）"
-        className={cn(
-          "flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs transition border font-medium select-none",
-          isEnabled
-            ? "border-teal/30 bg-teal-tint text-teal hover:border-teal/50"
-            : "border-line text-graphite hover:text-ink hover:border-line-soft bg-canvas/60",
-        )}
-      >
-        <Brain size={13} className={cn(isEnabled ? "text-teal" : "text-graphite")} />
-        <span className="font-mono text-[11px] tracking-tight">{label}</span>
-      </button>
+    <div className="relative inline-block shrink-0" ref={containerRef}>
+      {compact ? (
+        <button
+          type="button"
+          onClick={() => setOpen(!open)}
+          aria-expanded={open}
+          title={`记忆注入配置 (${label})`}
+          className={cn(
+            "relative flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border transition",
+            isEnabled
+              ? "border-teal/40 bg-teal-tint text-teal"
+              : "border-line/60 bg-line-soft/40 text-graphite hover:bg-line-soft hover:text-ink",
+          )}
+        >
+          <Brain size={15} />
+          {isEnabled && (
+            <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-teal" />
+          )}
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setOpen(!open)}
+          title="选择本轮对话要注入的记忆类型（长期记忆 MEMORY.md 与当日会话精炼独立注入）"
+          className={cn(
+            "flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs transition border font-medium select-none whitespace-nowrap",
+            isEnabled
+              ? "border-teal/30 bg-teal-tint text-teal hover:border-teal/50"
+              : "border-line text-graphite hover:text-ink hover:border-line-soft bg-canvas/60",
+          )}
+        >
+          <Brain size={13} className={cn(isEnabled ? "text-teal" : "text-graphite")} />
+          <span className="font-mono text-[11px] tracking-tight whitespace-nowrap">{label}</span>
+        </button>
+      )}
 
       {open && (
-        <div className="absolute bottom-full left-0 mb-2 w-80 rounded-xl border border-line bg-canvas p-3 shadow-xl backdrop-blur-md z-50 text-ink animate-in fade-in zoom-in-95 duration-100">
+        <div className="absolute bottom-full left-0 mb-2 w-80 max-w-[calc(100vw-32px)] rounded-xl border border-line bg-canvas p-3 shadow-xl backdrop-blur-md z-50 text-ink animate-in fade-in zoom-in-95 duration-100">
           <div className="flex items-center justify-between pb-2 border-b border-line-soft">
             <div className="flex items-center gap-1.5 text-xs font-semibold text-ink">
               <Brain size={14} className="text-teal" />

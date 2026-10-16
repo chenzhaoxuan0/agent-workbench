@@ -4,7 +4,7 @@ import {
   Laptop,
   Moon,
   Plus,
-  QrCode,
+  RefreshCw,
   Settings,
   Smartphone,
   Sun,
@@ -19,19 +19,19 @@ import { cn } from "../cn.ts";
 export function MobileDrawer({
   open,
   onClose,
-  onOpenRemote,
   preference,
   onSetPreference,
 }: {
   open: boolean;
   onClose: () => void;
-  onOpenRemote: () => void;
   preference: LayoutPreference;
   onSetPreference: (p: LayoutPreference) => void;
 }) {
   const units = useWorkbench((s) => s.units);
   const activeUnitId = useWorkbench((s) => s.activeUnitId);
   const selectUnit = useWorkbench((s) => s.selectUnit);
+  const refreshUnits = useWorkbench((s) => s.refreshUnits);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const openSettings = useShell((s) => s.openSettings);
   const resolvedAppearance = useAppearance((s) => s.resolvedAppearance);
   const setMode = useAppearance((s) => s.setMode);
@@ -115,58 +115,96 @@ export function MobileDrawer({
 
         {/* 机器人列表 */}
         <div className="flex-1 overflow-y-auto p-3 space-y-1">
-          <div className="px-2 py-1 text-[11px] font-semibold text-ash uppercase tracking-wider">
-            Agent 机器人列表
+          <div className="flex items-center justify-between px-2 py-1">
+            <span className="text-[11px] font-semibold text-ash uppercase tracking-wider">
+              Agent 机器人列表
+            </span>
+            <button
+              type="button"
+              onClick={async () => {
+                setIsRefreshing(true);
+                try {
+                  await refreshUnits();
+                } finally {
+                  setTimeout(() => setIsRefreshing(false), 500);
+                }
+              }}
+              disabled={isRefreshing}
+              title="从 PC 端同步 Agent 列表"
+              className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-medium text-teal hover:bg-teal-tint transition disabled:opacity-50"
+            >
+              <RefreshCw size={11} className={cn(isRefreshing && "animate-spin")} />
+              <span>{isRefreshing ? "同步中" : "从PC同步"}</span>
+            </button>
           </div>
-          {units.map((u) => {
-            const isSelected = u.id === activeUnitId;
-            return (
+
+          {units.length === 0 ? (
+            <div className="my-6 rounded-2xl border border-dashed border-line p-4 text-center bg-card/40">
+              <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-xl bg-teal-tint text-teal mb-2">
+                <Bot size={20} />
+              </div>
+              <p className="text-body-sm font-semibold text-ink">暂未发现 Agent 机器人</p>
+              <p className="mt-1 text-[11px] text-ash leading-relaxed">
+                数据正从桌面端同步。若列表未出现，请确保手机与电脑在同一局域网并点击重试。
+              </p>
               <button
-                key={u.id}
-                onClick={() => {
-                  selectUnit(u.id);
-                  onClose();
+                type="button"
+                onClick={async () => {
+                  setIsRefreshing(true);
+                  try {
+                    await refreshUnits();
+                  } finally {
+                    setTimeout(() => setIsRefreshing(false), 500);
+                  }
                 }}
-                className={cn(
-                  "flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-left transition",
-                  isSelected
-                    ? "bg-teal/15 text-teal font-semibold shadow-xs"
-                    : "text-graphite hover:bg-line-soft hover:text-ink",
-                )}
+                disabled={isRefreshing}
+                className="mt-3.5 inline-flex items-center gap-1.5 rounded-xl bg-teal px-3.5 py-1.5 text-caption font-medium text-white shadow-xs active:scale-95 transition disabled:opacity-50"
               >
-                <div
+                <RefreshCw size={12} className={cn(isRefreshing && "animate-spin")} />
+                <span>立即同步数据</span>
+              </button>
+            </div>
+          ) : (
+            units.map((u) => {
+              const isSelected = u.id === activeUnitId;
+              const isSteward = u.id === "steward";
+              return (
+                <button
+                  key={u.id}
+                  onClick={() => {
+                    selectUnit(u.id);
+                    onClose();
+                  }}
                   className={cn(
-                    "flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-sm",
-                    isSelected ? "bg-teal text-white" : "bg-line-soft text-graphite",
+                    "flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-left transition",
+                    isSelected
+                      ? "bg-teal/15 text-teal font-semibold shadow-xs"
+                      : "text-graphite hover:bg-line-soft hover:text-ink",
                   )}
                 >
-                  <Bot size={16} />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <span className="block truncate text-body-sm">{u.name}</span>
-                  <span className="block truncate text-[11px] text-ash">
-                    {u.identity?.role || "Agent"}
-                  </span>
-                </div>
-                {isSelected && <span className="h-2 w-2 rounded-full bg-teal" />}
-              </button>
-            );
-          })}
+                  <div
+                    className={cn(
+                      "flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-sm",
+                      isSelected ? "bg-teal text-white shadow-xs" : "bg-line-soft text-graphite",
+                    )}
+                  >
+                    <Bot size={16} />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <span className="block truncate text-body-sm">{u.name}</span>
+                    <span className="block truncate text-[11px] text-ash">
+                      {isSteward ? "系统总管" : u.identity?.role || "Agent"}
+                    </span>
+                  </div>
+                  {isSelected && <span className="h-2 w-2 rounded-full bg-teal" />}
+                </button>
+              );
+            })
+          )}
         </div>
 
         {/* 底部工具操作区 */}
         <div className="border-t border-line/60 bg-rail/40 p-3 space-y-2">
-          {/* 远控二维码 */}
-          <button
-            onClick={() => {
-              onClose();
-              onOpenRemote();
-            }}
-            className="flex w-full items-center gap-2.5 rounded-xl border border-line bg-card px-3 py-2 text-body-sm font-medium text-ink transition hover:border-teal hover:text-teal"
-          >
-            <QrCode size={16} className="text-teal" />
-            <span>移动端远控中心 (二维码)</span>
-          </button>
 
           {/* 布局切换 */}
           <div className="rounded-xl border border-line bg-card p-2 space-y-1">

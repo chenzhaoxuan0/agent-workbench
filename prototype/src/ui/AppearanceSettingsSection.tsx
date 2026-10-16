@@ -16,8 +16,11 @@ import {
   Upload,
   Download,
   Trash2,
+  Smartphone,
+  Laptop,
 } from "lucide-react";
 import { useAppearance } from "../store/useAppearance.ts";
+import { useLayoutStore } from "./mobile/useIsMobile.ts";
 import {
   APPEARANCE_PRESETS,
   contrastRatio,
@@ -235,6 +238,10 @@ export function AppearanceSettingsSection() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
 
+  const layoutPref = useLayoutStore((s) => s.preference);
+  const setLayoutPref = useLayoutStore((s) => s.setPreference);
+  const windowIsMobile = useLayoutStore((s) => s.windowIsMobile);
+
   const { mode, resolvedAppearance, activeProfile, art, wallpaper, presetId } = store;
   const followsTheme = activeProfile.transparency === null;
   // 跟随默认的显示值按有无壁纸分档：无壁纸 0%（不透明），有壁纸 30%（否则壁纸被盖住）
@@ -356,6 +363,54 @@ export function AppearanceSettingsSection() {
         </div>
         <p className="mt-3 text-caption text-ash">
           正在编辑「{resolvedAppearance === "dark" ? "深色" : "浅色"}」档案。切换模式会切到另一套档案，两套的改动各自独立保存。
+        </p>
+      </SectionCard>
+
+      {/* ---------------------------------------------------- 显示视图模式 */}
+      <SectionCard
+        icon={<Smartphone size={16} />}
+        title="显示视图模式"
+        desc="选择工作台使用桌面端完整布局还是手机移动端布局。随时可在抽屉或顶部栏中切换。"
+      >
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          {(
+            [
+              { value: "auto" as const, label: "自动检测", icon: Monitor, hint: "跟随屏幕宽度与触屏" },
+              { value: "mobile" as const, label: "手机视图", icon: Smartphone, hint: "底部输入框 + 抽屉导航" },
+              { value: "desktop" as const, label: "电脑视图", icon: Laptop, hint: "多栏侧栏与全功能桌面" },
+            ]
+          ).map((option) => {
+            const Icon = option.icon;
+            const active = layoutPref === option.value;
+            return (
+              <button
+                key={option.value}
+                type="button"
+                onClick={() => setLayoutPref(option.value)}
+                className={cn(
+                  "flex items-start gap-2.5 rounded-card border p-3 text-left transition",
+                  active
+                    ? "border-teal bg-teal-tint/20 ring-1 ring-teal"
+                    : "border-line bg-canvas hover:bg-surface-hover",
+                )}
+              >
+                <Icon size={16} className={cn("mt-0.5 shrink-0", active ? "text-teal" : "text-graphite")} />
+                <div className="min-w-0 flex-1">
+                  <span className="block text-body-sm font-medium text-ink">{option.label}</span>
+                  <span className="block text-caption text-ash mt-0.5">{option.hint}</span>
+                </div>
+                {active && (
+                  <span className="ml-auto flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-teal text-canvas">
+                    <Check size={11} strokeWidth={3} />
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+        <p className="mt-3 text-caption text-ash">
+          当前硬件检测为：{windowIsMobile ? "移动端（窄屏或触屏设备）" : "桌面端（宽屏桌面设备）"}。
+          若在手机上切换到了「电脑视图」，可随时在顶部标题栏点击「📱 切回手机视图」返回。
         </p>
       </SectionCard>
 
