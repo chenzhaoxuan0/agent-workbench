@@ -1,29 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
-import {
-  Check,
-  Cloud,
-  FolderGit2,
-  GitBranch,
-  GitMerge,
-  Loader2,
-  Pencil,
-  Play,
-  Plus,
-  RefreshCw,
-  Rocket,
-  Terminal as TerminalIcon,
-  Trash2,
-  TriangleAlert,
-  X,
-} from "lucide-react";
-import {
-  GIT_ERROR_CODES,
-  validateBranchName,
-  type GitBranchInfo,
-  type GitStatus,
-  type GitWorktree,
-} from "../core/git.ts";
-import { formatRelative } from "../core/automation.ts";
+import { FolderGit2, GitBranch, Loader2, Plus, RefreshCw, TriangleAlert, X } from "lucide-react";
+import { GIT_ERROR_CODES, type GitStatus, type GitWorktree } from "../core/git.ts";
 import {
   abortGitMerge,
   checkoutGitBranch,
@@ -39,7 +16,13 @@ import { useGit } from "../store/useGit.ts";
 import { useShell } from "../store/useShell.ts";
 import { useTerminalStore } from "../store/useTerminalStore.ts";
 import { selectActiveUnit, useWorkbench } from "../store/useWorkbench.ts";
-import { cn } from "./cn.ts";
+import { BranchRow } from "./sourceControl/BranchRow.tsx";
+import { WorktreeRow, worktreeTitle } from "./sourceControl/WorktreeRow.tsx";
+import { CreateBranchDialog } from "./sourceControl/CreateBranchDialog.tsx";
+import { RenameDialog } from "./sourceControl/RenameDialog.tsx";
+import { CreateWorktreeDialog } from "./sourceControl/CreateWorktreeDialog.tsx";
+import { ConfirmDialog } from "./sourceControl/ConfirmDialog.tsx";
+import { StartSessionDialog } from "./sourceControl/StartSessionDialog.tsx";
 
 /**
  * 源代码管理主视图 —— 激活单元仓库的分支 / 工作树管理。
@@ -48,11 +31,12 @@ import { cn } from "./cn.ts";
  * - 分支行内操作：切换 / 重命名（仅当前分支）/ 删除 / 合并；远程分支只读展示，
  *   可作为新建分支 / 新建工作树的基点
  * - 删除未合并分支：`-d` 失败（branch_not_merged）→ 确认 → `-D`
- * - 删除有改动的工作树：remove 失败（worktree_dirty）→ 确认 → --force
+ * - 删除有改动的工作树：remove 失败（worktree_dirty）→ 确认 → --force；
+ *   有活跃会话跑在该树里时直接拒绝（Windows 强删会拔掉执行器的 cwd）
  * - 分支已被别的工作树检出（branch_checked_out_elsewhere，带 data.path）→
  *   引导「打开那个工作树」而不是让用户干瞪眼
- * - 新建分支实时校验 + 「非法字符将替换为 -」的 sanitize-and-inform
  *
+ * 行组件与对话框在 ./sourceControl/ 下按 ui/ 约定一组件一文件。
  * v1 不做：改动列表 / 暂存 / 提交 / rebase / tag（见 ADR 0008 的后续清单）。
  */
 
@@ -82,9 +66,10 @@ function openTerminalAt(cwd: string, title: string): void {
   useShell.getState().setConversationView("terminal");
 }
 
-// ---------------------------------------------------------------------------
-// 页面
-// ---------------------------------------------------------------------------
+/** 路径比对统一分隔符：git 输出正斜杠、Windows 本地字符串反斜杠 */
+function samePath(a: string, b: string): boolean {
+  return a.replace(/\\/g, "/") === b.replace(/\\/g, "/");
+}
 
 type Dialog =
   | { kind: "createBranch"; ref?: string }
@@ -100,6 +85,7 @@ export function SourceControlPage() {
   const unit = useWorkbench(selectActiveUnit);
   const runtimes = useWorkbench((s) => s.runtimes);
   const activeRuntimeId = useWorkbench((s) => s.activeRuntimeId);
+  const sessions = useWorkbench((s) => s.sessions);
   const rootPath = useGit((s) => s.rootPath);
   const status = useGit((s) => s.status);
   const branches = useGit((s) => s.branches);
@@ -340,7 +326,7 @@ export function SourceControlPage() {
           existing={branches?.branches.filter((b) => b.kind === "local").map((b) => b.name) ?? []}
           busy={busy}
           onClose={() => setDialog(null)}
-          onSubmit={async (name) => op("重命名", () => renameGitBranch({ rootPath: root, name }))}
+          onSubmit={(name) => op("重命名", () => renameGitBranch({ rootPath: root, name }))}
         />
       )}
       {dialog?.kind === "createWorktree" && (
@@ -386,39 +372,52 @@ export function SourceControlPage() {
           }}
         />
       )}
-      {dialog?.kind === "deleteWorktree" && (
-        <ConfirmDialog
-          title={`删除工作树 ${worktreeTitle(dialog.wt)}`}
-          body={
-            dialog.forceReason !== undefined
-              ? `${dialog.forceReason}。强制删除（--force）会丢掉这些改动，确定？`
-              : `删除工作树目录 ${dialog.wt.path}？（目录里有未提交改动时会再向你确认一次）`
-          }
-          confirmLabel={dialog.forceReason !== undefined ? "强制删除" : "删除"}
-          danger
-          busy={busy}
-          onClose={() => setDialog(null)}
-          onConfirm={async () => {
-            const ok = await op(
-              "删除工作树",
-              () =>
-                removeGitWorktree({
-                  rootPath: dialog.root,
-                  path: dialog.wt.path,
-                  force: dialog.forceReason !== undefined,
-                }),
-            );
-            if (ok) {
-              setDialog(null);
-              return;
+      {dialog?.kind === "deleteWorktree" && (() => {
+        // 活跃会话防拆：有会话的 cwd 指向这棵树时拒绝删除（rootPath 是会话的
+        // 实际工作目录，会话工作树场景下就是树路径；契约字段，老 daemon 缺省）
+        const live = sessions.filter(
+          (s) => s.rootPath !== undefined && samePath(s.rootPath, dialog.wt.path) && s.status !== "done" && s.status !== "failed",
+        );
+        return (
+          <ConfirmDialog
+            title={`删除工作树 ${worktreeTitle(dialog.wt)}`}
+            body={
+              dialog.forceReason !== undefined
+                ? `${dialog.forceReason}。强制删除（--force）会丢掉这些改动，确定？`
+                : `删除工作树目录 ${dialog.wt.path}？（目录里有未提交改动时会再向你确认一次）`
             }
-            if (useGit.getState().error?.code === GIT_ERROR_CODES.worktreeDirty) {
-              useGit.getState().setError(null);
-              setDialog({ ...dialog, forceReason: "该工作树里有未提交改动" });
+            confirmLabel={dialog.forceReason !== undefined ? "强制删除" : "删除"}
+            danger
+            busy={busy}
+            confirmDisabled={live.length > 0}
+            note={
+              live.length > 0
+                ? `有 ${live.length} 个会话正在此工作树中运行，先停止或等它结束再删除（强删会直接拔掉执行器的工作目录）`
+                : undefined
             }
-          }}
-        />
-      )}
+            onClose={() => setDialog(null)}
+            onConfirm={async () => {
+              const ok = await op(
+                "删除工作树",
+                () =>
+                  removeGitWorktree({
+                    rootPath: dialog.root,
+                    path: dialog.wt.path,
+                    force: dialog.forceReason !== undefined,
+                  }),
+              );
+              if (ok) {
+                setDialog(null);
+                return;
+              }
+              if (useGit.getState().error?.code === GIT_ERROR_CODES.worktreeDirty) {
+                useGit.getState().setError(null);
+                setDialog({ ...dialog, forceReason: "该工作树里有未提交改动" });
+              }
+            }}
+          />
+        );
+      })()}
       {dialog?.kind === "startSession" && (
         <StartSessionDialog
           wt={dialog.wt}
@@ -441,9 +440,7 @@ export function SourceControlPage() {
   );
 }
 
-// ---------------------------------------------------------------------------
-// 行组件
-// ---------------------------------------------------------------------------
+// ---- 页面级小组件 -----------------------------------------------------------
 
 function BranchChip({ status }: { status: GitStatus }) {
   if (status.detached) {
@@ -465,158 +462,6 @@ function BranchChip({ status }: { status: GitStatus }) {
         </span>
       )}
     </span>
-  );
-}
-
-function BranchRow(props: {
-  branch: GitBranchInfo;
-  current: string | null;
-  disabled: boolean;
-  onCheckout: () => void;
-  onRename: () => void;
-  onDelete: () => void;
-  onMerge: () => void;
-  onCreateWorktreeFrom: () => void;
-}) {
-  const { branch, current, disabled } = props;
-  const isCurrent = branch.kind === "local" && branch.name === current;
-  const ts = Date.parse(branch.dateIso);
-  return (
-    <div
-      className={cn(
-        "group flex items-center gap-2 border-b border-line-soft px-3 py-2 last:border-b-0",
-        isCurrent ? "bg-teal-tint" : "hover:bg-line-soft/60",
-        branch.kind === "remote" && "text-ash",
-      )}
-    >
-      {branch.kind === "remote" ? (
-        <Cloud size={13} className="shrink-0 text-graphite" />
-      ) : (
-        <GitBranch size={13} className={cn("shrink-0", isCurrent ? "text-teal" : "text-graphite")} />
-      )}
-      <span className={cn("min-w-0 truncate text-body-sm", isCurrent ? "font-medium text-ink" : "text-ink")}>
-        {branch.name}
-      </span>
-      {isCurrent && <Check size={12} className="shrink-0 text-teal" />}
-      {branch.checkedOutIn !== null && !isCurrent && (
-        <span className="shrink-0 rounded-chip bg-rail px-1.5 py-px text-[10px] text-ash" title={branch.checkedOutIn}>
-          已被工作树检出
-        </span>
-      )}
-      <span className="tnum min-w-0 flex-1 truncate text-caption text-ash">
-        {branch.shortHash} · {Number.isFinite(ts) ? formatRelative(ts) : ""} · {branch.subject}
-      </span>
-
-      {/* 行内操作：hover 浮现，当前分支只留「重命名」 */}
-      <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-        {!isCurrent && (
-          <>
-            {branch.kind === "local" && (
-              <>
-                <RowBtn label={`切换到 ${branch.name}`} icon={Check} disabled={disabled} onClick={props.onCheckout} />
-                <RowBtn label={`合并 ${branch.name} 到当前分支`} icon={GitMerge} disabled={disabled} onClick={props.onMerge} />
-                <RowBtn label="删除分支" icon={Trash2} disabled={disabled} onClick={props.onDelete} danger />
-              </>
-            )}
-            <RowBtn
-              label="基于此分支新建工作树"
-              icon={FolderGit2}
-              disabled={disabled}
-              onClick={props.onCreateWorktreeFrom}
-            />
-          </>
-        )}
-        {isCurrent && (
-          <RowBtn label="重命名当前分支" icon={Pencil} disabled={disabled} onClick={props.onRename} />
-        )}
-      </div>
-    </div>
-  );
-}
-
-function WorktreeRow(props: {
-  wt: GitWorktree;
-  rootPath: string;
-  disabled: boolean;
-  sessionWorktreeSupported: boolean;
-  onStartSession: () => void;
-  onTerminal: () => void;
-  onReveal: () => void;
-  onDelete: () => void;
-}) {
-  const { wt, disabled } = props;
-  const segs = wt.path.split(/[\\/]/).filter(Boolean);
-  const name = segs[segs.length - 1] ?? wt.path;
-  return (
-    <div className="group flex items-center gap-2 border-b border-line-soft px-3 py-2 last:border-b-0 hover:bg-line-soft/60">
-      <FolderGit2 size={13} className="shrink-0 text-graphite" />
-      <span className="min-w-0 max-w-[30%] truncate text-body-sm text-ink" title={wt.path}>
-        {name}
-      </span>
-      {wt.branch !== null ? (
-        <span className="flex shrink-0 items-center gap-1 rounded-chip border border-line bg-rail px-1.5 py-px text-[11px] text-graphite">
-          <GitBranch size={10} />
-          {wt.branch}
-        </span>
-      ) : (
-        <span className="shrink-0 rounded-chip bg-rail px-1.5 py-px text-[11px] text-ash">@{wt.headShort}</span>
-      )}
-      {wt.isMain && (
-        <span className="shrink-0 rounded-chip bg-rail px-1.5 py-px text-[10px] text-graphite">主工作树</span>
-      )}
-      {wt.dirty && (
-        <span className="flex shrink-0 items-center gap-1 rounded-chip bg-amber-500/15 px-1.5 py-px text-[10px] text-amber-600">
-          有改动
-        </span>
-      )}
-      <span className="min-w-0 flex-1 truncate text-caption text-ash" title={wt.path}>
-        {wt.path}
-      </span>
-      <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-        <RowBtn
-          label={
-            props.sessionWorktreeSupported
-              ? "在此工作树启动会话"
-              : "当前执行器不支持工作树会话（切换执行器后可用）"
-          }
-          icon={Rocket}
-          disabled={disabled || !props.sessionWorktreeSupported || wt.branch === null}
-          onClick={props.onStartSession}
-        />
-        <RowBtn label="在终端中打开" icon={TerminalIcon} disabled={disabled} onClick={props.onTerminal} />
-        <RowBtn label="在文件管理器中显示" icon={FolderGit2} disabled={disabled} onClick={props.onReveal} />
-        {!wt.isMain && <RowBtn label="删除工作树" icon={Trash2} disabled={disabled} onClick={props.onDelete} danger />}
-      </div>
-    </div>
-  );
-}
-
-function worktreeTitle(wt: GitWorktree): string {
-  const segs = wt.path.split(/[\\/]/).filter(Boolean);
-  return segs[segs.length - 1] ?? wt.path;
-}
-
-function RowBtn(props: {
-  label: string;
-  icon: typeof Check;
-  disabled: boolean;
-  onClick: () => void;
-  danger?: boolean;
-}) {
-  const Icon = props.icon;
-  return (
-    <button
-      title={props.label}
-      aria-label={props.label}
-      disabled={props.disabled}
-      onClick={props.onClick}
-      className={cn(
-        "rounded-btn p-1 text-ash hover:bg-line hover:text-ink disabled:opacity-30",
-        props.danger && "hover:text-loss",
-      )}
-    >
-      <Icon size={12} />
-    </button>
   );
 }
 
@@ -655,359 +500,5 @@ function LoadingRow() {
       <Loader2 size={13} className="animate-spin" />
       读取中…
     </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// 对话框
-// ---------------------------------------------------------------------------
-
-function DialogShell(props: { title: string; children: ReactNode; onClose: () => void }) {
-  // Esc 关闭：bindShellShortcuts 的 Esc 链只认 shell 级弹窗，页面级对话框自管
-  // （与 AddBotDialog / ImportBotDialog 的最新约定一致）
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent): void => {
-      if (e.key === "Escape") props.onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [props.onClose]);
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6 backdrop-blur-xs"
-      onClick={props.onClose}
-    >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label={props.title}
-        onClick={(e) => e.stopPropagation()}
-        className="flex max-h-[92vh] w-[520px] max-w-[92vw] flex-col overflow-hidden rounded-card border border-line bg-card shadow-2xl"
-      >
-        <div className="flex h-10 shrink-0 items-center justify-between gap-2 border-b border-line px-4">
-          <span className="min-w-0 flex-1 truncate text-body-sm font-medium text-ink" title={props.title}>
-            {props.title}
-          </span>
-          <button onClick={props.onClose} aria-label="关闭" className="shrink-0 rounded-btn p-1 text-ash hover:bg-line-soft hover:text-ink">
-            <X size={13} />
-          </button>
-        </div>
-        {/* 矮视口下内容可滚 —— 外层 overflow-hidden 会直接裁掉（对齐 BacklogDialog 壳） */}
-        <div className="min-h-0 flex-1 overflow-y-auto">{props.children}</div>
-      </div>
-    </div>
-  );
-}
-
-/** 五个对话框共用的取消按钮（原先五份逐字重复的 className） */
-function DialogCancelBtn(props: { onClick: () => void }) {
-  return (
-    <button
-      onClick={props.onClick}
-      className="rounded-btn border border-line px-3 py-1.5 text-body-sm text-graphite hover:bg-line-soft hover:text-ink"
-    >
-      取消
-    </button>
-  );
-}
-
-function NameField(props: {
-  value: string;
-  onChange: (v: string) => void;
-  existing: readonly string[];
-  placeholder: string;
-}) {
-  const v = validateBranchName(props.value, props.existing);
-  return (
-    <label className="block">
-      <input
-        autoFocus
-        value={props.value}
-        onChange={(e) => props.onChange(e.target.value)}
-        placeholder={props.placeholder}
-        className={cn(
-          "w-full rounded-input border border-line bg-rail px-3 py-2 text-body-sm text-ink outline-none placeholder:text-ash",
-          props.value.length > 0 && !v.ok ? "border-loss" : "border-line focus:border-teal",
-        )}
-      />
-      {props.value.length > 0 && !v.ok && (
-        <span className="mt-1 block text-caption text-ash">
-          {v.reason}
-          {"sanitized" in v && v.sanitized.length > 0 && v.sanitized !== props.value && (
-            <button type="button" className="ml-1 text-teal hover:underline" onClick={() => props.onChange(v.sanitized)}>
-              改用「{v.sanitized}」
-          </button>
-          )}
-        </span>
-      )}
-    </label>
-  );
-}
-
-function CreateBranchDialog(props: {
-  existing: readonly string[];
-  refs: readonly GitBranchInfo[];
-  defaultRef?: string;
-  busy: boolean;
-  onClose: () => void;
-  onSubmit: (name: string, ref: string | undefined, checkout: boolean) => Promise<boolean>;
-}) {
-  const [name, setName] = useState("");
-  const [ref, setRef] = useState(props.defaultRef ?? "");
-  const [checkout, setCheckout] = useState(true);
-  const v = validateBranchName(name, props.existing);
-  return (
-    <DialogShell title="新建分支" onClose={props.onClose}>
-      <div className="flex flex-col gap-3 p-4">
-        <NameField value={name} onChange={setName} existing={props.existing} placeholder="分支名，如 feat/xxx" />
-        <label className="flex flex-col gap-1">
-          <span className="text-caption text-graphite">基于</span>
-          <select
-            value={ref}
-            onChange={(e) => setRef(e.target.value)}
-            className="w-full rounded-input border border-line bg-rail px-3 py-2 text-body-sm text-ink outline-none focus:border-teal"
-          >
-            <option value="">当前 HEAD</option>
-            {props.refs.map((b) => (
-              <option key={`${b.kind}/${b.name}`} value={b.name}>
-                {b.kind === "remote" ? "远程 " : ""}
-                {b.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="flex cursor-pointer items-center gap-2 text-body-sm text-ink">
-          <input type="checkbox" checked={checkout} onChange={(e) => setCheckout(e.target.checked)} className="accent-teal" />
-          创建后立即切换过去（VSCode 默认行为）
-        </label>
-        <div className="flex justify-end gap-2 pt-1">
-          <DialogCancelBtn onClick={props.onClose} />
-          <button
-            disabled={!v.ok || props.busy}
-            onClick={async () => {
-              if (await props.onSubmit(name.trim(), ref || undefined, checkout)) props.onClose();
-            }}
-            className="flex items-center gap-1.5 rounded-btn bg-ink px-3 py-1.5 text-body-sm font-medium text-canvas hover:opacity-90 disabled:opacity-40"
-          >
-            {props.busy && <Loader2 size={12} className="animate-spin" />}
-            创建
-          </button>
-        </div>
-      </div>
-    </DialogShell>
-  );
-}
-
-function RenameDialog(props: {
-  current: string;
-  existing: readonly string[];
-  busy: boolean;
-  onClose: () => void;
-  onSubmit: (name: string) => Promise<boolean>;
-}) {
-  const [name, setName] = useState(props.current);
-  const v = validateBranchName(name, props.existing.filter((n) => n !== props.current));
-  return (
-    <DialogShell title={`重命名分支 ${props.current}`} onClose={props.onClose}>
-      <div className="flex flex-col gap-3 p-4">
-        <NameField value={name} onChange={setName} existing={props.existing.filter((n) => n !== props.current)} placeholder="新分支名" />
-        <div className="flex justify-end gap-2">
-          <DialogCancelBtn onClick={props.onClose} />
-          <button
-            disabled={!v.ok || props.busy}
-            onClick={async () => {
-              if (await props.onSubmit(name.trim())) props.onClose();
-            }}
-            className="rounded-btn bg-ink px-3 py-1.5 text-body-sm font-medium text-canvas hover:opacity-90 disabled:opacity-40"
-          >
-            重命名
-          </button>
-        </div>
-      </div>
-    </DialogShell>
-  );
-}
-
-/** merge 走分支行内按钮（选定目标即合并），没有独立对话框 */
-
-function CreateWorktreeDialog(props: {
-  branches: readonly GitBranchInfo[];
-  defaultBranch?: string;
-  /** 远程分支行入口：作为新分支的基点（commitish），不是可检出的本地分支 */
-  defaultCommitish?: string;
-  rootPath: string;
-  busy: boolean;
-  onClose: () => void;
-  onSubmit: (payload: { path?: string; branch?: string; commitish?: string }) => Promise<boolean>;
-}) {
-  // mode=new：建新分支（可带 commitish 基点）；mode=existing：检出已有本地分支
-  const defaultIsExisting =
-    props.defaultBranch !== undefined && props.branches.some((b) => b.name === props.defaultBranch);
-  const [mode, setMode] = useState<"new" | "existing">(defaultIsExisting ? "existing" : "new");
-  const [newBranch, setNewBranch] = useState("");
-  const [existingBranch, setExistingBranch] = useState(
-    defaultIsExisting ? (props.defaultBranch ?? "") : (props.branches.find((b) => b.checkedOutIn === null)?.name ?? ""),
-  );
-  /** 新分支的基点：远程分支入口预填；清空 = 当前 HEAD */
-  const [commitish, setCommitish] = useState(props.defaultCommitish ?? "");
-  const [path, setPath] = useState("");
-
-  const repoSegs = props.rootPath.split(/[\\/]/).filter(Boolean);
-  const repoName = repoSegs[repoSegs.length - 1] ?? "repo";
-  const branchSeg = (mode === "new" ? newBranch : existingBranch).replace(/[\\/]/g, "-");
-  const defaultPath = `…/${repoName}.worktrees/${branchSeg || "<分支>"}`;
-  const v = validateBranchName(newBranch, props.branches.map((b) => b.name));
-  const canSubmit =
-    (mode === "new" && v.ok) ||
-    (mode === "existing" && existingBranch.length > 0 && props.branches.find((b) => b.name === existingBranch)?.checkedOutIn == null);
-
-  return (
-    <DialogShell title="新建工作树" onClose={props.onClose}>
-      <div className="flex flex-col gap-3 p-4">
-        <div className="flex gap-1">
-          {(["new", "existing"] as const).map((m) => (
-            <button
-              key={m}
-              onClick={() => setMode(m)}
-              aria-pressed={mode === m}
-              className={cn(
-                "flex h-7 items-center rounded-chip border px-2.5 text-caption",
-                mode === m ? "border-teal-edge bg-teal-tint text-ink" : "border-line text-graphite hover:bg-line-soft",
-              )}
-            >
-              {m === "new" ? "新分支" : "已有分支"}
-            </button>
-          ))}
-        </div>
-        {mode === "new" ? (
-          <>
-            <NameField value={newBranch} onChange={setNewBranch} existing={props.branches.map((b) => b.name)} placeholder="工作树用的分支名" />
-            <label className="flex flex-col gap-1">
-              <span className="text-caption text-graphite">基于（留空 = 当前 HEAD）</span>
-              <input
-                value={commitish}
-                onChange={(e) => setCommitish(e.target.value)}
-                placeholder="如 origin/release 或某次提交"
-                className="w-full rounded-input border border-line bg-rail px-3 py-2 text-body-sm text-ink outline-none placeholder:text-ash focus:border-teal"
-              />
-            </label>
-          </>
-        ) : (
-          <select
-            value={existingBranch}
-            onChange={(e) => setExistingBranch(e.target.value)}
-            className="w-full rounded-input border border-line bg-rail px-3 py-2 text-body-sm text-ink outline-none focus:border-teal"
-          >
-            {props.branches.map((b) => (
-              <option key={b.name} value={b.name} disabled={b.checkedOutIn !== null}>
-                {b.name}
-                {b.checkedOutIn !== null ? "（已被其他工作树检出）" : ""}
-              </option>
-            ))}
-          </select>
-        )}
-        <label className="flex flex-col gap-1">
-          <span className="text-caption text-graphite">路径（留空用默认：{defaultPath}）</span>
-          <input
-            value={path}
-            onChange={(e) => setPath(e.target.value)}
-            placeholder={defaultPath}
-            className="w-full rounded-input border border-line bg-rail px-3 py-2 text-body-sm text-ink outline-none placeholder:text-ash focus:border-teal"
-          />
-        </label>
-        <div className="flex justify-end gap-2">
-          <DialogCancelBtn onClick={props.onClose} />
-          <button
-            disabled={!canSubmit || props.busy}
-            onClick={async () => {
-              const payload =
-                mode === "new"
-                  ? {
-                      branch: newBranch.trim(),
-                      ...(commitish.trim() ? { commitish: commitish.trim() } : {}),
-                      ...(path.trim() ? { path: path.trim() } : {}),
-                    }
-                  : { commitish: existingBranch, ...(path.trim() ? { path: path.trim() } : {}) };
-              if (await props.onSubmit(payload)) props.onClose();
-            }}
-            className="flex items-center gap-1.5 rounded-btn bg-ink px-3 py-1.5 text-body-sm font-medium text-canvas hover:opacity-90 disabled:opacity-40"
-          >
-            {props.busy && <Loader2 size={12} className="animate-spin" />}
-            创建
-          </button>
-        </div>
-      </div>
-    </DialogShell>
-  );
-}
-
-function ConfirmDialog(props: {
-  title: string;
-  body: string;
-  confirmLabel: string;
-  danger?: boolean;
-  busy: boolean;
-  onClose: () => void;
-  onConfirm: () => void | Promise<void>;
-}) {
-  return (
-    <DialogShell title={props.title} onClose={props.onClose}>
-      <div className="flex flex-col gap-4 p-4">
-        <p className="text-body-sm text-ink">{props.body}</p>
-        <div className="flex justify-end gap-2">
-          <DialogCancelBtn onClick={props.onClose} />
-          <button
-            disabled={props.busy}
-            onClick={() => void props.onConfirm()}
-            className={cn(
-              "flex items-center gap-1.5 rounded-btn px-3 py-1.5 text-body-sm font-medium",
-              props.danger ? "bg-loss text-on-accent hover:opacity-90" : "bg-ink text-canvas hover:opacity-90",
-              "disabled:opacity-40",
-            )}
-          >
-            {props.busy && <Loader2 size={12} className="animate-spin" />}
-            {props.confirmLabel}
-          </button>
-        </div>
-      </div>
-    </DialogShell>
-  );
-}
-
-function StartSessionDialog(props: {
-  wt: GitWorktree;
-  runtimeName: string;
-  busy: boolean;
-  onClose: () => void;
-  onSubmit: (prompt: string) => void;
-}) {
-  const [prompt, setPrompt] = useState("");
-  return (
-    <DialogShell title={`在工作树中启动会话 · ${worktreeTitle(props.wt)}`} onClose={props.onClose}>
-      <div className="flex flex-col gap-3 p-4">
-        <p className="text-caption text-ash">
-          分支 {props.wt.branch} · 执行器 {props.runtimeName} —— 会话的工作目录将指向该工作树
-        </p>
-        <textarea
-          autoFocus
-          value={prompt}
-          onChange={(e) => setPrompt(e.target.value)}
-          placeholder="要它做什么？（留空则发「在这个工作树中工作」）"
-          rows={3}
-          className="w-full resize-none rounded-input border border-line bg-rail px-3 py-2 text-body-sm text-ink outline-none placeholder:text-ash focus:border-teal"
-        />
-        <div className="flex justify-end gap-2">
-          <DialogCancelBtn onClick={props.onClose} />
-          <button
-            disabled={props.busy}
-            onClick={() => props.onSubmit(prompt)}
-            className="flex items-center gap-1.5 rounded-btn bg-ink px-3 py-1.5 text-body-sm font-medium text-canvas hover:opacity-90 disabled:opacity-40"
-          >
-            <Play size={12} />
-            启动
-          </button>
-        </div>
-      </div>
-    </DialogShell>
   );
 }
