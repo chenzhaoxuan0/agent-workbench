@@ -12,6 +12,13 @@ export default defineConfig(({ mode }) => {
   // backend/src/config.ts 的 DEFAULT_DAEMON_PORT（5281），两边必须能一起改。
   const env = loadEnv(mode, process.cwd(), "");
   const uiPort = Number(env["VITE_UI_PORT"] ?? "5280");
+  // daemon 端口跟 client.ts 的 DAEMON_PORT 同源：默认 5281，可被
+  // VITE_AGENT_WORKBENCH_PORT 覆盖。同源客户端（defaultDaemonEndpoint 优先取
+  // window.location.origin）全部流量走这里的 proxy —— target 写死 5281 会让
+  // 「AGENT_WORKBENCH_PORT=5273 换端口」的配方只改了一半，前端悄悄连回旧 daemon。
+  const daemonPort = env["VITE_AGENT_WORKBENCH_PORT"]?.trim() || "5281";
+  const daemonWs = `ws://127.0.0.1:${daemonPort}`;
+  const daemonHttp = `http://127.0.0.1:${daemonPort}`;
 
   return {
     plugins: [react(), tailwindcss()],
@@ -20,27 +27,27 @@ export default defineConfig(({ mode }) => {
     },
     // host: true = 绑全部网卡：Windows 上同时覆盖 ::1 与 0.0.0.0，
     // 本地工具与手机（http://<pc-ip>:<uiPort>）都可达
-    // 配置 proxy 将 /ws, /bootstrap, /api 转发至 daemon 5281，避免手机端防火墙/跨端口访问失败
+    // 配置 proxy 将 /ws, /bootstrap, /api 转发至 daemon，避免手机端防火墙/跨端口访问失败
     server: {
       host: true,
       port: uiPort,
       strictPort: true,
       proxy: {
         "/ws": {
-          target: "ws://127.0.0.1:5281",
+          target: daemonWs,
           ws: true,
           changeOrigin: true,
         },
         "/bootstrap": {
-          target: "http://127.0.0.1:5281",
+          target: daemonHttp,
           changeOrigin: true,
         },
         "/api": {
-          target: "http://127.0.0.1:5281",
+          target: daemonHttp,
           changeOrigin: true,
         },
         "/healthz": {
-          target: "http://127.0.0.1:5281",
+          target: daemonHttp,
           changeOrigin: true,
         },
       },
