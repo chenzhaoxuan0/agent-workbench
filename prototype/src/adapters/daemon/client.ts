@@ -1391,4 +1391,69 @@ export async function pollWeixinQrLogin(
   return client.rpc<WeixinLoginPollResult>("channel.weixin.qr.poll", { qrCode, botId }, 15000);
 }
 
+export type TunnelStatus = "stopped" | "starting" | "running" | "error";
+export type TunnelProvider = "cloudflared" | "custom";
+
+export interface TunnelState {
+  readonly status: TunnelStatus;
+  readonly provider: TunnelProvider;
+  readonly url: string | null;
+  readonly error: string | null;
+  readonly cloudflaredAvailable: boolean;
+  readonly customUrl: string | null;
+}
+
+export async function fetchTunnelState(
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<TunnelState> {
+  try {
+    const res = await fetch(`${httpUrlOf(endpoint)}/api/tunnel/status`);
+    if (res.ok) {
+      return (await res.json()) as TunnelState;
+    }
+  } catch (err) {
+    console.warn("[client] fetchTunnelState HTTP fallback:", err);
+  }
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<TunnelState>("tunnel.status", null, 10000);
+}
+
+export async function startTunnel(
+  params: { provider?: TunnelProvider; customUrl?: string } = {},
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<TunnelState> {
+  try {
+    const res = await fetch(`${httpUrlOf(endpoint)}/api/tunnel/start`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(params),
+    });
+    if (res.ok) {
+      return (await res.json()) as TunnelState;
+    }
+  } catch (err) {
+    console.warn("[client] startTunnel HTTP fallback:", err);
+  }
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<TunnelState>("tunnel.start", params, 20000);
+}
+
+export async function stopTunnel(
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<TunnelState> {
+  try {
+    const res = await fetch(`${httpUrlOf(endpoint)}/api/tunnel/stop`, {
+      method: "POST",
+    });
+    if (res.ok) {
+      return (await res.json()) as TunnelState;
+    }
+  } catch (err) {
+    console.warn("[client] stopTunnel HTTP fallback:", err);
+  }
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<TunnelState>("tunnel.stop", null, 10000);
+}
+
+
 

@@ -68,6 +68,9 @@ async function main(): Promise<void> {
     stdio: ["ignore", "pipe", "pipe"],
   });
 
+  proc.stdout?.on("data", (d: Buffer) => console.log(`  [daemon:out] ${d.toString().trimEnd()}`));
+  proc.stderr?.on("data", (d: Buffer) => console.error(`  [daemon:err] ${d.toString().trimEnd()}`));
+
   proc.on("error", (err) => {
     console.error("daemon process error:", err);
   });
@@ -117,6 +120,51 @@ async function main(): Promise<void> {
   ok("telegram" in gateways, "channel.status 包含 telegram 网关状态");
   ok("weixin" in gateways, "channel.status 包含 weixin 网关状态");
   ok("discord" in gateways, "channel.status 包含 discord 网关状态");
+
+  // 6. 测试 HTTP Tunnel API
+  const tunResp = await fetch(`${url}/api/tunnel/status`);
+  ok(tunResp.status === 200, "GET /api/tunnel/status 返回 200");
+  const tunJson = (await tunResp.json()) as { status: string; provider: string };
+  ok(tunJson.status === "stopped" || tunJson.status === "running" || tunJson.status === "error", "Tunnel 状态字段有效");
+
+  // 7. 测试 WS RPC tunnel.start (自定义域名模式)
+  const tunnelStartResult = await new Promise<Record<string, unknown>>((resolve) => {
+    const handler = (raw: Buffer) => {
+      const msg = JSON.parse(raw.toString()) as { id?: string; result?: Record<string, unknown> };
+      if (msg.id === "call-tunnel-start") {
+        ws.off("message", handler);
+        resolve(msg.result ?? {});
+      }
+    };
+    ws.on("message", handler);
+    ws.send(
+      JSON.stringify({
+        v: 1,
+        type: "call",
+        id: "call-tunnel-start",
+        method: "tunnel.start",
+        params: { provider: "custom", customUrl: "https://test.tunnel.local" },
+      }),
+    );
+  });
+  ok(
+    tunnelStartResult.status === "running" && tunnelStartResult.url === "https://test.tunnel.local",
+    "tunnel.start (自定义模式) 启动成功并返回公网地址",
+  );
+
+  // 8. 测试 WS RPC tunnel.stop
+  const tunnelStopResult = await new Promise<Record<string, unknown>>((resolve) => {
+    const handler = (raw: Buffer) => {
+      const msg = JSON.parse(raw.toString()) as { id?: string; result?: Record<string, unknown> };
+      if (msg.id === "call-tunnel-stop") {
+        ws.off("message", handler);
+        resolve(msg.result ?? {});
+      }
+    };
+    ws.on("message", handler);
+    ws.send(JSON.stringify({ v: 1, type: "call", id: "call-tunnel-stop", method: "tunnel.stop", params: {} }));
+  });
+  ok(tunnelStopResult.status === "stopped", "tunnel.stop 停止公网穿透成功");
 
   // 优雅停止
   await new Promise<void>((resolve) => {

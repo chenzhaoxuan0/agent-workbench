@@ -1,26 +1,34 @@
 import { useEffect, useState, useId } from "react";
 import QRCode from "qrcode";
 import {
+  AlertCircle,
   Check,
+  Cloud,
   Copy,
   ExternalLink,
   Globe,
   HelpCircle,
   MessageCircle,
+  Play,
   QrCode,
   Radio,
   RefreshCw,
   Send,
   ShieldCheck,
   Smartphone,
+  Square,
   Terminal,
   X,
 } from "lucide-react";
 import {
   fetchNetworkInterfaces,
   getChannelStatusRpc,
+  fetchTunnelState,
+  startTunnel,
+  stopTunnel,
   type ChannelStatusResult,
   type NetworkInterfaceInfo,
+  type TunnelState,
 } from "../adapters/daemon/client.ts";
 import { useWorkbench, selectActiveUnit } from "../store/useWorkbench.ts";
 import { useShell } from "../store/useShell.ts";
@@ -28,7 +36,7 @@ import { cn } from "./cn.ts";
 
 export function RemoteControlDialog({ onClose }: { onClose: () => void }) {
   const dialogTitleId = useId();
-  const [tab, setTab] = useState<"lan" | "im">("lan");
+  const [tab, setTab] = useState<"lan" | "tunnel" | "im">("lan");
   const [interfaces, setInterfaces] = useState<readonly NetworkInterfaceInfo[]>([]);
   const [selectedIp, setSelectedIp] = useState<string>("");
   const [qrDataUrl, setQrDataUrl] = useState<string>("");
@@ -36,19 +44,32 @@ export function RemoteControlDialog({ onClose }: { onClose: () => void }) {
   const [loading, setLoading] = useState(true);
   const [channelStatus, setChannelStatus] = useState<ChannelStatusResult | null>(null);
 
+  // 公网穿透状态
+  const [tunnelState, setTunnelState] = useState<TunnelState | null>(null);
+  const [tunnelLoading, setTunnelLoading] = useState(false);
+  const [customTunnelUrl, setCustomTunnelUrl] = useState("");
+  const [tunnelQrDataUrl, setTunnelQrDataUrl] = useState("");
+  const [tunnelCopied, setTunnelCopied] = useState(false);
+  const [wingetCopied, setWingetCopied] = useState(false);
+
   const activeUnit = useWorkbench(selectActiveUnit);
   const openUnitSettings = useShell((s) => s.openUnitSettings);
 
-  // 1. 加载网卡与渠道状态
+  // 1. 加载网卡、渠道状态与公网穿透
   const refreshData = async () => {
     setLoading(true);
     try {
-      const [nets, chan] = await Promise.all([
+      const [nets, chan, tun] = await Promise.all([
         fetchNetworkInterfaces(),
         getChannelStatusRpc().catch(() => null),
+        fetchTunnelState().catch(() => null),
       ]);
       setInterfaces(nets);
       if (chan) setChannelStatus(chan);
+      if (tun) {
+        setTunnelState(tun);
+        if (tun.customUrl) setCustomTunnelUrl(tun.customUrl);
+      }
 
       // 默认选中推荐网卡（LAN 或 Tailscale，优先级最高排最前）
       const best = nets.find((n) => n.family === "IPv4" && n.type !== "loopback") || nets[0];
@@ -92,11 +113,105 @@ export function RemoteControlDialog({ onClose }: { onClose: () => void }) {
       .catch((err) => console.error("QR Code error:", err));
   }, [mobileUrl]);
 
+  // 公网穿透直连 URL 并生成二维码
+  const tunnelMobileUrl = tunnelState?.url
+    ? `${tunnelState.url}${token ? `?token=${encodeURIComponent(token)}` : ""}`
+    : "";
+
+  useEffect(() => {
+    if (!tunnelMobileUrl) {
+      setTunnelQrDataUrl("");
+      return;
+    }
+    QRCode.toDataURL(tunnelMobileUrl, {
+      width: 256,
+      margin: 2,
+      color: {
+        dark: "#141517",
+        light: "#ffffff",
+      },
+    })
+      .then((url) => setTunnelQrDataUrl(url))
+      .catch((err) => console.error("Tunnel QR Code error:", err));
+  }, [tunnelMobileUrl]);
+
   const handleCopy = () => {
     if (!mobileUrl) return;
     void navigator.clipboard.writeText(mobileUrl);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleTunnelCopy = () => {
+    if (!tunnelMobileUrl) return;
+    void navigator.clipboard.writeText(tunnelMobileUrl);
+    setTunnelCopied(true);
+    setTimeout(() => setTunnelCopied(false), 2000);
+  };
+
+  const handleWingetCopy = () => {
+    void navigator.clipboard.writeText("winget install Cloudflare.cloudflared");
+    setWingetCopied(true);
+    setTimeout(() => setWingetCopied(false), 2000);
+  };
+
+  // 穿透操作
+  const handleStartCloudflared = async () => {
+    setTunnelLoading(true);
+    try {
+      const state = await startTunnel({ provider: "cloudflared" });
+      setTunnelState(state);
+      if (state.status === "starting") {
+        let attempts = 0;
+        const interval = setInterval(async () => {
+          attempts++;
+          try {
+            const current = await fetchTunnelState();
+            setTunnelState(current);
+            if (current.status !== "starting" || attempts > 10) {
+              clearInterval(interval);
+              setTunnelLoading(false);
+            }
+          } catch {
+            clearInterval(interval);
+            setTunnelLoading(false);
+          }
+        }, 1500);
+      } else {
+        setTunnelLoading(false);
+      }
+    } catch (err) {
+      console.error("Start tunnel failed:", err);
+      setTunnelLoading(false);
+    }
+  };
+
+  const handleStartCustom = async () => {
+    if (!customTunnelUrl.trim()) return;
+    setTunnelLoading(true);
+    try {
+      const state = await startTunnel({
+        provider: "custom",
+        customUrl: customTunnelUrl.trim(),
+      });
+      setTunnelState(state);
+    } catch (err) {
+      console.error("Start custom tunnel failed:", err);
+    } finally {
+      setTunnelLoading(false);
+    }
+  };
+
+  const handleStopTunnel = async () => {
+    setTunnelLoading(true);
+    try {
+      const state = await stopTunnel();
+      setTunnelState(state);
+    } catch (err) {
+      console.error("Stop tunnel failed:", err);
+    } finally {
+      setTunnelLoading(false);
+    }
   };
 
   return (
@@ -118,7 +233,7 @@ export function RemoteControlDialog({ onClose }: { onClose: () => void }) {
                 移动端远控中心
               </h2>
               <p className="text-caption text-graphite">
-                双轨聚合：局域网手机 Web 触控控制台 + 离场 IM 渠道实时互动
+                三轨互联：局域网 Web 触控 + 公网穿透直连 + 离场 IM 渠道实时互动
               </p>
             </div>
           </div>
@@ -143,7 +258,22 @@ export function RemoteControlDialog({ onClose }: { onClose: () => void }) {
             )}
           >
             <QrCode size={16} />
-            <span>近场扫码直连 (局域网 Web)</span>
+            <span>近场扫码 (局域网 Web)</span>
+          </button>
+          <button
+            onClick={() => setTab("tunnel")}
+            className={cn(
+              "flex items-center gap-2 border-b-2 px-4 py-3 text-body-sm font-medium transition",
+              tab === "tunnel"
+                ? "border-teal text-teal"
+                : "border-transparent text-graphite hover:text-ink",
+            )}
+          >
+            <Globe size={16} />
+            <span>公网穿透直连 (Cloudflare / Frp)</span>
+            {tunnelState?.status === "running" && (
+              <span className="h-2 w-2 rounded-full bg-gain animate-pulse" />
+            )}
           </button>
           <button
             onClick={() => setTab("im")}
@@ -155,7 +285,7 @@ export function RemoteControlDialog({ onClose }: { onClose: () => void }) {
             )}
           >
             <Radio size={16} />
-            <span>离场 IM 渠道状态 (微信/飞书/TG/Discord)</span>
+            <span>离场 IM 渠道 (微信/飞书/TG/Discord)</span>
           </button>
         </div>
 
@@ -292,6 +422,209 @@ export function RemoteControlDialog({ onClose }: { onClose: () => void }) {
                   </div>
                 </div>
               </div>
+            </div>
+          ) : tab === "tunnel" ? (
+            /* 公网穿透直连选项卡 */
+            <div className="space-y-6">
+              {/* 顶部状态提示 */}
+              <div className="flex items-center justify-between rounded-xl border border-line/60 bg-rail/40 p-4">
+                <div>
+                  <h3 className="text-body-sm font-semibold text-ink">脱离局域网 · 全球公网访问</h3>
+                  <p className="text-caption text-graphite">
+                    无需路由器端口映射，通过 Cloudflare Quick Tunnel 或自定义反代域名，手机在任何蜂窝网络下均可扫码秒连。
+                  </p>
+                </div>
+                <button
+                  onClick={() => void refreshData()}
+                  className="flex items-center gap-1 text-caption text-ash hover:text-teal"
+                >
+                  <RefreshCw size={12} className={cn(loading && "animate-spin")} />
+                  <span>刷新状态</span>
+                </button>
+              </div>
+
+              {/* 错误提示 */}
+              {tunnelState?.error && (
+                <div className="flex items-center gap-2.5 rounded-xl border border-loss/20 bg-loss/10 p-3.5 text-caption text-loss">
+                  <AlertCircle size={16} className="shrink-0" />
+                  <span>{tunnelState.error}</span>
+                </div>
+              )}
+
+              {/* 运行中的公网二维码与链接 */}
+              {tunnelState?.status === "running" && tunnelMobileUrl ? (
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between rounded-xl border border-gain/30 bg-gain-tint/40 px-4 py-2.5 text-body-sm font-medium text-gain">
+                    <div className="flex items-center gap-2">
+                      <span className="h-2 w-2 rounded-full bg-gain animate-pulse" />
+                      <span>公网隧道已建立 ({tunnelState.provider === "cloudflared" ? "Cloudflare Quick Tunnel" : "自定义域名"})</span>
+                    </div>
+                    <button
+                      onClick={handleStopTunnel}
+                      disabled={tunnelLoading}
+                      className="flex items-center gap-1.5 rounded-lg border border-line bg-canvas px-3 py-1 text-caption text-ink hover:bg-loss-tint hover:text-loss transition"
+                    >
+                      <Square size={12} />
+                      <span>停止穿透</span>
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-1 items-center gap-6 rounded-2xl border border-line/70 bg-rail/30 p-5 md:grid-cols-2">
+                    {/* 二维码 */}
+                    <div className="flex flex-col items-center justify-center gap-2">
+                      <div className="relative flex aspect-square w-48 items-center justify-center overflow-hidden rounded-xl border border-line/80 bg-white p-3 shadow-md">
+                        {tunnelQrDataUrl ? (
+                          <img
+                            src={tunnelQrDataUrl}
+                            alt="公网直连二维码"
+                            className="h-full w-full object-contain"
+                          />
+                        ) : (
+                          <div className="flex flex-col items-center gap-2 text-ash">
+                            <RefreshCw size={24} className="animate-spin" />
+                            <span className="text-caption">生成二维码中...</span>
+                          </div>
+                        )}
+                      </div>
+                      <span className="text-[12px] font-medium text-graphite">
+                        手机在任何外网/蜂窝网络下扫码秒连
+                      </span>
+                    </div>
+
+                    {/* 链接与复制 */}
+                    <div className="flex flex-col justify-center space-y-3">
+                      <div>
+                        <span className="block text-caption font-medium text-graphite">公网直连地址</span>
+                        <div className="mt-1 flex items-center gap-2">
+                          <input
+                            readOnly
+                            aria-label="公网直连地址"
+                            value={tunnelMobileUrl}
+                            className="w-full truncate rounded-lg border border-line bg-canvas px-3 py-2 font-mono text-[12px] text-ink select-all focus:outline-none"
+                          />
+                          <button
+                            onClick={handleTunnelCopy}
+                            aria-label="复制公网地址"
+                            className="flex shrink-0 items-center gap-1.5 rounded-lg border border-line/80 bg-line-soft px-3 py-2 text-caption font-medium text-ink transition hover:bg-teal hover:text-white"
+                          >
+                            {tunnelCopied ? <Check size={14} /> : <Copy size={14} />}
+                            <span>{tunnelCopied ? "已复制" : "复制"}</span>
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="space-y-1.5 rounded-xl bg-teal-tint/50 p-3 text-caption text-graphite border border-teal/20">
+                        <div className="flex items-center gap-1.5 font-medium text-teal">
+                          <ShieldCheck size={14} />
+                          <span>端到端令牌鉴权保护</span>
+                        </div>
+                        <p className="text-[11px] leading-relaxed">
+                          二维码包含加密访问令牌，外网访问受到与桌面端同级的鉴权保护与首响仲裁约束。
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ) : tunnelState?.status === "starting" ? (
+                /* 启动中状态 */
+                <div className="flex flex-col items-center justify-center gap-3 rounded-2xl border border-line/80 bg-rail/40 py-12 text-center">
+                  <RefreshCw size={32} className="animate-spin text-teal" />
+                  <div className="space-y-1">
+                    <h4 className="text-body-sm font-semibold text-ink">正在建立公网隧道...</h4>
+                    <p className="text-caption text-ash">
+                      向 Cloudflare 申请临时加密公网域名，通常耗时 3~8 秒，请稍候。
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                /* 双模穿透配置卡片 */
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                  {/* Cloudflare Quick Tunnel */}
+                  <div className="flex flex-col justify-between rounded-xl border border-line/70 bg-card p-4 space-y-4">
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-2">
+                        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-teal/15 text-teal">
+                          <Cloud size={18} />
+                        </div>
+                        <div>
+                          <h4 className="text-body-sm font-semibold text-ink">Cloudflare Quick Tunnel</h4>
+                          <span className="text-[11px] text-teal font-medium">推荐 · 零配置即开即用</span>
+                        </div>
+                      </div>
+                      <p className="text-[11px] leading-relaxed text-graphite">
+                        由 Cloudflare 官方提供临时加密隧道服务，自动生成 <code className="rounded bg-line-soft px-1 text-ink">trycloudflare.com</code> 域名，免配公网 IP 与路由器。
+                      </p>
+                    </div>
+
+                    {tunnelState?.cloudflaredAvailable ? (
+                      <button
+                        onClick={handleStartCloudflared}
+                        disabled={tunnelLoading}
+                        className="flex w-full items-center justify-center gap-2 rounded-xl bg-teal px-4 py-2.5 text-body-sm font-semibold text-white shadow-xs transition hover:bg-teal-hover active:scale-[0.98] disabled:opacity-50"
+                      >
+                        {tunnelLoading ? (
+                          <RefreshCw size={16} className="animate-spin" />
+                        ) : (
+                          <Play size={16} />
+                        )}
+                        <span>一键启动公网穿透</span>
+                      </button>
+                    ) : (
+                      <div className="space-y-2 rounded-lg border border-line bg-rail/60 p-3 text-[11px]">
+                        <span className="font-medium text-amber-600 block">未检测到 cloudflared 工具</span>
+                        <p className="text-ash">可复制以下命令在终端中快速安装：</p>
+                        <div className="flex items-center gap-1.5">
+                          <code className="flex-1 truncate rounded bg-canvas px-2 py-1 font-mono text-[10px] text-ink border border-line">
+                            winget install Cloudflare.cloudflared
+                          </code>
+                          <button
+                            onClick={handleWingetCopy}
+                            className="shrink-0 rounded border border-line px-2 py-1 text-[10px] font-medium hover:bg-line-soft transition"
+                          >
+                            {wingetCopied ? <Check size={12} className="text-gain" /> : <Copy size={12} />}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 自定义反代 / Frp / Ngrok */}
+                  <div className="flex flex-col justify-between rounded-xl border border-line/70 bg-card p-4 space-y-4">
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-2">
+                        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-line-soft text-graphite">
+                          <Globe size={18} />
+                        </div>
+                        <div>
+                          <h4 className="text-body-sm font-semibold text-ink">自定义域名 / Frp / Ngrok</h4>
+                          <span className="text-[11px] text-ash">自建穿透 · 永久固定域名</span>
+                        </div>
+                      </div>
+                      <p className="text-[11px] leading-relaxed text-graphite">
+                        如果您已配置 Frp / Ngrok / Cloudflare Tunnel 固定域名反代本机 daemon 端口，可直接在此填入。
+                      </p>
+                    </div>
+
+                    <div className="space-y-2">
+                      <input
+                        type="url"
+                        placeholder="https://agent.yourdomain.com"
+                        value={customTunnelUrl}
+                        onChange={(e) => setCustomTunnelUrl(e.target.value)}
+                        className="w-full rounded-lg border border-line bg-rail px-3 py-2 text-body-sm text-ink outline-none transition focus:border-teal"
+                      />
+                      <button
+                        onClick={handleStartCustom}
+                        disabled={tunnelLoading || !customTunnelUrl.trim()}
+                        className="flex w-full items-center justify-center gap-2 rounded-xl border border-line bg-card px-4 py-2.5 text-body-sm font-semibold text-ink transition hover:bg-line-soft active:scale-[0.98] disabled:opacity-50"
+                      >
+                        <Check size={16} className="text-teal" />
+                        <span>启用自定义公网地址</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           ) : (
             /* IM 渠道状态选项卡 */

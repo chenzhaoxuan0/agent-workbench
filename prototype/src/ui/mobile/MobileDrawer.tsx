@@ -1,3 +1,4 @@
+import { useRef, useState } from "react";
 import {
   Bot,
   Laptop,
@@ -35,19 +36,63 @@ export function MobileDrawer({
   const resolvedAppearance = useAppearance((s) => s.resolvedAppearance);
   const setMode = useAppearance((s) => s.setMode);
 
+  // 原生手势左滑退出状态
+  const [dragX, setDragX] = useState(0);
+  const [isDragging, setIsDragging] = useState(false);
+  const startPosRef = useRef<{ x: number; y: number } | null>(null);
+
   if (!open) return null;
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    const touch = e.touches[0];
+    if (!touch) return;
+    startPosRef.current = { x: touch.clientX, y: touch.clientY };
+    setIsDragging(true);
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    if (!startPosRef.current) return;
+    const touch = e.touches[0];
+    if (!touch) return;
+    const deltaX = touch.clientX - startPosRef.current.x;
+    const deltaY = touch.clientY - startPosRef.current.y;
+    // 主要是横向滑动且向左滑动
+    if (Math.abs(deltaX) > Math.abs(deltaY) && deltaX < 0) {
+      setDragX(deltaX);
+    }
+  };
+
+  const handleTouchEnd = () => {
+    if (dragX < -70) {
+      // 达到阈值：收起侧边栏
+      onClose();
+    }
+    setDragX(0);
+    setIsDragging(false);
+    startPosRef.current = null;
+  };
 
   return (
     <>
-      {/* 遮罩 */}
+      {/* 遮罩（透明度跟随拖拽衰减） */}
       <div
         className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs transition-opacity animate-in fade-in duration-200"
+        style={{ opacity: Math.max(0.1, 1 - Math.abs(dragX) / 250) }}
         onClick={onClose}
         aria-hidden
       />
 
-      {/* 抽屉侧栏 */}
-      <div className="fixed inset-y-0 left-0 z-50 flex w-72 flex-col border-r border-line/80 bg-canvas text-ink shadow-2xl animate-in slide-in-from-left duration-300">
+      {/* 抽屉侧栏（支持触控阻尼跟随与弹性回弹） */}
+      <div
+        className="fixed inset-y-0 left-0 z-50 flex w-72 flex-col border-r border-line/80 bg-canvas text-ink shadow-2xl animate-in slide-in-from-left duration-300"
+        style={{
+          transform: `translateX(${dragX}px)`,
+          transition: isDragging ? "none" : "transform 0.25s cubic-bezier(0.16, 1, 0.3, 1)",
+        }}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+      >
         {/* 头部 */}
         <div className="flex items-center justify-between border-b border-line/60 bg-rail/50 px-4 py-3.5">
           <div className="flex items-center gap-2">

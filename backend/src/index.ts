@@ -102,6 +102,7 @@ import { WeixinGateway, beginWeixinLogin, pollWeixinLogin } from "./channels/wei
 import { DiscordGateway } from "./channels/discord.ts";
 import { CredentialVault } from "./credentials/vault.ts";
 import { getNetworkInterfaces } from "./network.ts";
+import { TunnelManager } from "./tunnel/manager.ts";
 import { askBot } from "./channels/askBot.ts";
 import { asModelId, asSessionId, asUnitId } from "../../prototype/src/core/units.ts";
 
@@ -757,6 +758,9 @@ feishuGateway.start();
 
 const memory = new MemoryService(store, config.homeDir);
 
+// ---- 公网穿透管理器 ---------------------------------------------------------
+let tunnelManager: TunnelManager;
+
 // ---- REST 管理面（权限闸的决策入口，docs/07 §六）----------------------------
 
 const httpRoutes: HttpRoute[] = [
@@ -881,6 +885,21 @@ const httpRoutes: HttpRoute[] = [
       return result;
     },
   },
+  {
+    method: "GET",
+    path: "/api/tunnel/status",
+    handle: () => tunnelManager.getState(),
+  },
+  {
+    method: "POST",
+    path: "/api/tunnel/start",
+    handle: async ({ body }) => tunnelManager.start(body as never),
+  },
+  {
+    method: "POST",
+    path: "/api/tunnel/stop",
+    handle: () => tunnelManager.stop(),
+  },
 ];
 
 function launchFileManager(targetPath: string): { ok: boolean; path: string } {
@@ -970,6 +989,7 @@ const imageProfiles = new ImageProfileStore(config.homeDir);
 const { server, port } = await startHttp(config, startedAt, httpRoutes, authorize, [
   { method: "POST", path: "/api/image/call", handle: handleImageCall(imageProfiles) },
 ]);
+tunnelManager = new TunnelManager(config.homeDir, port);
 const wss = attachWs(server, { config, startedAt, authorize });
 
 // ---- 待办 / GTD（backlog）—— 引擎需要 wss 广播，必须在 attachWs 之后构造 ----------
@@ -2617,6 +2637,13 @@ registerMethod("workspace.openFolder", async (params) => {
 
 registerMethod("health", () => healthPayload(config, startedAt));
 
+registerMethod("tunnel.status", () => tunnelManager.getState());
+registerMethod("tunnel.start", (params) => {
+  const p = (params ?? {}) as { provider?: "cloudflared" | "custom"; customUrl?: string };
+  return tunnelManager.start(p);
+});
+registerMethod("tunnel.stop", () => tunnelManager.stop());
+
 /**
  * 协议原生的关闭通道。Windows 上跨进程 SIGTERM 不可投递（冒烟脚本实证），
  * 程序化退出一律走这里；SIGINT/SIGTERM 处理器保留给终端 Ctrl+C 与 Unix。
@@ -2668,6 +2695,7 @@ async function shutdown(signal: string): Promise<void> {
   // 飞书也停：它有一个 15s reconcile interval 和每账号的长连接/子进程，
   // 漏掉它就会在 host.shutdown() 关掉 store 之后还能起新活（评审 P1 同类）
   feishuGateway.stop();
+  tunnelManager?.stop();
   // 杀光终端 → ConPTY 排空窗口 → terminate pty worker（顺序敏感，见 stop 注释）
   await terminals.stop();
   const force = setTimeout(() => process.exit(0), 2000).unref(); // 挂起写兜底：2s 强制退

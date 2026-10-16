@@ -1,5 +1,5 @@
-import { useMemo } from "react";
-import { Check, ShieldAlert, X, ChevronRight, HelpCircle } from "lucide-react";
+import { useMemo, useRef, useState } from "react";
+import { Check, ShieldAlert, X, ChevronRight, HelpCircle, ChevronDown } from "lucide-react";
 import { useWorkbench } from "../../store/useWorkbench.ts";
 import { needsDialog } from "../../core/permission.ts";
 import { cn } from "../cn.ts";
@@ -9,6 +9,11 @@ export function MobileConfirmationGate() {
   const decisions = useWorkbench((s) => s.permissionDecisions);
   const resolve = useWorkbench((s) => s.resolvePermission);
   const mode = useWorkbench((s) => s.permissionMode);
+
+  // 原生手势下拉关闭 / 拒绝状态
+  const [dragY, setDragY] = useState(0);
+  const [isDragging, setIsDragging] = useState(false);
+  const startYRef = useRef<number | null>(null);
 
   // 待裁决队列过滤（若任何端已经首响仲裁，decisions[reqId] 成立，会自动移出）
   const pending = useMemo(
@@ -26,6 +31,34 @@ export function MobileConfirmationGate() {
   const active = pending[0];
   if (!active) return null;
 
+  const handleTouchStart = (e: React.TouchEvent) => {
+    const touch = e.touches[0];
+    if (!touch) return;
+    startYRef.current = touch.clientY;
+    setIsDragging(true);
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    if (startYRef.current === null) return;
+    const touch = e.touches[0];
+    if (!touch) return;
+    const delta = touch.clientY - startYRef.current;
+    if (delta > 0) {
+      // 触控阻尼跟随
+      setDragY(delta * 0.75);
+    }
+  };
+
+  const handleTouchEnd = () => {
+    if (dragY > 90) {
+      // 超过阈值：触发拒绝操作并关闭
+      resolve(active.requestId, "deny");
+    }
+    setDragY(0);
+    setIsDragging(false);
+    startYRef.current = null;
+  };
+
   const riskMeta = {
     high: { label: "高风险操作", cls: "bg-loss-tint text-loss border-loss/20" },
     medium: { label: "中风险", cls: "bg-amber-500/15 text-amber-600 border-amber-500/20" },
@@ -41,13 +74,41 @@ export function MobileConfirmationGate() {
 
   return (
     <>
-      {/* 半透明遮罩 */}
-      <div className="fixed inset-0 z-40 bg-black/50 backdrop-blur-xs animate-in fade-in duration-200" />
+      {/* 半透明遮罩（透明度随手势下拉动态衰减） */}
+      <div
+        className="fixed inset-0 z-40 bg-black/50 backdrop-blur-xs animate-in fade-in duration-200"
+        style={{ opacity: Math.max(0.1, 1 - dragY / 250) }}
+        onClick={() => resolve(active.requestId, "deny")}
+      />
 
       {/* 底部上滑卡片 Bottom Sheet */}
-      <div className="fixed inset-x-0 bottom-0 z-50 flex flex-col rounded-t-3xl border-t border-line/80 bg-canvas px-5 pb-6 pt-3 shadow-2xl animate-in slide-in-from-bottom duration-300">
-        {/* 顶部手势把手 */}
-        <div className="mx-auto mb-3 h-1.5 w-12 rounded-full bg-line-strong/60" />
+      <div
+        className="fixed inset-x-0 bottom-0 z-50 flex flex-col rounded-t-3xl border-t border-line/80 bg-canvas px-5 pb-6 pt-3 shadow-2xl animate-in slide-in-from-bottom duration-300"
+        style={{
+          transform: `translateY(${dragY}px)`,
+          transition: isDragging ? "none" : "transform 0.25s cubic-bezier(0.16, 1, 0.3, 1)",
+        }}
+      >
+        {/* 顶部手势把手与下拉提示区 */}
+        <div
+          className="flex cursor-grab flex-col items-center pb-2 pt-1 active:cursor-grabbing touch-none"
+          onTouchStart={handleTouchStart}
+          onTouchMove={handleTouchMove}
+          onTouchEnd={handleTouchEnd}
+        >
+          <div
+            className={cn(
+              "h-1.5 w-12 rounded-full transition-colors",
+              dragY > 50 ? "bg-loss animate-pulse" : "bg-line-strong/60",
+            )}
+          />
+          {dragY > 30 && (
+            <span className="mt-1 flex items-center gap-1 text-[10px] font-medium text-loss animate-in fade-in">
+              <ChevronDown size={12} />
+              <span>释放直接拒绝本次执行</span>
+            </span>
+          )}
+        </div>
 
         {/* 头部标题与风险徽标 */}
         <div className="flex items-center justify-between pb-2">
