@@ -27,14 +27,14 @@ async function main(): Promise<void> {
   const hasLoopback = interfaces.some((i) => i.type === "loopback");
   ok(hasLoopback, "网卡列表中包含回环接口");
 
-  // 2. 测试凭证保险库
+  // 2. 测试凭证保险库（包含带冒号的命名空间 ID）
   const tmpHome = process.env.TEMP || process.env.TMP || "/tmp";
   const vault = new CredentialVault(tmpHome);
-  await vault.save("test-token", "sk-secret-123456", { botId: "bot-test" });
-  const loaded = await vault.load("test-token");
-  ok(loaded?.secret === "sk-secret-123456", "凭证保险库保存与读取成功");
-  await vault.delete("test-token");
-  const deleted = await vault.load("test-token");
+  await vault.save("weixin:bot-test", "sk-secret-123456", { botId: "bot-test" });
+  const loaded = await vault.load("weixin:bot-test");
+  ok(loaded?.secret === "sk-secret-123456", "凭证保险库带冒号命名空间保存与读取成功");
+  await vault.delete("weixin:bot-test");
+  const deleted = await vault.load("weixin:bot-test");
   ok(deleted === null, "凭证保险库删除成功");
 
   // 3. 启动后台 Daemon 验证网关启动与 RPC 状态

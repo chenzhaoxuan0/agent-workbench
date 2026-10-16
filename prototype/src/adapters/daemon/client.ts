@@ -658,7 +658,13 @@ export async function ensureBotGitignore(
 }
 
 export interface ChannelStatus {
-  readonly gateways: { readonly feishu: number; readonly telegram: number };
+  readonly gateways: {
+    readonly feishu: number;
+    readonly telegram: number;
+    readonly weixin?: number;
+    readonly discord?: number;
+    readonly [kind: string]: number | undefined;
+  };
   readonly bots: readonly {
     readonly id: string;
     readonly channels: readonly { readonly kind: string; readonly enabled: boolean; readonly accounts: number }[];
@@ -1354,17 +1360,8 @@ export interface GatewayStatus {
   readonly details?: Record<string, unknown>;
 }
 
-export interface ChannelStatusResult {
-  readonly ok: boolean;
-  readonly gateways: Record<string, GatewayStatus>;
-}
-
-export async function getChannelStatusRpc(
-  endpoint: string = defaultDaemonEndpoint(),
-): Promise<ChannelStatusResult> {
-  const client = DaemonClient.get(endpoint);
-  return client.rpc<ChannelStatusResult>("channel.status", null, 15000);
-}
+export type ChannelStatusResult = ChannelStatus;
+export const getChannelStatusRpc = fetchChannelStatus;
 
 export interface WeixinQrCodeResult {
   readonly qrCode: string;

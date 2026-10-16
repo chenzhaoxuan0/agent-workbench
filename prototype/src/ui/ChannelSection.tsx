@@ -588,10 +588,11 @@ export function ChannelStatusHint({ botId }: { botId: string }) {
         if (!alive) return;
         const mine = s.bots.find((b) => b.id === botId);
         const enabled = mine?.channels.filter((c) => c.enabled) ?? [];
-        if (mine !== undefined && enabled.length > 0 && (s.gateways.feishu > 0 || s.gateways.telegram > 0)) {
+        const totalActiveGateways = (s.gateways.feishu ?? 0) + (s.gateways.telegram ?? 0) + (s.gateways.weixin ?? 0) + (s.gateways.discord ?? 0);
+        if (mine !== undefined && enabled.length > 0 && totalActiveGateways > 0) {
           const kinds = [...new Set(enabled.map((c) => c.kind))].join(" / ");
           setState("taken");
-          setInfo(`已接管（${kinds}，飞书网关 ${s.gateways.feishu} 账号 · Telegram ${s.gateways.telegram}）`);
+          setInfo(`已接管（${kinds}，活跃连接：飞书 ${s.gateways.feishu} · TG ${s.gateways.telegram} · 微信 ${s.gateways.weixin ?? 0} · Discord ${s.gateways.discord ?? 0}）`);
           return;
         }
         if (attempts < 5) {

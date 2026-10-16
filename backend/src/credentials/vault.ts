@@ -25,8 +25,8 @@ export class CredentialVault {
   }
 
   private filePath(id: string): string {
-    // 过滤安全字符，防路径遍历
-    const safeId = id.replace(/[^a-zA-Z0-9_\-.:]/g, "_");
+    // 过滤安全字符，防路径遍历及 Windows 保留字符（冒号等）
+    const safeId = id.replace(/[^a-zA-Z0-9_\-.]/g, "_");
     return path.join(this.dir, `${safeId}.json`);
   }
 

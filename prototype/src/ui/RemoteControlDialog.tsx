@@ -382,11 +382,19 @@ function ChannelCard({
   name: string;
   desc: string;
   icon: typeof MessageCircle;
-  status?: { running: boolean; accounts: number; details?: Record<string, unknown> };
+  status?: number | { running?: boolean; accounts?: number; details?: Record<string, unknown> };
   interactive?: boolean;
 }) {
-  const isRunning = status?.running === true;
-  const accountsCount = status?.accounts ?? 0;
+  const accountsCount =
+    typeof status === "number"
+      ? status
+      : typeof status?.accounts === "number"
+        ? status.accounts
+        : 0;
+  const isRunning =
+    typeof status === "number"
+      ? status > 0
+      : status?.running === true || accountsCount > 0;
 
   return (
     <div className="flex flex-col justify-between rounded-xl border border-line/70 bg-card p-4 transition hover:border-line-strong">
