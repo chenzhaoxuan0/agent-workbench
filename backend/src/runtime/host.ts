@@ -261,9 +261,9 @@ export class RuntimeHost {
     private readonly memory?: MemoryInjector,
   ) {
     // 同步读盘（文件很小，几 KB）。**必须**在构造函数里做完而不是懒加载：
-    // 启动预热 `void host.syncAllModels()` 是 fire-and-forget，界面的
-    // adapter.list 完全可能抢在探测之前到达 —— 那一刻 #modelCache 还是空的，
-    // 用户就会看到适配器内置的种子清单。这正是「每次进去都是初始化态」的由来。
+    // daemon 启动**不再自动探测**（见 index.ts），界面的 adapter.list 很可能
+    // 在任何探测之前就到了 —— 那一刻 #modelCache 还是空的，用户就只能看到适配器
+    // 内置的种子清单。这正是「每次进去都是初始化态」的由来。
     this.loadModelCacheDisk();
   }
 
