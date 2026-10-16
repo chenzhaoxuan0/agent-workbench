@@ -26,7 +26,14 @@ function resetZoom() {
  */
 function bindZoomShortcuts(wc) {
   wc.on("before-input-event", (event, input) => {
-    if (input.type !== "keyDown" || !input.control || input.alt || input.meta) return;
+    if (input.type !== "keyDown") return;
+    // F12 或 Ctrl+Shift+I 呼出 DevTools（便于调试控制台日志与渲染异常）
+    if (input.key === "F12" || (input.control && input.shift && (input.key || "").toLowerCase() === "i")) {
+      wc.toggleDevTools();
+      event.preventDefault();
+      return;
+    }
+    if (!input.control || input.alt || input.meta) return;
     const key = (input.key || "").toLowerCase();
     if (key === "=" || key === "+" || input.code === "NumpadAdd") {
       applyZoom(0.5);

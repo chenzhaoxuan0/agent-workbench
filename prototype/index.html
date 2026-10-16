@@ -22,6 +22,19 @@
             document.documentElement.setAttribute('data-theme', 'light');
           }
         } catch (e) {}
+
+        window.addEventListener('error', function(event) {
+          var root = document.getElementById('root');
+          if (root && root.children.length === 0) {
+            var msg = event.error ? (event.error.stack || event.error.message) : event.message;
+            root.innerHTML = '<div style="padding:28px;max-width:760px;margin:48px auto;background:#18181b;border:1px solid #ef444466;border-radius:10px;font-family:ui-sans-serif,system-ui,sans-serif;color:#f4f4f5;box-shadow:0 10px 25px rgba(0,0,0,0.5);">' +
+              '<h3 style="margin:0 0 12px;color:#f87171;font-size:17px;font-weight:600;">前端脚本执行异常 (未进入 React 渲染)</h3>' +
+              '<p style="margin:0 0 14px;color:#a1a1aa;font-size:13px;">模块初次解析/加载时抛出了错误：</p>' +
+              '<pre style="margin:0;padding:12px;background:#09090b;border:1px solid #27272a;border-radius:6px;font-size:12px;color:#e4e4e7;white-space:pre-wrap;word-break:break-all;font-family:ui-monospace,monospace;max-height:300px;overflow:auto;">' + (msg || '未知错误') + '</pre>' +
+              '<button onclick="location.reload()" style="margin-top:16px;padding:8px 18px;background:#0d9488;color:#fff;font-weight:500;border:none;border-radius:6px;cursor:pointer;font-size:13px;">刷新重试</button>' +
+              '</div>';
+          }
+        });
       })();
     </script>
   </head>

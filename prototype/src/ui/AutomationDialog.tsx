@@ -115,6 +115,11 @@ interface BuilderDraft {
   readonly maxRuns: number;
 }
 
+/** 两位补零 */
+function pad(n: number): string {
+  return String(n).padStart(2, "0");
+}
+
 /** datetime-local 用的 "YYYY-MM-DDTHH:MM" */
 function toLocalInput(at: number): string {
   const d = new Date(at);
@@ -132,22 +137,24 @@ function floorToMinute(at: number): number {
   return Math.floor(at / 60_000) * 60_000;
 }
 
-const DEFAULT_DRAFT: BuilderDraft = {
-  freq: "daily",
-  time: "09:00",
-  weekdays: [1, 2, 3, 4, 5],
-  dayOfMonth: 1,
-  interval: 30,
-  unit: "minutes",
-  delayMinutes: 30,
-  delayMode: "relative",
-  // 默认给「一小时后」，而不是今天某个可能已经过去的钟点
-  runAtLocal: toLocalInput(Date.now() + 3_600_000),
-  recurring: true,
-  maxRuns: 1,
-};
+function createDefaultDraft(): BuilderDraft {
+  return {
+    freq: "daily",
+    time: "09:00",
+    weekdays: [1, 2, 3, 4, 5],
+    dayOfMonth: 1,
+    interval: 30,
+    unit: "minutes",
+    delayMinutes: 30,
+    delayMode: "relative",
+    // 默认给「一小时后」，而不是今天某个可能已经过去的钟点
+    runAtLocal: toLocalInput(Date.now() + 3_600_000),
+    recurring: true,
+    maxRuns: 1,
+  };
+}
 
-const pad = (n: number): string => String(n).padStart(2, "0");
+const DEFAULT_DRAFT = createDefaultDraft();
 
 /** 规则 → 表单草稿（编辑预填）。「N 分钟后」与「指定时刻」两种一次性各自还原。 */
 function draftOf(a: Automation): BuilderDraft {

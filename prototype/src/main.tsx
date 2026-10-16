@@ -7,6 +7,7 @@ import "./store/useAppearance.ts";
 // 待办（GTD）信号：提议弹窗/总状态点要跨主视图常驻，订阅挂在应用入口
 import { bindBacklogSignals } from "./store/useBacklog.ts";
 import { App } from "./app.tsx";
+import { ErrorBoundary } from "./ui/ErrorBoundary.tsx";
 
 bindBacklogSignals();
 
@@ -22,6 +23,9 @@ if (!el) throw new Error("#root not found");
 
 createRoot(el).render(
   <StrictMode>
-    <App />
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
   </StrictMode>,
 );
+
