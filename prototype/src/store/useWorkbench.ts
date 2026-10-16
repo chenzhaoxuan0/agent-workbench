@@ -190,6 +190,12 @@ interface WorkbenchState {
     opts?: {
       memoryOptions?: MemoryInjectionOptions;
       attachments?: readonly import("../core/attachments.ts").ChatAttachment[];
+      /**
+       * 在指定工作树里开**新会话**（源代码管理面板「在此工作树启动会话」）。
+       * 给了它就跳过续聊判定 —— 工作树会话永远是新开的，daemon 侧负责
+       * ensure（不存在则按 branch 创建）。
+       */
+      worktree?: { path: string; branch: string };
     },
   ) => Promise<void>;
   /** 停止当前运行 */
@@ -829,9 +835,16 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
       }));
     };
 
-    // 续聊：活跃会话开着（未 done/failed）且属于当前执行器
+    // 续聊：活跃会话开着（未 done/failed）且属于当前执行器。
+    // 工作树会话例外：它永远是新开的（daemon 按 path+branch ensure 工作树）。
     const active = activeSessionId !== null ? get().sessions.find((s) => s.id === activeSessionId) : undefined;
-    if (active !== undefined && active.runtimeId === activeRuntimeId && active.status !== "done" && active.status !== "failed") {
+    if (
+      opts?.worktree === undefined &&
+      active !== undefined &&
+      active.runtimeId === activeRuntimeId &&
+      active.status !== "done" &&
+      active.status !== "failed"
+    ) {
       set({ busy: true });
       pushUserBubble(active.id);
       try {
@@ -858,7 +871,8 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
         unit,
         prompt: fullPrompt,
         model,
-        worktree: unit.kind === "project" ? { path: `${unit.rootPath}/.wt/session`, branch: "feat/session" } : undefined,
+        // 仅源代码管理面板显式传入：在此工作树开新会话（ADR 0008）
+        worktree: opts?.worktree,
         loop,
         memoryOptions: opts?.memoryOptions ?? { scopes: get().memoryScopes },
         attachments,

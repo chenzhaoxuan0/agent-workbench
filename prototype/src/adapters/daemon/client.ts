@@ -667,6 +667,107 @@ export async function ensureBotGitignore(
   return client.rpc<{ changed: boolean }>("bot.gitignore.ensure", { rootPath }, 15000);
 }
 
+// ---- git.* —— 源代码管理面板（类型定义在 core/git.ts，实现在 backend/src/git/repo.ts） ----
+
+export async function fetchGitStatus(
+  rootPath: string,
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<import("../../core/git.ts").GitStatusResult> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc("git.status", { rootPath }, 20000);
+}
+
+export async function fetchGitBranches(
+  rootPath: string,
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<import("../../core/git.ts").GitBranchesResult> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc("git.branches.list", { rootPath }, 20000);
+}
+
+export async function createGitBranch(
+  params: { rootPath: string; name: string; ref?: string; checkout?: boolean },
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<null> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<null>("git.branch.create", params, 30000);
+}
+
+export async function checkoutGitBranch(
+  params: { rootPath: string; name: string },
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<null> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<null>("git.branch.checkout", params, 30000);
+}
+
+export async function renameGitBranch(
+  params: { rootPath: string; name: string },
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<null> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<null>("git.branch.rename", params, 30000);
+}
+
+/** force=true 即 `git branch -D`：UI 在收到 branch_not_merged 错误码并经用户确认后重试 */
+export async function deleteGitBranch(
+  params: { rootPath: string; name: string; force?: boolean },
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<null> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<null>("git.branch.delete", params, 30000);
+}
+
+export async function mergeGitBranch(
+  params: { rootPath: string; name: string },
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<null> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<null>("git.merge", params, 60000);
+}
+
+export async function abortGitMerge(
+  rootPath: string,
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<null> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<null>("git.merge.abort", { rootPath }, 30000);
+}
+
+export async function fetchGitWorktrees(
+  rootPath: string,
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<{ worktrees: readonly import("../../core/git.ts").GitWorktree[] }> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc("git.worktrees.list", { rootPath }, 30000);
+}
+
+export async function createGitWorktree(
+  params: { rootPath: string; path?: string; branch?: string; commitish?: string },
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<{ path: string; branch: string | null }> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc("git.worktree.create", params, 60000);
+}
+
+/** force=true 即 `--force`：UI 在收到 worktree_dirty 错误码并经用户确认后重试 */
+export async function removeGitWorktree(
+  params: { rootPath: string; path: string; force?: boolean },
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<null> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<null>("git.worktree.remove", params, 60000);
+}
+
+/** 在系统文件管理器中显示该目录 */
+export async function revealGitWorktree(
+  path: string,
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<null> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<null>("git.worktree.reveal", { path }, 15000);
+}
+
 export interface ChannelStatus {
   readonly gateways: {
     readonly feishu: number;

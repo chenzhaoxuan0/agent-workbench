@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { useWorkbench } from "../store/useWorkbench.ts";
 import { SETTINGS_GROUPS, SETTINGS_SECTIONS, useShell } from "../store/useShell.ts";
+import { useGit } from "../store/useGit.ts";
 import { fetchUnitHistory, type UnitHistoryEntry } from "../adapters/daemon/client.ts";
 import { useHistoryPrefs } from "../store/useHistoryPrefs.ts";
 import { formatRelative } from "../core/automation.ts";
@@ -384,6 +385,40 @@ function useCommands(): readonly Command[] {
         hint: "定时任务与后台流",
         group: "视图",
         run: () => shell().setMainView("automations"),
+      },
+      {
+        id: "view-source-control",
+        label: "打开源代码管理",
+        hint: "激活单元仓库的分支与工作树",
+        group: "视图",
+        icon: FolderGit2,
+        run: () => shell().setMainView("sourceControl"),
+      },
+    );
+
+    // 源代码管理快捷动作：打开面板并直接落到对应对话框（面板挂载时消费 pendingDialog）
+    out.push(
+      {
+        id: "git-create-branch",
+        label: "新建分支…",
+        hint: "当前激活单元的 git 仓库",
+        group: "源代码管理",
+        icon: FolderGit2,
+        run: () => {
+          useGit.getState().setPendingDialog("createBranch");
+          shell().setMainView("sourceControl");
+        },
+      },
+      {
+        id: "git-create-worktree",
+        label: "新建工作树…",
+        hint: "并行隔离的工作目录（默认 <仓库>.worktrees/<分支>）",
+        group: "源代码管理",
+        icon: FolderGit2,
+        run: () => {
+          useGit.getState().setPendingDialog("createWorktree");
+          shell().setMainView("sourceControl");
+        },
       },
     );
 

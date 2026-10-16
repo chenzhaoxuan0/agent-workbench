@@ -8,6 +8,7 @@ import { CommandCenter } from "./ui/CommandCenter.tsx";
 import { Composer } from "./ui/Composer.tsx";
 import { DesktopTopOverlay } from "./ui/DesktopTopOverlay.tsx";
 import { SettingsPage } from "./ui/SettingsPage.tsx";
+import { SourceControlPage } from "./ui/SourceControlPage.tsx";
 import { PermissionDialog } from "./ui/PermissionDialog.tsx";
 import { Timeline } from "./ui/Timeline.tsx";
 import { useWorkbench } from "./store/useWorkbench.ts";
@@ -202,6 +203,11 @@ function ConversationSlot() {
         /* 待办清单（独立主视图） */
         <main className="h-full min-h-0" aria-label="待办">
           <BacklogPage />
+        </main>
+      ) : mainView === "sourceControl" ? (
+        /* 源代码管理（独立主视图）：分支 / 工作树 */
+        <main className="h-full min-h-0" aria-label="源代码管理">
+          <SourceControlPage />
         </main>
       ) : (
         <main className="flex h-full min-h-0 flex-col" aria-label="会话">

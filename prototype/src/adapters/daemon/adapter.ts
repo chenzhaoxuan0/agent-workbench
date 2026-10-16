@@ -258,6 +258,8 @@ class DaemonRuntimeAdapter implements RuntimeAdapter {
           model: req.model,
           mode: req.loop?.mode ?? "build",
           reasoningLevel: req.loop?.reasoningLevel,
+          // 源代码管理面板「在此工作树启动会话」：daemon 侧 ensure 后以工作树为 cwd
+          ...(req.worktree !== undefined ? { worktree: req.worktree } : {}),
           memoryOptions: req.memoryOptions,
         },
         60000,

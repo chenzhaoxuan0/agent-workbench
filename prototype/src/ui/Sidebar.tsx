@@ -6,6 +6,7 @@ import {
   FolderGit2,
   FolderOpen,
   FolderPlus,
+  GitBranch,
   ImagePlus,
   ListTodo,
   PanelLeftClose,
@@ -16,6 +17,7 @@ import {
 } from "lucide-react";
 import { useWorkbench, type ViewMode, type BotWriteGuards } from "../store/useWorkbench.ts";
 import { useShell } from "../store/useShell.ts";
+import { useGit } from "../store/useGit.ts";
 import { useAppearance } from "../store/useAppearance.ts";
 import type { AvatarFrame } from "../core/appearance.ts";
 import { formatRelative } from "../core/automation.ts";
@@ -212,6 +214,12 @@ export function Sidebar() {
               icon={ListTodo}
               label="待办"
               onClick={() => useShell.getState().setMainView("backlog")}
+            />
+            <IconNavBtn
+              icon={GitBranch}
+              label="源代码管理"
+              hint="分支与工作树"
+              onClick={() => useShell.getState().setMainView("sourceControl")}
             />
             <IconNavBtn
               icon={ImagePlus}
@@ -582,6 +590,11 @@ function UnitRow({
   const isSynthetic = isSyntheticUnit(unit);
   const units = useWorkbench((s) => s.units);
   const hideFailedInSidebar = useHistoryPrefs((s) => s.prefs.hideFailedInSidebar);
+  /** 分支标记（源代码管理的缓存；TTL 节流，非 git 仓库为 null 不显示） */
+  const branchName = useGit((s) => s.branchByRoot[unit.rootPath]);
+  useEffect(() => {
+    void useGit.getState().refreshBranchBadge(unit.rootPath);
+  }, [unit.rootPath]);
   /** 历史详情弹窗（子列表条目点开看对话用；focusKey 预展开点进来的那条） */
   const [historyDialogOpen, setHistoryDialogOpen] = useState(false);
   const [historyFocus, setHistoryFocus] = useState<string | undefined>(undefined);
@@ -768,6 +781,12 @@ function UnitRow({
           </span>
           <span className="truncate text-[11px] text-graphite">
             {subtitle || <span className="text-ash">{unit.rootPath}</span>}
+            {branchName != null && (
+              <span className="ml-1 inline-flex items-center gap-0.5 text-ash" title={`当前分支 ${branchName}`}>
+                <GitBranch size={9} className="shrink-0" />
+                {branchName}
+              </span>
+            )}
           </span>
           {unavailable && (
             <span className="mt-0.5 w-fit rounded-chip bg-loss/10 px-1 py-0.2 text-[10px] text-loss">目录不可用</span>
