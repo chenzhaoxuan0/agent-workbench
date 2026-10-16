@@ -65,7 +65,7 @@ parentPort?.on("message", (m: {
 
   const p = ptys.get(id);
   if (p === undefined) {
-    if (t === "write" || t === "resize") reply({ t: "error", id, message: `no such pty: ${id}` });
+    // 竞态保护：终端刚创建还没落 map、或者刚好退出，不报致命 error 炸掉主线程 session
     return;
   }
   try {

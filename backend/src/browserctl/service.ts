@@ -27,7 +27,7 @@ import {
   writeBrowserControlConfig,
 } from "../ctrl/store.ts";
 import { installBrowserControlSkill } from "../ctrl/skills.ts";
-import { MCP_EXECUTORS, MCP_UNSUPPORTED_EXECUTORS } from "../mcpadmin/executors.ts";
+import { MCP_EXECUTORS, MCP_UNSUPPORTED_EXECUTORS, wrapCmd } from "../mcpadmin/executors.ts";
 import { mcpRemove, mcpSave, type McpServiceDeps } from "../mcpadmin/service.ts";
 import { join } from "node:path";
 import { log } from "../log.ts";
@@ -52,6 +52,12 @@ export interface BrowserControlService {
   readonly acpEntries: () => AcpMcpServer[];
   /** daemon 启动时调：接管模式自动拉起共享 Chrome */
   readonly boot: () => Promise<void>;
+  /**
+   * daemon 退出前的尽力收尾（复审 P1）：带走自己拉起的共享 Chrome。Windows 上
+   * 父进程退出不杀子进程，残留实例会让 CDP 调试端口在关掉工作台后继续暴露。
+   * 收编的存量进程（无句柄）无从杀起，跳过——与 stopSharedChrome 同口径。
+   */
+  readonly dispose: () => Promise<void>;
 }
 
 /** 共享 Chrome 的进程态（service 内部，不进配置文件） */
@@ -294,7 +300,9 @@ export function createBrowserControlService(
       const cfg = readBrowserControlConfig();
       if (!cfg.enabled) return [];
       try {
-        const entry = buildEntry(ACP_EXECUTOR_ID, cfg);
+        // 与落盘路径（mcpSave → wrapCmd）同一口径：Windows 上 npx 这类 .cmd shim
+        // 不包 cmd /c，部分 CLI 直接 spawn 会 ENOENT（复审 P2）——dsh 注入同样要包
+        const entry = wrapCmd(buildEntry(ACP_EXECUTOR_ID, cfg));
         return [
           {
             name: entry.name,
@@ -318,6 +326,14 @@ export function createBrowserControlService(
       } catch (e) {
         // boot 是 void 火后不管的：任何抛错在这里终结，绝不让 daemon 启动崩
         log.error("browser control boot failed", { error: e instanceof Error ? e.message : String(e) });
+      }
+    },
+    dispose: async () => {
+      // 尽力收尾：自己拉起的共享 Chrome 带走；已在单飞链上排队也不等它——退出路径不等新启动
+      try {
+        await withChrome(stopChromeLocked);
+      } catch (e) {
+        log.warn("browser control dispose failed", { error: e instanceof Error ? e.message : String(e) });
       }
     },
   };

@@ -15,7 +15,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { isLocalOrigin } from "../httpd.ts";
+import { isLocalOrigin, isLoopbackAddr } from "../httpd.ts";
 import type {
   AcpMcpServer,
   ComputerControlState,
@@ -290,7 +290,7 @@ export function createComputerControl(
           case "computer_double_click": return { content: [{ type: "text", text: await done(rt.click(intArg(args, "x"), intArg(args, "y"), "double")) }] };
           case "computer_right_click": return { content: [{ type: "text", text: await done(rt.click(intArg(args, "x"), intArg(args, "y"), "right")) }] };
           case "computer_drag": return { content: [{ type: "text", text: await done(rt.drag(intArg(args, "x1"), intArg(args, "y1"), intArg(args, "x2"), intArg(args, "y2"))) }] };
-          case "computer_scroll": return { content: [{ type: "text", text: await done(rt.scroll(intArg(args, "x"), intArg(args, "y"), intArg(args, "amount"))) }] };
+          case "computer_scroll": return { content: [{ type: "text", text: await done(rt.scroll(intArg(args, "x"), intArg(args, "y"), intArg(args, "amount", { negative: true }))) }] };
           case "computer_type": return { content: [{ type: "text", text: await done(rt.typeText(strArg(args, "text"))) }] };
           case "computer_key": return { content: [{ type: "text", text: await done(rt.key(strArg(args, "combo"))) }] };
           case "computer_window_list": {
@@ -327,6 +327,15 @@ export function createComputerControl(
 
   // ---- MCP over HTTP ----
   const handleHttp = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    // 来源闸（复审 P1）：这是全 daemon 唯一能动真实键鼠的面，无论 token 配置如何
+    // 都只收回环来源——token 关闭 + daemon 绑非回环（AGENT_WORKBENCH_HOST=0.0.0.0）
+    // 时 authorize 根本不跑，Origin/Content-Type 两闸又只有浏览器会带，LAN 内任意
+    // 脚本裸发 POST 就能点桌面。回环判定自带豁免给本机 CLI 客户端。
+    if (!isLoopbackAddr(req.socket.remoteAddress)) {
+      res.writeHead(403, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: { code: -32052, message: "computer control endpoint only accepts loopback connections" } }));
+      return;
+    }
     // 双闸（评审 P0，与 index.ts authorize 的回环豁免构成纵深防御）：
     // - Origin：浏览器跨源 simple request（text/plain POST，无需预检）也能把请求
     //   送到回环端口。CLI 客户端不发 Origin；有 Origin 就必须是本地源，否则任意
@@ -525,10 +534,12 @@ export function createComputerControl(
 
 // ---- 参数收窄（未知形态早报错，不静默转换） ------------------------------------------
 
-function intArg(args: Record<string, unknown>, key: string): number {
+function intArg(args: Record<string, unknown>, key: string, opts?: { readonly negative?: boolean }): number {
   const v = args[key];
-  if (typeof v !== "number" || !Number.isFinite(v) || v < 0) {
-    throw new Error(`参数 ${key} 必须是 ≥0 的整数`);
+  // negative 档专给滚轮 amount 这类「正数向下、负数向上」的参数（复审 P1）：
+  // 工具契约明说负值合法，一刀切 ≥0 会把向上滚动拒之门外
+  if (typeof v !== "number" || !Number.isFinite(v) || (!opts?.negative && v < 0)) {
+    throw new Error(`参数 ${key} 必须是${opts?.negative ? "" : " ≥0 的"}整数`);
   }
   return Math.round(v);
 }

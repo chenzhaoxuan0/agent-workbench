@@ -34,6 +34,8 @@ interface WorkerSession {
   onData: Listener | null;
   onExit: ExitListener | null;
   spawnError: string | null;
+  created: boolean;
+  pendingWrites: string[];
 }
 
 export class PtyHost {
@@ -48,7 +50,14 @@ export class PtyHost {
     listeners: { onData: Listener; onExit: ExitListener },
   ): PtyHandle {
     const handle: PtyHandle = { terminalId, pid: undefined };
-    const session: WorkerSession = { handle, onData: listeners.onData, onExit: listeners.onExit, spawnError: null };
+    const session: WorkerSession = {
+      handle,
+      onData: listeners.onData,
+      onExit: listeners.onExit,
+      spawnError: null,
+      created: false,
+      pendingWrites: [],
+    };
     this.sessions.set(terminalId, session);
 
     // worker 在后台拉起；如果起不来（或中途死掉），failAll 会把这个 session 收口
@@ -73,6 +82,11 @@ export class PtyHost {
   }
 
   write(terminalId: string, data: string): void {
+    const s = this.sessions.get(terminalId);
+    if (s !== undefined && !s.created) {
+      s.pendingWrites.push(data);
+      return;
+    }
     this.worker?.postMessage({ t: "write", id: terminalId, data });
   }
 
@@ -98,6 +112,7 @@ export class PtyHost {
       let settled = false;
       w.once("online", () => {
         settled = true;
+        this.worker = w;
         resolve(w);
       });
       w.once("error", (err: Error) => {
@@ -114,8 +129,14 @@ export class PtyHost {
         if (session === undefined) return;
         if (t === "data" && typeof m.data === "string") session.onData?.(m.data);
         else if (t === "exit") this.finish(session, m.exitCode ?? 0);
-        else if (t === "created" && typeof m.pid === "number") session.handle.pid = m.pid;
-        else if (t === "error" && t !== undefined) this.finishWithError(id, m.message ?? "pty spawn failed");
+        else if (t === "created") {
+          if (typeof m.pid === "number") session.handle.pid = m.pid;
+          session.created = true;
+          for (const pending of session.pendingWrites) {
+            this.worker?.postMessage({ t: "write", id, data: pending });
+          }
+          session.pendingWrites.length = 0;
+        } else if (t === "error" && t !== undefined) this.finishWithError(id, m.message ?? "pty spawn failed");
       });
       w.once("exit", (code) => {
         this.worker = null;
@@ -123,7 +144,6 @@ export class PtyHost {
         log.warn("pty worker exited", { code, liveTerminals: this.sessions.size });
         this.failAll(`pty worker 退出（code=${code}）`);
       });
-      this.worker = w;
     }).finally(() => {
       this.starting = null;
     });

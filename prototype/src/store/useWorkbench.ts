@@ -478,8 +478,12 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
     // 但必须说一声 —— 否则用户点了没反应、或者跑起来才发现用的是别的东西。
     // 注意警告文本要**并进**成功消息里：先 set 再被「已派发」覆盖等于没提示。
     const now = get().automations.find((a) => String(a.id) === String(id));
+    // 判定必须走 isModelAvailable（复审 P1）：只看「配没配模型」会让每一条配了模型
+    // 的任务在手动运行时都吃到假错误，还会把「已派发」的成功提示整个顶掉。
+    // runtimeId 存的是裸执行器名，判定口径要补 daemon: 前缀。
     const stale =
-      now !== undefined && now.model
+      now !== undefined && now.model !== null && now.model !== "" &&
+      !isModelAvailable(get(), `daemon:${now.runtimeId}`, now.model)
         ? `注意：${now.name} 配的模型 ${now.model} 已不在 ${now.runtimeId} 的可选清单里（多半下线了），仍按它派发。`
         : null;
     const { runAutomationNow, defaultDaemonEndpoint } = await import("../adapters/daemon/client.ts");

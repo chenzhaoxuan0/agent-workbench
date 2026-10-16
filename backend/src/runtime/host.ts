@@ -135,6 +135,8 @@ interface HostSession {
   endedAt: number | undefined;
   /** 来源徽标（docs/09 §六.2）。缺省 = 工作台 */
   readonly source: SessionSource;
+  /** 交互式渠道会话：权限不自动放行，等渠道侧人裁决（见 StartSessionInput.interactive） */
+  readonly interactive: boolean;
   /** 实际生效的模型（modelHint 失效时的回落结果） */
   readonly modelActual: string | null;
   /** 被丢掉的 modelHint。非空 = 界面必须弱提示（docs/09 §六.1） */
@@ -174,6 +176,12 @@ export interface StartSessionInput {
   readonly reasoningLevel?: string;
   /** 这个会话从哪来（docs/09 §六.2 的来源徽标）。缺省 = 工作台 */
   readonly source?: SessionSource;
+  /**
+   * 交互式渠道会话（IM 审批按钮 / 移动端确认门）：权限闸**不自动放行**，
+   * 挂起等渠道侧的人点按钮裁决。缺省 false = 沿用 headless 全放行语义
+   * （automation / webhook / mcp / 飞书 等无人可等的来源不变）。
+   */
+  readonly interactive?: boolean;
   /** 记忆注入配置（可选指定 semantic / daily / procedural 作用域） */
   readonly memoryOptions?: MemoryInjectorOptions;
   /**
@@ -192,12 +200,15 @@ export interface StartSessionInput {
  * 回落顺序按 units.ts 契约原文：用户所选 → 这个 hint → 执行器默认。
  * 这里把「最终用哪个」和「hint 有没有被丢掉」一起算出来交给会话，
  * 界面才有东西可显示——只在 adapter 里默默回落的话，UI 永远不知道发生过。
+ *
+ * 判定清单由调用方给：**有兜底缓存必须用缓存**（复审 P0）——listAdapters 展示面
+ * 优先吐缓存，冷启动时若这里仍用适配器种子清单，界面选的模型（缓存 id）会被
+ * 派发面静默换成种子第一档，展示与派发就分裂了。
  */
 function resolveModelFor(
-  adapter: ExecutorAdapter,
+  supported: readonly ExecutorModelInfo[],
   requested: ModelId | null,
 ): { model: ModelId | null; droppedHint: string | null } {
-  const supported = adapter.models;
   if (requested === null) return { model: null, droppedHint: null };
   if (supported.some((m) => m.id === requested)) return { model: requested, droppedHint: null };
   // 不可用 → 落执行器默认（清单首项，与注册表口径一致），并把丢掉的那个记下来
@@ -345,8 +356,10 @@ export class RuntimeHost {
         endedAt: row.endedAt ?? undefined,
         // 从盘装载的死会话：来源与模型没落 state.db（老会话更是连字段都没有），
         // 只能按「工作台起的」处理。徽标显示成「工作台」而不是空——空会让人以为
-        // 这个字段没实现。
+        // 这个字段没实现。同理 interactive 按缺省 false：resume 后不自动放行，
+        // 与工作台当面确认的行为一致。
         source: "workbench",
+        interactive: false,
         modelActual: null,
         modelHintDropped: null,
         stats: { ...row.stats },
@@ -843,7 +856,11 @@ export class RuntimeHost {
     // 契约原文说 hint 失效会被静默忽略——那正是 docs/09 §六.1 要补掉的静默：
     // 用户以为自己在用便宜模型，实际在烧贵的。适配器自己也会回落，但只有 host
     // 知道它回落到了哪儿，所以判定收在这一处，不散进每个 adapter。
-    const { model: effective, droppedHint } = resolveModelFor(adapter, input.model);
+    // 判定清单与 listAdapters 同源：兜底缓存优先，没有缓存才用适配器种子清单（复审 P0）。
+    const { model: effective, droppedHint } = resolveModelFor(
+      this.modelCache.get(adapter.id)?.models ?? adapter.models,
+      input.model,
+    );
 
     // 晚绑定 sink：adapter.start 需要一个 sink，而台账行要等 start 返回才知道 id。
     // 适配器契约保证 start() 期间不发事件（turn 由 send 驱动），这里只是双保险。
@@ -870,6 +887,7 @@ export class RuntimeHost {
       startedAt: Date.now(),
       endedAt: undefined,
       source: input.source ?? "workbench",
+      interactive: input.interactive ?? false,
       modelActual: effective === null ? null : String(effective),
       modelHintDropped: droppedHint,
       stats: { messages: 0, toolCalls: 0, inputTokens: 0, outputTokens: 0, costUsd: 0, durationMs: 0 },
@@ -1257,19 +1275,26 @@ export class RuntimeHost {
 
   /** 权限闸（Phase 4）：规则命中就自动决策；交互会话不命中保持挂起等人 */
   private evaluateGate(h: HostSession, event: Extract<RuntimeEvent, { type: "permission.requested" }>): void {
-    this.pendingPerms.set(`${h.id}:${event.requestId}`, { kind: event.kind, detail: event.detail });
+    const key = `${h.id}:${event.requestId}`;
+    this.pendingPerms.set(key, { kind: event.kind, detail: event.detail });
     const decision = this.gate.evaluate(h.runtimeId, event.kind, h.lastTool ?? "", event.detail);
     if (decision !== null) {
+      // 同步占位：自动裁决成立的同一 tick 就摘牌，晚到的人工点击在
+      // resolvePermission 的首响判定处直接出局，落不进 always 规则
+      this.pendingPerms.delete(key);
       log.info("permission auto-resolved by rule", { sessionId: h.id, requestId: event.requestId, decision });
       void h.impl?.resolvePermission(event.requestId, decision).catch((err: unknown) =>
         log.warn("gate auto-resolve failed", { error: err instanceof Error ? err.message : String(err) }),
       );
       return;
     }
-    // headless 会话（automation / 渠道 / webhook / mcp）没有人可等：挂着就是永远挂着，
-    // 运行记录卡 running、渠道这轮永远不回。按 docs/08 的既定语义【完全放行】——
-    // 敏感命令的收口靠 deny 规则（上面 evaluate 已按规则优先拦过一轮）。
-    if (h.source !== "workbench") {
+    // headless 会话（automation / webhook / mcp / 飞书等无人可等的渠道）挂着就是
+    // 永远挂着：运行记录卡 running、渠道这轮永远不回。按 docs/08 的既定语义
+    // 【完全放行】——敏感命令的收口靠 deny 规则（上面 evaluate 已按规则优先拦过一轮）。
+    // 例外是 interactive 渠道会话（IM 审批按钮 / 移动端确认门）：闸门是他们存在的
+    // 全部意义，自动放行等于把确认门变成装饰品——必须挂起等渠道侧的人裁决。
+    if (h.source !== "workbench" && !h.interactive) {
+      this.pendingPerms.delete(key);
       log.info("permission auto-allowed for headless session", { sessionId: h.id, requestId: event.requestId, source: h.source });
       void h.impl?.resolvePermission(event.requestId, "allow").catch((err: unknown) =>
         log.warn("headless auto-allow failed", { error: err instanceof Error ? err.message : String(err) }),
@@ -1288,28 +1313,32 @@ export class RuntimeHost {
     const h = this.sessions.get(sessionId);
     if (h === undefined) throw adapterError("unknown_session", `no such session: ${sessionId}`);
     if (h.impl === null) throw adapterError("session_not_live", `session ${sessionId} is not live`);
-    // always：落规则表，同类请求下次不再问（pattern 用最近工具名，detail 兜底）
+    // 首响仲裁（复审 P1）：pendingPerms 的查与删在同一个同步块里完成——
+    // 另一端并发点击 / IM 迟到的回调在这里直接出局：不落 always 规则、不补发
+    // 「实际没生效的裁决」事件（那会把时间线徽标覆盖成假的）。
+    const key = `${sessionId}:${requestId}`;
+    const meta = this.pendingPerms.get(key);
+    if (meta === undefined) {
+      log.warn("permission resolution dropped (not pending: already resolved or unknown)", { sessionId, requestId, decision });
+      return;
+    }
+    this.pendingPerms.delete(key);
+    await h.impl.resolvePermission(requestId, decision);
+    // always：落规则表，同类请求下次不再问（pattern 用最近工具名，detail 兜底）。
+    // 放在 impl 首响成立**之后**：迟到的 always 不再有机会改写放行面。
     if (decision === "always") {
-      const meta = this.pendingPerms.get(`${sessionId}:${requestId}`);
-      const pattern = h.lastTool ?? meta?.detail ?? requestId;
+      const pattern = h.lastTool ?? meta.detail ?? requestId;
       const id = this.gate.addRule({
         runtimeId: h.runtimeId,
-        kind: meta?.kind ?? null,
+        kind: meta.kind,
         pattern,
         decision: "allow",
       });
       log.info("permission rule added (always)", { id, runtimeId: h.runtimeId, pattern });
     }
-    await h.impl.resolvePermission(requestId, decision);
-    const resolvedEvent: RuntimeEvent = {
-      type: "permission.resolved",
-      sessionId,
-      requestId,
-      decision,
-    };
-    this.emitStamped(h, resolvedEvent);
-    this.track(h, resolvedEvent);
-    this.persistOnEvent(h, resolvedEvent);
+    // 注：permission.resolved 事件**不在这里补发**——适配器在 resolvePermission
+    // 内部经 sink 发过一份（claude/mockperm/kimi/… 均如此），host 再发会造成
+    // trace 双写与广播双帧；无人值守来源也不会丢事件：规则自动裁决同样走适配器。
   }
 
   async shutdown(): Promise<void> {
@@ -1408,6 +1437,13 @@ function sameExecutorModels(
   return a.every((m, i) => {
     const o = b[i];
     if (o === undefined) return false;
+    // 推理档位也要比（复审 P1）：CLI 给同一模型改档位而 id/窗口没动时，
+    // 不比就会把真实变化判成「没变」——与前端 registry.sameModelList 口径对齐
+    const sameLevels = (x: readonly string[] | undefined, y: readonly string[] | undefined): boolean => {
+      if (x === y) return true;
+      if (!Array.isArray(x) || !Array.isArray(y) || x.length !== y.length) return false;
+      return x.every((v, j) => v === y[j]);
+    };
     return (
       m.id === o.id &&
       m.displayName === o.displayName &&
@@ -1416,7 +1452,8 @@ function sameExecutorModels(
       m.multimodal === o.multimodal &&
       m.defaultReasoningLevel === o.defaultReasoningLevel &&
       m.inputPerMTok === o.inputPerMTok &&
-      m.outputPerMTok === o.outputPerMTok
+      m.outputPerMTok === o.outputPerMTok &&
+      sameLevels(m.reasoningLevels, o.reasoningLevels)
     );
   });
 }

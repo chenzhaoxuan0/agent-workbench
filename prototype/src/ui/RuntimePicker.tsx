@@ -4,7 +4,7 @@ import { formatContext, formatPrice, type ModelSpec } from "../core/models.ts";
 import { prefsOf, resolveVisibleModels } from "../core/modelPrefs.ts";
 import type { RuntimeEntry } from "../core/registry.ts";
 import { useShell } from "../store/useShell.ts";
-import { modelSpecFor, selectVisibleModels, useWorkbench, visibleModelsFor } from "../store/useWorkbench.ts";
+import { modelSpecFor, selectVisibleModels, useWorkbench, visibleModelsFor, isHiddenByUser } from "../store/useWorkbench.ts";
 import { cn } from "./cn.ts";
 import { RuntimeIcon } from "./RuntimeIcon.tsx";
 
@@ -236,7 +236,12 @@ export function RuntimePicker() {
   // 以前直接落进 "未选模型"：模型一被下线，顶栏就变成「执行器 · 未选模型」，
   // 用户既看不到自己原来选的是什么，也完全不知道出了什么事。
   const activeModel = active ? modelSpecFor(active, activeModelId ?? undefined) : undefined;
-  const modelStale = activeModelId !== null && activeModelId !== undefined && !activeModels.some((m) => m.id === activeModelId);
+  // 「不在可见清单」要拆成两态（复审 P1）：被用户隐藏 ≠ 已下线，混在一起会把
+  // 自己藏的模型划线标成「下线」，tooltip 还说反了发送行为。
+  const modelMissing = activeModelId !== null && activeModelId !== undefined && !activeModels.some((m) => m.id === activeModelId);
+  const hiddenNow = useWorkbench((s) => (activeId !== null && modelMissing ? isHiddenByUser(s, activeId, String(activeModelId)) : false));
+  const modelHidden = modelMissing && hiddenNow;
+  const modelStale = modelMissing && !hiddenNow;
   const label = active ? (activeModel?.displayName ?? "未选模型") : "执行器";
 
   return (
@@ -248,7 +253,8 @@ export function RuntimePicker() {
         title={
           active
             ? `${active.presentation.displayName}${active.testOnly ? " · 测试夹具" : ""} · ${label}` +
-              (modelStale ? "\n⚠ 该模型已不在可选清单里（多半是下线了），发消息仍会照它发，换不换由你决定" : "") +
+              (modelStale ? "\n⚠ 该模型已不在可选清单里（多半是下线了），发送时会回落到该执行器的第一个可用模型（时间线会标注「已回落」）" : "") +
+              (modelHidden ? "\n🔒 该模型已被你手动隐藏，发送时会改用当前列表的第一个模型；到设置里取消隐藏可继续用它" : "") +
               `\n${active.presentation.tagline}`
             : "选择执行器与模型"
         }

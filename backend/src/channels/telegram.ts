@@ -242,6 +242,9 @@ export class TelegramGateway {
       const { reply } = await runBotTurn(this.opts.host, bot, text, {
         source: "telegram",
         mode: acc.interactiveApproval ? "build" : "yolo",
+        // 交互审批位：不开它，host 对非 workbench 来源一律自动放行，
+        // 下面的审批按钮就只是装饰品（复审 P0）
+        interactive: acc.interactiveApproval,
         onTurnStart: (sessionId) => {
           if (acc.interactiveApproval) {
             this.opts.host.onSessionEvent(sessionId, "permission.requested", (ev) => {

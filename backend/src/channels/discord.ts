@@ -275,6 +275,9 @@ export class DiscordGateway {
       const { reply } = await runBotTurn(this.opts.host, bot, text, {
         source: "discord",
         mode: spec.interactiveApproval ? "build" : "yolo",
+        // 交互审批位：不开它，host 对非 workbench 来源一律自动放行，
+        // 下面的 Components 按钮就只是装饰品（复审 P0）
+        interactive: spec.interactiveApproval,
         onTurnStart: (sessionId) => {
           if (spec.interactiveApproval) {
             this.opts.host.onSessionEvent(sessionId, "permission.requested", (ev) => {
@@ -421,15 +424,23 @@ export class DiscordGateway {
     if (chunks.length === 0) chunks.push("(空回复)");
 
     for (const chunk of chunks) {
-      await fetch(`${DISCORD_API_BASE}/channels/${channelId}/messages`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bot ${cleanToken}`,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({ content: chunk }),
-        signal: AbortSignal.timeout(10_000),
-      });
+      // 内部必须捕获（复审 P1）：本函数常被 processTurn 的 catch 分支调用——
+      // 网络故障时那里再 reject 就是 unhandled rejection，Node ≥15 直接掀翻 daemon。
+      // telegram/weixin 的同类发送都有内部捕获，唯独这里裸奔。
+      try {
+        const resp = await fetch(`${DISCORD_API_BASE}/channels/${channelId}/messages`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bot ${cleanToken}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ content: chunk }),
+          signal: AbortSignal.timeout(10_000),
+        });
+        if (!resp.ok) log.warn("discord message send failed", { status: resp.status, channelId });
+      } catch (err: unknown) {
+        log.warn("discord message send failed", { channelId, error: err instanceof Error ? err.message : String(err) });
+      }
     }
   }
 }

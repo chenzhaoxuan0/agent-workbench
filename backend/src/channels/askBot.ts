@@ -37,6 +37,11 @@ export async function runBotTurn(
     mode?: "plan" | "build" | "edit" | "yolo";
     waitMs?: number;
     source?: SessionSource;
+    /**
+     * 交互式审批：true = 会话的权限闸不自动放行，等渠道侧的人（按钮/数字回复）
+     * 裁决。只作用于**新会话**；续聊沿用该会话创建时的裁决方式。
+     */
+    interactive?: boolean;
     memoryOptions?: MemoryInjectorOptions;
     /**
      * 轮次一开始（sessionId 一拿到）就回调 —— **不等这一轮跑完**。
@@ -93,6 +98,7 @@ export async function runBotTurn(
       mode: opts.mode ?? "yolo", // faceless 渠道无审批面
       // 来源标记：时间轴上据此显示「来自飞书 / 来自 webhook」徽标（docs/09 §六.2）
       source: opts.source ?? "workbench",
+      interactive: opts.interactive ?? false,
       memoryOptions: memOpts,
       // 新会话路径：同样在 send 之前交出去（startSession 内部保证顺序）
       onSessionReady: opts.onTurnStart === undefined ? undefined : (sid) => opts.onTurnStart?.(sid),

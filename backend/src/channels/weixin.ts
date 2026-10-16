@@ -144,6 +144,11 @@ interface WeixinAccountSpec {
   readonly botId: string;
   readonly botToken: string;
   readonly ilinkBotId?: string;
+  /**
+   * 专属对话过滤（复审 P0）：只应答这个 OpenID 的私聊。微信侧任何联系人
+   * 都能给 bot 发消息——没有这层过滤，等于把桌面 agent 的驾驶权交给整个通讯录。
+   */
+  readonly chatId?: string;
   readonly interactiveApproval: boolean;
 }
 
@@ -212,6 +217,7 @@ export class WeixinGateway {
             botId,
             botToken: token,
             ilinkBotId: typeof rawAcc["ilinkBotId"] === "string" ? rawAcc["ilinkBotId"] : undefined,
+            chatId: typeof rawAcc["chatId"] === "string" && rawAcc["chatId"] !== "" ? rawAcc["chatId"] : undefined,
             interactiveApproval: rawAcc["interactiveApproval"] !== false,
           });
         }
@@ -260,6 +266,13 @@ export class WeixinGateway {
         const fromUser = readString(m, "from_user_id") || readString(m, "from_user") || readString(m, "from");
         const contextToken = readString(m, "context_token");
         if (!text.trim() || !fromUser) continue;
+        // 发送者闸（复审 P0）：未配置 chatId 一律不应答（默认拒绝而非默认全放），
+        // 配了就只应答那一个 OpenID。落进日志是为了让「配了 bot 却没反应」可排查。
+        if (acc.chatId === undefined) {
+          log.warn("weixin message dropped: account has no chatId filter (set chatId to allow a single admin chat)", { account: acc.key, from: fromUser });
+          continue;
+        }
+        if (fromUser !== acc.chatId) continue;
         this.enqueue(acc, fromUser, text.trim(), contextToken);
       }
     } catch {
@@ -309,6 +322,9 @@ export class WeixinGateway {
       const result = await runBotTurn(this.opts.host, bot, text, {
         source: "weixin",
         mode: acc.interactiveApproval ? "build" : "yolo",
+        // 交互审批位：不开它，host 对非 workbench 来源一律自动放行，
+        // 下面的数字审批就只是装饰品（复审 P0）
+        interactive: acc.interactiveApproval,
         onTurnStart: (sessionId) => {
           this.opts.host.onSessionEvent(sessionId, "permission.requested", (ev) => {
             const event = ev as Extract<RuntimeEvent, { type: "permission.requested" }>;

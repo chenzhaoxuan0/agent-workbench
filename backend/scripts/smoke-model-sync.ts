@@ -164,6 +164,9 @@ class FakeAdapter implements ExecutorAdapter {
 
   constructor(private readonly mode: "live" | "throw") {}
 
+  /** 派发断言用：host 到底把哪个 model 交给了适配器（复审 P0 回归） */
+  lastStartModel: ModelId | null | undefined;
+
   /** 永远只有内置种子 —— 模拟「daemon 刚起来、还没探测过」的原始状态 */
   get models(): readonly ExecutorModelInfo[] {
     return SEED;
@@ -177,8 +180,16 @@ class FakeAdapter implements ExecutorAdapter {
   async probe(): Promise<ProbeResult> {
     return { state: { status: "ready" }, elapsedMs: 0 };
   }
-  async start(): Promise<never> {
-    throw new Error("假执行器不建会话");
+  async start(req: { model: ModelId | null }): Promise<AdapterSession> {
+    this.lastStartModel = req.model;
+    const sid = `fake_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    return {
+      id: sid as AdapterSession["id"],
+      send: async () => {},
+      cancel: async () => {},
+      resolvePermission: async () => {},
+      externalRef: () => null,
+    };
   }
   resumeSession(): AdapterSession {
     throw new Error("假执行器不续会话");
@@ -233,6 +244,29 @@ check(
   typeof r2.reason === "string" && r2.reason.includes("沿用上次探测结果"),
   { reason: r2.reason },
 );
+
+// 派发回归（复审 P0）：冷启动后（适配器只有种子、盘上有缓存）用缓存内的模型
+// 派发，host 不得把它静默换成种子第一档 —— 展示面（listAdapters 吐缓存）与
+// 派发面（resolveModelFor 的判定清单）必须同源。这条 bug 的样子：界面选的是
+// live-b，发出去实际跑的是 seed-only（还可能是全家最贵的旗舰档），用户毫无感知。
+{
+  const fakeDispatch = new FakeAdapter("throw");
+  const h2b = new RuntimeHost(() => {}, new TraceSink(join(fakeHome, "traces-dispatch")), fakeHome, fakeStore, fakeGate);
+  h2b.register(fakeDispatch);
+  const s = await h2b.startSession({
+    runtimeId: "fake",
+    unitId: "unit-smoke" as Parameters<typeof h2b.startSession>[0]["unitId"],
+    unitName: "smoke",
+    rootPath: fakeHome,
+    prompt: "派发回归",
+    model: "live-b" as ModelId,
+  });
+  check(
+    "冷启动后派发缓存内模型不被换成种子第一档",
+    s.modelActual === "live-b" && fakeDispatch.lastStartModel === "live-b",
+    { modelActual: s.modelActual, adapterGot: fakeDispatch.lastStartModel },
+  );
+}
 
 // 反向对照：**没有**缓存文件的全新 home，只能退回种子 —— 证明上面确实是缓存在起作用
 const bareHome = mkdtempSync(join(tmpdir(), `agent-workbench-smoke-models-bare-`));

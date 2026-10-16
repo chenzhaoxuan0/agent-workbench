@@ -2787,11 +2787,17 @@ async function shutdown(signal: string): Promise<void> {
   // 漏掉它就会在 host.shutdown() 关掉 store 之后还能起新活（评审 P1 同类）
   feishuGateway.stop();
   tunnelManager?.stop();
+  // 共享 Chrome 与终端并行收尾（复审 P1）：Windows 上 daemon 退出不杀子进程，
+  // 不带走它 = CDP 调试端口在关掉工作台后无限期暴露。收编的存量实例无句柄，跳过。
+  const chromeDispose = browserControl.dispose().catch((err: unknown) =>
+    log.warn("shared chrome dispose failed", { error: err instanceof Error ? err.message : String(err) }),
+  );
   // 杀光终端 → ConPTY 排空窗口 → terminate pty worker（顺序敏感，见 stop 注释）
   await terminals.stop();
   const force = setTimeout(() => process.exit(0), 2000).unref(); // 挂起写兜底：2s 强制退
   try {
     await host.shutdown();
+    await chromeDispose; // host 收尾（最慢的一段）之后、强杀定时器之前尽力等完
   } catch (err: unknown) {
     log.warn("host shutdown failed", { error: err instanceof Error ? err.message : String(err) });
   }
