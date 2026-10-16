@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { FolderGit2, GitBranch, Loader2, Plus, RefreshCw, TriangleAlert, X } from "lucide-react";
-import { GIT_ERROR_CODES, type GitStatus, type GitWorktree } from "../core/git.ts";
+import { Files, FolderGit2, GitBranch, Loader2, Plus, RefreshCw, TriangleAlert, X } from "lucide-react";
+import { GIT_ERROR_CODES, sumChanges, type GitStatus, type GitWorktree } from "../core/git.ts";
 import {
   checkoutGitBranch,
   createGitBranch,
@@ -9,10 +9,12 @@ import {
   revealGitWorktree,
 } from "../adapters/daemon/client.ts";
 import { useGit } from "../store/useGit.ts";
+import { useGitChanges } from "../store/useGitChanges.ts";
 import { useShell } from "../store/useShell.ts";
 import { useTerminalStore } from "../store/useTerminalStore.ts";
 import { selectActiveUnit, useWorkbench } from "../store/useWorkbench.ts";
 import { BranchRow } from "./sourceControl/BranchRow.tsx";
+import { ChangeFileList } from "./sourceControl/ChangeFileList.tsx";
 import { WorktreeRow, worktreeTitle } from "./sourceControl/WorktreeRow.tsx";
 import { CreateBranchDialog } from "./sourceControl/CreateBranchDialog.tsx";
 import { CreateWorktreeDialog } from "./sourceControl/CreateWorktreeDialog.tsx";
@@ -20,20 +22,27 @@ import { ConfirmDialog } from "./sourceControl/ConfirmDialog.tsx";
 import { StartSessionDialog } from "./sourceControl/StartSessionDialog.tsx";
 
 /**
- * 源代码管理主视图 —— 激活单元仓库的分支 / 工作树管理。
+ * 源代码管理主视图 —— 激活单元仓库的「仓库总管」（ADR 0010）。
+ *
+ * 它不是三个入口之外的第四个入口，而是全景视图：分支 + 工作树 + 改动。
+ * 三个入口回答三个各自的问题（在哪工作 / 要不要落库 / 改了什么），这里回答
+ * 「坐下来管理这个仓库」。会话工作树（隔离承重墙，ADR 0008）继续只住在这里。
  *
  * 分支面对齐 ZCode 窄模型（ADR 0009）：只做「在哪个分支上工作」——
  * 列出 / 新建即切换 / 切换；合并、改名、删除留给终端。远程分支只读展示，
  * 可作为新建工作树的基点。
  *
- * 工作树是会话隔离的承重墙（ADR 0008），完整保留：
+ * 「改动」区（ADR 0010 的 ③）与提交对话框读**同一个** useGitChanges store：
+ * 两边各拉一份 git.changes 就会出现「对话框说 3 个文件、面板说 4 个」。
+ *
+ * 工作树层（ADR 0008）完整保留：
  * - 删除有改动的工作树：remove 失败（worktree_dirty）→ 确认 → --force；
  *   有活跃会话跑在该树里时直接拒绝（Windows 强删会拔掉执行器的 cwd）
  * - 分支已被别的工作树检出（branch_checked_out_elsewhere，带 data.path）→
  *   引导「打开那个工作树」而不是让用户干瞪眼
  *
  * 行组件与对话框在 ./sourceControl/ 下按 ui/ 约定一组件一文件。
- * v1 不做：改动列表 / 暂存 / 提交 / rebase / tag（见 ADR 0008 的后续清单）。
+ * 仍不做：discard / 逐 hunk 暂存 / rebase / tag（ADR 0009、0010）。
  */
 
 // ---- RPC 错误的形状（daemon GitError → wire error {code,message,data}） --------
@@ -92,6 +101,16 @@ export function SourceControlPage() {
   const pendingDialog = useGit((s) => s.pendingDialog);
   const setPendingDialog = useGit((s) => s.setPendingDialog);
 
+  // 改动面（ADR 0010）：与提交对话框共用同一个 store，这里只负责绑定仓库
+  const changes = useGitChanges((s) => s.changes);
+  const loadingChanges = useGitChanges((s) => s.loading);
+  const busyChanges = useGitChanges((s) => s.busy);
+  const changesError = useGitChanges((s) => s.error);
+  const openChangesRepo = useGitChanges((s) => s.openRepo);
+  const reloadChanges = useGitChanges((s) => s.reload);
+  const stagePaths = useGitChanges((s) => s.stage);
+  const unstagePaths = useGitChanges((s) => s.unstage);
+
   const [dialog, setDialog] = useState<Dialog>(null);
   const [busy, setBusy] = useState(false);
 
@@ -105,6 +124,9 @@ export function SourceControlPage() {
   useEffect(() => {
     if (unitRootPath !== undefined) openRepo(unitRootPath);
   }, [unitRootPath, openRepo]);
+  useEffect(() => {
+    if (unitRootPath !== undefined) openChangesRepo(unitRootPath);
+  }, [unitRootPath, openChangesRepo]);
 
   // 没有激活单元时不消费：留着等单元就绪后面板挂载时再弹，而不是静默吞掉
   useEffect(() => {
@@ -115,10 +137,13 @@ export function SourceControlPage() {
 
   // 面板聚焦时刷新一次（从别处切回来看到的就不是旧数据）
   useEffect(() => {
-    const onFocus = (): void => void refresh();
+    const onFocus = (): void => {
+      void refresh();
+      void reloadChanges();
+    };
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
-  }, [refresh]);
+  }, [refresh, reloadChanges]);
 
   /** 所有操作的统一外壳：busy 门闩 + 失败横幅 + 成功刷新 */
   const op = async (name: string, action: () => Promise<unknown>): Promise<boolean> => {
@@ -145,6 +170,11 @@ export function SourceControlPage() {
   const root = rootPath ?? unit.rootPath;
   const repoName = root.split(/[\\/]/).filter(Boolean).pop() ?? "";
 
+  const stagedChanges = changes?.staged ?? [];
+  const unstagedChanges = changes?.unstaged ?? [];
+  const untrackedChanges = changes?.untracked ?? [];
+  const changesTotals = sumChanges(stagedChanges, unstagedChanges, untrackedChanges);
+
   return (
     <div className="flex h-full min-h-0 flex-col overflow-y-auto">
       {/* 头部：仓库 + 当前分支状态 */}
@@ -156,13 +186,16 @@ export function SourceControlPage() {
         {status?.isRepo && <BranchChip status={status} />}
         <div className="ml-auto flex items-center gap-1">
           <button
-            onClick={() => void refresh()}
-            disabled={loading || busy}
+            onClick={() => {
+              void refresh();
+              void reloadChanges();
+            }}
+            disabled={loading || busy || loadingChanges}
             title="刷新"
             aria-label="刷新"
             className="rounded-btn p-1.5 text-ash hover:bg-line-soft hover:text-ink disabled:opacity-40"
           >
-            <RefreshCw size={14} className={loading ? "animate-spin" : undefined} />
+            <RefreshCw size={14} className={loading || loadingChanges ? "animate-spin" : undefined} />
           </button>
         </div>
       </header>
@@ -194,6 +227,80 @@ export function SourceControlPage() {
         <EmptyState text="该目录不是 git 仓库（没有 .git）" />
       ) : (
         <div className="flex min-h-0 flex-1 flex-col gap-4 p-4">
+          {/* ---- 改动（ADR 0010 的 ③：改了什么）—— 在分支区之上 ---- */}
+          <section className="min-h-0">
+            <SectionHeader
+              icon={<Files size={13} className="text-teal" />}
+              title="改动"
+              count={changesTotals.files}
+              action={
+                <span className="tnum font-mono text-[11px] text-ash">
+                  {changesTotals.added > 0 && <span className="text-gain">+{changesTotals.added} </span>}
+                  {changesTotals.removed > 0 && <span className="text-loss">-{changesTotals.removed}</span>}
+                </span>
+              }
+            />
+            {changes === null ? (
+              loadingChanges ? (
+                <LoadingRow />
+              ) : (
+                <div className="rounded-card border border-line px-3 py-2 text-caption text-ash">还没有改动数据</div>
+              )
+            ) : changesError !== null ? (
+              // **绝不把读取失败显示成「工作树干净」** —— 那是撒谎，用户会以为
+              // 改动不存在而直接提交（或者更糟：以为安全而丢弃工作）
+              <div className="flex items-start gap-2 rounded-card border border-line bg-card px-3 py-2 text-caption text-loss">
+                <TriangleAlert size={13} className="mt-0.5 shrink-0" />
+                <span className="min-w-0 flex-1 break-words">读取改动失败：{changesError.text}</span>
+                <button
+                  onClick={() => void reloadChanges()}
+                  className="shrink-0 rounded-btn border border-line px-2 py-0.5 text-caption text-graphite hover:bg-line-soft hover:text-ink"
+                >
+                  重试
+                </button>
+              </div>
+            ) : changesTotals.files === 0 ? (
+              <div className="rounded-card border border-line bg-card py-6 text-center text-caption text-ash">
+                工作树干净，没有未提交的改动
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <div className="overflow-hidden rounded-card border border-line bg-card">
+                  <header className="flex h-7 items-center gap-1.5 border-b border-line-soft bg-line-soft/40 px-2.5">
+                    <span className="text-caption font-medium text-ink">已暂存</span>
+                    <span className="tnum text-[11px] text-ash">({stagedChanges.length})</span>
+                  </header>
+                  <ChangeFileList
+                    rootPath={root}
+                    entries={stagedChanges}
+                    sourceId="staged"
+                    disabled={busy}
+                    busy={busyChanges}
+                    onUnstage={(paths) => void unstagePaths(paths)}
+                    emptyText="暂存区是空的"
+                  />
+                </div>
+                <div className="overflow-hidden rounded-card border border-line bg-card">
+                  <header className="flex h-7 items-center gap-1.5 border-b border-line-soft bg-line-soft/40 px-2.5">
+                    <span className="text-caption font-medium text-ink">未暂存</span>
+                    <span className="tnum text-[11px] text-ash">
+                      ({unstagedChanges.length + untrackedChanges.length})
+                    </span>
+                  </header>
+                  <ChangeFileList
+                    rootPath={root}
+                    entries={[...unstagedChanges, ...untrackedChanges]}
+                    sourceId="unstaged"
+                    disabled={busy}
+                    busy={busyChanges}
+                    onStage={(paths) => void stagePaths(paths)}
+                    emptyText="没有未暂存的改动"
+                  />
+                </div>
+              </div>
+            )}
+          </section>
+
           {/* ---- 分支 ---- */}
           <section className="min-h-0">
             <SectionHeader

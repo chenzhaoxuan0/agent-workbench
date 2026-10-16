@@ -7,20 +7,34 @@ import {
 } from "../adapters/daemon/client.ts";
 
 /**
- * 源代码管理 store —— 「源代码管理」主视图的数据面。
+ * 源代码管理 store —— 「源代码管理」主视图与对话页顶栏两个 git 入口的数据面。
  *
- * 操作（建/删/切）不在 store 里包一层：组件直接调 client 包装并 catch RPC 错误
- * （错误码决定确认流，这是 UI 交互，不是共享状态），成功后调 refresh() 收敛。
- * store 只持有**列表数据**与侧栏分支标记缓存 —— 这些才是多处消费的共享状态。
+ * 操作（建/删/切/提交/推送）不在 store 里包一层：组件直接调 client 包装并 catch
+ * RPC 错误（错误码决定确认流，这是 UI 交互，不是共享状态），成功后调 refresh()
+ * 收敛。store 只持有**列表数据**与徽章快照 —— 这些才是多处消费的共享状态。
  */
 
 export type GitPendingDialog = "createBranch" | "createWorktree";
+
+/**
+ * 侧栏分支标记 / Composer 顶栏落库触发器**共用**的轻量快照。
+ *
+ * 两面读的是同一次 `git.status` 的不同字段，所以缓存成一份而不是两个 map ——
+ * 同一个 rootPath 只起一个 git 进程，TTL 也只有一道闸。null = 非 git 仓库。
+ */
+export interface GitBadge {
+  readonly branch: string | null;
+  /** 改动条目数：落库触发器据此亮提交图标 */
+  readonly dirtyFileCount: number;
+  /** 领先远端的提交数：据此亮推送图标 */
+  readonly ahead: number;
+}
 
 /** 面板错误横幅的形状：code/data 来自 daemon GitError，供「放弃合并」「打开那个工作树」这类出口按钮判断 */
 export interface GitPanelError {
   readonly text: string;
   readonly code?: string;
-  readonly data?: { readonly path?: string };
+  readonly data?: { readonly path?: string; readonly detail?: string };
 }
 
 interface GitState {
@@ -36,8 +50,8 @@ interface GitState {
   /** CommandCenter 等入口「打开面板并直接弹对话框」的一次性请求 */
   pendingDialog: GitPendingDialog | null;
 
-  /** 侧栏 unit 行的分支名缓存：rootPath → 分支名（非 git 仓库为 null） */
-  branchByRoot: Record<string, string | null>;
+  /** 徽章快照缓存：rootPath → 快照（非 git 仓库为 null） */
+  badgeByRoot: Record<string, GitBadge | null>;
 
   /** 换仓库（切单元）或首次进入面板时重置并拉全量 */
   openRepo: (rootPath: string) => void;
@@ -47,6 +61,9 @@ interface GitState {
   /** 分支操作（切换/新建）成功后的即时收敛：绕过徽章 TTL 直接写结果，
    *  芯片与侧栏不用等下一轮节流拉取；后续 refreshBranchBadge 自会复核 */
   markBranch: (rootPath: string, branch: string | null) => void;
+  /** 提交/推送成功后的即时收敛：dirtyFileCount 与 ahead 立刻归零，
+   *  触发器不用等满 TTL（否则图标会在对话框关掉后还亮着） */
+  markSettled: (rootPath: string) => void;
   setPendingDialog: (d: GitPendingDialog | null) => void;
   setError: (err: GitPanelError | null) => void;
 }
@@ -57,6 +74,13 @@ const badgeFetchedAt = new Map<string, number>();
 
 /** 同仓库 refresh 的代际计数（见 refresh 注释） */
 let refreshGen = 0;
+
+/** status → 徽章快照。非 git 仓库折成 null（侧栏标记与触发器都不显示） */
+function toBadge(status: GitStatusResult): GitBadge | null {
+  return status.isRepo
+    ? { branch: status.branch, dirtyFileCount: status.dirtyFileCount, ahead: status.ahead }
+    : null;
+}
 
 /** 旧 daemon（没有 git.* 方法）的报错翻成人话，其余原样 */
 function friendlyGitError(err: unknown): GitPanelError {
@@ -74,7 +98,7 @@ export const useGit = create<GitState>((set, get) => ({
   loading: false,
   error: null,
   pendingDialog: null,
-  branchByRoot: {},
+  badgeByRoot: {},
 
   openRepo: (rootPath) => {
     if (get().rootPath === rootPath) {
@@ -106,7 +130,7 @@ export const useGit = create<GitState>((set, get) => ({
           worktrees: [],
           loading: false,
           error: null,
-          branchByRoot: { ...get().branchByRoot, [rootPath]: null },
+          badgeByRoot: { ...get().badgeByRoot, [rootPath]: null },
         });
         badgeFetchedAt.set(rootPath, Date.now());
         return;
@@ -122,10 +146,7 @@ export const useGit = create<GitState>((set, get) => ({
         worktrees: worktreesRes.worktrees,
         loading: false,
         error: null,
-        branchByRoot: {
-          ...get().branchByRoot,
-          [rootPath]: status.branch,
-        },
+        badgeByRoot: { ...get().badgeByRoot, [rootPath]: toBadge(status) },
       });
       badgeFetchedAt.set(rootPath, Date.now());
     } catch (err: unknown) {
@@ -142,9 +163,9 @@ export const useGit = create<GitState>((set, get) => ({
       // 只在成功后占坑：冷启动时 UnitRow 早于 daemon WS 就绪挂载，第一次调用
       // 会静默失败 —— 失败若也记时间戳，这个会话期内的重试全被 TTL 挡死
       badgeFetchedAt.set(rootPath, Date.now());
-      // 徽章路径**只写 branchByRoot**：写 status 会用跨越用户操作的旧快照
+      // 徽章路径**只写 badgeByRoot**：写 status 会用跨越用户操作的旧快照
       // 覆盖面板头部（checkout 成功后头部倒退回旧分支名），status 归 refresh() 管
-      set({ branchByRoot: { ...get().branchByRoot, [rootPath]: status.isRepo ? status.branch : null } });
+      set({ badgeByRoot: { ...get().badgeByRoot, [rootPath]: toBadge(status) } });
     } catch (err: unknown) {
       // unknown_method = daemon 是没有 git.* 的旧版本：负缓存满 TTL，
       // 别让 60s 轮询每轮都去撞一个注定失败的 RPC
@@ -157,6 +178,21 @@ export const useGit = create<GitState>((set, get) => ({
   },
 
   setPendingDialog: (pendingDialog) => set({ pendingDialog }),
-  markBranch: (rootPath, branch) => set({ branchByRoot: { ...get().branchByRoot, [rootPath]: branch } }),
+  markBranch: (rootPath, branch) =>
+    set({
+      badgeByRoot: {
+        ...get().badgeByRoot,
+        // 合并而不是整条替换：只更新分支名，dirtyFileCount / ahead 沿用上一次
+        // 已知值，等下一轮 refreshBranchBadge 复核
+        [rootPath]: { ...(get().badgeByRoot[rootPath] ?? { dirtyFileCount: 0, ahead: 0 }), branch },
+      },
+    }),
+  markSettled: (rootPath) =>
+    set({
+      badgeByRoot: {
+        ...get().badgeByRoot,
+        [rootPath]: { ...(get().badgeByRoot[rootPath] ?? { branch: null }), dirtyFileCount: 0, ahead: 0 },
+      },
+    }),
   setError: (error) => set({ error }),
 }));

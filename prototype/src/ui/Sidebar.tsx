@@ -600,7 +600,7 @@ function UnitRow({
   const units = useWorkbench((s) => s.units);
   const hideFailedInSidebar = useHistoryPrefs((s) => s.prefs.hideFailedInSidebar);
   /** 分支标记（源代码管理的缓存；TTL 节流，非 git 仓库为 null 不显示） */
-  const branchName = useGit((s) => s.branchByRoot[unit.rootPath]);
+  const branchName = useGit((s) => s.badgeByRoot[unit.rootPath]?.branch);
   useEffect(() => {
     void useGit.getState().refreshBranchBadge(unit.rootPath);
   }, [unit.rootPath]);

@@ -177,6 +177,27 @@ export function validateBranchName(name: string, existing: readonly string[] = [
 
 export type GitAction = "commit" | "commitAndPush" | "push";
 
+/** 一组改动行的合计。提交对话框与源代码管理页的行数统计共用，别各写一遍 reduce */
+export interface ChangeTotals {
+  readonly files: number;
+  readonly added: number;
+  readonly removed: number;
+}
+
+export function sumChanges(...groups: readonly (readonly GitChangeEntry[])[]): ChangeTotals {
+  let files = 0;
+  let added = 0;
+  let removed = 0;
+  for (const group of groups) {
+    for (const entry of group) {
+      files += 1;
+      added += entry.added;
+      removed += entry.removed;
+    }
+  }
+  return { files, added, removed };
+}
+
 /**
  * 按仓库状态解析「主动作」（ZCode `resolveGitActionMenuPrimaryAction` 同款）：
  * 既有待提交改动又有领先远端 → 提交并推送；只有改动 → 提交；只有领先 → 推送；

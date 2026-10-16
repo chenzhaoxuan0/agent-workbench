@@ -14,9 +14,11 @@ import { cn } from "./cn.ts";
  * - 失败（dirty_worktree / branch_checked_out_elsewhere 等）在面板内联报错；
  *   引导性出口（打开那个工作树）在「源代码管理」面板，这里只报事实
  */
-export function BranchPicker(props: { rootPath: string | undefined }) {
+export function BranchPicker(props: { rootPath: string | undefined; showFooterActions?: boolean }) {
   const rootPath = props.rootPath;
-  const branchName = useGit((s) => (rootPath === undefined ? undefined : s.branchByRoot[rootPath]));
+  // 提交对话框里内嵌的是精简版：不带「新建分支」底栏（那里是干正事的，不是切分支）
+  const showFooterActions = props.showFooterActions !== false;
+  const branchName = useGit((s) => (rootPath === undefined ? undefined : s.badgeByRoot[rootPath]?.branch));
   const refreshBadge = useGit((s) => s.refreshBranchBadge);
 
   // 侧栏同款口径：徽章缓存 TTL 节流（切单元来回点不重复起 git 进程）
@@ -156,9 +158,10 @@ export function BranchPicker(props: { rootPath: string | undefined }) {
               })
             )}
           </div>
-          <div className="border-t border-line-soft p-2">
-            {creating ? (
-              <div className="flex flex-col gap-1.5">
+          {showFooterActions && (
+            <div className="border-t border-line-soft p-2">
+              {creating ? (
+                <div className="flex flex-col gap-1.5">
                 <input
                   autoFocus
                   value={newName}
@@ -194,17 +197,18 @@ export function BranchPicker(props: { rootPath: string | undefined }) {
                   </button>
                 </div>
               </div>
-            ) : (
-              <button
-                type="button"
-                onClick={() => setCreating(true)}
-                className="flex w-full items-center gap-2 rounded-btn px-2 py-1.5 text-body-sm text-ink hover:bg-line-soft"
-              >
-                <Plus size={12} className="text-graphite" />
-                <span>新建分支</span>
-              </button>
-            )}
-          </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setCreating(true)}
+                  className="flex w-full items-center gap-2 rounded-btn px-2 py-1.5 text-body-sm text-ink hover:bg-line-soft"
+                >
+                  <Plus size={12} className="text-graphite" />
+                  <span>新建分支</span>
+                </button>
+              )}
+            </div>
+          )}
           {error !== null && <div className="break-all border-t border-line-soft px-2.5 py-2 text-caption text-loss">{error}</div>}
         </div>
       )}

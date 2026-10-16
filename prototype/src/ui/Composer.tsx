@@ -14,6 +14,7 @@ import { nativeCommandsFor, useNativeCommands } from "../store/useNativeCommands
 import type { NativeCommandInfo } from "../core/adapter.ts";
 import { RuntimePicker } from "./RuntimePicker.tsx";
 import { BranchPicker } from "./BranchPicker.tsx";
+import { GitActionTrigger } from "./GitActionTrigger.tsx";
 import { ReasoningEffortPicker } from "./LoopParamsPicker.tsx";
 import { PermissionModePicker } from "./PermissionModePicker.tsx";
 import { SlashCommandMenu, filterNativeCommands } from "./SlashCommandMenu.tsx";
@@ -254,6 +255,8 @@ export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
 
               {/* 分支选择器（ZCode 同款交互，ADR 0009 窄面）：非 git 仓库时自动隐藏 */}
               <BranchPicker rootPath={unit?.rootPath} />
+              {/* 落库触发器（ADR 0010 的 ②）：状态驱动图标，始终展示、干净时置灰 */}
+              <GitActionTrigger rootPath={unit?.rootPath} />
             </div>
 
             {/* 附件数量提示 */}
