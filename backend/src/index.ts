@@ -50,6 +50,9 @@ import {
   sanitizeEntry,
   type McpServiceDeps,
 } from "./mcpadmin/service.ts";
+import { createBrowserControlService } from "./browserctl/service.ts";
+import { createComputerControl } from "./computerctl/server.ts";
+import { COMPUTER_MCP_PATH, controlActions, registerAcpEntriesProvider, setControlContext } from "./ctrl/store.ts";
 import { TerminalManager } from "./terminal/terminals.ts";
 import { Store } from "./store/db.ts";
 import { listNativeSessions, readNativeSession } from "./history/index.ts";
@@ -905,7 +908,7 @@ function launchFileManager(targetPath: string): { ok: boolean; path: string } {
   return { ok: true, path: cleanPath };
 }
 
-/** 鉴权判定（docs/08 WP-7）：token 开启时全查，唯一豁免 = 回环取 /bootstrap 与 本机打开文件夹 */
+/** 鉴权判定（docs/08 WP-7）：token 开启时全查，豁免 = 回环取 /bootstrap、回环打开文件夹、回环电脑控制 MCP 端点 */
 const authorize = (req: IncomingMessage, url: URL): boolean => {
   if (config.token === null) return true;
   if (url.pathname === "/bootstrap") {
@@ -920,6 +923,15 @@ const authorize = (req: IncomingMessage, url: URL): boolean => {
     if (origin !== undefined && !isLocalOrigin(origin)) return false;
     if (isLoopbackAddr(req.socket.remoteAddress)) return true;
   }
+  // 电脑控制 MCP 端点（docs/14 §3.1）：执行器的 MCP 客户端带不了 x-awb-token，
+  // 与 stdio MCP 桥（src/mcp.ts）同级信任——只认回环来源，且 Origin 若存在必须
+  // 是本地源（跨源网页的 simple request 不带预检就能打到回环端口；工具层
+  // handleHttp 里还有同款检查 + content-type 闸，这里是网络层第一道）
+  if (url.pathname === COMPUTER_MCP_PATH) {
+    const origin = req.headers.origin;
+    if (origin !== undefined && !isLocalOrigin(origin)) return false;
+    return isLoopbackAddr(req.socket.remoteAddress);
+  }
   if (url.pathname === "/webhook/bot") return true; // per-bot secret 在路由内自验
   const provided = req.headers["x-awb-token"] ?? url.searchParams.get("token");
   return typeof provided === "string" && provided === config.token;
@@ -929,9 +941,28 @@ const authorize = (req: IncomingMessage, url: URL): boolean => {
 // Authorization 后转发并透传响应流。这条路由是流式大载荷，走 httpd 的裸路由通道。
 const imageProfiles = new ImageProfileStore(config.homeDir);
 
+// ---- 浏览器 / 电脑控制（docs/14）------------------------------------------------
+// 两个服务都持有 mcpadmin 的写通道（扇出 playwright / workbench-computer 条目）；
+// ctrl/store 的上下文要在 startHttp 之后注入（电脑控制条目 url 需要 daemon 实际端口）。
+const controlDeps: McpServiceDeps = { configHome: os.homedir(), stateHome: config.homeDir };
+setControlContext(config.homeDir, config.port);
+const browserControl = createBrowserControlService(controlDeps);
+const computerControl = createComputerControl(controlDeps);
+registerAcpEntriesProvider(() => [...browserControl.acpEntries(), ...computerControl.acpEntries()]);
+void browserControl.boot(); // 接管模式已启用 → 自动拉起共享 Chrome（内部自带 catch，不掀翻启动）
+
 const { server, port } = await startHttp(config, startedAt, httpRoutes, authorize, [
   { method: "POST", path: "/api/image/call", handle: handleImageCall(imageProfiles) },
+  // 电脑控制的 MCP 端点（Streamable HTTP）：CLI 客户端不会带 x-awb-token，
+  // authorize 里按「回环 + 该路径」豁免（与 /bootstrap 同级信任）
+  { method: "POST", path: COMPUTER_MCP_PATH, handle: computerControl.handleHttp },
 ]);
+// 实际绑定端口（传 0 时由系统分配）同步给控制层——条目 url / dsh 注入都用它
+setControlContext(config.homeDir, port);
+// 端口落定后对齐：电脑控制若已启用，重写 12 家条目里的 url（端口变了旧条目就是死链）
+void computerControl.boot().catch((e: unknown) => {
+  log.error("computer control boot reconcile failed", { error: e instanceof Error ? e.message : String(e) });
+});
 const wss = attachWs(server, { config, startedAt, authorize });
 
 // ---- 待办 / GTD（backlog）—— 引擎需要 wss 广播，必须在 attachWs 之后构造 ----------
@@ -2405,6 +2436,52 @@ registerMethod("mcp.read", (params) => {
   if (typeof p.executorId !== "string") throw Object.assign(new Error("executorId is required"), { code: "bad_params" });
   return mcpReadFile(mcpDeps, p.executorId);
 });
+
+// ---- 浏览器 / 电脑控制（docs/14；服务实例在 startHttp 前后那段创建） ----------------
+
+registerMethod("browserControl.get", () => browserControl.getState());
+
+registerMethod("browserControl.setEnabled", (params) => {
+  const p = (params ?? {}) as { enabled?: boolean };
+  if (typeof p.enabled !== "boolean") throw Object.assign(new Error("enabled is required"), { code: "bad_params" });
+  return browserControl.setEnabled(p.enabled);
+});
+
+registerMethod("browserControl.setMode", (params) => {
+  const p = (params ?? {}) as { mode?: string };
+  if (p.mode !== "isolated" && p.mode !== "takeover") {
+    throw Object.assign(new Error("mode must be isolated|takeover"), { code: "bad_params" });
+  }
+  return browserControl.setMode(p.mode);
+});
+
+registerMethod("browserControl.setBrowser", (params) => {
+  const p = (params ?? {}) as { browser?: string };
+  if (p.browser !== "msedge" && p.browser !== "chrome") {
+    throw Object.assign(new Error("browser must be msedge|chrome"), { code: "bad_params" });
+  }
+  return browserControl.setBrowser(p.browser);
+});
+
+registerMethod("browserControl.sharedChrome.start", () => browserControl.startSharedChrome());
+registerMethod("browserControl.sharedChrome.stop", () => browserControl.stopSharedChrome());
+
+registerMethod("computerControl.get", () => computerControl.getState());
+
+registerMethod("computerControl.setEnabled", (params) => {
+  const p = (params ?? {}) as { enabled?: boolean };
+  if (typeof p.enabled !== "boolean") throw Object.assign(new Error("enabled is required"), { code: "bad_params" });
+  return computerControl.setEnabled(p.enabled);
+});
+
+registerMethod("computerControl.panic", () => computerControl.panic());
+
+registerMethod("computerControl.actions", (params) => {
+  const p = (params ?? {}) as { afterSeq?: number };
+  const afterSeq = typeof p.afterSeq === "number" && Number.isFinite(p.afterSeq) ? p.afterSeq : 0;
+  return { actions: controlActions(afterSeq).filter((a) => a.domain === "computer") };
+});
+
 registerMethod("session.start", (params) => {
   // params 在协议里是可选的（wsd 的信封声明 params?: unknown）——
   // 缺了要当 bad_params 报，不能 `params as {...}` 后直接读属性（TypeError → internal）
