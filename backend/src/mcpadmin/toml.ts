@@ -29,6 +29,12 @@ interface SegDraft {
   end?: number;
 }
 
+/** 主表正文里的一个键值块；key=null 表示空行/纯注释/游离行。数组跨行时整块聚合 */
+interface KvBlock {
+  readonly key: string | null;
+  readonly lines: string[];
+}
+
 const HEADER_LINE_RE = /^[ \t]*\[[^\]]+\]/;
 const ARRAY_TABLE_RE = /^[ \t]*\[\[/;
 
@@ -157,6 +163,76 @@ function stripComment(line: string): string {
   return line;
 }
 
+/** 行内括号净增量（引号内不计）—— 识别跨行数组的开闭 */
+function bracketDeltaOutsideStrings(line: string): number {
+  let delta = 0;
+  let inS = false;
+  let inD = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i]!;
+    if (inS) {
+      if (c === "'") inS = false;
+      continue;
+    }
+    if (inD) {
+      if (c === "\\") i++;
+      else if (c === '"') inD = false;
+      continue;
+    }
+    if (c === "'") inS = true;
+    else if (c === '"') inD = true;
+    else if (c === "[") delta++;
+    else if (c === "]") delta--;
+  }
+  return delta;
+}
+
+/**
+ * 段正文行 → 键值块序列。`args = [` 这类跨行数组按括号配对聚成一块
+ * （散行单独保留会产出去掉闭合括号的残废 TOML）；未闭合到段尾也原样成块。
+ */
+function bodyKvBlocks(lines: readonly string[]): KvBlock[] {
+  const blocks: KvBlock[] = [];
+  let open: KvBlock | null = null;
+  let depth = 0;
+  for (const line of lines) {
+    const clean = stripComment(line).trim();
+    if (open !== null) {
+      open.lines.push(line);
+      depth += bracketDeltaOutsideStrings(stripComment(line));
+      if (depth <= 0) {
+        blocks.push(open);
+        open = null;
+        depth = 0;
+      }
+      continue;
+    }
+    if (clean === "" || clean.startsWith("[")) {
+      blocks.push({ key: null, lines: [line] });
+      continue;
+    }
+    const eq = clean.indexOf("=");
+    if (eq === -1) {
+      blocks.push({ key: null, lines: [line] });
+      continue;
+    }
+    const key = clean.slice(0, eq).trim().replace(/^["']|["']$/g, "");
+    const value = clean.slice(eq + 1).trim();
+    const blk: KvBlock = { key, lines: [line] };
+    if (value.startsWith("[")) {
+      const d = bracketDeltaOutsideStrings(stripComment(line));
+      if (d > 0) {
+        open = blk;
+        depth = d;
+        continue;
+      }
+    }
+    blocks.push(blk);
+  }
+  if (open !== null) blocks.push(open);
+  return blocks;
+}
+
 /** 段正文行 → 键值表（值为 string 或 string[]；解不动的值跳过） */
 function parseBodyKv(lines: readonly string[]): Map<string, string | string[]> {
   const out = new Map<string, string | string[]>();
@@ -218,9 +294,18 @@ function headerName(name: string): string {
   return /^[A-Za-z0-9_-]+$/.test(name) ? name : tomlString(name);
 }
 
-/** 条目 → 段组字节文本（主表 + 可选 env / 请求头子表），用文件既有 EOL。
- * headersKey：codex 用 http_headers，grok 用 headers（两家 schema 同构、键名不同） */
-function generateGroup(entry: McpServerEntry, eol: string, extraMainLines: readonly string[] = [], headersKey = "http_headers"): string {
+/**
+ * 条目 → 段组字节文本（主表 + 可选 env / 请求头子表），用文件既有 EOL。
+ * headersKey：codex 用 http_headers，grok 用 headers（两家 schema 同构、键名不同）。
+ * extras 携带旧文件里必须原样存活的行：主表未知/未供键块、env/请求头子表里
+ * 新条目没覆盖的键（解析不动的值，如 `PORT = 8080` 这类非字符串）。
+ */
+function generateGroup(
+  entry: McpServerEntry,
+  eol: string,
+  extras: { main?: readonly string[]; env?: readonly string[]; headers?: readonly string[]; headersKey?: string } = {},
+): string {
+  const headersKey = extras.headersKey ?? "http_headers";
   const h = headerName(entry.name);
   const main: string[] = [`[mcp_servers.${h}]`];
   if (entry.transport === "stdio") {
@@ -231,14 +316,16 @@ function generateGroup(entry: McpServerEntry, eol: string, extraMainLines: reado
   } else {
     if (entry.url !== undefined) main.push(`url = ${tomlString(entry.url)}`);
   }
-  main.push(...extraMainLines);
+  main.push(...(extras.main ?? []));
   let text = main.join(eol) + eol;
-  if (entry.env !== undefined && Object.keys(entry.env).length > 0) {
-    const envLines = Object.entries(entry.env).map(([k, v]) => `${/^[A-Za-z0-9_-]+$/.test(k) ? k : tomlString(k)} = ${tomlString(v)}`);
+  if ((entry.env !== undefined && Object.keys(entry.env).length > 0) || (extras.env?.length ?? 0) > 0) {
+    const envLines = Object.entries(entry.env ?? {}).map(([k, v]) => `${/^[A-Za-z0-9_-]+$/.test(k) ? k : tomlString(k)} = ${tomlString(v)}`);
+    envLines.push(...(extras.env ?? []));
     text += eol + `[mcp_servers.${h}.env]` + eol + envLines.join(eol) + eol;
   }
-  if (entry.headers !== undefined && Object.keys(entry.headers).length > 0 && entry.transport !== "stdio") {
-    const hLines = Object.entries(entry.headers).map(([k, v]) => `${tomlString(k)} = ${tomlString(v)}`);
+  if (entry.transport !== "stdio" && ((entry.headers !== undefined && Object.keys(entry.headers).length > 0) || (extras.headers?.length ?? 0) > 0)) {
+    const hLines = Object.entries(entry.headers ?? {}).map(([k, v]) => `${tomlString(k)} = ${tomlString(v)}`);
+    hLines.push(...(extras.headers ?? []));
     text += eol + `[mcp_servers.${h}.${headersKey}]` + eol + hLines.join(eol) + eol;
   }
   return text;
@@ -329,29 +416,53 @@ function groupCutEnd(text: string, first: Seg, last: Seg): number {
 const MANAGED_MAIN_KEYS = new Set(["command", "args", "url"]);
 
 /**
- * 从旧主表段提取「我们不管理的键值行」（原字节、剥尾部 \r）。
+ * 从旧主表段提取「编辑后必须活下来」的键值块（原字节、剥尾部 \r）：
+ * - 非受管键（用户的扩展字段，如 bearer_token_env_var）恒保留
+ * - 受管键（command/args/url）只在**新条目没有提供**该字段时保留 ——
+ *   新条目没提供通常意味着旧值解析不动（跨行数组、非字符串元素），
+ *   按旧逻辑丢弃等于把用户的 args 静默删掉
  * 组内纯注释行随组重建丢弃（组外注释不受影响）——与 codex 拒载整份配置相比，
  * 这是可接受的取舍；扩展键本身是数据，必须活下来。
  */
-function collectUnknownMainLines(text: string, group: readonly Seg[], eol: string): string[] {
+function collectUnknownMainLines(text: string, group: readonly Seg[], entry: McpServerEntry): string[] {
   const mainSeg = group.find((s) => s.path !== null && s.path.length === 2);
   if (mainSeg === undefined) return [];
+  const supplies = (key: string): boolean =>
+    key === "command" ? entry.command !== undefined
+      : key === "args" ? entry.args !== undefined
+        : key === "url" ? entry.url !== undefined
+          : true;
   const out: string[] = [];
-  for (const line of segBodyLines(text, mainSeg)) {
-    const clean = stripComment(line).trim();
-    if (clean === "" || clean.startsWith("[")) continue;
-    const eq = clean.indexOf("=");
-    if (eq === -1) continue;
-    const key = clean.slice(0, eq).trim().replace(/^["']|["']$/g, "");
-    if (!MANAGED_MAIN_KEYS.has(key)) out.push(line);
+  for (const blk of bodyKvBlocks(segBodyLines(text, mainSeg))) {
+    if (blk.key === null) continue;
+    if (!MANAGED_MAIN_KEYS.has(blk.key) || !supplies(blk.key)) out.push(...blk.lines);
+  }
+  return out;
+}
+
+/**
+ * 旧子表（env / 请求头）里新条目没覆盖的键值块 —— 保留原字节。
+ * 新条目已供的键按新值重生成；没供的（解析不动的值、或读取时被丢的字段）
+ * 按旧逻辑会静默消失，这里原样接回。
+ */
+function collectUnsuppliedSubLines(text: string, group: readonly Seg[], subName: string, supplied: ReadonlySet<string>): string[] {
+  const seg = group.find((s) => {
+    const p = s.path;
+    return p !== null && p.length === 3 && p[2] === subName;
+  });
+  if (seg === undefined) return [];
+  const out: string[] = [];
+  for (const blk of bodyKvBlocks(segBodyLines(text, seg))) {
+    if (blk.key === null) continue;
+    if (!supplied.has(blk.key)) out.push(...blk.lines);
   }
   return out;
 }
 
 /**
  * 定点替换/新增一个条目段组；返回新全文。
- * - 已存在：原位替换该 name 分组的字节区间（env/http_headers 子表按新条目重生成；
- *   主表未知扩展键值行、任意深度的未知子表、组尾注释/空行原字节保留）
+ * - 已存在：原位替换该 name 分组的字节区间（env/http_headers 子表按新条目重生成，
+ *   新条目未覆盖的子表键、主表未知扩展键值行、任意深度的未知子表、组尾注释/空行原字节保留）
  * - 不存在：文件末尾追加（TOML 语义：末尾新表头安全）
  */
 export function upsertTomlEntry(text: string, entry: McpServerEntry, opts: { headersKey?: string } = {}): string {
@@ -363,25 +474,35 @@ export function upsertTomlEntry(text: string, entry: McpServerEntry, opts: { hea
 
   if (group.length === 0) {
     // 末尾追加：补齐行尾，隔一个空行（文件已有独立尾段时不强加）
-    if (text === "") return generateGroup(entry, eol, [], headersKey);
+    if (text === "") return generateGroup(entry, eol);
     let out = text.endsWith("\n") ? text : text + eol;
     if (!/\n[ \t]*\r?\n$/.test(out)) out += eol;
-    return out + generateGroup(entry, eol, [], headersKey);
+    return out + generateGroup(entry, eol);
   }
 
   const first = group[0]!;
   const last = group[group.length - 1]!;
   const cutEnd = groupCutEnd(text, first, last);
-  const extraMain = collectUnknownMainLines(text, group, eol);
-  // 未知子表（env/请求头之外的任意深度子表）按原字节保留，维持原有相对顺序
+  const extraMain = collectUnknownMainLines(text, group, entry);
+  const extraEnv = collectUnsuppliedSubLines(text, group, "env", new Set(Object.keys(entry.env ?? {})));
+  const extraHeaders = collectUnsuppliedSubLines(text, group, headersKey, new Set(Object.keys(entry.headers ?? {})));
+  // 未知子表（env/请求头之外的任意深度子表）按原字节保留，维持原有相对顺序。
+  // 每片在自己的最后一个实质行处收口：切片以表头定界，含到下一表头之间的
+  // 尾部空行/注释 —— 不收口的话那一段会被 keepSubRaw 与 text.slice(cutEnd)
+  // 各带一份，每编辑一次注释/空行就翻一倍。
   const keepSubRaw = group
     .filter((s) => {
       const p = s.path;
       return p !== null && p.length >= 3 && !(p.length === 3 && (p[2] === "env" || p[2] === headersKey));
     })
-    .map((s) => text.slice(s.start, s.end))
+    .map((s) => text.slice(s.start, groupCutEnd(text, s, s)))
     .join("");
-  return text.slice(0, first.start) + generateGroup(entry, eol, extraMain, headersKey) + keepSubRaw + text.slice(cutEnd);
+  return (
+    text.slice(0, first.start) +
+    generateGroup(entry, eol, { main: extraMain, env: extraEnv, headers: extraHeaders, headersKey }) +
+    keepSubRaw +
+    text.slice(cutEnd)
+  );
 }
 
 /** 定点删除一个条目的全部段（主表 + 子表）：整段字节区间摘除，组尾注释/空行与区间外原样 */

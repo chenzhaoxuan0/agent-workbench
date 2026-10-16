@@ -11,8 +11,9 @@
  *   command+args 合并为数组、env→environment —— cc-switch mcp/opencode.rs 转换表）
  * - zcode：~/.zcode/cli/config.json 的 mcp.servers 嵌套键（上游 mcpSyncService 同款）
  *
- * Windows cmd /c 包装（claude/codex 写入侧）：npx/npm/... 这类 .cmd shim 不包会触发
- * Claude /doctor 警告；读取侧拆包防双重包裹（借鉴 cc-switch claude_mcp.rs）。
+ * Windows cmd /c 包装（service 层统一做，全部 stdio 执行器一个口径）：
+ * npx/npm/... 这类 .cmd shim 不包会触发 Claude /doctor 警告、部分 CLI 直接
+ * spawn 失败；读取侧拆包防双重包裹（借鉴 cc-switch claude_mcp.rs）。
  */
 import type { McpServerEntry } from "../contract.ts";
 import { join as joinPath } from "node:path";
@@ -21,10 +22,13 @@ import { readTomlEntries, upsertTomlEntry, removeTomlEntry } from "./toml.ts";
 import { readYamlEntries, upsertYamlEntry, removeYamlEntry } from "./yamledit.ts";
 
 /**
- * Hermes 配置路径：HERMES_HOME env → Windows %LOCALAPPDATA%\hermes → ~/.hermes
- * （hermes_constants.py 的平台默认；冒烟经 HERMES_HOME 指向临时目录注入）
+ * Hermes 配置路径：显式注入的 configHome（冒烟）→ HERMES_HOME env →
+ * Windows %LOCALAPPDATA%\hermes → ~/.hermes（hermes_constants.py 的平台默认）。
+ * 注入优先于 env：这台机器常见 HERMES_HOME 常驻，注入目录不抢先的话
+ * 冒烟会静默读写真实配置。
  */
-function hermesConfigPath(): string {
+function hermesConfigPath(configHome: string): string {
+  if (configHome !== homedir()) return joinPath(configHome, "hermes", "config.yaml");
   const envHome = process.env["HERMES_HOME"];
   if (envHome !== undefined && envHome !== "") return joinPath(envHome, "config.yaml");
   if (process.platform === "win32") {
@@ -56,18 +60,25 @@ const WRAP_CMDS = new Set(["npx", "npm", "yarn", "pnpm", "node", "bun", "bunx", 
 /** cmd /c 包装只对 Windows 有意义（.cmd shim 解析）；其他平台包了反而起不来 */
 const IS_WIN = process.platform === "win32";
 
-function wrapCmd(entry: McpServerEntry): McpServerEntry {
+export function wrapCmd(entry: McpServerEntry): McpServerEntry {
   if (!IS_WIN || entry.transport !== "stdio" || entry.command === undefined) return entry;
   if (!WRAP_CMDS.has(entry.command.toLowerCase())) return entry;
   return { ...entry, command: "cmd", args: ["/c", entry.command, ...(entry.args ?? [])] };
 }
 
-function unwrapCmd(entry: McpServerEntry): McpServerEntry {
+/**
+ * 拆包只认「包的是我们认的 shim 命令」（npx/node/…，容忍 .cmd/.exe 后缀）：
+ * `cmd /c mytool.cmd` 是用户自己选的启动方式，拆了再写回去就丢了包装，
+ * Windows 上直接起 .cmd 会 ENOENT。
+ */
+export function unwrapCmd(entry: McpServerEntry): McpServerEntry {
   if (!IS_WIN || entry.transport !== "stdio" || entry.command === undefined) return entry;
   const cmd = entry.command.toLowerCase();
   const args = entry.args ?? [];
   if (cmd !== "cmd" && cmd !== "cmd.exe") return entry;
   if (args[0]?.toLowerCase() !== "/c" || args[1] === undefined) return entry;
+  const inner = args[1]!.toLowerCase().replace(/\.(cmd|exe)$/, "");
+  if (!WRAP_CMDS.has(inner)) return entry;
   return { ...entry, command: args[1]!, args: args.slice(2) };
 }
 
@@ -205,11 +216,8 @@ export const MCP_EXECUTORS: readonly McpExecutorDef[] = [
     name: "Claude Code",
     configPath: (home) => joinPath(home, ".claude.json"),
     emptySeed: "{}",
-    readServers: jsonReadServers(["mcpServers"], (n, raw) => {
-      const e = claudeLikeToCanonical(n, raw);
-      return e === null ? null : unwrapCmd(e);
-    }),
-    writeServer: jsonUpsert(["mcpServers"], (e) => claudeLikeFromCanonical(wrapCmd(e))),
+    readServers: jsonReadServers(["mcpServers"], (n, raw) => claudeLikeToCanonical(n, raw)),
+    writeServer: jsonUpsert(["mcpServers"], claudeLikeFromCanonical),
     removeServer: jsonRemove(["mcpServers"]),
   },
   {
@@ -217,12 +225,9 @@ export const MCP_EXECUTORS: readonly McpExecutorDef[] = [
     name: "Codex CLI",
     configPath: (home) => joinPath(home, ".codex", "config.toml"),
     emptySeed: "",
-    readServers: (text) => {
-      const out = new Map<string, McpServerEntry>();
-      for (const [k, v] of readTomlEntries(text)) out.set(k, unwrapCmd(v));
-      return out;
-    },
-    writeServer: (text, entry) => upsertTomlEntry(text, wrapCmd(entry)),
+    // cmd /c 包装/拆包统一在 service 层做（所有执行器一个口径），这里保持纯形态转换
+    readServers: (text) => readTomlEntries(text),
+    writeServer: (text, entry) => upsertTomlEntry(text, entry),
     removeServer: removeTomlEntry,
   },
   {
@@ -404,7 +409,7 @@ export const MCP_EXECUTORS: readonly McpExecutorDef[] = [
     //（测试经 HERMES_HOME env 注入），config.yaml 顶层 mcp_servers，无 type 推断式
     id: "hermes",
     name: "Hermes",
-    configPath: () => hermesConfigPath(),
+    configPath: (home) => hermesConfigPath(home),
     emptySeed: "",
     readServers: (text) => readYamlEntries(text),
     writeServer: (text, entry) => upsertYamlEntry(text, entry),

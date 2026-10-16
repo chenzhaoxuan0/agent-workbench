@@ -16,6 +16,12 @@ import type { McpServerEntry } from "../contract.ts";
 /** 我们管理的连接字段；条目内其余行（enabled/timeout/…）原字节保留 */
 const MANAGED_KEYS = new Set(["command", "args", "env", "url", "headers"]);
 
+/** 条目行（两空格缩进键）：`  name:` / `  'my srv':`（引号名）/ `  name: # 注` */
+const ENTRY_LINE_RE = /^  ([^ \t#-][^:]*):(\s|$)/;
+
+/** args 块列表项：`      - 值`（六空格缩进 + 短横线） */
+const DASH_ITEM_RE = /^ {6}-\s?(.*)$/;
+
 function stripBom(text: string): string {
   return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
 }
@@ -88,28 +94,34 @@ function findMcpBlock(text: string): YamlBlock | null {
 function findEntryRange(text: string, block: YamlBlock, name: string): { start: number; end: number } | null {
   const body = text.slice(block.keyStart, block.blockEnd);
   const lines = body.split("\n");
-  const target = `  ${name}:`;
   let offset = block.keyStart;
   let entryStart = -1;
   for (let li = 0; li < lines.length; li++) {
     const line = lines[li]!;
     const bare = line.endsWith("\r") ? line.slice(0, -1) : line;
-    if (/^  [^ \t#-][^:]*:(\s|$)/.test(bare)) {
+    const m = ENTRY_LINE_RE.exec(bare);
+    if (m !== null) {
       if (entryStart !== -1) {
         // 遇到下一条目：上一条目区间结束
         return { start: entryStart, end: offset };
       }
-      if (bare === target || bare.startsWith(target + " ")) {
-        entryStart = offset;
-      }
+      // 键要走标量解析比对：`'my srv':` 这类引号名按原文比对永远不命中，
+      // 编辑会追加成重名条目、删除会静默变 no-op
+      if (parseYamlScalar(m[1]!) === name) entryStart = offset;
     }
     offset += line.length + 1;
   }
   return entryStart === -1 ? null : { start: entryStart, end: block.blockEnd };
 }
 
-/** 从条目旧块提取「非受管键」的行（标量行与整块，含行内注释）——编辑后原样接回 */
-function collectKeptLines(entryText: string): string[] {
+/**
+ * 从条目旧块提取「编辑后必须活下来」的行 —— 标量行与整块，含行内注释。
+ * 非受管键（enabled/timeout/…）恒保留；受管键（command/args/env/url/headers）
+ * 只在**新条目没有提供**该字段时保留 —— 没提供通常意味着旧值解析不动
+ * （args 是块式短横线列表、env 是 flow 映射），按旧逻辑丢弃等于把用户的
+ * 连接参数静默删掉。保留的块键（值为空的行）其缩进子行一并保留。
+ */
+function collectKeptLines(entryText: string, entry: McpServerEntry): string[] {
   const lines = entryText.split("\n");
   const kept: string[] = [];
   let skippingBlockKey: string | null = null;
@@ -119,14 +131,21 @@ function collectKeptLines(entryText: string): string[] {
     if (m !== null) {
       const key = m[1]!.trim().replace(/^["']|["']$/g, "");
       skippingBlockKey = null;
-      if (!MANAGED_KEYS.has(key)) {
+      const supplies =
+        key === "command" ? entry.command !== undefined
+          : key === "args" ? entry.args !== undefined
+            : key === "env" ? entry.env !== undefined
+              : key === "url" ? entry.url !== undefined
+                : key === "headers" ? entry.headers !== undefined
+                  : true;
+      if (!MANAGED_KEYS.has(key) || !supplies) {
         kept.push(bare);
         if (/^    [^:]+:\s*$/.test(bare)) skippingBlockKey = key; // 块键（值为空）→ 其缩进子行也保留
       }
       continue;
     }
     if (skippingBlockKey !== null && /^ {6,}/.test(bare)) {
-      kept.push(bare); // 非受管块键的子行
+      kept.push(bare); // 保留块键的子行（args 短横线项 / 深层映射行）
     }
   }
   return kept;
@@ -177,6 +196,7 @@ export function readYamlEntries(text: string): Map<string, McpServerEntry> {
   }
   let cur: Draft | null = null;
   let curKey: string | null = null; // 当前块键（env:/headers:）
+  let inArgsList = false; // 当前在 args: 的块式短横线列表里
   const flush = (): void => {
     if (cur === null) return;
     if (cur.command !== undefined || cur.url !== undefined) {
@@ -202,9 +222,19 @@ export function readYamlEntries(text: string): Map<string, McpServerEntry> {
     if (entryM !== null) {
       flush();
       cur = { name: parseYamlScalar(entryM[1]!) };
+      curKey = null;
+      inArgsList = false;
       continue;
     }
     if (cur === null) continue;
+    // args: 的块式短横线列表项（六空格 + `-`），读到非列表行为止
+    if (inArgsList && DASH_ITEM_RE.test(bare)) {
+      const item = parseYamlScalar(DASH_ITEM_RE.exec(bare)![1]!);
+      if (cur.args === undefined) cur.args = [];
+      cur.args.push(item);
+      continue;
+    }
+    inArgsList = false;
     if (subM !== null && curKey !== null) {
       const bucket = curKey === "env" ? cur.env : cur.headers;
       if (bucket !== undefined) bucket[subM[1]!.trim()] = parseYamlScalar(subM[2] ?? "");
@@ -215,8 +245,15 @@ export function readYamlEntries(text: string): Map<string, McpServerEntry> {
       const val = fieldM[2] ?? "";
       if (key === "command") cur.command = parseYamlScalar(val);
       else if (key === "url") cur.url = parseYamlScalar(val);
-      else if (key === "args") cur.args = parseFlowArray(val);
-      else if (key === "env" && val.trim() === "") {
+      else if (key === "args") {
+        if (val.trim() === "") {
+          // 块式列表：args:\n      - a\n      - b —— 后续短横线行在上方聚拢
+          cur.args = [];
+          inArgsList = true;
+          continue;
+        }
+        cur.args = parseFlowArray(val);
+      } else if (key === "env" && val.trim() === "") {
         curKey = "env";
         if (cur.env === undefined) cur.env = {};
         continue;
@@ -232,9 +269,20 @@ export function readYamlEntries(text: string): Map<string, McpServerEntry> {
   return out;
 }
 
+/** flow 形态（`mcp_servers: {a: …}`）定点编辑器不可见：追加会造出第二个同名顶层键 */
+function assertBlockForm(text: string): void {
+  for (const line of text.split("\n")) {
+    const bare = line.endsWith("\r") ? line.slice(0, -1) : line;
+    if (/^mcp_servers:\s*\{/.test(bare)) {
+      throw Object.assign(new Error("flow 形态（mcp_servers: {…}）不支持定点编辑，请先手工展开为块形态"), { code: "parse_error" });
+    }
+  }
+}
+
 /** 定点替换/新增一个条目；返回新全文。文件无 mcp_servers 块时在末尾追加顶层键。 */
 export function upsertYamlEntry(text: string, entry: McpServerEntry): string {
   text = stripBom(text);
+  assertBlockForm(text);
   const eol = detectEol(text);
   const block = findMcpBlock(text);
   if (block === null) {
@@ -244,16 +292,21 @@ export function upsertYamlEntry(text: string, entry: McpServerEntry): string {
   }
   const range = findEntryRange(text, block, entry.name);
   if (range === null) {
-    // 追加到块尾（块尾 = 下一个顶层键行首或文件末尾，插入行自带换行）
-    return text.slice(0, block.blockEnd) + generateEntryLines(entry, eol, []) + text.slice(block.blockEnd);
+    // 追加到块尾（块尾 = 下一个顶层键行首或文件末尾，插入行自带换行）。
+    // 块尾前若无换行（mcp_servers: 是最后一个顶层键且文件无尾换行），
+    // 直接拼接会把新条目第一行粘到上一行尾 → 非法 YAML
+    let out = text.slice(0, block.blockEnd);
+    if (out !== "" && !out.endsWith("\n")) out += eol;
+    return out + generateEntryLines(entry, eol, []) + text.slice(block.blockEnd);
   }
-  const kept = collectKeptLines(text.slice(range.start, range.end));
+  const kept = collectKeptLines(text.slice(range.start, range.end), entry);
   return text.slice(0, range.start) + generateEntryLines(entry, eol, kept) + text.slice(range.end);
 }
 
 /** 定点删除一个条目（整段行区间摘除，区间外原样） */
 export function removeYamlEntry(text: string, name: string): string {
   text = stripBom(text);
+  assertBlockForm(text);
   const block = findMcpBlock(text);
   if (block === null) return text;
   const range = findEntryRange(text, block, name);

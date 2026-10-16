@@ -18,7 +18,7 @@ import type {
   McpServerEntry,
   McpServerInstance,
 } from "../contract.ts";
-import { findExecutorDef, MCP_EXECUTORS, MCP_UNSUPPORTED_EXECUTORS, type McpExecutorDef } from "./executors.ts";
+import { findExecutorDef, MCP_EXECUTORS, MCP_UNSUPPORTED_EXECUTORS, unwrapCmd, wrapCmd, type McpExecutorDef } from "./executors.ts";
 import { assertSha, fingerprint, firstWriteBackup, readTextOrNull, writeTextAtomic } from "./fsx.ts";
 
 export interface McpServiceDeps {
@@ -78,12 +78,18 @@ function pathOf(def: McpExecutorDef, deps: McpServiceDeps): string {
   return def.configPath(deps.configHome);
 }
 
-/** 读某执行器的 live 条目（文件不存在 → 空表；解析失败 → 抛 parse_error） */
+/**
+ * 读某执行器的 live 条目（文件不存在 → 空表；解析失败 → 抛 parse_error）。
+ * 统一在这里拆 cmd /c 包装：所有执行器一个口径，清单/复制/停用库里的条目
+ * 都是裸命令形态（写入侧再由 wrap 套回）。
+ */
 function readLive(def: McpExecutorDef, deps: McpServiceDeps): { text: string | null; entries: Map<string, McpServerEntry> } {
   const path = pathOf(def, deps);
   const text = readTextOrNull(path);
   if (text === null) return { text: null, entries: new Map() };
-  return { text, entries: def.readServers(text) };
+  const entries = new Map<string, McpServerEntry>();
+  for (const [name, entry] of def.readServers(text)) entries.set(name, unwrapCmd(entry));
+  return { text, entries };
 }
 
 /** 校验条目形态（写入前的最后防线）；def 给定时附带该执行器的传输能力校验 */
@@ -160,7 +166,7 @@ export function sanitizeEntry(raw: unknown): McpServerEntry {
   };
 }
 
-/** 全量清单：五家的文件状态 + live/vault 条目按名聚行 */
+/** 全量清单：十二家的文件状态 + live/vault 条目按名聚行 */
 export function mcpInventory(deps: McpServiceDeps): McpInventory {
   const vault = loadVault(deps);
   const files: McpFileStatus[] = [];
@@ -175,7 +181,7 @@ export function mcpInventory(deps: McpServiceDeps): McpInventory {
       const text = readTextOrNull(path);
       if (text !== null) {
         try {
-          const entries = def.readServers(text);
+          const entries = readLive(def, deps).entries;
           count = entries.size;
           for (const [name, entry] of entries) {
             push(byName, name, { executorId: def.id, entry, disabled: false });
@@ -214,11 +220,11 @@ function push(map: Map<string, McpServerInstance[]>, name: string, inst: McpServ
   else arr.push(inst);
 }
 
-/** 新增/编辑一条（编辑保留条目上的未知扩展键） */
+/** 新增/编辑一条（编辑保留条目上的未知扩展键；写入侧统一套 cmd /c 包装） */
 export async function mcpSave(deps: McpServiceDeps, executorId: string, entry: McpServerEntry, expectedSha?: string): Promise<McpMutationResult> {
   const def = findExecutorDef(executorId);
   validateEntry(entry, def);
-  const result = await mutateFile(def, deps, expectedSha, (text) => def.writeServer(text ?? def.emptySeed, entry));
+  const result = await mutateFile(def, deps, expectedSha, (text) => def.writeServer(text ?? def.emptySeed, wrapCmd(entry)));
   // 编辑时条目名若在停用库也有一份（先停用后改名重建），从库里清掉，避免双份。
   // 注意：不能在这里失败回滚 live —— vault 残留只是清单双实例，下次操作自愈；
   // 反过来（live 已删 vault 没写进）才是两头落空，那个顺序问题在 mcpRemove 里管。
@@ -244,13 +250,12 @@ export async function mcpRemove(deps: McpServiceDeps, executorId: string, name: 
 
   return withVault(async () => {
     const vault = loadVault(deps);
-    const liveText = readTextOrNull(pathOf(def, deps));
-    const liveEntries = liveText === null ? new Map<string, McpServerEntry>() : def.readServers(liveText);
-    const entry = liveEntries.get(name) ?? vault[executorId]?.[name];
+    const live = readLive(def, deps);
+    const entry = live.entries.get(name) ?? vault[executorId]?.[name];
     if (entry === undefined) {
       throw Object.assign(new Error(`找不到服务：${name}`), { code: "not_found" });
     }
-    const inLive = liveText !== null && liveEntries.has(name);
+    const inLive = live.text !== null && live.entries.has(name);
 
     if (toVault) {
       vault[executorId] = { ...(vault[executorId] ?? {}), [name]: entry };
@@ -291,7 +296,7 @@ export async function mcpSetEnabled(deps: McpServiceDeps, executorId: string, na
       throw Object.assign(new Error(`停用库里没有 ${name}（可能从未停用，或已从库里删除）`), { code: "not_in_vault" });
     }
     validateEntry(entry, def);
-    const result = await mutateFile(def, deps, expectedSha, (text) => def.writeServer(text ?? def.emptySeed, entry));
+    const result = await mutateFile(def, deps, expectedSha, (text) => def.writeServer(text ?? def.emptySeed, wrapCmd(entry)));
     const bucket = vault[executorId];
     if (bucket !== undefined) {
       delete bucket[name];
