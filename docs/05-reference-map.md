@@ -200,3 +200,23 @@ ZCode 是工作台布局与交互习惯的**总参照**，几乎每个壳层文�
 4. **记忆编排后端**——三柱路由 + weknora / local-folder / sqlite 三后端连通；`core/weknora.ts` 已是真 API 客户端可直接复用，SQLite 后端对齐 waku 的 `.waku/state.db` 语义（§四）。
 5. **出图代理（可缓）**——原型已客户端直连真 API；仅在需要隐藏 key / 统一计费 / 服务端落盘时再收进后端，届时以 `core/imageApi.ts` 为契约。
 6. **补齐各节未移植清单**——三泳道时间轴（§三/§四）、Arena SSE 直播与 throwaway home 沙箱（§四）、waku 83 项 pytest verify 形态（§四）、fal.ai 供应商族 / 遮罩编辑器 / 透明背景 canvas 后处理（§七）。
+
+---
+
+## 十四、playwright-mcp 与 nut.js —— 浏览器 / 电脑控制
+
+设计文档 `docs/14-browser-computer-control.md`；术语见根 `CONTEXT.md` §「浏览器与电脑控制」。
+
+| 参照的能力 | 本项目落点 | 备注 |
+|---|---|---|
+| playwright-mcp 官方 server 整体 | `backend/src/browserctl/service.ts` 扇出编排 | **不 fork 不自研工具面**：启用即把 `npx @playwright/mcp@latest` 写进各执行器原生配置（复用 ADR 0004 的 mcpadmin 通道） |
+| 持久 profile 按工作区哈希共享 → 并发冲突 | 隔离模式显式 `--user-data-dir`（每执行器一目录） | 官方 README 实证的限制；本项目多 bot 共用 rootPath 是常态，必须绕开默认值 |
+| `--cdp-endpoint` 接管已有浏览器 | 接管模式 + daemon 拉起共享 Chrome（`browserctl/chrome.ts`） | 独立 user-data-dir + 调试端口 9333 起（Chrome 136+ 拒绝默认目录开调试口）；启动前 `/json/version` 健康检查收编存量 |
+| `--browser msedge/chrome` 系统通道零下载 | 隔离模式默认 msedge | Windows 每机必有 Edge |
+| nut.js 键鼠 / 截图 / 窗口（@nut-tree-fork/nut-js，官方包已下架 npm） | `backend/src/computerctl/runtime.ts` | 懒加载；DPI 换算（逻辑/返回图宽）、BGRA→PNG（node:zlib 自写编码器，包不带 imageToJpg）、中文剪贴板绕 IME —— 三坑的解法全部对照 win-computer-use-mcp |
+| Anthropic computer use 动作集（screenshot/click/type/key/scroll…） | `computer_*` 12 工具（`computerctl/server.ts`） | 坐标相对当次返回图的范式；动作名对齐让任何视觉模型开箱会用 |
+| ZCode 的 CONTROLLER_BUSY / 急停 / 主 agent 独占 | 输入租约 + `computer_stop` + 总闸 + panic RPC | **实现未抄**（ZCode 原生层闭源），只借产品语义 |
+
+**服务端参照入口**：playwright-mcp `src/`（工具面与 profile 逻辑）；win-computer-use-mcp `mcp/computer-use-mcp/`（Windows 坑对照）；anthropic-quickstarts `computer-use-demo/`（动作 schema）。
+
+**未移植**（二期）：Chrome 扩展接管模式（`--extension`）、MCP server 层高危确认门、UIA 结构化快照（ZCode 式 state_id/elements）、截图流面板。

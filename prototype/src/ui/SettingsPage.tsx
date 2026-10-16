@@ -6,11 +6,13 @@ import {
   Anchor,
   Brain,
   ChartBar,
+  Globe,
   History,
   ImagePlus,
   Keyboard,
   Layers,
   Minus,
+  Monitor,
   Package,
   Palette,
   Plug,
@@ -33,6 +35,8 @@ import { getGuardianConfigRpc, readProjectMemory, runDigestDryRun, setGuardianCo
 import { ProviderInstancesPanel } from "./ProviderInstancesPanel.tsx";
 import { SkillsSettingsSection } from "./SkillsSettingsSection.tsx";
 import { McpSettingsSection } from "./McpSettingsSection.tsx";
+import { BrowserControlSection } from "./BrowserControlSection.tsx";
+import { ComputerControlSection } from "./ComputerControlSection.tsx";
 import { ImageSettingsSection } from "./ImageSettingsSection.tsx";
 import { AppearanceSettingsSection } from "./AppearanceSettingsSection.tsx";
 import { useHistoryPrefs } from "../store/useHistoryPrefs.ts";
@@ -53,6 +57,8 @@ const ICONS: Record<string, typeof Settings2> = {
   history: History,
   layers: Layers,
   plug: Plug,
+  globe: Globe,
+  monitor: Monitor,
 };
 
 /** 居中内容列：max-w-5xl 给予多列执行器与模型管理更充裕的呼吸空间 */
@@ -152,7 +158,7 @@ export function SettingsPage() {
 /* ------------------------------------------------------------- 原语 */
 
 /** 对齐 ZCode 的 SettingsRow：左 label+description，右 control，border-t 分隔 */
-function SettingsRow({
+export function SettingsRow({
   label,
   description,
   control,
@@ -186,8 +192,8 @@ function SettingsRow({
   );
 }
 
-/** 对齐 ZCode 的 SettingsGroupCard */
-function GroupCard({ children }: { children: ReactNode }) {
+/** 对齐 ZCode 的 SettingsGroupCard（浏览器/电脑控制分区也从这里取，保持单一来源） */
+export function GroupCard({ children }: { children: ReactNode }) {
   return <div className="overflow-hidden rounded-card border border-line bg-card">{children}</div>;
 }
 
@@ -237,6 +243,10 @@ function SectionBody({ section }: { section: SettingsSectionDef }) {
       return <SkillsSettingsSection />;
     case "mcp":
       return <McpSettingsSection />;
+    case "browserControl":
+      return <BrowserControlSection />;
+    case "computerControl":
+      return <ComputerControlSection />;
     case "memory":
       return <MemorySettingsSection />;
     case "image":

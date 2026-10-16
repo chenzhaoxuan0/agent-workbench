@@ -56,6 +56,20 @@ export type {
   McpUnsupportedExecutor,
 } from "../../prototype/src/core/mcp.ts";
 
+export type {
+  AcpMcpServer,
+  BrowserChannel,
+  BrowserControlConfig,
+  BrowserControlMode,
+  BrowserControlState,
+  ComputerControlConfig,
+  ComputerControlState,
+  ComputerLeaseInfo,
+  ControlActionEntry,
+  ControlFanoutOutcome,
+  SharedChromeStatus,
+} from "../../prototype/src/core/control.ts";
+
 import { isShellTool as coreIsShellTool } from "../../prototype/src/core/events.ts";
 
 /**

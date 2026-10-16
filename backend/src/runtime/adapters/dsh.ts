@@ -61,6 +61,7 @@ import type {
   SessionId,
 } from "../../contract.ts";
 import { execLines, resolveCommand, type ResolvedCommand } from "../exec.ts";
+import { acpMcpServers } from "../../ctrl/store.ts";
 import { log } from "../../log.ts";
 
 // ---- ACP 线缆类型（宽松，同 mcode） -------------------------------------------
@@ -483,9 +484,25 @@ export class DshAdapter implements ExecutorAdapter {
       state.initialized = true;
     }
     if (state.ref === null) {
-      const res = (await this.request(state, "session/new", { cwd: state.rootPath, mcpServers: [] }, 60000)) as {
-        sessionId?: string;
-      };
+      // mcpServers 动态注入（docs/14 §2.4）：dsh 无落盘 MCP 配置，浏览器/电脑控制的
+      // 条目由 ctrl/store 的 provider 给出（两个能力都停用时为空数组）。
+      // dsh 若拒收某形态（session/new 直接报错），降级为无 MCP 重试一次——注入是
+      // 增强，不能把会话本身搞死。
+      const injected = acpMcpServers();
+      let res: { sessionId?: string };
+      try {
+        res = (await this.request(state, "session/new", { cwd: state.rootPath, mcpServers: injected }, 60000)) as {
+          sessionId?: string;
+        };
+      } catch (err: unknown) {
+        if (injected.length === 0) throw err;
+        log.warn("dsh session/new rejected mcpServers, retrying without", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+        res = (await this.request(state, "session/new", { cwd: state.rootPath, mcpServers: [] }, 60000)) as {
+          sessionId?: string;
+        };
+      }
       if (typeof res.sessionId !== "string" || res.sessionId === "") {
         throw adapterError("acp_no_session", "dsh acp session/new returned no sessionId");
       }
@@ -498,7 +515,7 @@ export class DshAdapter implements ExecutorAdapter {
 
   private async resumeSession(state: DshSession): Promise<void> {
     try {
-      await this.request(state, "session/resume", { sessionId: state.ref, cwd: state.rootPath, mcpServers: [] }, 60000);
+      await this.request(state, "session/resume", { sessionId: state.ref, cwd: state.rootPath, mcpServers: acpMcpServers() }, 60000);
       state.sessionLoaded = true;
     } catch (err: unknown) {
       // cwd 变了 / 会话不可恢复：回落新会话，宁可丢历史也不能永久不可用

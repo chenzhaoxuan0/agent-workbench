@@ -6,7 +6,8 @@
 
 内置终端直接驱动各家 CLI（TUI 交互或 headless 驱动均可），每个 bot 绑定自己的
 默认执行器与模型；支持飞书/Telegram 渠道接入、定时自动化、待办（GTD：空闲心跳
-提议 + 确认门 + 验收闭环）、记忆系统与出图工作台。
+提议 + 确认门 + 验收闭环）、记忆系统、出图工作台，以及多执行器统一的
+浏览器控制（playwright-mcp 扇出）与电脑控制（总闸 + 急停）。
 以 [MIT](LICENSE) 协议开源。
 
 ---
@@ -163,6 +164,9 @@ agent-workbench/
 | **Codex-Dream-Skin**（Codex Dream Skin Studio） | MIT | 外观系统契约：theme.json 十组色、safe-css 变量域、透明度方向与「只染背景不染文字」的钉死行为 |
 | **gpt_image_playground**（CookSleep） | MIT | 出图工作台全链路移植（images/responses 双模式、SSE 解析、供应商映射） |
 | **cc-switch** | MIT | MCP 多执行器管理的操作参照：单键外科手术式写入、首写字节备份、Codex TOML 字段分侧与 opencode local/remote 转换、Windows `cmd /c` 包装等写安全规范与交互（预设库 / 粘贴导入 / 落盘预览）→ MCP 管理 |
+| **playwright-mcp**（Microsoft） | Apache-2.0 | 浏览器控制本体：启用即把官方 server 扇出进各执行器原生配置（不 fork 不自研工具面）；持久 profile 并发冲突的显式 `--user-data-dir` 对策、`--cdp-endpoint` 接管共享 Chrome、`--browser` 系统通道零下载 → `backend/src/browserctl/`（docs/14） |
+| **@nut-tree-fork/nut-js**（nut.js 社区续命版，官方包已下架 npm） | MIT | 电脑控制运行时：键鼠 / 截图 / 窗口；DPI 换算、BGRA→PNG 编码、中文剪贴板绕 IME 的坑位解法对照 win-computer-use-mcp（qq306863030/deepfish-extensions，MIT） → `backend/src/computerctl/runtime.ts` |
+| **anthropic-quickstarts**（Anthropic） | MIT | computer-use-demo 的动作集与「截图 → 坐标动作」范式 → `computer_*` 12 工具形状（任何视觉模型开箱会用） |
 | **cherry-studio** | GPL | **只看思路未抄码**：dsh SDK 进程内嵌形态的对比参照，最终选了 ACP；借鉴「resume token 事件化」 |
 | **VS Code** | MIT | 终端集成模式（terminalInstance / xtermTerminal 的会话持久化与分屏） |
 | **OpenClaw**（OpenClaw Foundation） | MIT | 渠道插件抽象（ChannelPlugin）与渠道编排 |

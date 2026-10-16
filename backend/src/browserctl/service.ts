@@ -1,0 +1,290 @@
+/**
+ * 浏览器控制服务（docs/14 §2）—— playwright-mcp 的扇出编排与共享 Chrome 生命周期。
+ *
+ * 工作台不内置浏览器：条目是官方 `npx @playwright/mcp@latest`，模式只有两种——
+ * - 隔离（默认）：每执行器独立持久 profile（显式 --user-data-dir，绕开官方
+ *   「按工作区哈希共享 profile → 并发冲突」的默认行为，docs/14 §2.1 实证）；
+ * - 接管：全执行器 --cdp-endpoint 连 daemon 拉起的共享 Chrome（登录态互通）。
+ *
+ * 扇出完全复用 mcpadmin（ADR 0004：原生配置唯一真相源），本模块只做条目构造
+ * 与编排；dsh 无落盘配置，经 ctrl/store 的 provider 动态注入。
+ */
+import type {
+  AcpMcpServer,
+  BrowserChannel,
+  BrowserControlConfig,
+  BrowserControlMode,
+  BrowserControlState,
+  ControlFanoutOutcome,
+  McpServerEntry,
+  SharedChromeStatus,
+} from "../contract.ts";
+import {
+  BROWSER_ENTRY_NAME,
+  controlActions,
+  logControlAction,
+  readBrowserControlConfig,
+  writeBrowserControlConfig,
+} from "../ctrl/store.ts";
+import { installBrowserControlSkill } from "../ctrl/skills.ts";
+import { MCP_EXECUTORS, MCP_UNSUPPORTED_EXECUTORS } from "../mcpadmin/executors.ts";
+import { mcpRemove, mcpSave, type McpServiceDeps } from "../mcpadmin/service.ts";
+import { join } from "node:path";
+import { log } from "../log.ts";
+import {
+  cdpAlive,
+  killTree,
+  launchSharedChrome,
+  type SharedChromeHandle,
+} from "./chrome.ts";
+
+/** dsh 的 ACP 注入（无落盘配置的家伙拿自己的 profile 目录） */
+const ACP_EXECUTOR_ID = "dsh";
+
+export interface BrowserControlService {
+  readonly getState: () => BrowserControlState;
+  readonly setEnabled: (enabled: boolean) => Promise<BrowserControlState>;
+  readonly setMode: (mode: BrowserControlMode) => Promise<BrowserControlState>;
+  readonly setBrowser: (browser: BrowserChannel) => Promise<BrowserControlState>;
+  readonly startSharedChrome: () => Promise<BrowserControlState>;
+  readonly stopSharedChrome: () => Promise<BrowserControlState>;
+  /** dsh session/new 注入用的条目（启用才有；接管模式在共享 Chrome 存活时才有） */
+  readonly acpEntries: () => AcpMcpServer[];
+  /** daemon 启动时调：接管模式自动拉起共享 Chrome */
+  readonly boot: () => Promise<void>;
+}
+
+/** 共享 Chrome 的进程态（service 内部，不进配置文件） */
+interface ChromeState {
+  handle: SharedChromeHandle | null;
+  /** 上次健康检查结果（running 的判定口径：进程活着或已收编，且端口有响应） */
+  alive: boolean;
+  exitReason: string | null;
+  /** 端口已写进条目，但 Chrome 迟迟没起来时的错误说明 */
+  lastError: string | null;
+}
+
+export function createBrowserControlService(
+  deps: McpServiceDeps,
+  opts: {
+    readonly profileRoot?: string;
+    /** 冒烟注入假启动器（返回收编型 handle，child=null），避免真拉浏览器 */
+    readonly launcher?: typeof launchSharedChrome;
+  } = {},
+): BrowserControlService {
+  const profileRoot = opts.profileRoot ?? deps.stateHome;
+  const launch = opts.launcher ?? launchSharedChrome;
+  const chrome: ChromeState = { handle: null, alive: false, exitReason: null, lastError: null };
+  let lastFanout: ControlFanoutOutcome[] = [];
+
+  // ---- 条目构造 ---------------------------------------------------------------
+
+  function profileDirOf(executorId: string): string {
+    return join(profileRoot, "browser-profiles", executorId);
+  }
+
+  function buildEntry(executorId: string, cfg: BrowserControlConfig): McpServerEntry {
+    if (cfg.mode === "takeover") {
+      const port = cfg.sharedPort;
+      if (port === undefined) throw new Error("接管模式缺 sharedPort（先启动共享 Chrome）");
+      return {
+        name: BROWSER_ENTRY_NAME,
+        transport: "stdio",
+        command: "npx",
+        args: ["@playwright/mcp@latest", "--cdp-endpoint", `http://127.0.0.1:${port}`],
+      };
+    }
+    return {
+      name: BROWSER_ENTRY_NAME,
+      transport: "stdio",
+      command: "npx",
+      args: [
+        "@playwright/mcp@latest",
+        "--browser",
+        cfg.browser,
+        "--user-data-dir",
+        profileDirOf(executorId),
+      ],
+    };
+  }
+
+  // ---- 扇出 / 回收 --------------------------------------------------------------
+
+  async function fanout(cfg: BrowserControlConfig): Promise<ControlFanoutOutcome[]> {
+    const outcomes: ControlFanoutOutcome[] = [];
+    for (const def of MCP_EXECUTORS) {
+      try {
+        await mcpSave(deps, def.id, buildEntry(def.id, cfg));
+        outcomes.push({ executorId: def.id, ok: true });
+      } catch (e) {
+        const error = e instanceof Error ? e.message : String(e);
+        outcomes.push({ executorId: def.id, ok: false, error });
+      }
+    }
+    logControlAction("browser", "entry.write", `写入 ${BROWSER_ENTRY_NAME} 条目：${
+      outcomes.filter((o) => o.ok).length}/${outcomes.length
+    } 家成功（模式 ${cfg.mode}）`);
+    return outcomes;
+  }
+
+  async function recall(): Promise<ControlFanoutOutcome[]> {
+    const outcomes: ControlFanoutOutcome[] = [];
+    for (const def of MCP_EXECUTORS) {
+      try {
+        await mcpRemove(deps, def.id, BROWSER_ENTRY_NAME, { toVault: true });
+        outcomes.push({ executorId: def.id, ok: true });
+      } catch (e) {
+        // not_found = 本来就没装，不算失败
+        const code = (e as { code?: string }).code;
+        if (code === "not_found") outcomes.push({ executorId: def.id, ok: true });
+        else outcomes.push({ executorId: def.id, ok: false, error: e instanceof Error ? e.message : String(e) });
+      }
+    }
+    logControlAction("browser", "entry.remove", `停用 ${BROWSER_ENTRY_NAME}：${
+      outcomes.filter((o) => o.ok).length}/${outcomes.length
+    } 家移入停用库`);
+    return outcomes;
+  }
+
+  // ---- 共享 Chrome --------------------------------------------------------------
+
+  function sharedChromeStatus(): SharedChromeStatus {
+    const handle = chrome.handle;
+    return {
+      running: chrome.alive,
+      executable: handle?.executable ?? null,
+      kind: handle?.kind ?? null,
+      port: handle?.port ?? readBrowserControlConfig().sharedPort ?? null,
+      exitReason: chrome.exitReason,
+    };
+  }
+
+  async function startSharedChrome(): Promise<BrowserControlState> {
+    const cfg = readBrowserControlConfig();
+    if (chrome.handle !== null && (await cdpAlive(chrome.handle.port))) {
+      chrome.alive = true;
+      return state(cfg);
+    }
+    const result = await launch(
+      // 接管模式优先拉用户选的通道（chrome 通道时真 Chrome，否则 Edge 也行）
+      cfg.browser,
+      join(profileRoot, "browser-shared-profile"),
+      cfg.sharedPort,
+    );
+    if ("error" in result) {
+      chrome.lastError = result.error;
+      chrome.handle = null;
+      chrome.alive = false;
+      logControlAction("browser", "sharedChrome.start", `失败：${result.error}`);
+      return state(cfg);
+    }
+    chrome.handle = result;
+    chrome.alive = true;
+    chrome.exitReason = null;
+    chrome.lastError = null;
+    result.child?.once("exit", (code) => {
+      chrome.alive = false;
+      chrome.exitReason = `进程退出（code=${code ?? "?"}）`;
+      logControlAction("browser", "sharedChrome.exit", chrome.exitReason);
+    });
+    // 端口变了（基址被占上浮）→ 持久化 + 若已启用则重写条目
+    if (cfg.sharedPort !== result.port) {
+      const next = { ...cfg, sharedPort: result.port };
+      writeBrowserControlConfig(next);
+      if (next.enabled) await fanout(next).then((f) => (lastFanout = f));
+      logControlAction("browser", "sharedChrome.port", `调试端口定为 ${result.port}，条目已同步`);
+      return state(next);
+    }
+    logControlAction("browser", "sharedChrome.start", `${result.kind} 就绪 @127.0.0.1:${result.port}`);
+    return state(readBrowserControlConfig());
+  }
+
+  async function stopSharedChrome(): Promise<BrowserControlState> {
+    const handle = chrome.handle;
+    if (handle?.child?.pid !== undefined) {
+      killTree(handle.child.pid);
+      logControlAction("browser", "sharedChrome.stop", `已终止（端口 ${handle.port}）`);
+    } else {
+      // 收编的存量进程（child=null）无从杀起：只记状态，端口留给用户手关
+      logControlAction("browser", "sharedChrome.stop", "实例为收编存量（daemon 无进程句柄），未终止");
+    }
+    chrome.handle = null;
+    chrome.alive = false;
+    return state(readBrowserControlConfig());
+  }
+
+  // ---- 状态组装 -----------------------------------------------------------------
+
+  function state(cfg: BrowserControlConfig): BrowserControlState {
+    return {
+      config: cfg,
+      sharedChrome: sharedChromeStatus(),
+      fanout: lastFanout,
+      notes: [
+        ...MCP_UNSUPPORTED_EXECUTORS.map((u) => ({
+          executorId: u.id,
+          note: u.id === ACP_EXECUTOR_ID ? "MCP 随会话动态注入（启用后自动生效）" : u.reason,
+        })),
+      ],
+      actions: controlActions().filter((a) => a.domain === "browser").slice(-50),
+    };
+  }
+
+  async function apply(cfg: BrowserControlConfig): Promise<BrowserControlState> {
+    writeBrowserControlConfig(cfg);
+    lastFanout = cfg.enabled ? await fanout(cfg) : await recall();
+    return state(readBrowserControlConfig());
+  }
+
+  return {
+    getState: () => state(readBrowserControlConfig()),
+    setEnabled: async (enabled) => {
+      const cfg = readBrowserControlConfig();
+      if (enabled && cfg.mode === "takeover" && !(await cdpAlive(cfg.sharedPort ?? -1))) {
+        // 接管模式启用前确保共享 Chrome 活着（起不来也继续写条目，错误在状态里可见）
+        await startSharedChrome();
+      }
+      const fresh = readBrowserControlConfig();
+      logControlAction("browser", enabled ? "enabled" : "disabled", enabled ? "浏览器控制启用" : "浏览器控制停用（条目入停用库）");
+      if (enabled) installBrowserControlSkill();
+      return apply({ ...fresh, enabled });
+    },
+    setMode: async (mode) => {
+      const cfg = readBrowserControlConfig();
+      if (mode === "takeover" && cfg.sharedPort === undefined) await startSharedChrome();
+      logControlAction("browser", "mode", `模式切换 → ${mode}`);
+      return apply({ ...readBrowserControlConfig(), mode });
+    },
+    setBrowser: async (browser) => {
+      logControlAction("browser", "browser", `隔离通道切换 → ${browser}`);
+      return apply({ ...readBrowserControlConfig(), browser });
+    },
+    startSharedChrome,
+    stopSharedChrome,
+    acpEntries: () => {
+      const cfg = readBrowserControlConfig();
+      if (!cfg.enabled) return [];
+      try {
+        const entry = buildEntry(ACP_EXECUTOR_ID, cfg);
+        return [
+          {
+            name: entry.name,
+            command: entry.command,
+            args: entry.args,
+            ...(entry.env !== undefined ? { env: entry.env } : {}),
+          },
+        ];
+      } catch (e) {
+        log.warn("browser acp entry unavailable", { error: e instanceof Error ? e.message : String(e) });
+        return [];
+      }
+    },
+    boot: async () => {
+      const cfg = readBrowserControlConfig();
+      if (cfg.enabled && cfg.mode === "takeover") {
+        log.info("browser control: takeover enabled, starting shared chrome");
+        await startSharedChrome();
+      }
+    },
+  };
+}

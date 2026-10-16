@@ -48,7 +48,9 @@ export type SettingsSectionId =
   | "shortcuts"
   | "memory"
   | "skills"
-  | "mcp";
+  | "mcp"
+  | "browserControl"
+  | "computerControl";
 
 export type SettingsGroupId = "basics" | "agentCapabilities";
 
@@ -82,6 +84,8 @@ export const SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
   { id: "memory", title: "记忆", desc: "语义事实 / 情节事件 / 程序性技能 三层记忆（对齐 waku）", groupId: "agentCapabilities", icon: "brain" },
   { id: "skills", title: "技能", desc: "按技能源分组的技能清单与停用开关（.disabled/ 搬运）", groupId: "agentCapabilities", icon: "layers" },
   { id: "mcp", title: "MCP 服务", desc: "分执行器管理各家原生配置里的 MCP：增删改、停用库、跨执行器复制", groupId: "agentCapabilities", icon: "plug" },
+  { id: "browserControl", title: "浏览器控制", desc: "playwright-mcp 一键扇出到全部执行器；隔离 / 接管（共享 Chrome）两模式", groupId: "agentCapabilities", icon: "globe" },
+  { id: "computerControl", title: "电脑控制", desc: "执行器操作真实桌面（截图 / 键鼠 / 窗口）：总闸、急停与动作日志", groupId: "agentCapabilities", icon: "monitor" },
   { id: "image", title: "出图", desc: "图像供应商 profile 管理（gpt_image_playground 字段全集）", groupId: "agentCapabilities", icon: "image" },
 ];
 
