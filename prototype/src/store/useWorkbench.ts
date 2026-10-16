@@ -1086,9 +1086,17 @@ export const selectUnitAutomations = (s: WorkbenchState): readonly Automation[] 
 // 注册执行器 bootstrap —— 必须在 store 创建之后（要校正 activeRuntimeId）：
 // 优先本地 daemon（真实执行），不可达时回退 mock（纯 UI 原型，daemon 没起是正常态）。
 //
-// ⚠ 必须重试（3s 间隔 × 40 次 ≈ 2 分钟）：`pnpm dev` 下 vite 0.5s 就绪而 daemon
-// 要 8–15s 才监听，页面先开就撞上竞态；单次尝试失败会让执行器列表永远空着
-// （「没有已注册的执行器」），用户只能手动刷新。重试让竞态自愈。
+// ⚠ 必须重试：`pnpm dev` 下 vite 0.5s 就绪而 daemon 还要再起一会儿，页面先开就
+// 撞上竞态；单次尝试失败会让执行器列表永远空着（「没有已注册的执行器」），
+// 用户只能手动刷新。重试让竞态自愈。
+//
+// ⚠ 间隔必须**短间隔起步、指数退避**，不能是固定 3s。去掉 daemon 启动预热之后，
+// 冷启动的 db→listening 实测只有 37ms，tsx 进程本身几百毫秒也就起来了 ——
+// 也就是说「页面已加载但 daemon 还没监听」这个窗口通常不到一秒。固定 3s 会让用户
+// 盯着一个空的执行器列表白等整整一轮，而实际差距可能只有 200ms。
+// 封顶仍留 3s：daemon 真没起（被占用/崩溃）时，长间隔避免无谓重试风暴，
+// 总时长仍在两分钟内自愈。
+const RETRY_DELAYS_MS = [150, 300, 600, 1200, 3000] as const;
 void (async () => {
   const { listDaemonExecutors } = await import("../adapters/daemon/client.ts");
   const { createDaemonFactory } = await import("../adapters/daemon/adapter.ts");
@@ -1107,13 +1115,13 @@ void (async () => {
       throw new Error("daemon 无可用执行器");
     } catch (err: unknown) {
       if (attempt === 1) {
-        console.info("[workbench] daemon 未就绪，3s 后重试（pnpm dev 下 daemon 比 vite 慢是常态）", err instanceof Error ? err.message : err);
+        console.info("[workbench] daemon 未就绪，按退避节奏重试（pnpm dev 下 daemon 比 vite 慢是常态）", err instanceof Error ? err.message : err);
       }
       if (attempt === MAX_ATTEMPTS) {
         console.info("[workbench] 本地 daemon 不可达 —— 无执行器可用（启动 backend/ 的 daemon 即接入真实执行）", err instanceof Error ? err.message : err);
         return;
       }
-      await new Promise((r) => setTimeout(r, 3000));
+      await new Promise((r) => setTimeout(r, RETRY_DELAYS_MS[Math.min(attempt - 1, RETRY_DELAYS_MS.length - 1)]!));
     }
   }
   if (infos === null) return;
