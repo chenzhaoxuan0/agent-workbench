@@ -40,6 +40,7 @@ import { GrokAdapter } from "./runtime/adapters/grok.ts";
 import { CursorAdapter } from "./runtime/adapters/cursor.ts";
 import { OpenclawAdapter } from "./runtime/adapters/openclaw.ts";
 import { buildSkillsInventory, copySkill, setSkillDisabled } from "./skills/inventory.ts";
+import * as gitRepo from "./git/repo.ts";
 import {
   mcpCopy,
   mcpInventory,
@@ -2286,6 +2287,85 @@ registerMethod("bot.gitignore.ensure", (params) => {
   }
   return botRegistry.ensureGitignore(p.rootPath);
 });
+
+// ---- git.* —— 源代码管理面板（分支 / 工作树），见 backend/src/git/repo.ts ----
+// 危险操作的错误码约定（UI 据此走确认流）：branch_not_merged → 确认后 force=true
+// 重试；worktree_dirty → 确认后 force=true 重试；branch_checked_out_elsewhere 带
+// data.path → 引导打开那个工作树。全表见 docs/07-wire-protocol.md。
+
+function gitRoot(params: unknown): string {
+  const p = (params ?? {}) as { rootPath?: string };
+  if (typeof p.rootPath !== "string" || p.rootPath === "") {
+    throw Object.assign(new Error("rootPath is required"), { code: "bad_params" });
+  }
+  return p.rootPath;
+}
+
+registerMethod("git.status", (params) => gitRepo.status(gitRoot(params)));
+registerMethod("git.branches.list", (params) => gitRepo.listBranches(gitRoot(params)));
+registerMethod("git.branch.create", (params) => {
+  const p = (params ?? {}) as { rootPath?: string; name?: string; ref?: string; checkout?: boolean };
+  const rootPath = gitRoot(params);
+  if (typeof p.name !== "string" || p.name === "") {
+    throw Object.assign(new Error("name is required"), { code: "bad_params" });
+  }
+  return gitRepo.createBranch(rootPath, p.name, { ref: p.ref, checkout: p.checkout });
+});
+registerMethod("git.branch.checkout", (params) => {
+  const p = (params ?? {}) as { rootPath?: string; name?: string };
+  const rootPath = gitRoot(params);
+  if (typeof p.name !== "string" || p.name === "") {
+    throw Object.assign(new Error("name is required"), { code: "bad_params" });
+  }
+  return gitRepo.checkoutBranch(rootPath, p.name);
+});
+registerMethod("git.branch.rename", (params) => {
+  const p = (params ?? {}) as { rootPath?: string; name?: string };
+  const rootPath = gitRoot(params);
+  if (typeof p.name !== "string" || p.name === "") {
+    throw Object.assign(new Error("name is required"), { code: "bad_params" });
+  }
+  return gitRepo.renameBranch(rootPath, p.name);
+});
+registerMethod("git.branch.delete", (params) => {
+  const p = (params ?? {}) as { rootPath?: string; name?: string; force?: boolean };
+  const rootPath = gitRoot(params);
+  if (typeof p.name !== "string" || p.name === "") {
+    throw Object.assign(new Error("name is required"), { code: "bad_params" });
+  }
+  return gitRepo.deleteBranch(rootPath, p.name, p.force === true);
+});
+registerMethod("git.merge", (params) => {
+  const p = (params ?? {}) as { rootPath?: string; name?: string };
+  const rootPath = gitRoot(params);
+  if (typeof p.name !== "string" || p.name === "") {
+    throw Object.assign(new Error("name is required"), { code: "bad_params" });
+  }
+  return gitRepo.merge(rootPath, p.name);
+});
+registerMethod("git.merge.abort", (params) => gitRepo.mergeAbort(gitRoot(params)));
+registerMethod("git.worktrees.list", async (params) => ({ worktrees: await gitRepo.listWorktrees(gitRoot(params)) }));
+registerMethod("git.worktree.create", (params) => {
+  const p = (params ?? {}) as { rootPath?: string; path?: string; branch?: string; commitish?: string };
+  return gitRepo.createWorktree(gitRoot(params), { path: p.path, branch: p.branch, commitish: p.commitish });
+});
+registerMethod("git.worktree.remove", (params) => {
+  const p = (params ?? {}) as { rootPath?: string; path?: string; force?: boolean };
+  const rootPath = gitRoot(params);
+  if (typeof p.path !== "string" || p.path === "") {
+    throw Object.assign(new Error("path is required"), { code: "bad_params" });
+  }
+  return gitRepo.removeWorktree(rootPath, p.path, p.force === true);
+});
+// 在系统文件管理器里显示目录（资源管理器 / Finder / xdg-open）
+registerMethod("git.worktree.reveal", (params) => {
+  const p = (params ?? {}) as { path?: string };
+  if (typeof p.path !== "string" || p.path === "") {
+    throw Object.assign(new Error("path is required"), { code: "bad_params" });
+  }
+  return gitRepo.revealPath(p.path);
+});
+
 // 渠道运行态：bot.json 声明了什么 vs 网关实际起没起。docs/09 §五的状态徽标要靠它
 registerMethod("channel.status", async () => {
   const bots = await botRegistry.listBots();
@@ -2584,6 +2664,7 @@ registerMethod("session.start", (params) => {
     runtimeId?: string; unitId?: string; unitName?: string; rootPath?: string;
     prompt?: string; model?: string; mode?: "plan" | "build" | "edit" | "yolo";
     reasoningLevel?: string;
+    worktree?: { path?: string; branch?: string };
     memoryOptions?: {
       scopes?: readonly ("semantic" | "daily" | "procedural")[];
       dailyDate?: string;
@@ -2594,6 +2675,15 @@ registerMethod("session.start", (params) => {
       typeof p.rootPath !== "string" || typeof p.prompt !== "string") {
     throw Object.assign(new Error("runtimeId, unitId, rootPath, prompt are required"), { code: "bad_params" });
   }
+  // 会话工作树：两个字段要么都在要么都不在，半个 spec 没有语义
+  const worktree =
+    p.worktree !== undefined && typeof p.worktree.path === "string" && typeof p.worktree.branch === "string" && p.worktree.path !== "" && p.worktree.branch !== ""
+      ? { path: p.worktree.path, branch: p.worktree.branch }
+      : p.worktree === undefined
+        ? undefined
+        : (() => {
+            throw Object.assign(new Error("worktree requires both path and branch"), { code: "bad_params" });
+          })();
   return host.startSession({
     runtimeId: p.runtimeId,
     unitId: asUnitId(p.unitId),
@@ -2603,6 +2693,7 @@ registerMethod("session.start", (params) => {
     model: typeof p.model === "string" ? asModelId(p.model) : null,
     mode: p.mode,
     reasoningLevel: p.reasoningLevel,
+    worktree,
     memoryOptions: p.memoryOptions,
   });
 });

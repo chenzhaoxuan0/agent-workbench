@@ -25,6 +25,7 @@ import type {
   UnitId,
 } from "../contract.ts";
 import { log } from "../log.ts";
+import { ensureWorktree } from "../git/repo.ts";
 import { asSessionId, type SessionSource } from "../../../prototype/src/core/units.ts";
 import type { TraceSink } from "./trace.ts";
 import type { Store } from "../store/db.ts";
@@ -174,6 +175,12 @@ export interface StartSessionInput {
   readonly model: ModelId | null;
   readonly mode?: StartRequest["mode"];
   readonly reasoningLevel?: string;
+  /**
+   * 会话工作树（源代码管理面板「在此工作树启动会话」）：不存在则按 branch
+   * 创建，存在则幂等复用。命中后会话全程的 rootPath（执行器 cwd、记忆注入、
+   * 台账）都指向工作树目录，而非单元根目录。
+   */
+  readonly worktree?: { readonly path: string; readonly branch: string };
   /** 这个会话从哪来（docs/09 §六.2 的来源徽标）。缺省 = 工作台 */
   readonly source?: SessionSource;
   /**
@@ -828,6 +835,13 @@ export class RuntimeHost {
   async startSession(input: StartSessionInput): Promise<Session> {
     const adapter = this.getAdapter(input.runtimeId);
 
+    // 会话工作树：ensure（不存在则建）之后，rootPath 全程指向工作树。
+    // 放在最前面 —— 记忆注入、执行器 cwd、台账都要用换算后的路径。
+    let rootPath = input.rootPath;
+    if (input.worktree !== undefined) {
+      rootPath = await ensureWorktree(input.rootPath, input.worktree);
+    }
+
     // 记忆注入（docs/10 WP-3）：**只在开新会话时注入一次**。
     // - 冻结快照：续聊不重复注入，保住 LLM 前缀缓存（hermes 的做法）
     // - 切换执行器会开新会话 → 冷启动时自然重新注入，这正是我们要的
@@ -841,10 +855,10 @@ export class RuntimeHost {
     let injected: InjectedPrompt | null = null;
     if (this.memory !== undefined && !isNativeCommand) {
       try {
-        injected = await this.memory.build(input.rootPath, input.prompt, input.memoryOptions);
-      } catch (err: unknown) {
-        log.warn("memory injection skipped", {
-          root: input.rootPath,
+      injected = await this.memory.build(rootPath, input.prompt, input.memoryOptions);
+    } catch (err: unknown) {
+      log.warn("memory injection skipped", {
+        root: rootPath,
           error: err instanceof Error ? err.message : String(err),
         });
         injected = null;
@@ -869,7 +883,7 @@ export class RuntimeHost {
       {
         unitId: input.unitId,
         unitName: input.unitName,
-        rootPath: input.rootPath,
+        rootPath,
         prompt: effectivePrompt,
         model: effective,
         mode: input.mode,
@@ -912,7 +926,7 @@ export class RuntimeHost {
       startedAt: h.startedAt,
       endedAt: null,
       cliRef: null,
-      rootPath: input.rootPath,
+      rootPath,
       stats: { ...h.stats },
     });
     this.store.insertMessage(h.id, Date.now(), "user", input.prompt);
@@ -928,7 +942,7 @@ export class RuntimeHost {
         this.store.insertDispatch({
           sessionId: h.id,
           runtimeId: h.runtimeId,
-          rootPath: input.rootPath,
+          rootPath,
           userText: redactText(input.prompt),
           injectedBlock: injected.block, // 已在 injection 侧遮蔽过
           injectedChars: injected.injectedChars,
