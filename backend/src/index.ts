@@ -98,6 +98,10 @@ import { draftPromptOf, type BacklogConfig, type BacklogSignal } from "../../pro
 import { BotRegistry } from "./bots/registry.ts";
 import { TelegramGateway } from "./channels/telegram.ts";
 import { FeishuGateway, diagnoseLarkAccount, larkIdentities, larkProfileList, addLarkProfile } from "./channels/feishu.ts";
+import { WeixinGateway, beginWeixinLogin, pollWeixinLogin } from "./channels/weixin.ts";
+import { DiscordGateway } from "./channels/discord.ts";
+import { CredentialVault } from "./credentials/vault.ts";
+import { getNetworkInterfaces } from "./network.ts";
 import { askBot } from "./channels/askBot.ts";
 import { asModelId, asSessionId, asUnitId } from "../../prototype/src/core/units.ts";
 
@@ -694,19 +698,41 @@ const quotaResumeWatcher = new QuotaResumeWatcher({
 });
 quotaResumeWatcher.start();
 
+// 凭证保险库（Credential Vault）：管理微信等扫码产生的动态敏感令牌
+const credentialVault = new CredentialVault(config.homeDir);
+
 // 渠道网关（docs/08 WP-8）：bot 的 IM 入站通道。
 //
 // ⚠ 2026-10-02：Telegram 从「启动时无条件 start 的全局单例」改成 reconciler。
 // 旧写法的问题是渠道状态与 bot.json 无关——用户在设置页改完渠道保存，daemon 里的
-// 连接纹丝不动，必须重启才生效。现在两家网关都定期比对盘上定义与在跑实例。
+// 连接纹丝不动，必须重启才生效。现在各网关都定期比对盘上定义与在跑实例。
 // apiBase 可指向 mock（冒烟）。
 const telegramGateway = new TelegramGateway({
   apiBase: process.env["AGENT_WORKBENCH_TELEGRAM_API"] ?? "https://api.telegram.org",
   registry: botRegistry,
   host,
-  pollMs: 1500,
+  vault: credentialVault,
+  pollMs: 2000,
 });
 telegramGateway.start();
+
+// 微信：腾讯官方 iLink Bot 协议长连接
+const weixinGateway = new WeixinGateway({
+  registry: botRegistry,
+  host,
+  vault: credentialVault,
+  pollMs: 3000,
+});
+weixinGateway.start();
+
+// Discord：官方 WebSocket Gateway v10 + REST 原生轻量接入
+const discordGateway = new DiscordGateway({
+  registry: botRegistry,
+  host,
+  vault: credentialVault,
+  pollMs: 5000,
+});
+discordGateway.start();
 
 // 飞书：每 bot 一个飞书机器人（一个飞书应用 = 一个账号 = 一个 bot 身份）。
 // 入站拦截器：配置的确认会话里发「确认/拒绝 <待办id>」直接落到待办引擎（v1 关键词口径），
@@ -827,6 +853,32 @@ const httpRoutes: HttpRoute[] = [
         throw Object.assign(new Error("path or botId is required"), { code: "bad_params" });
       }
       return launchFileManager(targetPath);
+    },
+  },
+  {
+    method: "GET",
+    path: "/api/network/interfaces",
+    handle: () => ({ ok: true, interfaces: getNetworkInterfaces() }),
+  },
+  {
+    method: "POST",
+    path: "/api/channels/weixin/qr/begin",
+    handle: () => beginWeixinLogin(),
+  },
+  {
+    method: "POST",
+    path: "/api/channels/weixin/qr/poll",
+    handle: async ({ body }) => {
+      const p = (body ?? {}) as { qrCode?: string; botId?: string };
+      if (!p.qrCode) throw Object.assign(new Error("qrCode is required"), { code: "bad_params" });
+      const result = await pollWeixinLogin(p.qrCode);
+      if (result.status === "success" && p.botId) {
+        await credentialVault.save(`weixin:${p.botId}`, result.botToken, {
+          botId: p.botId,
+          ilinkBotId: result.botId,
+        });
+      }
+      return result;
     },
   },
 ];
@@ -2174,7 +2226,12 @@ registerMethod("channel.status", async () => {
   const bots = await botRegistry.listBots();
   return {
     // 各网关当前真正持有的账号数
-    gateways: { feishu: feishuGateway.activeAccounts, telegram: telegramGateway.activeAccountCount },
+    gateways: {
+      feishu: feishuGateway.activeAccounts,
+      telegram: telegramGateway.activeAccountCount,
+      weixin: weixinGateway.activeAccountCount,
+      discord: discordGateway.activeAccountCount,
+    },
     bots: bots.map((b) => {
       const declared = Array.isArray(b.channels) ? (b.channels as Array<Record<string, unknown>>) : [];
       return {
@@ -2187,6 +2244,24 @@ registerMethod("channel.status", async () => {
       };
     }),
   };
+});
+
+// 网卡拓扑探测（配对码与远程控制用）
+registerMethod("network.interfaces", () => ({ interfaces: getNetworkInterfaces() }));
+
+// 微信 iLink 扫码登录流程
+registerMethod("channel.weixin.qr.begin", () => beginWeixinLogin());
+registerMethod("channel.weixin.qr.poll", async (params) => {
+  const p = (params ?? {}) as { qrCode?: string; botId?: string };
+  if (!p.qrCode) throw Object.assign(new Error("qrCode is required"), { code: "bad_params" });
+  const result = await pollWeixinLogin(p.qrCode);
+  if (result.status === "success" && p.botId) {
+    await credentialVault.save(`weixin:${p.botId}`, result.botToken, {
+      botId: p.botId,
+      ilinkBotId: result.botId,
+    });
+  }
+  return result;
 });
 // 「这个 bot 接的是哪个飞书机器人」——名字 + 头像，不是 profile 字符串。
 // profile 形如 cli_a94d…，界面上没人认得出那是哪个机器人。
@@ -2588,6 +2663,8 @@ async function shutdown(signal: string): Promise<void> {
   backlogEngine?.stop();
   memoryScheduler?.stop(); // 之前漏了：60s interval 会活到 process.exit，正在跑的日报/curator 被从中间砍断
   telegramGateway.stop();
+  weixinGateway.stop();
+  discordGateway.stop();
   // 飞书也停：它有一个 15s reconcile interval 和每账号的长连接/子进程，
   // 漏掉它就会在 host.shutdown() 关掉 store 之后还能起新活（评审 P1 同类）
   feishuGateway.stop();

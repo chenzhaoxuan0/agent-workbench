@@ -17,6 +17,8 @@ import { TerminalPanel } from "./ui/TerminalPanel.tsx";
 import { WorkspaceHeader } from "./ui/WorkspaceHeader.tsx";
 import { bindShellShortcuts, useShell } from "./store/useShell.ts";
 import { HistoryDialog } from "./ui/HistoryDialog.tsx";
+import { MobileLayout } from "./ui/mobile/MobileLayout.tsx";
+import { useIsMobile } from "./ui/mobile/useIsMobile.ts";
 import { cn } from "./ui/cn.ts";
 
 /**
@@ -41,6 +43,7 @@ export function WorkspaceShell() {
   const settingsOpen = useShell((s) => s.settingsOpen);
   const historyModal = useShell((s) => s.historyModal);
   const closeHistoryModal = useShell((s) => s.closeHistoryModal);
+  const { isMobile, preference, setPreference } = useIsMobile();
   useEffect(() => bindShellShortcuts(), []);
 
   // 首载重挂：F5 后把 daemon 里还活着的终端进程找回成标签（带最近输出回放）。
@@ -50,6 +53,10 @@ export function WorkspaceShell() {
     // created 帧推送认领：定时任务的 TUI 派发一到点就自动弹标签，不等刷新
     useTerminalStore.getState().installTerminalCreatedClaim();
   }, []);
+
+  if (isMobile) {
+    return <MobileLayout preference={preference} onSetPreference={setPreference} />;
+  }
 
   return (
     /* 画布底色只由 body 刷一次（开壁纸时它就是唯一的全局半透明层），

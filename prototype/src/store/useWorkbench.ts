@@ -864,6 +864,14 @@ function consumeEvents(adapter: RuntimeAdapter): void {
           busy: false,
         }));
       }
+      if (event.type === "permission.resolved") {
+        useWorkbench.setState((s) => ({
+          permissionDecisions: {
+            ...s.permissionDecisions,
+            [event.requestId]: event.decision,
+          },
+        }));
+      }
       if (event.type === "message.completed") useWorkbench.setState({ busy: false });
       if (event.type === "deliverable") {
         useWorkbench.setState((s) => ({
