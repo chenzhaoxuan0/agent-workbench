@@ -106,7 +106,7 @@
 | `bot.put` / `bot.list` | **已实现** | bot 定义落盘面（WP-5）：`<rootPath>/.agent-workbench/bot.json`；put 校验 id/rootPath/name 并自动把父目录登记为扫描根 |
 | `bot.roots.add` | **已实现** | 登记扫描根目录 |
 | `bot.ask` | **已实现** | params `{botId, text, waitMs?}`；给 bot 发文本等轮落定，result `{sessionId, reply}`（WP-9：webhook/MCP 共用内核） |
-| `git.status` | **已实现** | params `{rootPath}`；result `{isRepo, branch?, detached, headShort, upstream?, ahead, behind, dirty}`（porcelain v2 解析）。非 git 仓库返回 `{isRepo:false}` 而非报错 |
+| `git.status` | **已实现** | params `{rootPath}`；result `{isRepo, branch?, detached, headShort, upstream?, ahead, behind, dirty, dirtyFileCount}`（porcelain v2 解析）。非 git 仓库返回 `{isRepo:false}` 而非报错。`dirtyFileCount` = 改动条目数（ADR 0010 加，旧 daemon 缺省由前端 client 补齐） |
 | `git.branches.list` | **已实现** | params `{rootPath}`；result `{current, detached, branches[]}`，分支行含 `kind: local\|remote`、shortHash、dateIso、author、subject、`checkedOutIn`（被哪个工作树检出，含主仓库） |
 | `git.branch.create` | **已实现** | params `{rootPath, name, ref?}`；新建即切换（`checkout -b --no-track`，ADR 0009 收窄后无 checkout 选项）。错误码：`invalid_branch_name` / `branch_exists` |
 | `git.branch.checkout` | **已实现** | params `{rootPath, name}`。错误码：`dirty_worktree`（本地改动会被覆盖） |
@@ -114,9 +114,15 @@
 | `git.worktree.create` | **已实现** | params `{rootPath, path?, branch?, commitish?}`；`branch` 与 `commitish` **至少其一**（两者都不给报 `bad_params`，ADR 0009 起不再支持从当前 HEAD 凭空建 detached 树）：`branch` 建新分支（可叠 `commitish` 定基点）、仅 `commitish` 检出已有 ref。路径相对时按仓库根解析；缺省用 VSCode 约定 `<仓库父目录>/<仓库名>.worktrees/<分支>`。result `{path, branch}`（branch 原样带回 branch/commitish）。错误码：`worktree_path_exists` / `invalid_branch_name` / `branch_checked_out_elsewhere`（data.path 指向占用分支的工作树，不带引号） |
 | `git.worktree.remove` | **已实现** | params `{rootPath, path, force?}`；有未提交改动报 `worktree_dirty`，UI 确认后 `force:true`（`--force`）重试；`worktree_is_main` = 主工作树拒删 |
 | `git.worktree.reveal` | **已实现** | params `{path}`；在系统文件管理器中显示（explorer / open / xdg-open） |
+| `git.changes` | **已实现** | params `{rootPath}`；result `{staged[], unstaged[], untracked[]}`，每行 `{path, xy, added, removed}`（ADR 0010）。`xy` 是 porcelain v2 双字母状态码（**X=索引 / Y=工作区**，同一文件可同时落两组）；行数取 `--numstat -z`，二进制给 0，未跟踪文件按实际行数（>512KB 不读，给 0）。刻意用 `-unormal`：完全未跟踪的目录折叠成一条 `dist/`，避免一个没 gitignore 的 `node_modules` 撑爆单次刷新 |
+| `git.diff` | **已实现** | params `{rootPath, path, sourceId: staged\|unstaged}`；result `{patch, truncated, binary, untracked}`。`staged` = 索引 vs HEAD，`unstaged` = 工作区 vs 索引。未跟踪文件索引里没有可比对象，由 daemon 合成「新增文件」patch 并置 `untracked:true`；超长按 256KB / 4000 行截断 |
+| `git.stage` / `git.unstage` | **已实现** | params `{rootPath, paths[]}`（**非空字符串数组**，空数组即 `bad_params`）。一律按精确路径 + `--` 分隔符，路径越出仓库根或以 `-` 开头都拒（`bad_params`）。stage 用 `add -A` 以覆盖已删除的文件 |
+| `git.commit` | **已实现** | params `{rootPath, message, paths[], stagedOnly?}`；result `{commitHash, branchName}`。`stagedOnly:true` = 只提交索引当前内容、不碰工作区（**这是默认语义，不做 `commit -a`**）；`stagedOnly:false` 时 `paths` 必填，先 `add -A` 这些路径再提交索引 —— 未跟踪文件因此也能进这次提交，且不会波及其他路径。错误码：`nothing_to_commit` / `identity_missing` |
+| `git.push` | **已实现** | params `{rootPath, remote?}`；result `{branchName, remoteName, trackingBranchName, setUpstream}`。remote 判定顺序：显式参数 → 已配置的 upstream → 仓库里唯一的 remote；都没有报 `no_remote`。无 upstream 时自动补 `-u` 并置 `setUpstream:true`。detached HEAD 拒绝。错误码：`push_rejected`（`data.detail` 带远端原话，供对话框展示与复制）/ `no_remote` |
+| `git.identity` | **已实现** | params `{rootPath}`；result `{name, email}` 或 **null**（任一项缺失）。提交对话框据此显示身份缺失警告条 |
 | 自动化 / Ops / 记忆方法 | Phase 5–7 | 落地时在此表登记 schema |
 
-**git.* 的公共错误码**（全表见 prototype/src/core/git.ts 的 `GIT_ERROR_CODES`，daemon 与前端共用一份词表）：`bad_params`（参数缺失/类型不符）、`not_a_repo`、`invalid_branch_name`（含前导 "-" 的选项注入防护）、`git_unavailable`（PATH 无 git / spawn 失败；Windows NTSTATUS 级失败自动重试 3 次）、`git_timeout`、`git_error`（未识别话术原样透传首行）。工作树路径一律走 `--porcelain -z`（NUL 分隔，路径不 C-quote），中文/空格路径不会带引号脏数据。
+**git.* 的公共错误码**（全表见 prototype/src/core/git.ts 的 `GIT_ERROR_CODES`，daemon 与前端共用一份词表）：`bad_params`（参数缺失/类型不符）、`not_a_repo`、`invalid_branch_name`（含前导 "-" 的选项注入防护）、`git_unavailable`（PATH 无 git / spawn 失败；Windows NTSTATUS 级失败自动重试 3 次）、`git_timeout`、`git_error`（未识别话术原样透传首行）。工作树路径一律走 `--porcelain -z`（NUL 分隔，路径不 C-quote），中文/空格路径不会带引号脏数据。提交面另加 4 个（ADR 0010）：`nothing_to_commit`、`identity_missing`、`push_rejected`（`data.detail` 带远端原话）、`no_remote`。
 
 **为什么有 `daemon.stop`**：Windows 上跨进程 SIGTERM 不可投递（冒烟实证，`child.kill("SIGTERM")` 后子进程无动于衷）。程序化退出一律走协议；SIGINT/SIGTERM 处理器保留给终端 Ctrl+C 与 Unix。这是 Phase 0 的一个硬结论，后续 PTY / 子进程管理会反复遇到，处置口径一致：**能走协议的走协议，信号只当人肉兜底**。
 

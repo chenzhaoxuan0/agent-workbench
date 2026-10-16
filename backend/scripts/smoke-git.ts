@@ -10,6 +10,10 @@
  *   → 工作树：创建（默认路径约定）/ 分支被占用（branch_checked_out_elsewhere 带
  *     data.path）/ dirty 探测 / 脏删除拒绝（worktree_dirty）→ 强删 /
  *     主工作树拒删 / 目标路径已存在
+ *   → 提交面（ADR 0010）：changes 三组分组 / diff（staged+unstaged+未跟踪合成）/
+ *     stage → commit → push 全链（远端是**本地 bare 仓库**，全程不碰网络）/
+ *     首推 setUpstream / non-fast-forward → push_rejected / nothing_to_commit /
+ *     identity 缺失 / no_remote / 路径越界与选项注入的 bad_params
  *   → 会话工作树：session.start 带 worktree（mockperm 夹具执行器）→ 工作树被
  *     ensure 出来并注册；同 spec 二连发幂等复用
  *   → daemon.stop 优雅退出 → 夹具清理
@@ -18,7 +22,7 @@
  */
 
 import { spawn, execSync, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -59,11 +63,23 @@ function check(name: string, cond: boolean, detail?: unknown): void {
 }
 
 let daemon: ChildProcess | undefined;
+/** 传给 daemon 的空 git 全局配置（见 startDaemon 注释） */
+let emptyGlobalConfig = "";
 
 function startDaemon(port: number): void {
   daemon = spawn(process.execPath, ["--import", "tsx", path.join(backendRoot, "src", "index.ts")], {
     cwd: backendRoot,
-    env: { ...process.env, AGENT_WORKBENCH_PORT: String(port), AGENT_WORKBENCH_HOST: "127.0.0.1", AGENT_WORKBENCH_INSECURE: "1" },
+    env: {
+      ...process.env,
+      AGENT_WORKBENCH_PORT: String(port),
+      AGENT_WORKBENCH_HOST: "127.0.0.1",
+      AGENT_WORKBENCH_INSECURE: "1",
+      // 让 git 的身份解析**只**看仓库本地配置：否则这台机器的 ~/.gitconfig 一旦
+      // 配了 user.email，「身份缺失」用例就永远测不到（提交面要靠它证明
+      // identity_missing 这个码真的会抛出来）。文件本身是空的，放临时目录。
+      GIT_CONFIG_GLOBAL: emptyGlobalConfig,
+      GIT_CONFIG_NOSYSTEM: "1",
+    },
     stdio: ["ignore", "pipe", "pipe"],
   });
   for (const stream of [daemon.stdout, daemon.stderr]) {
@@ -148,6 +164,31 @@ async function main(): Promise<void> {
   const worktreeHome = path.join(os.tmpdir(), `awb-smoke-git-home-${Date.now()}`);
   const notRepo = mkdtempSync(path.join(os.tmpdir(), "awb-smoke-norepo-"));
 
+  // 提交面夹具：本地 bare 仓库当 remote（全程离线）。两个仓库分工明确 ——
+  // cRepo 有本地身份 + remote，跑「改 → 暂存 → 提交 → 推送」全链；
+  // noIdRepo 是 git 仓库但**没有**任何身份配置，专测 identity_missing / no_remote。
+  const commitHome = mkdtempSync(path.join(os.tmpdir(), "awb-smoke-git-commit-"));
+  emptyGlobalConfig = path.join(commitHome, "empty.gitconfig");
+  writeFileSync(emptyGlobalConfig, "");
+  const bareRemote = path.join(commitHome, "remote.git");
+  const cRepo = path.join(commitHome, "repo");
+  const cClone = path.join(commitHome, "clone");
+  const noIdRepo = path.join(commitHome, "noid");
+  for (const dir of [bareRemote, cRepo, noIdRepo]) mkdirSync(dir, { recursive: true });
+
+  const gc = (cmd: string, cwd: string): string => execSync(cmd, { cwd, stdio: "pipe" }).toString();
+  execSync("git init --bare -q", { cwd: bareRemote, stdio: "ignore" });
+  // bare 仓库的 HEAD 默认指向 init.defaultBranch（各家 git 不一），钉死成 main，
+  // 后面的 clone 才不会 checkout 到一个不存在的分支
+  gc("git symbolic-ref HEAD refs/heads/main", bareRemote);
+  gc("git init -q -b main", cRepo);
+  gc("git config user.email smoke@awb", cRepo);
+  gc("git config user.name awb-smoke", cRepo);
+  gc(`git remote add origin "${bareRemote}"`, cRepo);
+  writeFileSync(path.join(cRepo, "readme.md"), "# commit surface\n");
+  gc("git add . && git commit -q -m init", cRepo);
+  gc("git init -q -b main", noIdRepo); // 故意不配 user.name / user.email
+
   const port = await freePort();
   console.log(`smoke: starting daemon on 127.0.0.1:${port}`);
   startDaemon(port);
@@ -168,10 +209,10 @@ async function main(): Promise<void> {
       if (r["ok"] !== true) throw new Error(`${method} failed: ${JSON.stringify(r["error"])}`);
       return r["result"] as T;
     };
-    const errorOf = async (method: string, params: unknown): Promise<{ code?: string; data?: { path?: string }; message?: string }> => {
+    const errorOf = async (method: string, params: unknown): Promise<{ code?: string; data?: { path?: string; detail?: string }; message?: string }> => {
       const r = await call(method, params);
       check(`${method} → ${(r["error"] as { code?: string } | undefined)?.code ?? "(no error)"}`, r["ok"] === false, r);
-      return (r["error"] ?? {}) as { code?: string; data?: { path?: string }; message?: string };
+      return (r["error"] ?? {}) as { code?: string; data?: { path?: string; detail?: string }; message?: string };
     };
 
     // 1. 状态
@@ -276,8 +317,7 @@ async function main(): Promise<void> {
     check("worktree gone after force remove", wl3.worktrees.length === 1, wl3);
 
     // 7. 会话工作树：ensure 创建 → 注册可见 → 同 spec 二连发幂等
-    const sessionWt = path.join(worktreeHome, "session-wt");
-    const session = await ok<{ id: string; status: string }>("session.start", {
+    const sessionWt = path.join(worktreeHome, "session-wt");    const session = await ok<{ id: string; status: string }>("session.start", {
       runtimeId: "mockperm",
       unitId: "smoke-git",
       unitName: "git 冒烟",
@@ -304,7 +344,152 @@ async function main(): Promise<void> {
     await call("session.cancel", { sessionId: session.id }).catch(() => undefined);
     await call("session.cancel", { sessionId: session2.id }).catch(() => undefined);
 
-    // 8. 优雅退出
+    // 8. 提交面（ADR 0010）：改了什么 → 要不要落库。远端是本地 bare 仓库，全程离线
+    const idC = await ok<{ name: string; email: string } | null>("git.identity", { rootPath: cRepo });
+    check(
+      "git.identity resolves local config",
+      idC?.name === "awb-smoke" && idC.email === "smoke@awb",
+      idC,
+    );
+    const idNone = await ok<{ name: string } | null>("git.identity", { rootPath: noIdRepo });
+    check("git.identity → null when unset", idNone === null, idNone);
+
+    // 分组正确性：改一个已跟踪文件 + 加一个未跟踪文件
+    writeFileSync(path.join(cRepo, "readme.md"), "# commit surface\nline2\n");
+    writeFileSync(path.join(cRepo, "fresh.txt"), "n1\nn2\nn3\n");
+    const ch1 = await ok<{ staged: unknown[]; unstaged: { path: string; added: number; removed: number }[]; untracked: { path: string; added: number }[] }>(
+      "git.changes",
+      { rootPath: cRepo },
+    );
+    check("changes: staged empty on fresh repo", ch1.staged.length === 0, ch1);
+    check(
+      "changes: modified file in unstaged with line counts",
+      ch1.unstaged.some((f) => f.path === "readme.md" && f.added === 1 && f.removed === 0),
+      ch1.unstaged,
+    );
+    check(
+      "changes: untracked counted by real lines",
+      ch1.untracked.some((f) => f.path === "fresh.txt" && f.added === 3),
+      ch1.untracked,
+    );
+
+    const stDirty = await ok<{ dirty: boolean; dirtyFileCount: number }>("git.status", { rootPath: cRepo });
+    check("status.dirtyFileCount counts porcelain entries", stDirty.dirty === true && stDirty.dirtyFileCount === 2, stDirty);
+
+    // 未跟踪文件的 diff：git 索引里没有可比对象，daemon 合成「新增文件」patch
+    const dUntracked = await ok<{ patch: string; untracked: boolean; truncated: boolean }>("git.diff", {
+      rootPath: cRepo, path: "fresh.txt", sourceId: "unstaged",
+    });
+    check(
+      "diff: untracked → synthesized new-file patch",
+      dUntracked.untracked === true && dUntracked.patch.includes("+n1") && dUntracked.patch.includes("@@ -0,0 +1,3 @@"),
+      dUntracked,
+    );
+
+    // 参数面与 argv 注入防护
+    await errorOf("git.diff", { rootPath: cRepo, path: "readme.md" }).then((e) =>
+      check("git.diff without sourceId → bad_params", e.code === "bad_params", e));
+    await errorOf("git.stage", { rootPath: cRepo, paths: [] }).then((e) =>
+      check("git.stage with empty paths → bad_params", e.code === "bad_params", e));
+    await errorOf("git.stage", { rootPath: cRepo, paths: ["--force"] }).then((e) =>
+      check("option-looking path rejected", e.code === "bad_params", e));
+    await errorOf("git.stage", { rootPath: cRepo, paths: ["../outside.txt"] }).then((e) =>
+      check("path escaping repo root rejected", e.code === "bad_params", e));
+    await errorOf("git.commit", { rootPath: cRepo, message: "   " }).then((e) =>
+      check("blank commit message → bad_params", e.code === "bad_params", e));
+
+    // 提交空索引 → nothing_to_commit（这一步在改完之后，索引仍然是空的）
+    await errorOf("git.commit", { rootPath: cRepo, message: "空提交", stagedOnly: true }).then((e) =>
+      check("empty index → nothing_to_commit", e.code === "nothing_to_commit", e));
+
+    // 身份缺失：noIdRepo 有内容但没身份
+    writeFileSync(path.join(noIdRepo, "x.txt"), "x\n");
+    await ok("git.stage", { rootPath: noIdRepo, paths: ["x.txt"] });
+    await errorOf("git.commit", { rootPath: noIdRepo, message: "无身份", stagedOnly: true }).then((e) =>
+      check("missing user.name/email → identity_missing", e.code === "identity_missing", e));
+
+    // 无远端的仓库 → no_remote
+    await errorOf("git.push", { rootPath: noIdRepo }).then((e) =>
+      check("push without remote → no_remote", e.code === "no_remote", e));
+
+    // 暂存 → staged diff → 提交（只提交索引）→ 首推
+    await ok("git.stage", { rootPath: cRepo, paths: ["readme.md", "fresh.txt"] });
+    const ch2 = await ok<{ staged: { path: string; added: number }[]; untracked: unknown[] }>("git.changes", { rootPath: cRepo });
+    check(
+      "stage moves entries into staged and clears untracked",
+      ch2.staged.some((f) => f.path === "readme.md") &&
+        ch2.staged.some((f) => f.path === "fresh.txt") &&
+        ch2.untracked.length === 0,
+      ch2,
+    );
+    const dStaged = await ok<{ patch: string }>("git.diff", { rootPath: cRepo, path: "readme.md", sourceId: "staged" });
+    check("diff(staged) shows the staged hunk", dStaged.patch.includes("+line2"), dStaged);
+
+    // 「包含未暂存改动」：暂存后再改同一文件，不勾开关就只能提交已暂存的那一版
+    writeFileSync(path.join(cRepo, "readme.md"), "# commit surface\nline2\nline3\n");
+    const com1 = await ok<{ commitHash: string; branchName: string }>("git.commit", {
+      rootPath: cRepo, message: "提交面冒烟", paths: [], stagedOnly: true,
+    });
+    check("commit returns hash + branch", /^[0-9a-f]{7,}$/.test(com1.commitHash) && com1.branchName === "main", com1);
+    const leftOver = await ok<{ unstaged: { path: string }[] }>("git.changes", { rootPath: cRepo });
+    check(
+      "stagedOnly leaves later edits untouched (no accidental -a)",
+      leftOver.unstaged.some((f) => f.path === "readme.md"),
+      leftOver.unstaged,
+    );
+
+    const push1 = await ok<{ remoteName: string; setUpstream: boolean; trackingBranchName: string | null; branchName: string | null }>(
+      "git.push",
+      { rootPath: cRepo },
+    );
+    check(
+      "first push sets upstream (-u)",
+      push1.setUpstream === true && push1.remoteName === "origin" && push1.branchName === "main",
+      push1,
+    );
+    const bareLog = gc("git log --oneline", bareRemote);
+    check("bare remote received the commit", bareLog.includes(com1.commitHash), bareLog);
+    const stPushed = await ok<{ ahead: number; upstream: string | null }>("git.status", { rootPath: cRepo });
+    check("after push: upstream set and nothing ahead", stPushed.upstream === "origin/main" && stPushed.ahead === 0, stPushed);
+
+    // 取消暂存
+    writeFileSync(path.join(cRepo, "extra.txt"), "e\n");
+    await ok("git.stage", { rootPath: cRepo, paths: ["extra.txt"] });
+    await ok("git.unstage", { rootPath: cRepo, paths: ["extra.txt"] });
+    const ch3 = await ok<{ staged: { path: string }[]; untracked: { path: string }[] }>("git.changes", { rootPath: cRepo });
+    check(
+      "unstage returns the file to untracked",
+      ch3.staged.length === 0 && ch3.untracked.some((f) => f.path === "extra.txt"),
+      ch3,
+    );
+
+    // 「包含未暂存改动」= 勾上后连未跟踪文件一起进这次提交
+    const com2 = await ok<{ commitHash: string }>("git.commit", {
+      rootPath: cRepo, message: "带上未跟踪", paths: ["extra.txt", "readme.md"], stagedOnly: false,
+    });
+    const ch4 = await ok<{ staged: unknown[]; unstaged: unknown[]; untracked: unknown[] }>("git.changes", { rootPath: cRepo });
+    check(
+      "commit(paths) folds unstaged + untracked in and leaves a clean tree",
+      typeof com2.commitHash === "string" && ch4.staged.length === 0 && ch4.unstaged.length === 0 && ch4.untracked.length === 0,
+      ch4,
+    );
+
+    // non-fast-forward：让远端领先一个提交，本地再推就是拒绝
+    gc(`git clone -q "${bareRemote}" "${cClone}"`, commitHome);
+    gc("git config user.email other@awb", cClone);
+    gc("git config user.name other", cClone);
+    writeFileSync(path.join(cClone, "other.txt"), "other\n");
+    gc("git add . && git commit -q -m other && git push -q", cClone);
+    writeFileSync(path.join(cRepo, "diverged.txt"), "d\n");
+    gc("git add . && git commit -q -m diverged", cRepo);
+    const rej = await errorOf("git.push", { rootPath: cRepo });
+    check(
+      "non-fast-forward → push_rejected with server detail",
+      rej.code === "push_rejected" && typeof rej.data?.detail === "string" && rej.data.detail.length > 0,
+      rej,
+    );
+
+    // 9. 优雅退出
     ws.send(JSON.stringify({ v: 1, id: "smoke-git-stop", method: "daemon.stop" }));
     const stopAck = await nextMessage(ws, (f) => f["id"] === "smoke-git-stop");
     check("daemon.stop acks", stopAck["ok"] === true, stopAck);
@@ -322,7 +507,7 @@ async function main(): Promise<void> {
     try {
       execSync("git worktree prune", { cwd: fixture, stdio: "ignore" });
     } catch { /* 夹具已坏也无所谓 */ }
-    for (const dir of [fixture, notRepo, worktreeHome]) {
+    for (const dir of [fixture, notRepo, worktreeHome, commitHome]) {
       try {
         rmSync(dir, { recursive: true, force: true });
       } catch { /* 留给系统临时目录清理 */ }

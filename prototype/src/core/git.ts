@@ -1,6 +1,6 @@
 /**
- * 源代码管理（git 分支 / 工作树）的领域类型与纯工具 —— 「源代码管理」主视图
- * （ui/SourceControlPage.tsx）与侧栏分支标记共用。
+ * 源代码管理（git 分支 / 工作树 / 改动）的领域类型与纯工具 —— 「源代码管理」主视图
+ * （ui/SourceControlPage.tsx）、Composer 顶栏的分支芯片与落库入口共用。
  *
  * 类型与 daemon git.* RPC 的 result 一一对应（backend/src/git/repo.ts 是实现）。
  * core 层保持零依赖：这里只有类型和纯函数，DOM / RPC 都不碰。
@@ -18,6 +18,8 @@ export interface GitStatus {
   readonly ahead: number;
   readonly behind: number;
   readonly dirty: boolean;
+  /** porcelain v2 的改动条目数（非 `#` 行）。dirty 的计数版，触发器据此亮提交图标 */
+  readonly dirtyFileCount: number;
 }
 
 /** 非 git 仓库时 status 的返回形态 */
@@ -54,6 +56,59 @@ export interface GitWorktree {
   readonly isMain: boolean;
 }
 
+// ---- 改动面（提交 / 推送） -------------------------------------------------
+
+/**
+ * 一个改动条目。`xy` 是 porcelain v2 的双字母状态码：**X 是索引（暂存区）、
+ * Y 是工作区**，所以同一个文件可能同时出现在 staged 与 unstaged 两组里。
+ * 未跟踪为 `"??"`，未合并为 `UU` 等。
+ */
+export interface GitChangeEntry {
+  /** 仓库相对路径，git 输出的正斜杠形态；未跟踪目录带尾斜杠（如 `dist/`） */
+  readonly path: string;
+  readonly xy: string;
+  /** 新增行数；未跟踪文件按文件实际行数给，二进制给 0 */
+  readonly added: number;
+  readonly removed: number;
+}
+
+export interface GitChangesResult {
+  readonly staged: readonly GitChangeEntry[];
+  readonly unstaged: readonly GitChangeEntry[];
+  readonly untracked: readonly GitChangeEntry[];
+}
+
+export interface GitDiffResult {
+  /** unified diff 文本；超长已按 daemon 侧阈值截断（见 truncated） */
+  readonly patch: string;
+  readonly truncated: boolean;
+  /** 二进制文件：git 的 patch 对它没意义，UI 直接给提示 */
+  readonly binary: boolean;
+  /** 未跟踪文件：索引里没有可比对象，daemon 合成「新增文件」patch */
+  readonly untracked: boolean;
+}
+
+export interface GitCommitResult {
+  readonly commitHash: string;
+  /** 提交时的当前分支；detached 时为 null */
+  readonly branchName: string | null;
+}
+
+export interface GitPushResult {
+  readonly branchName: string | null;
+  readonly remoteName: string;
+  /** 推送的远端分支名；无 upstream 的首推为 null */
+  readonly trackingBranchName: string | null;
+  /** true = daemon 补了 `-u`（首推顺带建立追踪关系） */
+  readonly setUpstream: boolean;
+}
+
+/** 提交身份。name / email 任一缺失即为 null —— 提交对话框据此显示警告条 */
+export interface GitIdentity {
+  readonly name: string;
+  readonly email: string;
+}
+
 // ---- git.* 的稳定错误码词表（ADR 0008） ------------------------------------
 // daemon 的 mapError 产生、SourceControlPage 按码走确认流、smoke-git 按码断言。
 // 三处曾各写裸字符串，一处改名其余静默退化 —— 收进唯一词表。
@@ -72,6 +127,14 @@ export const GIT_ERROR_CODES = {
   worktreeIsMain: "worktree_is_main",
   worktreePathExists: "worktree_path_exists",
   pathMissing: "path_missing",
+  /** 没有可提交的内容（索引为空且未勾选「包含未暂存改动」） */
+  nothingToCommit: "nothing_to_commit",
+  /** user.name / user.email 缺失，git 会拒绝提交 */
+  identityMissing: "identity_missing",
+  /** 远端拒绝推送：non-fast-forward / fetch first / protected branch */
+  pushRejected: "push_rejected",
+  /** 仓库一个 remote 都没有（或没指定且无法唯一确定） */
+  noRemote: "no_remote",
 } as const;
 
 export type GitErrorCode = (typeof GIT_ERROR_CODES)[keyof typeof GIT_ERROR_CODES];
@@ -108,4 +171,27 @@ export function validateBranchName(name: string, existing: readonly string[] = [
   }
   if (existing.includes(trimmed)) return { ok: false, reason: "同名分支已存在", sanitized: trimmed };
   return { ok: true };
+}
+
+// ---- 落库入口的主动作解析 -------------------------------------------------
+
+export type GitAction = "commit" | "commitAndPush" | "push";
+
+/**
+ * 按仓库状态解析「主动作」（ZCode `resolveGitActionMenuPrimaryAction` 同款）：
+ * 既有待提交改动又有领先远端 → 提交并推送；只有改动 → 提交；只有领先 → 推送；
+ * 两者都没有 → null，触发器置灰（**置灰不消失**，消失即信号丢失）。
+ *
+ * 纯函数放 core：触发器芯片与提交对话框的 Enter 键走同一条判定，不各写一份。
+ */
+export function resolveGitActionMenuPrimaryAction(input: {
+  readonly dirtyFileCount: number;
+  readonly ahead: number;
+}): GitAction | null {
+  const canCommit = input.dirtyFileCount > 0;
+  const canPush = input.ahead > 0;
+  if (canCommit && canPush) return "commitAndPush";
+  if (canCommit) return "commit";
+  if (canPush) return "push";
+  return null;
 }

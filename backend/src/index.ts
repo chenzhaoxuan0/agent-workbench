@@ -2323,6 +2323,16 @@ function optStr(params: unknown, key: string): string | undefined {
   return v.trim() === "" ? undefined : v;
 }
 
+/** 必填字符串数组参数：提交面（stage / unstage / commit）按路径操作，成批传 */
+function reqStrArray(params: unknown, key: string): string[] {
+  const p = (params ?? {}) as Record<string, unknown>;
+  const v = p[key];
+  if (!Array.isArray(v) || v.length === 0 || v.some((e) => typeof e !== "string" || e === "")) {
+    throw Object.assign(new Error(`${key} must be a non-empty string array`), { code: "bad_params" });
+  }
+  return v as string[];
+}
+
 registerMethod("git.status", (params) => gitRepo.status(gitRoot(params)));
 registerMethod("git.branches.list", (params) => gitRepo.listBranches(gitRoot(params)));
 registerMethod("git.branch.create", (params) =>
@@ -2350,6 +2360,32 @@ registerMethod("git.worktree.remove", (params) => {
 });
 // 在系统文件管理器里显示目录（资源管理器 / Finder / xdg-open）
 registerMethod("git.worktree.reveal", (params) => gitRepo.revealPath(reqStr(params, "path")));
+
+// 提交面（ADR 0010，从 ADR 0008 的「v1 不做清单」转正）：
+// 改了什么 = changes / diff，要不要落库 = stage / unstage / commit / push / identity。
+// discard（丢改动）不做 —— 不可逆且无安全网，等 checkpoint 路线。错误码约定
+// （UI 据此走确认流与警告条）：nothing_to_commit / identity_missing /
+// push_rejected（data.detail 带远端原话）/ no_remote。全表见 docs/07-wire-protocol.md。
+registerMethod("git.changes", (params) => gitRepo.changes(gitRoot(params)));
+registerMethod("git.diff", (params) =>
+  gitRepo.diff(gitRoot(params), reqStr(params, "path"), reqStr(params, "sourceId") as "staged" | "unstaged"),
+);
+registerMethod("git.stage", (params) => gitRepo.stagePaths(gitRoot(params), reqStrArray(params, "paths")));
+registerMethod("git.unstage", (params) => gitRepo.unstagePaths(gitRoot(params), reqStrArray(params, "paths")));
+registerMethod("git.commit", (params) => {
+  const p = (params ?? {}) as { message?: unknown; paths?: unknown; stagedOnly?: unknown };
+  if (typeof p.message !== "string") throw Object.assign(new Error("message must be a string"), { code: "bad_params" });
+  if (p.stagedOnly !== undefined && typeof p.stagedOnly !== "boolean") {
+    throw Object.assign(new Error("stagedOnly must be a boolean"), { code: "bad_params" });
+  }
+  return gitRepo.commitChanges(gitRoot(params), {
+    message: p.message,
+    paths: Array.isArray(p.paths) ? p.paths.filter((v): v is string => typeof v === "string") : [],
+    ...(p.stagedOnly !== undefined ? { stagedOnly: p.stagedOnly } : {}),
+  });
+});
+registerMethod("git.push", (params) => gitRepo.push(gitRoot(params), optStr(params, "remote")));
+registerMethod("git.identity", (params) => gitRepo.identity(gitRoot(params)));
 
 // 渠道运行态：bot.json 声明了什么 vs 网关实际起没起。docs/09 §五的状态徽标要靠它
 registerMethod("channel.status", async () => {

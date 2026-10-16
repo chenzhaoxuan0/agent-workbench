@@ -20,7 +20,16 @@
  */
 
 import type { NativeCommandInfo, RuntimeCapabilities } from "../../core/adapter.ts";
-import type { GitBranchesResult, GitStatusResult, GitWorktree } from "../../core/git.ts";
+import type {
+  GitBranchesResult,
+  GitChangesResult,
+  GitCommitResult,
+  GitDiffResult,
+  GitIdentity,
+  GitPushResult,
+  GitStatusResult,
+  GitWorktree,
+} from "../../core/git.ts";
 import type { RuntimeEvent } from "../../core/events.ts";
 import { ruleFromCron, type Automation, type AutomationRun, type ScheduleRule } from "../../core/automation.ts";
 import type { BacklogConfig, BacklogItem, BacklogProposal, BacklogSignal, BacklogStateSnapshot, QuotaHeadroom, QuotaResumeConfig } from "../../core/backlog.ts";
@@ -675,7 +684,13 @@ export async function fetchGitStatus(
   endpoint: string = defaultDaemonEndpoint(),
 ): Promise<GitStatusResult> {
   const client = DaemonClient.get(endpoint);
-  return client.rpc("git.status", { rootPath }, 20000);
+  const r = await client.rpc<GitStatusResult>("git.status", { rootPath }, 20000);
+  // 老 daemon（没 ADR 0010 的字段）不返回 dirtyFileCount：在此补齐，
+  // 让 UI 不必为「开发时后端没重启」写满地的 ?? 0
+  if (r.isRepo && typeof r.dirtyFileCount !== "number") {
+    return { ...r, dirtyFileCount: r.dirty ? 1 : 0 };
+  }
+  return r;
 }
 
 export async function fetchGitBranches(
@@ -734,6 +749,65 @@ export async function revealGitWorktree(
 ): Promise<null> {
   const client = DaemonClient.get(endpoint);
   return client.rpc<null>("git.worktree.reveal", { path }, 15000);
+}
+
+// ---- git.* 提交面（ADR 0010）：改了什么 / 要不要落库 ------------------------
+
+export async function fetchGitChanges(
+  rootPath: string,
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<GitChangesResult> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc("git.changes", { rootPath }, 30000);
+}
+
+export async function fetchGitDiff(
+  params: { rootPath: string; path: string; sourceId: "staged" | "unstaged" },
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<GitDiffResult> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc("git.diff", params, 30000);
+}
+
+export async function stageGitPaths(
+  params: { rootPath: string; paths: readonly string[] },
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<null> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<null>("git.stage", { rootPath: params.rootPath, paths: [...params.paths] }, 30000);
+}
+
+export async function unstageGitPaths(
+  params: { rootPath: string; paths: readonly string[] },
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<null> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<null>("git.unstage", { rootPath: params.rootPath, paths: [...params.paths] }, 30000);
+}
+
+export async function commitGitChanges(
+  params: { rootPath: string; message: string; paths: readonly string[]; stagedOnly?: boolean },
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<GitCommitResult> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc("git.commit", { ...params, paths: [...params.paths] }, 90000);
+}
+
+export async function pushGitBranch(
+  params: { rootPath: string; remote?: string },
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<GitPushResult> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc("git.push", params, 150000);
+}
+
+/** 提交身份；null = user.name / user.email 有缺，提交对话框据此显示警告条 */
+export async function fetchGitIdentity(
+  rootPath: string,
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<GitIdentity | null> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc("git.identity", { rootPath }, 20000);
 }
 
 export interface ChannelStatus {

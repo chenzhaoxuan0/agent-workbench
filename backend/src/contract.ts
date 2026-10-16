@@ -73,6 +73,12 @@ export type {
 export type {
   GitBranchInfo,
   GitBranchesResult,
+  GitChangeEntry,
+  GitChangesResult,
+  GitCommitResult,
+  GitDiffResult,
+  GitIdentity,
+  GitPushResult,
   GitStatus,
   GitStatusResult,
   GitWorktree,

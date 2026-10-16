@@ -1,6 +1,8 @@
 # git 操作走 daemon spawn git CLI + wire 协议 RPC，不引入 JS git 库
 
 > **修订（ADR 0009）**：本文「Considerations / Consequences」中的执行面决策（spawn git CLI、错误码交互契约、`--porcelain -z`、会话工作树 ensure 语义）继续有效；但「v1 范围」里的分支操作面已收窄——合并 / 分支改名 / 分支删除已移除，新建分支固定为「新建即切换」，见 `0009-narrow-branch-surface.md`。错误码词表随之删去 `branch_not_merged` / `branch_is_current` / `merge_conflicts` / `no_merge_in_progress`。
+>
+> **修订（ADR 0010）**：「v1 范围」里的**改动列表 / 暂存 / 提交 / 推送**已转正落地（`git.changes` / `git.diff` / `git.stage` / `git.unstage` / `git.commit` / `git.push` / `git.identity`，外加 `git.status` 的 `dirtyFileCount`），UI 侧据此把 git 交互拆成分支切换 / 落库 / 审阅三个入口，见 `0010-git-ui-three-entries.md`。**discard 与逐 hunk 暂存仍然不做**。
 
 「源代码管理」（分支 / 工作树管理，交互范式对齐 VSCode SCM）的执行面全部由 daemon spawn 本机 `git` 二进制完成（`backend/src/git/repo.ts`，经 `runtime/exec.ts` 的 resolveCommand 解析 PATH），以 `git.*` 方法族暴露到 wire 协议（docs/07 已登记全表）。前端只拿结构化 result 与带错误码的 error，不知道任何命令行细节。
 
@@ -20,6 +22,6 @@
 - **到达 git argv 的一切 ref 先过校验**：分支名走 `check-ref-format --branch`（前导 "-"、空名、非法字符拒掉），ref/commitish 至少拒绝前导 "-"——否则客户端把 `--force` 当分支名传进来会被 git 当选项吞掉，绕过 dirty_worktree 确认流。
 - **git 输出的路径一律 `--porcelain -z` 解析**（NUL 分隔、不 C-quote）：LF 版会把含中文/空格的路径加引号转义，喂给 existsSync / explorer 全是坑。错误话术里抠路径时同样要剥 git 的单引号。
 - **UI 按 `RuntimeCapabilities.worktrees` 渐进增强**：「在此工作树启动会话」只对声明该能力的执行器开放（目前仅 codex），能力声明跟实现走。
-- **v1 范围**：分支（创建/切换/删除/重命名/merge，远程只读）+ 工作树（创建/列表/删除/reveal）+ 会话工作树。改动列表 / 暂存 / 提交 / rebase / tag 是明确的后续项，`git.*` 命名空间为它们预留 —— 追加方法对 wire 协议是非破坏性演进（docs/07 §五）。
+- **v1 范围**：分支（创建/切换/删除/重命名/merge，远程只读）+ 工作树（创建/列表/删除/reveal）+ 会话工作树。改动列表 / 暂存 / 提交 / rebase / tag 是明确的后续项，`git.*` 命名空间为它们预留 —— 追加方法对 wire 协议是非破坏性演进（docs/07 §五）。**（ADR 0009 收窄分支面；ADR 0010 转正改动列表 / 暂存 / 提交 / 推送，discard 与 rebase / tag 仍然不做）**
 - daemon 在非 git 仓库目录上的调用返回 `{isRepo:false}` 而非报错：侧栏分支标记与面板空态都依赖这个「诚实的缺席」而不是异常流。裸仓库（没有工作树）按同口径处理。
 - **Windows 现实**：快速连发 spawn git.exe 偶发 NTSTATUS 级进程初始化失败（0xC0000142，杀软/desktop-heap 的锅）——run 层按「close code ≥ 0x80000000 视为没跑起来」自动重试，不重试就是随机红灯。
