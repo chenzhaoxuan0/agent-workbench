@@ -473,10 +473,21 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
   },
 
   runAutomationNowAction: async (id) => {
+    // 运行前提示（不拦）：定时任务配的模型可能已经下线了。
+    // 不拦是因为模型**临时**不可用不该让人连「手动跑一次」都做不了，
+    // 但必须说一声 —— 否则用户点了没反应、或者跑起来才发现用的是别的东西。
+    // 注意警告文本要**并进**成功消息里：先 set 再被「已派发」覆盖等于没提示。
+    const now = get().automations.find((a) => String(a.id) === String(id));
+    const stale =
+      now !== undefined && now.model
+        ? `注意：${now.name} 配的模型 ${now.model} 已不在 ${now.runtimeId} 的可选清单里（多半下线了），仍按它派发。`
+        : null;
     const { runAutomationNow, defaultDaemonEndpoint } = await import("../adapters/daemon/client.ts");
     try {
       await runAutomationNow(Number(id), defaultDaemonEndpoint());
-      set({ automationNotice: { kind: "info", text: "已派发，正在起新会话" } });
+      set({
+        automationNotice: { kind: stale === null ? "info" : "error", text: stale ?? "已派发，正在起新会话" },
+      });
       // 稍等片刻再刷，让「最近运行」立刻出现这条
       setTimeout(() => void get().refreshAutomations(), 1500);
     } catch (err: unknown) {
@@ -699,14 +710,31 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
       ...(loopState.reasoningLevel ? { reasoningLevel: loopState.reasoningLevel } : {}),
     };
 
-    // 模型三级回落：用户所选 → 工作单元 modelHint → 该 CLI 当前有效清单的第一个。
-    // 每一级都过「有效清单」校验：用户在设置里藏掉的模型不算数，
-    // modelHint 指向一个被藏掉 / 该 CLI 不接的模型时也不能生效。
-    const visible = visibleModelsFor(get(), activeRuntimeId);
+    // 模型回落：用户所选 → 工作单元 modelHint → 该 CLI 当前有效清单的第一个。
+    //
+    // 两类「不在有效清单里」要分开，它们对用户是完全不同的两件事：
+    //
+    // ① 用户在设置里**主动藏掉**的 —— 这是他明确表达过的意图，该排除，沿用旧行为；
+    // ② **失效模型**（执行器不再提供的）—— 这不是用户的选择，是模型下线了。
+    //    这里绝不能静默换成 visible[0]：用户以为在用 opus，实际跑的是列表第一个
+    //    （codex 实测就是 $10/$50 的旗舰档 gpt-6-astra）。照他选的用，界面上
+    //    由 ModelSelect / RuntimePicker 标「不可用」，换不换由他决定。
+    const s = get();
+    const visible = visibleModelsFor(s, activeRuntimeId);
     const hint = unit.bindings.find((b) => b.runtimeId === activeRuntimeId)?.modelHint;
     const picked = runtimeModels[activeRuntimeId];
-    const inVisible = (id: ModelId | null | undefined) => id !== null && id !== undefined && visible.some((m) => m.id === id);
-    const model: ModelId = inVisible(picked) ? picked! : inVisible(hint ? asModelId(hint) : null) ? (asModelId(hint!) as ModelId) : (visible[0]?.id ?? asModelId(""));
+    const retired = new Set(s.runtimes.find((r) => r.id === activeRuntimeId)?.retiredModels.map((m) => m.id));
+    const usable = (id: ModelId | null | undefined): boolean => {
+      if (id === null || id === undefined) return false;
+      if (visible.some((m) => m.id === id)) return true;
+      // 失效但用户没主动藏过 → 尊重他的选择，不偷换
+      return retired.has(id) && !isHiddenByUser(s, activeRuntimeId, id);
+    };
+    const model: ModelId = usable(picked)
+      ? (picked as ModelId)
+      : usable(hint ? asModelId(hint) : null)
+        ? (asModelId(hint!) as ModelId)
+        : (visible[0]?.id ?? asModelId(""));
 
     const pushUserBubble = (sessionId: SessionId) => {
       set((s) => ({
@@ -770,6 +798,17 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
     pushUserBubble(session.id);
   },
 
+  /**
+   * 重新探测执行器 —— 探测**连接状态**，顺带把模型清单也带回来。
+   *
+   * 为什么必须顺带：daemon 侧好几个 adapter 的 `probe()` 里会 `void this.syncModels()`
+   * （codex / grok / opencode / pi），也就是用户按这一下，daemon 的模型清单**确实变了**。
+   * 但以前前端这里只 `setState(probe.state)`，从不取回模型 —— 用户看到的就是
+   * 「我明明点了刷新，界面纹丝不动」。
+   *
+   * 所以探完必须再走一次 syncModelsAll：两条路最终收敛到同一份清单，
+   * 用户按哪个按钮都不再是「白按」。
+   */
   probeAll: async () => {
     for (const entry of get().runtimes) {
       void runtimeRegistry
@@ -779,6 +818,7 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
         .catch(() => undefined);
     }
     await Promise.resolve();
+    await get().syncModelsAll();
   },
 
   /**
@@ -797,7 +837,9 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
       const { syncDaemonModels } = await import("../adapters/daemon/client.ts");
       const { report, adapters } = await syncDaemonModels();
       const byId = new Map(adapters.map((a) => [a.id, a]));
+      const cachedById = new Map(report.map((r) => [r.runtimeId, r.cachedAt]));
       const changed: string[] = [];
+      const retired: string[] = [];
       for (const entry of runtimeRegistry.list()) {
         const bare = entry.id.replace(/^daemon:/, "");
         const fresh = byId.get(bare) ?? byId.get(entry.id);
@@ -805,9 +847,16 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
         // daemon 侧模型 id 是裸 string，注册表要的是带品牌的 ModelId —— 在这里归一，
         // 别让类型品牌泄漏成「每个调用点各写一遍 asModelId」
         const raw = fresh.models.map((m) => ({ ...m, id: asModelId(m.id) }));
-        if (runtimeRegistry.updateModels(entry.id, raw, fresh.modelsDiscoverable !== false)) {
+        // cachedAt 决定这一轮能不能动失效模型：有值 = daemon 没能真探到，
+        // 沿用的是上次的清单，此时隐藏/退役一律不生效（否则一次网络抖动
+        // 就会让用户可选的模型凭空消失）。
+        const cachedAt = fresh.modelsCachedAt ?? cachedById.get(fresh.id) ?? cachedById.get(bare);
+        const hadRetired = entry.retiredModels.length;
+        if (runtimeRegistry.updateModels(entry.id, raw, fresh.modelsDiscoverable !== false, cachedAt)) {
           changed.push(fresh.displayName);
         }
+        const nowRetired = runtimeRegistry.get(entry.id)?.retiredModels.length ?? 0;
+        if (nowRetired > hadRetired) retired.push(fresh.displayName);
       }
       set({
         modelSync: { at: Date.now(), report: [...report] },
@@ -816,7 +865,8 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
       // 那里统一处理「选中的模型已不在新清单里」的回落，这里不再重复一份逻辑。
       console.info(
         `[workbench] 模型清单已刷新：${report.filter((r) => r.source === "live").length}/${report.length} 家来自实时探测` +
-          (changed.length > 0 ? `，更新：${changed.join("、")}` : "，清单无变化"),
+          (changed.length > 0 ? `，更新：${changed.join("、")}` : "，清单无变化") +
+          (retired.length > 0 ? `，检测到失效模型：${retired.join("、")}` : ""),
       );
     } catch (err: unknown) {
       console.info("[workbench] 模型刷新失败（执行器不可达？）", err instanceof Error ? err.message : err);
@@ -894,18 +944,19 @@ runtimeRegistry.subscribe((runtimes) => {
   // 缺了这一步，用户第一次打开模型下拉会看到「未选模型」，
   // 而模型在 StartSessionRequest 里是必填的 —— 就成了个死路。
   //
-  // ⚠ 补默认值之外还要**校验**已选模型是否还在新清单里：刷新后执行器可能下线了
-  // 某个模型（换订阅、模型下线），选中的 id 变成空气 —— 界面上还显示着，
-  // 等用户点发送才失败。发现悬空就地改回默认，别把错误留到最后一刻。
-  const cur = useWorkbench.getState().runtimeModels;
+  // ⚠ 已选模型的悬空**不再就地改回默认**（原先会）。
+  // 以前这里 `else if (!r.models.some(...)) patch[r.id] = r.defaultModel`，
+  // 于是模型被下线时，用户以为自己在用 opus，实际已经悄悄跑成列表第一个
+  // （codex 实测就是旗舰档 gpt-6-astra，$10/$50 per MTok）。
+  // 模型下线不是用户的错，不该在他不知情时换掉他正在用的东西：
+  // 现在保持选中，交给 UI 标「不可用」，由他决定换不换。
+  // 判据用 visibleModelsFor 而不是 r.models —— 用户自己添加的自定义模型
+  // 不在 r.models 里，但它可选，不该被判成失效。
+  const state = useWorkbench.getState();
+  const cur = state.runtimeModels;
   const patch: Record<string, ModelId> = {};
   for (const r of runtimes) {
-    const selected = cur[r.id];
-    if (selected === undefined) {
-      patch[r.id] = r.defaultModel;
-    } else if (!r.models.some((m) => m.id === selected)) {
-      patch[r.id] = r.defaultModel;
-    }
+    if (cur[r.id] === undefined) patch[r.id] = r.defaultModel;
   }
   if (Object.keys(patch).length > 0) {
     useWorkbench.setState((s) => ({ runtimeModels: { ...s.runtimeModels, ...patch } }));
@@ -935,16 +986,79 @@ export const selectActiveUnit = (s: WorkbenchState): WorkUnit | undefined =>
 export const selectActiveRuntime = (s: WorkbenchState): RuntimeEntry | undefined =>
   s.runtimes.find((r) => r.id === s.activeRuntimeId);
 
+/**
+ * 用户是否**主动**把这个模型从选择器里藏了。
+ *
+ * 与「模型失效」是两回事，必须分开判：藏是明确意图，该尊重；失效是模型下线，
+ * 不是用户的选择，不该因此偷换他正在用的模型。见 send() 里的回落注释。
+ */
+export function isHiddenByUser(
+  s: WorkbenchState,
+  runtimeId: string,
+  modelId: string,
+): boolean {
+  return prefsOf(s.modelPrefs, runtimeId).hiddenModels.includes(asModelId(modelId));
+}
+
+/**
+ * 某个模型 id 在该执行器当前**是否还可选**。
+ *
+ * 四个下拉框（设置页 / 待办 / 定时任务 / 提议横幅）共用这一个判据，
+ * 免得各写一套又漂移 —— 只要有一个地方没接上，「隐藏失效模型」就漏了。
+ *
+ * 判据走 visibleModelsFor 而非 runtime.models：用户自己添加的自定义模型
+ * 不在执行器申报清单里，但它照样可选，不该被判成失效。
+ */
+export function isModelAvailable(
+  s: WorkbenchState,
+  runtimeId: string,
+  modelId: string | null | undefined,
+): boolean {
+  if (modelId === null || modelId === undefined || modelId === "") return false;
+  return visibleModelsFor(s, runtimeId).some((m) => m.id === modelId);
+}
+
+/**
+ * 取模型的展示 spec —— 当前清单里没有就退到失效留档，再没有才查本地目录。
+ *
+ * 失效留档这一步不能省：动态发现的新模型不在本地目录里，只查目录会返回
+ * undefined，UI 上就只剩一个空气 id，用户完全不知道自己在选什么。
+ */
+export function modelSpecFor(
+  runtime: RuntimeEntry | undefined,
+  modelId: ModelId | null | undefined,
+): ModelSpec | undefined {
+  if (runtime === undefined || modelId === null || modelId === undefined) return undefined;
+  return (
+    runtime.models.find((m) => m.id === modelId) ??
+    runtime.retiredModels.find((m) => m.id === modelId) ??
+    modelById(modelId)
+  );
+}
+
 /** 当前执行器 + 当前模型。composer 与能力展示都读它 */
 export const selectActivePair = (
   s: WorkbenchState,
-): { readonly runtime?: RuntimeEntry; readonly model?: ModelSpec; readonly modelId: ModelId | null } => {
+): {
+  readonly runtime?: RuntimeEntry;
+  readonly model?: ModelSpec;
+  readonly modelId: ModelId | null;
+  /** false = 用户选的模型已经失效。UI 必须标出来，绝不能静默换掉。 */
+  readonly modelAvailable: boolean;
+} => {
   const runtime = s.runtimes.find((r) => r.id === s.activeRuntimeId);
   const visible = runtime ? visibleModelsFor(s, s.activeRuntimeId) : [];
   const raw = s.runtimeModels[s.activeRuntimeId] ?? runtime?.defaultModel ?? null;
-  // 所选模型可能已被用户在设置里藏掉 → 回落到当前有效清单的第一个
-  const modelId = visible.some((m) => m.id === raw) ? raw : (visible[0]?.id ?? null);
-  return { runtime, model: modelById(modelId), modelId };
+  // 保持用户选的那个 —— 失效也保持（原先在这里静默回落到 visible[0]，
+  // 于是模型一被下线，用户以为在用 opus，实际悄悄跑的是列表第一个）。
+  // 只有「压根没选过」才退到清单第一个。
+  const modelId = raw ?? (visible[0]?.id ?? null);
+  return {
+    runtime,
+    model: modelSpecFor(runtime, modelId),
+    modelId,
+    modelAvailable: isModelAvailable(s, s.activeRuntimeId, modelId),
+  };
 };
 
 /** 某个 CLI 的有效模型清单。⚠ 返回引用稳定的数组（见 visibleModelsFor 的注释） */
@@ -972,9 +1086,17 @@ export const selectUnitAutomations = (s: WorkbenchState): readonly Automation[] 
 // 注册执行器 bootstrap —— 必须在 store 创建之后（要校正 activeRuntimeId）：
 // 优先本地 daemon（真实执行），不可达时回退 mock（纯 UI 原型，daemon 没起是正常态）。
 //
-// ⚠ 必须重试（3s 间隔 × 40 次 ≈ 2 分钟）：`pnpm dev` 下 vite 0.5s 就绪而 daemon
-// 要 8–15s 才监听，页面先开就撞上竞态；单次尝试失败会让执行器列表永远空着
-// （「没有已注册的执行器」），用户只能手动刷新。重试让竞态自愈。
+// ⚠ 必须重试：`pnpm dev` 下 vite 0.5s 就绪而 daemon 还要再起一会儿，页面先开就
+// 撞上竞态；单次尝试失败会让执行器列表永远空着（「没有已注册的执行器」），
+// 用户只能手动刷新。重试让竞态自愈。
+//
+// ⚠ 间隔必须**短间隔起步、指数退避**，不能是固定 3s。去掉 daemon 启动预热之后，
+// 冷启动的 db→listening 实测只有 37ms，tsx 进程本身几百毫秒也就起来了 ——
+// 也就是说「页面已加载但 daemon 还没监听」这个窗口通常不到一秒。固定 3s 会让用户
+// 盯着一个空的执行器列表白等整整一轮，而实际差距可能只有 200ms。
+// 封顶仍留 3s：daemon 真没起（被占用/崩溃）时，长间隔避免无谓重试风暴，
+// 总时长仍在两分钟内自愈。
+const RETRY_DELAYS_MS = [150, 300, 600, 1200, 3000] as const;
 void (async () => {
   const { listDaemonExecutors } = await import("../adapters/daemon/client.ts");
   const { createDaemonFactory } = await import("../adapters/daemon/adapter.ts");
@@ -993,13 +1115,13 @@ void (async () => {
       throw new Error("daemon 无可用执行器");
     } catch (err: unknown) {
       if (attempt === 1) {
-        console.info("[workbench] daemon 未就绪，3s 后重试（pnpm dev 下 daemon 比 vite 慢是常态）", err instanceof Error ? err.message : err);
+        console.info("[workbench] daemon 未就绪，按退避节奏重试（pnpm dev 下 daemon 比 vite 慢是常态）", err instanceof Error ? err.message : err);
       }
       if (attempt === MAX_ATTEMPTS) {
         console.info("[workbench] 本地 daemon 不可达 —— 无执行器可用（启动 backend/ 的 daemon 即接入真实执行）", err instanceof Error ? err.message : err);
         return;
       }
-      await new Promise((r) => setTimeout(r, 3000));
+      await new Promise((r) => setTimeout(r, RETRY_DELAYS_MS[Math.min(attempt - 1, RETRY_DELAYS_MS.length - 1)]!));
     }
   }
   if (infos === null) return;
@@ -1014,16 +1136,19 @@ void (async () => {
     runtimeRegistry.setState(factories[0]!.id, { status: "stopped" });
     useWorkbench.setState({ activeRuntimeId: factories[0]!.id });
     console.info(`[workbench] 已连接本地 daemon：${infos.map((i) => i.id).join(", ")}`);
-    // 哪些模型本地目录没收 —— **说出来**。
+    // 哪些模型本地元数据目录没收 —— **说出来**。
     // 原来的坑：查不到就静默丢弃，models 空了 → defaultModel 为 null → 整个
     // 执行器从列表里消失，控制台一个错都没有。现在降级显示（价格显示为未知），
     // 必须留痕，否则「加了个执行器但界面看不到」只能靠猜。
+    //
+    // 判据用 vendor === "custom" 而非文案：scaffoldModel 造的占位一律 vendor=custom，
+    // 用户自己添加的自定义模型也是。绑死中文字符串的话，下次改文案这里就静默失配。
     //
     // 放在这里而不是 subscribe 里：registerAll 每注册一个就 emit 一次，
     // 在回调里打会把同一条消息刷 8 遍。
     const unlisted = runtimeRegistry
       .list()
-      .flatMap((r) => r.models.filter((m) => m.vendorLabel === "未收录").map((m) => `${r.presentation.displayName}/${m.id}`));
+      .flatMap((r) => r.models.filter((m) => m.vendor === "custom" && m.source === "").map((m) => `${r.presentation.displayName}/${m.id}`));
     if (unlisted.length > 0) {
       console.info(
         `[workbench] ${unlisted.length} 个模型本地目录没收录，已降级显示（价格/窗口为未知）：${unlisted.join("、")}` +

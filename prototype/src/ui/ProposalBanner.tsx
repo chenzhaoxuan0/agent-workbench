@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { AlarmClockCheck, ChevronDown, ChevronUp, Sparkles, X } from "lucide-react";
 import { formatBacklogRelative } from "../core/backlog.ts";
 import { useBacklog } from "../store/useBacklog.ts";
-import { useWorkbench, visibleModelsFor } from "../store/useWorkbench.ts";
+import { useWorkbench } from "../store/useWorkbench.ts";
+import { ModelSelect } from "./ModelSelect.tsx";
 import { cn } from "./cn.ts";
 
 /**
@@ -48,7 +49,6 @@ export function ProposalBanner() {
   if (proposal === null) return null;
 
   const namespaced = runtimeBare === "" ? "" : `daemon:${runtimeBare}`;
-  const models = namespaced === "" ? [] : visibleModelsFor(useWorkbench.getState(), namespaced);
   const quota = proposal.quotas.find((q) => q.runtimeId === runtimeBare) ?? null;
 
   const onConfirm = (): void => {
@@ -142,14 +142,13 @@ export function ProposalBanner() {
             ))}
             {runtimes.length === 0 && <option value="">（无可用执行器）</option>}
           </select>
-          <select value={model} onChange={(e) => setModel(e.target.value)} className={inputCls} aria-label="模型">
-            <option value="">跟随默认</option>
-            {models.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.displayName}
-              </option>
-            ))}
-          </select>
+          <ModelSelect
+            runtimeId={namespaced}
+            value={model}
+            onChange={setModel}
+            className={inputCls}
+            ariaLabel="模型"
+          />
         </div>
         {quota !== null && quota.percent !== null && quota.percent <= 10 && (
           <p className="mt-1.5 rounded-btn bg-amber-500/10 px-2 py-1.5 text-caption text-amber-600">

@@ -619,7 +619,17 @@ export function ProviderInstancesPanel() {
                         没标的话，用户对着一个从没变过的列表只会怀疑是自己没刷新对 */}
                     <span className="mt-1 flex items-center gap-1 text-[11px] text-ash min-w-0">
                       <span className="tnum shrink-0">模型 {r.models.length}</span>
-                      {!r.modelsDiscoverable ? (
+                      {r.modelsCachedAt !== null ? (
+                        /* 这一档排最前，因为它盖过其余所有情况：连实时源都没碰到，
+                           显示的是上次成功探测的结果。用户必须一眼看出「这不是刚探的」，
+                           否则「我明明刷新过」和「其实没刷到」永远分不开。 */
+                        <span
+                          className="shrink-0 text-amber-600"
+                          title="本次启动没能连上实时源，当前清单来自上次成功探测的结果"
+                        >
+                          · 来自上次探测 {formatAgo(r.modelsCachedAt)}
+                        </span>
+                      ) : !r.modelsDiscoverable ? (
                         <span
                           className="shrink-0 text-ash/90"
                           title="该执行器没有模型清单查询接口，只能用内置清单 —— 刷新对它无效"

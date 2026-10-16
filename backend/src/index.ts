@@ -252,8 +252,22 @@ host.register(new OpenclawAdapter());
 host.register(new MockPermAdapter());
 host.loadPersisted();
 memoryScheduler?.start();
-// 后台并发预热动态模型查询（不阻断启动）
-void host.syncAllModels();
+// ⚠ 这里**刻意不做**启动预热探测。
+//
+// 早先这里是 `void host.syncAllModels()`：每次启动都要并发拉起十来个 CLI 子进程
+// 去列模型清单（实测总耗时 28s，openclaw 一家就 28.5s），换来的是「用户没要求的
+// 一次后台开销」。而它其实换不来正确性 —— fire-and-forget 的探测和界面的
+// adapter.list 赛跑，谁先谁后全看时序。
+//
+// 现在启动只读盘上的兜底缓存（RuntimeHost 构造函数同步做，几 KB），
+// 于是冷启动**立刻**给得出上一次的真实探测结果；要最新的由用户点
+// 「探测模型」或「重新探测执行器」，两条路都汇到 host.syncModels()。
+//
+// 代价说清楚：首次安装（盘上还没有缓存）时，启动看到的是各适配器的内置种子清单，
+// 界面上如实标「· 未刷新」—— 要真实清单得点一下刷新。这是「按需付费」换来的，
+// 不是把问题藏起来。
+// 想恢复启动预热，把下面这行加回来即可（宿主已从盘上载好缓存，不会再退回种子清单）：
+// void host.syncAllModels();
 
 // 总管 bot：初始化即就位（docs/10 §4.6）。失败不阻断启动 ——
 // 记忆是增强，不是前置条件。

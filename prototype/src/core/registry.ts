@@ -25,6 +25,24 @@ export interface RuntimeEntry {
   readonly models: readonly ModelSpec[];
   /** 该执行器能否动态发现模型清单。false = 刷新按钮对它无效，UI 要照实标 */
   readonly modelsDiscoverable: boolean;
+  /**
+   * 上面这份 models 来自 daemon 的兜底缓存、缓存写于何时；null = 本次真探到的。
+   *
+   * UI 靠它显示「来自上次探测 · X 前」。**别把它当新鲜度指标**——
+   * 我们刻意不给缓存设 TTL（探不到就是探不到，宁可告诉你多旧也不假装新鲜）。
+   */
+  readonly modelsCachedAt: number | null;
+  /**
+   * 失效模型：上一次成功探测里有、最近一次成功探测里已经不在的模型。
+   *
+   * 它们**不在** `models` 里（不占下拉框位置），但仍保留完整 spec ——
+   * 因为用户可能正选着它、或在定时任务里配着它，界面必须能显示
+   * 「X（不可用）」，而不是在用户不知情时把选择悄悄换成别的模型。
+   *
+   * 只在 `source === "live"` 的轮次里增删：探测失败那轮沿用旧清单，
+   * 此时既不认定任何模型失效，也不复活任何模型。
+   */
+  readonly retiredModels: readonly ModelSpec[];
   /** 相对该执行器的默认模型。非 null —— 注册时就不允许空清单 */
   readonly defaultModel: ModelId;
   readonly state: ConnectionState;
@@ -52,6 +70,21 @@ export class RuntimeRegistry {
   readonly #modelOverrides = new Map<RuntimeId, readonly RawExecutorModel[]>();
   /** 该执行器能否动态发现模型清单（daemon 侧能力标记） */
   readonly #modelDiscoverable = new Map<RuntimeId, boolean>();
+  /**
+   * 失效模型留档：执行器 id → 模型 id → 最后一次见到的完整 spec。
+   *
+   * 为什么要留 spec 而不只留 id：模型可能不在本地目录里（daemon 动态发现的
+   * 新模型），只存 id 的话界面渲染不出它的名字，用户看到的是一串空气。
+   *
+   * 上限 8 家/家：绝大多数执行器一辈子不会下线超过几个模型，留满是无意义的
+   * 内存增长；而一个从没见过的执行器不会一上来就有 8 个失效模型，所以这个
+   * 截断只会发生在「长期跟踪同一家」的场景，代价可接受。
+   */
+  readonly #retired = new Map<RuntimeId, Map<ModelId, ModelSpec>>();
+  /** 每家当前清单的来源标记：null = 真探到；数字 = 兜底缓存的写入时刻 */
+  readonly #modelCachedAt = new Map<RuntimeId, number | null>();
+  /** 退役留档的条数上限（见 #retired） */
+  static readonly RETIRED_LIMIT = 8;
 
   // ---- 注册 ----
 
@@ -63,6 +96,9 @@ export class RuntimeRegistry {
     }
     this.#factories.set(factory.id, factory);
     this.#states.set(factory.id, { status: "unprobed" });
+    // 注册快照自带兜底标记的话，登记下来 —— 否则 bootstrap 拿到的是缓存清单，
+    // 界面却会说「已刷新」，正是要治的那个毛病。
+    this.#modelCachedAt.set(factory.id, factory.modelsCachedAt ?? null);
     this.#emit();
   }
 
@@ -101,14 +137,17 @@ export class RuntimeRegistry {
     } else {
       models = [...sortModels(f.models)];
     }
-    // ⚠ 已知问题（本次审查记录，未改）：`models[0]?.id ?? defaultModelFor(models)` 里
-    // defaultModelFor 永远轮不到（models 非空时第一项就有值），于是 models.ts 里
-    // 「默认取均衡档」的规则成了死代码，默认模型 = daemon 列在第一个的那个
-    // （codex 实测是旗舰档 gpt-6-astra，$10/$50 per MTok）。
-    // 不能简单换成 `defaultModelFor(models) ?? models[0]?.id`：动态同步进来的
-    // 未收录模型会被 scaffoldModel 标成 balanced，反而抢在目录里已知的均衡档前面。
-    // 要修得先决定「未收录模型能不能当默认」，属于产品决策。
-    const first = models[0]?.id ?? defaultModelFor(models);
+    // 默认模型 = **已收录模型**里挑均衡档；实在一个都没有才退回第一个。
+    //
+    // 为什么不能直接 `defaultModelFor(models)`：scaffoldModel 把所有未收录模型
+    // 一律标成 balanced，于是「均衡档优先」这条规则会让一个刚探回来的、我们根本
+    // 不了解强弱的新模型抢在目录里已知的均衡档前面当默认。用户什么都不选，
+    // 默认拿到的就是个来路不明的模型。
+    // 为什么不能只用 `models[0]`：那是 daemon 的排列顺序，不是用户意图。
+    // codex 实测列在第一个的是旗舰档 gpt-6-astra（$10/$50 per MTok）——
+    // 等于什么都不选就按最贵的跑。
+    const catalogued = models.filter((m) => modelById(m.id) !== undefined);
+    const first = defaultModelFor(catalogued.length > 0 ? catalogued : models) ?? models[0]?.id;
     if (!first) return null;
     return {
       id,
@@ -118,6 +157,8 @@ export class RuntimeRegistry {
       transportKind: f.transport.kind,
       models,
       modelsDiscoverable: this.#modelDiscoverable.get(id) ?? true,
+      modelsCachedAt: this.#modelCachedAt.get(id) ?? null,
+      retiredModels: [...(this.#retired.get(id)?.values() ?? [])],
       defaultModel: first,
       state: this.#states.get(id) ?? { status: "unprobed" },
     };
@@ -156,17 +197,64 @@ export class RuntimeRegistry {
   /**
    * 用刷新回来的 daemon 原生清单替换该执行器的模型清单，并标记它能否动态发现。
    *
+   * @param cachedAt 这份清单来自 daemon 的兜底缓存、缓存写于何时；
+   *                 **省略 = 本轮真探到了**。这个区分是整套失效模型机制的地基：
+   *                 探测失败那轮沿用旧清单，此时既不认定任何模型失效，也不复活任何模型。
+   *
    * @returns 是否真的换了清单（换了才 emit，避免空刷新把整个界面重渲一遍）
    */
-  updateModels(id: RuntimeId, raw: readonly RawExecutorModel[], discoverable: boolean): boolean {
-    const prev = this.#modelOverrides.get(id);
-    if (prev !== undefined && sameModelList(prev, raw) && this.#modelDiscoverable.get(id) === discoverable) {
+  updateModels(
+    id: RuntimeId,
+    raw: readonly RawExecutorModel[],
+    discoverable: boolean,
+    cachedAt?: number,
+  ): boolean {
+    const prevRaw = this.#modelOverrides.get(id);
+    const prevCachedAt = this.#modelCachedAt.get(id) ?? null;
+    const nextCachedAt = cachedAt ?? null;
+
+    // 退役增删必须排在「无变化就提前返回」**之前**：清单没变不代表
+    // 「这份清单是不是探来的」没变，而且顺序反了会在首次拿到实时清单时
+    // 把刚出现的模型误判成「上一个执行器的遗留」。
+    if (cachedAt === undefined) this.#reconcileRetired(id, raw);
+
+    if (
+      prevRaw !== undefined &&
+      sameModelList(prevRaw, raw) &&
+      this.#modelDiscoverable.get(id) === discoverable &&
+      prevCachedAt === nextCachedAt
+    ) {
       return false; // 真的什么都没变，不必 emit
     }
     this.#modelDiscoverable.set(id, discoverable);
     this.#modelOverrides.set(id, raw);
+    this.#modelCachedAt.set(id, nextCachedAt);
     this.#emit();
     return true;
+  }
+
+  /**
+   * 对齐失效模型留档：清单里没有的旧模型退役，回归的模型复活。
+   *
+   * 只在真探到的那轮调用（见 updateModels 的 cachedAt 语义）。
+   * 退役时存的是**上一轮的完整 spec**，不是重新去目录里查 —— 动态发现的新模型
+   * 本来就不在目录里，只存 id 会让界面渲染不出它的名字。
+   */
+  #reconcileRetired(id: RuntimeId, raw: readonly RawExecutorModel[]): void {
+    const next = new Map<ModelId, ModelSpec>(this.#retired.get(id) ?? []);
+    for (const m of raw) next.delete(m.id);
+    const seen = new Set(raw.map((m) => m.id));
+    for (const spec of this.#entry(id)?.models ?? []) {
+      if (seen.has(spec.id)) continue;
+      next.set(spec.id, spec);
+    }
+    while (next.size > RuntimeRegistry.RETIRED_LIMIT) {
+      const oldest = next.keys().next();
+      if (oldest.done) break;
+      next.delete(oldest.value);
+    }
+    if (next.size === 0) this.#retired.delete(id);
+    else this.#retired.set(id, next);
   }
 
   /** bootstrap 阶段登记该执行器的发现能力（还没拿到模型清单，只标能力） */

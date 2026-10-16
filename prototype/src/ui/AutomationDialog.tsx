@@ -11,7 +11,8 @@ import {
 } from "../core/automation.ts";
 import type { AutomationWriteInput, ResumableSession } from "../adapters/daemon/client.ts";
 import { fetchResumableSessions } from "../adapters/daemon/client.ts";
-import { useWorkbench, visibleModelsFor } from "../store/useWorkbench.ts";
+import { useWorkbench } from "../store/useWorkbench.ts";
+import { ModelSelect } from "./ModelSelect.tsx";
 import { cn } from "./cn.ts";
 
 /**
@@ -257,7 +258,6 @@ export function AutomationDialog({
   };
 
   const namespacedRuntime = `daemon:${runtimeBare}`;
-  const models = useWorkbench((s) => visibleModelsFor(s, namespacedRuntime));
 
   // 「发到已有对话」要能选**具体哪个**对话：只写「已有对话」等于让用户猜，
   // 而发火时才自动挑的那条，未必是他以为的那个。执行器变了必须重拉 ——
@@ -748,14 +748,12 @@ export function AutomationDialog({
 
           <div className="grid grid-cols-2 gap-3">
             <Field label="模型" hint={launchMode === "terminal" ? "仅纯后台模式生效（TUI 里可自行切换）" : "可选，缺省跟随执行器默认"}>
-              <select value={model} onChange={(e) => setModel(e.target.value)} className={inputCls}>
-                <option value="">跟随默认</option>
-                {models.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.displayName}
-                  </option>
-                ))}
-              </select>
+              <ModelSelect
+                runtimeId={namespacedRuntime}
+                value={model}
+                onChange={setModel}
+                className={inputCls}
+              />
             </Field>
             <Field label="权限模式" hint={launchMode === "terminal" ? "仅纯后台模式生效（TUI 默认免审批）" : "到点的会话以此模式起"}>
               <select value={mode} onChange={(e) => setMode(e.target.value)} className={inputCls}>

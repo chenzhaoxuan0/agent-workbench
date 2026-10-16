@@ -3,7 +3,8 @@ import { ListTodo, X } from "lucide-react";
 import type { BacklogItem } from "../core/backlog.ts";
 import { draftPromptOf } from "../core/backlog.ts";
 import { useBacklog } from "../store/useBacklog.ts";
-import { useWorkbench, visibleModelsFor } from "../store/useWorkbench.ts";
+import { useWorkbench } from "../store/useWorkbench.ts";
+import { ModelSelect } from "./ModelSelect.tsx";
 import { cn } from "./cn.ts";
 
 /**
@@ -46,7 +47,6 @@ export function BacklogDialog({ initial, onClose }: { initial: BacklogItem | nul
 
   const unit = units.find((u) => u.id === unitId);
   const namespaced = runtimeBare === "" ? "" : `daemon:${runtimeBare}`;
-  const models = namespaced === "" ? [] : visibleModelsFor(useWorkbench.getState(), namespaced);
 
   // 目标变了且 prompt 没被手动碰过 → 跟着重新生成草稿
   const onGoalChange = (v: string): void => {
@@ -177,14 +177,12 @@ export function BacklogDialog({ initial, onClose }: { initial: BacklogItem | nul
 
           <div className="grid grid-cols-2 gap-3">
             <Field label="模型" hint={launchMode === "terminal" ? "仅纯后台模式生效（TUI 里可自行切换）" : "可选，缺省跟随执行器默认"}>
-              <select value={model} onChange={(e) => setModel(e.target.value)} className={inputCls}>
-                <option value="">跟随默认</option>
-                {models.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.displayName}
-                  </option>
-                ))}
-              </select>
+              <ModelSelect
+                runtimeId={namespaced}
+                value={model}
+                onChange={setModel}
+                className={inputCls}
+              />
             </Field>
             <Field label="权限模式" hint={launchMode === "terminal" ? "仅纯后台模式生效（TUI 默认免审批）" : "执行时自动放行（deny 规则仍生效）"}>
               <select value={mode} onChange={(e) => setMode(e.target.value)} className={inputCls}>
