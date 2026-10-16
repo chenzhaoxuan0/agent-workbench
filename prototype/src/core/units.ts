@@ -297,6 +297,11 @@ export interface Session {
   /** 是否为项目模式下的短寿会话（worktree 隔离） */
   readonly ephemeral: boolean;
   readonly worktree?: { readonly path: string; readonly branch: string };
+  /**
+   * 会话的实际工作目录（cwd）：普通会话 = 单元 rootPath，会话工作树 = ensure 后的
+   * 工作树路径。源代码管理靠它防「删掉有活跃会话在跑的工作树」。缺省 = 旧 daemon。
+   */
+  readonly rootPath?: string;
   readonly stats: SessionStats;
 }
 

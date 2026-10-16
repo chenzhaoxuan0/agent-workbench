@@ -130,6 +130,8 @@ interface HostSession {
   readonly id: SessionId;
   readonly unitId: UnitId;
   readonly runtimeId: RuntimeId;
+  /** 会话实际 cwd（worktree 会话 = 工作树路径）；源代码管理删树前的活跃会话判定用 */
+  readonly rootPath: string;
   title: string;
   status: SessionStatus;
   readonly startedAt: number;
@@ -357,6 +359,8 @@ export class RuntimeHost {
         id: row.id as SessionId,
         unitId: row.unitId as UnitId,
         runtimeId: row.runtimeId as RuntimeId,
+        // 老行可能没写 rootPath（列后加的）：空串 = 未知，删树防拆判定自然不命中
+        rootPath: row.rootPath ?? "",
         title: row.title,
         status: row.status as SessionStatus,
         startedAt: row.startedAt,
@@ -809,6 +813,7 @@ export class RuntimeHost {
       id: h.id,
       unitId: h.unitId,
       runtimeId: h.runtimeId,
+      rootPath: h.rootPath,
       title: h.title,
       status: h.status,
       startedAt: h.startedAt,
@@ -896,6 +901,7 @@ export class RuntimeHost {
       id: impl.id,
       unitId: input.unitId,
       runtimeId: adapter.id as RuntimeId,
+      rootPath,
       title: input.prompt.length > 60 ? input.prompt.slice(0, 60) + "…" : input.prompt,
       status: "running",
       startedAt: Date.now(),
