@@ -78,7 +78,7 @@
 | `adapter.list` | **已实现** | 已注册执行器摘要 `{id, displayName, glyph, models[], modelsDiscoverable, capabilities}` |
 | `adapter.probe` | **已实现** | params `{runtimeId}`；result 为契约 ProbeResult。**只探测安装/认证/版本，不碰模型清单** |
 | `adapter.models` | **已实现** | params `{runtimeId?}`（省略 = 全部）；result `{report[], adapters[]}`。刷新模型清单，与 probe 互不相干。**零用量**：只跑各 CLI 只读列清单命令或读本地目录文件，不发 prompt、不起 turn |
-| `session.start` | **已实现** | params `{runtimeId, unitId, unitName?, rootPath, prompt, model?, mode?}`；result 为契约 Session；后续事件经事件流推送 |
+| `session.start` | **已实现** | params `{runtimeId, unitId, unitName?, rootPath, prompt, model?, mode?, reasoningLevel?, worktree?, memoryOptions?}`；result 为契约 Session；后续事件经事件流推送。`worktree {path, branch}`（ADR 0008）：不存在则按 branch 创建工作树，存在则幂等复用；命中后会话的 rootPath（执行器 cwd / 记忆注入 / 台账）全程指向工作树目录 |
 | `session.send` | **已实现** | params `{sessionId, text}`；多轮续聊 |
 | `session.cancel` | **已实现** | params `{sessionId}` |
 | `session.list` | **已实现** | result 为契约 Session[]（按开始时间倒序），含累计 stats |
@@ -106,6 +106,17 @@
 | `bot.put` / `bot.list` | **已实现** | bot 定义落盘面（WP-5）：`<rootPath>/.agent-workbench/bot.json`；put 校验 id/rootPath/name 并自动把父目录登记为扫描根 |
 | `bot.roots.add` | **已实现** | 登记扫描根目录 |
 | `bot.ask` | **已实现** | params `{botId, text, waitMs?}`；给 bot 发文本等轮落定，result `{sessionId, reply}`（WP-9：webhook/MCP 共用内核） |
+| `git.status` | **已实现** | params `{rootPath}`；result `{isRepo, branch?, detached, headShort, upstream?, ahead, behind, dirty}`（porcelain v2 解析）。非 git 仓库返回 `{isRepo:false}` 而非报错 |
+| `git.branches.list` | **已实现** | params `{rootPath}`；result `{current, detached, branches[]}`，分支行含 `kind: local\|remote`、shortHash、dateIso、author、subject、`checkedOutIn`（被哪个工作树检出，含主仓库） |
+| `git.branch.create` | **已实现** | params `{rootPath, name, ref?, checkout?}`；缺省 `checkout=true` 即 `checkout -b --no-track`（VSCode 同款）。错误码：`invalid_branch_name` / `branch_exists` |
+| `git.branch.checkout` | **已实现** | params `{rootPath, name}`。错误码：`dirty_worktree`（本地改动会被覆盖） |
+| `git.branch.rename` | **已实现** | params `{rootPath, name}`；重命名**当前分支**（VSCode 同款语义） |
+| `git.branch.delete` | **已实现** | params `{rootPath, name, force?}`；先 `-d`，未合入报 `branch_not_merged` 由 UI 确认后带 `force:true`（`-D`）重试。`branch_is_current` = 删当前分支被拒 |
+| `git.merge` / `git.merge.abort` | **已实现** | params `{rootPath, name}` / `{rootPath}`；冲突报 `merge_conflicts`（UI 提供「放弃合并」与「在终端解决」出口），abort 即 `merge --abort` |
+| `git.worktrees.list` | **已实现** | params `{rootPath}`；result `{worktrees[]}`：path / branch / headShort / dirty（逐树 status 探测）/ isMain |
+| `git.worktree.create` | **已实现** | params `{rootPath, path?, branch?, commitish?}`；`branch` 建新分支、`commitish` 检出已有 ref（二选一）。路径缺省用 VSCode 约定 `<仓库父目录>/<仓库名>.worktrees/<分支>`。错误码：`worktree_path_exists` / `branch_checked_out_elsewhere`（data.path 指向占用分支的工作树） |
+| `git.worktree.remove` | **已实现** | params `{rootPath, path, force?}`；有未提交改动报 `worktree_dirty`，UI 确认后 `force:true`（`--force`）重试；`worktree_is_main` = 主工作树拒删 |
+| `git.worktree.reveal` | **已实现** | params `{path}`；在系统文件管理器中显示（explorer / open / xdg-open） |
 | 自动化 / Ops / 记忆方法 | Phase 5–7 | 落地时在此表登记 schema |
 
 **为什么有 `daemon.stop`**：Windows 上跨进程 SIGTERM 不可投递（冒烟实证，`child.kill("SIGTERM")` 后子进程无动于衷）。程序化退出一律走协议；SIGINT/SIGTERM 处理器保留给终端 Ctrl+C 与 Unix。这是 Phase 0 的一个硬结论，后续 PTY / 子进程管理会反复遇到，处置口径一致：**能走协议的走协议，信号只当人肉兜底**。
