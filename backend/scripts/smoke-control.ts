@@ -231,7 +231,8 @@ async function main(): Promise<void> {
   registerAcpEntriesProvider(() => [...browser.acpEntries(), ...computer.acpEntries()]);
   // 现态：浏览器启用（接管）+ 电脑 panic 关
   let injected = acpMcpServers();
-  check("只剩浏览器的 stdio 条目", injected.length === 1 && injected[0]?.name === "playwright" && injected[0]?.command === "npx", injected);
+  const isNpx = injected[0]?.command === "npx" || (injected[0]?.command === "cmd" && injected[0]?.args?.[1] === "npx");
+  check("只剩浏览器的 stdio 条目", injected.length === 1 && injected[0]?.name === "playwright" && isNpx, injected);
   check("条目带 cdp 参数（ACP 形状）", injected[0]?.args?.includes("http://127.0.0.1:9390") === true);
   await computer.setEnabled(true);
   injected = acpMcpServers();
