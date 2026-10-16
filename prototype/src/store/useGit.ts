@@ -44,6 +44,9 @@ interface GitState {
   refresh: () => Promise<void>;
   /** 侧栏标记：轻量只拉 status；面板 refresh 时顺带覆盖同一缓存 */
   refreshBranchBadge: (rootPath: string) => Promise<void>;
+  /** 分支操作（切换/新建）成功后的即时收敛：绕过徽章 TTL 直接写结果，
+   *  芯片与侧栏不用等下一轮节流拉取；后续 refreshBranchBadge 自会复核 */
+  markBranch: (rootPath: string, branch: string | null) => void;
   setPendingDialog: (d: GitPendingDialog | null) => void;
   setError: (err: GitPanelError | null) => void;
 }
@@ -154,5 +157,6 @@ export const useGit = create<GitState>((set, get) => ({
   },
 
   setPendingDialog: (pendingDialog) => set({ pendingDialog }),
+  markBranch: (rootPath, branch) => set({ branchByRoot: { ...get().branchByRoot, [rootPath]: branch } }),
   setError: (error) => set({ error }),
 }));

@@ -4,7 +4,6 @@ import {
   ChevronDown,
   Command,
   FolderGit2,
-  GitBranch,
   Paperclip,
   Plus,
   Square,
@@ -14,6 +13,7 @@ import { useShell } from "../store/useShell.ts";
 import { nativeCommandsFor, useNativeCommands } from "../store/useNativeCommands.ts";
 import type { NativeCommandInfo } from "../core/adapter.ts";
 import { RuntimePicker } from "./RuntimePicker.tsx";
+import { BranchPicker } from "./BranchPicker.tsx";
 import { ReasoningEffortPicker } from "./LoopParamsPicker.tsx";
 import { PermissionModePicker } from "./PermissionModePicker.tsx";
 import { SlashCommandMenu, filterNativeCommands } from "./SlashCommandMenu.tsx";
@@ -252,14 +252,8 @@ export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
                 <ChevronDown size={10} className="text-ash shrink-0" />
               </button>
 
-              {/* 分支（先行实现页面展示效果） */}
-              <div
-                className="flex items-center gap-1 rounded-md border border-line/60 bg-line-soft/60 px-2 py-0.5 text-[11px] font-mono text-graphite hover:text-ink transition select-none cursor-default"
-                title="代码仓库分支 (当前为 main 分支)"
-              >
-                <GitBranch size={11} className="text-teal shrink-0" />
-                <span>main</span>
-              </div>
+              {/* 分支选择器（ZCode 同款交互，ADR 0009 窄面）：非 git 仓库时自动隐藏 */}
+              <BranchPicker rootPath={unit?.rootPath} />
             </div>
 
             {/* 附件数量提示 */}
