@@ -483,7 +483,9 @@ function resolveSendTarget(
 ): string | null {
   const pick = (id: string): string | null => {
     const row = store.getSession(id);
-    return row !== undefined && row.cliRef !== null ? id : null;
+    // runtimeId 必须一致：会话是执行器私有的，跨执行器的 cli_ref 根本接不回来，
+    // 钉了别家执行器的会话还投出去 = 把提示词发进一个必然失败（或错误家）的对话
+    return row !== undefined && row.cliRef !== null && row.runtimeId === automation.runtimeId ? id : null;
   };
   // 1. 如果用户显式钉死了目标会话，只认该会话；接不回则直接返回 null，由外层回退到新开会话，绝不乱投到其它无关会话
   if (automation.targetSessionId !== null && automation.targetSessionId !== undefined && automation.targetSessionId !== "") {
@@ -1130,6 +1132,11 @@ function resolveSchedule(p: {
     if (typeof p.runAt !== "number" || !Number.isFinite(p.runAt)) {
       throw badAutomation("runAt must be a number (epoch ms)");
     }
+    // 与 delayMinutes 的互斥同理：runAt 与 scheduleRule/cron 同给时谁优先都是猜，
+    // 静默取 runAt 会把另一半参数丢得无声无息 —— 直接拒
+    if ((p.scheduleRule !== undefined && p.scheduleRule !== null) || (typeof p.cron === "string" && p.cron.trim() !== "")) {
+      throw badAutomation("runAt 与 scheduleRule/cron 只能给一个");
+    }
     const now = Date.now();
     if (p.runAt <= now) throw badAutomation("runAt 已经是过去时间了");
     if (p.runAt > now + 365 * 86_400_000) throw badAutomation("runAt 超过一年后，自动化不支持");
@@ -1265,6 +1272,9 @@ registerMethod("automation.update", (params) => {
   if (typeof p.runAt === "number" && typeof p.delayMinutes === "number") {
     throw badAutomation("runAt 与 delayMinutes 只能给一个");
   }
+  if (typeof p.runAt === "number" && typeof p.maxRuns === "number") {
+    throw badAutomation("runAt 是一次性任务，不能配 maxRuns（跑一次即停）");
+  }
   if (p.maxRuns !== undefined && p.maxRuns !== null &&
       (!Number.isFinite(p.maxRuns) || p.maxRuns < 1 || p.maxRuns > 10_000)) {
     throw badAutomation("maxRuns 必须是 1..10000（null = 不限次数）");
@@ -1276,19 +1286,36 @@ registerMethod("automation.update", (params) => {
   const absolute = typeof p.runAt === "number";
   const wantsRuns = p.recurring !== undefined || p.maxRuns !== undefined || delay || absolute;
   const recurring = delay || absolute ? false : (p.recurring ?? prev.recurring);
+  // 切到一次性表达（delay/runAt）时 maxRuns 强制 1：留着 prev 的 >1 会让一次性
+  // 任务跑完后既不到终态也推不出下一次，调度器只能亮「无法推算」的错误徽章
   const maxRuns = p.maxRuns !== undefined
     ? (p.maxRuns === null ? (recurring ? null : 1) : p.maxRuns)
-    : ((delay || absolute || (p.recurring !== undefined && !recurring)) && prev.maxRuns === null ? 1 : prev.maxRuns);
+    : delay || absolute
+      ? 1
+      : ((p.recurring !== undefined && !recurring) && prev.maxRuns === null ? 1 : prev.maxRuns);
 
   const scheduleChanged = p.cron !== undefined || p.scheduleRule !== undefined || delay || absolute;
   if (scheduleChanged) {
     const resolved = resolveSchedule(p);
-    // create 拒绝「推不出未来」的表达式，update 也必须拒 —— 否则写下去就是
-    // enabled + next_run_at=null 的无声卡死行
-    if (resolved.nextRunAt === null) throw badAutomation("当前规则推不出任何未来的触发时间");
-    patch.cron = resolved.cron;
-    patch.scheduleRule = resolved.rule;
-    patch.nextRunAt = resolved.nextRunAt;
+    // create 拒「推不出未来」，update 大多数情况同拒 —— 例外：编辑一个已经
+    // 发火过的一次性任务（runAt 已成过去）时表单会把原样规则回传，那不是在
+    // 改调度，拒掉等于「改个名字都存不了」。识别之：盘上调度原样不动。
+    const pastOneShotResubmit =
+      resolved.nextRunAt === null && resolved.rule !== null && resolved.rule.runAt !== undefined &&
+      resolved.rule.runAt <= Date.now() && p.runAt === undefined && p.delayMinutes === undefined && p.cron === undefined;
+    if (resolved.nextRunAt === null && !pastOneShotResubmit) {
+      // 否则写下去就是 enabled + next_run_at=null 的无声卡死行
+      throw badAutomation("当前规则推不出任何未来的触发时间");
+    }
+    if (!pastOneShotResubmit) {
+      patch.cron = resolved.cron;
+      patch.scheduleRule = resolved.rule;
+      patch.nextRunAt = resolved.nextRunAt;
+      // 重排已发火的一次性任务：terminal 认领时被置 enabled=0，给了新的未来
+      // 落点就是明确要再跑，保持停用会无声地永远不跑。只重挂一次性行 ——
+      // 手动停用的循环任务改调度，不该被自作主张拉起。
+      if (!prev.enabled && prev.recurring === false) patch.enabled = true;
+    }
   } else if (wantsRuns) {
     // 只动次数口径：下一个触发点从现有规则重算。
     // 盘上的行可能被手改坏（weekly 缺 weekdays / 坏 cron）——这里抛不得，
@@ -1353,13 +1380,22 @@ registerMethod("automation.runs", (params) => {
   const limit = typeof p.limit === "number" ? Math.min(Math.max(p.limit, 1), 200) : 20;
   return store.listAutomationRuns(p.id, limit);
 });
-registerMethod("automation.runNow", (params) => {
+registerMethod("automation.runNow", async (params) => {
   const p = (params ?? {}) as { id?: number };
   if (typeof p.id !== "number") throw badAutomation("id is required");
   const hit = store.getAutomation(p.id);
   if (hit === undefined) throw Object.assign(new Error(`no such automation: ${p.id}`), { code: "unknown_automation" });
-  // 手动触发不消耗 run_count（那是 scheduled 跑的账，一次性任务的终态判断只看它）
-  return runAutomation(hit.automation, { trigger: "manual" });
+  const out = await runAutomation(hit.automation, { trigger: "manual" });
+  // 手动触发不消耗 run_count（那是 scheduled 跑的账，一次性任务的终态判断只看它）。
+  // 例外：**待发火的一次性任务**手动跑 = 用户明确「现在就跑这次」，排定的那次
+  // 必须一并收口 —— 否则到点还会再跑一次，违背「跑一次，跑完即停」的承诺。
+  const a = hit.automation;
+  if (!a.recurring && (a.maxRuns ?? 1) <= 1 && a.enabled && a.nextRunAt !== null) {
+    scheduler.invalidate(a.id);
+    // 与调度器认领同款原子收口：next_run_at=null + run_count+1 + enabled=0
+    store.markAutomationFired(a.id, null, Date.now(), true);
+  }
+  return out;
 });
 
 // ---- 单元历史（unit.history）---------------------------------------------------
@@ -2321,7 +2357,8 @@ registerMethod("mcp.remove", (params) => {
     throw Object.assign(new Error("executorId and name are required"), { code: "bad_params" });
   }
   const expectedSha = typeof p.expectedSha === "string" && p.expectedSha !== "" ? p.expectedSha : undefined;
-  return mcpRemove(mcpDeps, p.executorId, p.name, { toVault: p.toVault !== false, expectedSha });
+  // toVault 严格布尔：字符串 "false" 这类 truthy 会静默当 true（与 setEnabled 的口径对齐）
+  return mcpRemove(mcpDeps, p.executorId, p.name, { toVault: typeof p.toVault === "boolean" ? p.toVault : true, expectedSha });
 });
 
 registerMethod("mcp.setEnabled", (params) => {

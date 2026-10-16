@@ -576,7 +576,20 @@ export function AutomationDialog({
                       <button
                         key={m.id}
                         type="button"
-                        onClick={() => patchSchedule({ delayMode: m.id })}
+                        onClick={() => {
+                          if (m.id !== "absolute") {
+                            patchSchedule({ delayMode: m.id });
+                            return;
+                          }
+                          // 预填值是模块加载时算的，页面开久了已是过去时 ——
+                          // 切到「指定时刻」时给个一定可用的「一小时后」，别让人先撞一次校验
+                          const parsed = fromLocalInput(draft.runAtLocal);
+                          patchSchedule(
+                            parsed === null || parsed <= Date.now()
+                              ? { delayMode: m.id, runAtLocal: toLocalInput(Date.now() + 3_600_000) }
+                              : { delayMode: m.id },
+                          );
+                        }}
                         className={cn(
                           "rounded-chip px-2.5 py-1 text-caption transition",
                           draft.delayMode === m.id ? "bg-teal-tint font-medium text-teal" : "text-ash hover:bg-line-soft hover:text-graphite",
