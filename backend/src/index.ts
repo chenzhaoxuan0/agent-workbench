@@ -2301,70 +2301,65 @@ function gitRoot(params: unknown): string {
   return p.rootPath;
 }
 
+/** 必填字符串参数的统一校验：八个 git.* 方法共用，别再复制粘贴四行块 */
+function reqStr(params: unknown, key: string): string {
+  const p = (params ?? {}) as Record<string, unknown>;
+  const v = p[key];
+  if (typeof v !== "string" || v === "") {
+    throw Object.assign(new Error(`${key} is required`), { code: "bad_params" });
+  }
+  return v;
+}
+
+/** 可选字符串参数：给了就必须是 string（数字混进来会在 spawn 里炸成误导性的 git_unavailable） */
+function optStr(params: unknown, key: string): string | undefined {
+  const p = (params ?? {}) as Record<string, unknown>;
+  const v = p[key];
+  if (v === undefined || v === null) return undefined;
+  if (typeof v !== "string") {
+    throw Object.assign(new Error(`${key} must be a string`), { code: "bad_params" });
+  }
+  return v.trim() === "" ? undefined : v;
+}
+
 registerMethod("git.status", (params) => gitRepo.status(gitRoot(params)));
 registerMethod("git.branches.list", (params) => gitRepo.listBranches(gitRoot(params)));
 registerMethod("git.branch.create", (params) => {
-  const p = (params ?? {}) as { rootPath?: string; name?: string; ref?: string; checkout?: boolean };
-  const rootPath = gitRoot(params);
-  if (typeof p.name !== "string" || p.name === "") {
-    throw Object.assign(new Error("name is required"), { code: "bad_params" });
+  const name = reqStr(params, "name");
+  const checkout = (params as { checkout?: unknown } | null)?.checkout;
+  if (checkout !== undefined && typeof checkout !== "boolean") {
+    throw Object.assign(new Error("checkout must be a boolean"), { code: "bad_params" });
   }
-  return gitRepo.createBranch(rootPath, p.name, { ref: p.ref, checkout: p.checkout });
+  return gitRepo.createBranch(gitRoot(params), name, { ref: optStr(params, "ref"), checkout: checkout === undefined ? undefined : checkout });
 });
-registerMethod("git.branch.checkout", (params) => {
-  const p = (params ?? {}) as { rootPath?: string; name?: string };
-  const rootPath = gitRoot(params);
-  if (typeof p.name !== "string" || p.name === "") {
-    throw Object.assign(new Error("name is required"), { code: "bad_params" });
-  }
-  return gitRepo.checkoutBranch(rootPath, p.name);
-});
-registerMethod("git.branch.rename", (params) => {
-  const p = (params ?? {}) as { rootPath?: string; name?: string };
-  const rootPath = gitRoot(params);
-  if (typeof p.name !== "string" || p.name === "") {
-    throw Object.assign(new Error("name is required"), { code: "bad_params" });
-  }
-  return gitRepo.renameBranch(rootPath, p.name);
-});
+registerMethod("git.branch.checkout", (params) => gitRepo.checkoutBranch(gitRoot(params), reqStr(params, "name")));
+registerMethod("git.branch.rename", (params) => gitRepo.renameBranch(gitRoot(params), reqStr(params, "name")));
 registerMethod("git.branch.delete", (params) => {
-  const p = (params ?? {}) as { rootPath?: string; name?: string; force?: boolean };
-  const rootPath = gitRoot(params);
-  if (typeof p.name !== "string" || p.name === "") {
-    throw Object.assign(new Error("name is required"), { code: "bad_params" });
+  const force = (params as { force?: unknown } | null)?.force;
+  if (force !== undefined && typeof force !== "boolean") {
+    throw Object.assign(new Error("force must be a boolean"), { code: "bad_params" });
   }
-  return gitRepo.deleteBranch(rootPath, p.name, p.force === true);
+  return gitRepo.deleteBranch(gitRoot(params), reqStr(params, "name"), force === true);
 });
-registerMethod("git.merge", (params) => {
-  const p = (params ?? {}) as { rootPath?: string; name?: string };
-  const rootPath = gitRoot(params);
-  if (typeof p.name !== "string" || p.name === "") {
-    throw Object.assign(new Error("name is required"), { code: "bad_params" });
-  }
-  return gitRepo.merge(rootPath, p.name);
-});
+registerMethod("git.merge", (params) => gitRepo.merge(gitRoot(params), reqStr(params, "name")));
 registerMethod("git.merge.abort", (params) => gitRepo.mergeAbort(gitRoot(params)));
 registerMethod("git.worktrees.list", async (params) => ({ worktrees: await gitRepo.listWorktrees(gitRoot(params)) }));
-registerMethod("git.worktree.create", (params) => {
-  const p = (params ?? {}) as { rootPath?: string; path?: string; branch?: string; commitish?: string };
-  return gitRepo.createWorktree(gitRoot(params), { path: p.path, branch: p.branch, commitish: p.commitish });
-});
+registerMethod("git.worktree.create", (params) =>
+  gitRepo.createWorktree(gitRoot(params), {
+    path: optStr(params, "path"),
+    branch: optStr(params, "branch"),
+    commitish: optStr(params, "commitish"),
+  }),
+);
 registerMethod("git.worktree.remove", (params) => {
-  const p = (params ?? {}) as { rootPath?: string; path?: string; force?: boolean };
-  const rootPath = gitRoot(params);
-  if (typeof p.path !== "string" || p.path === "") {
-    throw Object.assign(new Error("path is required"), { code: "bad_params" });
+  const force = (params as { force?: unknown } | null)?.force;
+  if (force !== undefined && typeof force !== "boolean") {
+    throw Object.assign(new Error("force must be a boolean"), { code: "bad_params" });
   }
-  return gitRepo.removeWorktree(rootPath, p.path, p.force === true);
+  return gitRepo.removeWorktree(gitRoot(params), reqStr(params, "path"), force === true);
 });
 // 在系统文件管理器里显示目录（资源管理器 / Finder / xdg-open）
-registerMethod("git.worktree.reveal", (params) => {
-  const p = (params ?? {}) as { path?: string };
-  if (typeof p.path !== "string" || p.path === "") {
-    throw Object.assign(new Error("path is required"), { code: "bad_params" });
-  }
-  return gitRepo.revealPath(p.path);
-});
+registerMethod("git.worktree.reveal", (params) => gitRepo.revealPath(reqStr(params, "path")));
 
 // 渠道运行态：bot.json 声明了什么 vs 网关实际起没起。docs/09 §五的状态徽标要靠它
 registerMethod("channel.status", async () => {
@@ -2676,11 +2671,17 @@ registerMethod("session.start", (params) => {
     throw Object.assign(new Error("runtimeId, unitId, rootPath, prompt are required"), { code: "bad_params" });
   }
   // 会话工作树：两个字段要么都在要么都不在，半个 spec 没有语义
+  // （null / 缺字段的形态也要落 bad_params，不能 TypeError → internal）
+  const wtRaw: unknown = p.worktree;
+  const wtOk =
+    wtRaw !== null && typeof wtRaw === "object" &&
+    typeof (wtRaw as { path?: unknown }).path === "string" && (wtRaw as { path: string }).path !== "" &&
+    typeof (wtRaw as { branch?: unknown }).branch === "string" && (wtRaw as { branch: string }).branch !== "";
   const worktree =
-    p.worktree !== undefined && typeof p.worktree.path === "string" && typeof p.worktree.branch === "string" && p.worktree.path !== "" && p.worktree.branch !== ""
-      ? { path: p.worktree.path, branch: p.worktree.branch }
-      : p.worktree === undefined
-        ? undefined
+    wtRaw === undefined
+      ? undefined
+      : wtOk
+        ? { path: (wtRaw as { path: string }).path, branch: (wtRaw as { branch: string }).branch }
         : (() => {
             throw Object.assign(new Error("worktree requires both path and branch"), { code: "bad_params" });
           })();

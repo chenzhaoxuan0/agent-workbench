@@ -17,6 +17,7 @@ import {
   X,
 } from "lucide-react";
 import {
+  GIT_ERROR_CODES,
   validateBranchName,
   type GitBranchInfo,
   type GitStatus,
@@ -64,9 +65,21 @@ interface RpcErrorShape {
 }
 
 function asRpcError(err: unknown): RpcErrorShape {
-  return err instanceof Error
-    ? { code: (err as { code?: string }).code, message: err.message }
-    : { message: String(err) };
+  // data 必须带出来：branch_checked_out_elsewhere 的 data.path 是
+  // 「打开那个工作树」出口按钮的唯一数据源，丢了它按钮永远不渲染
+  if (err instanceof Error) {
+    const e = err as Error & { code?: string; data?: { path?: string } };
+    return { code: e.code, message: e.message, ...(e.data !== undefined ? { data: e.data } : {}) };
+  }
+  return { message: String(err) };
+}
+
+/** 开终端并把用户带到看得见它的地方：sourceControl 视图下 TerminalPanel 不挂载，
+ *  只 createTab 的话标签建在后台、用户原地不动（Codex 评审 P2） */
+function openTerminalAt(cwd: string, title: string): void {
+  useTerminalStore.getState().createTab({ cwd, title });
+  useShell.getState().setMainView("chat");
+  useShell.getState().setConversationView("terminal");
 }
 
 // ---------------------------------------------------------------------------
@@ -76,9 +89,10 @@ function asRpcError(err: unknown): RpcErrorShape {
 type Dialog =
   | { kind: "createBranch"; ref?: string }
   | { kind: "rename"; name: string }
-  | { kind: "createWorktree"; branch?: string }
-  | { kind: "deleteBranch"; name: string; forceReason?: string }
-  | { kind: "deleteWorktree"; wt: GitWorktree; forceReason?: string }
+  | { kind: "createWorktree"; branch?: string; commitish?: string }
+  /** root 在打开时快照：删除确认跨仓库重试会强删错仓库的同名分支（评审 P1） */
+  | { kind: "deleteBranch"; root: string; name: string; forceReason?: string }
+  | { kind: "deleteWorktree"; root: string; wt: GitWorktree; forceReason?: string }
   | { kind: "startSession"; wt: GitWorktree }
   | null;
 
@@ -105,17 +119,19 @@ export function SourceControlPage() {
   /** 会话工作树按执行器能力门控（契约 RuntimeCapabilities.worktrees） */
   const sessionWorktreeSupported = activeRuntime?.capabilities.worktrees === true;
 
-  // 跟随激活单元换仓库；面板打开期间 CommandCenter 的快捷入口经
-  // pendingDialog 请求直接落到某个对话框
+  // 跟随激活单元换仓库（key 用 rootPath：unit 对象身份每次 units 重建都变，
+  // 拿它当依赖会让无关的列表刷新都触发一轮 4+ git 进程的 refresh）
+  const unitRootPath = unit?.rootPath;
   useEffect(() => {
-    if (unit !== undefined) openRepo(unit.rootPath);
-  }, [unit, openRepo]);
+    if (unitRootPath !== undefined) openRepo(unitRootPath);
+  }, [unitRootPath, openRepo]);
 
+  // 没有激活单元时不消费：留着等单元就绪后面板挂载时再弹，而不是静默吞掉
   useEffect(() => {
-    if (pendingDialog === null) return;
+    if (pendingDialog === null || unit === undefined) return;
     setDialog(pendingDialog === "createBranch" ? { kind: "createBranch" } : { kind: "createWorktree" });
     setPendingDialog(null);
-  }, [pendingDialog, setPendingDialog]);
+  }, [pendingDialog, setPendingDialog, unit]);
 
   // 面板聚焦时刷新一次（从别处切回来看到的就不是旧数据）
   useEffect(() => {
@@ -174,9 +190,9 @@ export function SourceControlPage() {
       {/* 错误横幅（合并冲突时给「放弃合并」出口） */}
       {error !== null && (
         <div className="mx-4 mt-3 flex items-start gap-2 rounded-card border border-line bg-card px-3 py-2 text-body-sm text-ink">
-          <TriangleAlert size={14} className="mt-0.5 shrink-0 text-amber-500" />
+          <TriangleAlert size={14} className="mt-0.5 shrink-0 text-loss" />
           <span className="min-w-0 flex-1 break-all">{error.text}</span>
-          {error.code === "merge_conflicts" && (
+          {error.code === GIT_ERROR_CODES.mergeConflicts && (
             <>
               <button
                 onClick={() => void op("放弃合并", () => abortGitMerge(root))}
@@ -185,16 +201,14 @@ export function SourceControlPage() {
                 放弃合并
               </button>
               <button
-                onClick={() =>
-                  useTerminalStore.getState().createTab({ cwd: root, title: "解决合并冲突" })
-                }
+                onClick={() => openTerminalAt(root, "解决合并冲突")}
                 className="shrink-0 rounded-btn border border-line px-2 py-0.5 text-caption text-graphite hover:bg-line-soft hover:text-ink"
               >
                 在终端解决
               </button>
             </>
           )}
-          {error.code === "branch_checked_out_elsewhere" && error.data?.path !== undefined && (
+          {error.code === GIT_ERROR_CODES.branchCheckedOutElsewhere && error.data?.path !== undefined && (
             <button
               onClick={() => void revealGitWorktree(error.data?.path ?? "")}
               className="shrink-0 rounded-btn border border-line px-2 py-0.5 text-caption text-graphite hover:bg-line-soft hover:text-ink"
@@ -235,7 +249,7 @@ export function SourceControlPage() {
             {branches === null ? (
               <LoadingRow />
             ) : (
-              <div className="overflow-hidden rounded-card border border-line">
+              <div className="overflow-hidden rounded-card border border-line bg-card">
                 {branches.branches.length === 0 && <EmptyState text="没有任何分支" inset />}
                 {branches.branches.map((b) => (
                   <BranchRow
@@ -245,9 +259,17 @@ export function SourceControlPage() {
                     disabled={busy}
                     onCheckout={() => void op(`切换到 ${b.name}`, () => checkoutGitBranch({ rootPath: root, name: b.name }))}
                     onRename={() => setDialog({ kind: "rename", name: b.name })}
-                    onDelete={() => setDialog({ kind: "deleteBranch", name: b.name })}
+                    onDelete={() => setDialog({ kind: "deleteBranch", root, name: b.name })}
                     onMerge={() => void op(`合并 ${b.name}`, () => mergeGitBranch({ rootPath: root, name: b.name }))}
-                    onCreateWorktreeFrom={() => setDialog({ kind: "createWorktree", branch: b.name })}
+                    onCreateWorktreeFrom={() =>
+                      // 远程分支不是本地分支，不能走「检出已有分支」模式：
+                      // 作为新分支的 commitish 基点传下去，否则会静默从当前 HEAD 建树
+                      setDialog(
+                        b.kind === "local"
+                          ? { kind: "createWorktree", branch: b.name }
+                          : { kind: "createWorktree", commitish: b.name },
+                      )
+                    }
                   />
                 ))}
               </div>
@@ -273,7 +295,7 @@ export function SourceControlPage() {
             {worktrees === null ? (
               <LoadingRow />
             ) : (
-              <div className="overflow-hidden rounded-card border border-line">
+              <div className="overflow-hidden rounded-card border border-line bg-card">
                 {worktrees.length === 0 && <EmptyState text="没有工作树" inset />}
                 {worktrees.map((w) => (
                   <WorktreeRow
@@ -283,9 +305,14 @@ export function SourceControlPage() {
                     disabled={busy}
                     sessionWorktreeSupported={sessionWorktreeSupported}
                     onStartSession={() => setDialog({ kind: "startSession", wt: w })}
-                    onTerminal={() => useTerminalStore.getState().createTab({ cwd: w.path, title: worktreeTitle(w) })}
-                    onReveal={() => void revealGitWorktree(w.path).catch(() => undefined)}
-                    onDelete={() => setDialog({ kind: "deleteWorktree", wt: w })}
+                    onTerminal={() => openTerminalAt(w.path, worktreeTitle(w))}
+                    onReveal={() =>
+                      void revealGitWorktree(w.path).catch((err: unknown) => {
+                        const e = asRpcError(err);
+                        setError({ text: `在文件管理器中显示失败：${e.message ?? "未知错误"}`, code: e.code });
+                      })
+                    }
+                    onDelete={() => setDialog({ kind: "deleteWorktree", root, wt: w })}
                   />
                 ))}
               </div>
@@ -320,10 +347,11 @@ export function SourceControlPage() {
         <CreateWorktreeDialog
           branches={branches?.branches.filter((b) => b.kind === "local") ?? []}
           defaultBranch={dialog.branch}
+          defaultCommitish={dialog.commitish}
           rootPath={root}
           busy={busy}
           onClose={() => setDialog(null)}
-          onSubmit={async (payload) => op("新建工作树", () => createGitWorktree({ rootPath: root, ...payload }))}
+          onSubmit={(payload) => op("新建工作树", () => createGitWorktree({ rootPath: root, ...payload }))}
         />
       )}
       {dialog?.kind === "deleteBranch" && (
@@ -339,14 +367,21 @@ export function SourceControlPage() {
           busy={busy}
           onClose={() => setDialog(null)}
           onConfirm={async () => {
+            // 用打开对话框时快照的 root：op 期间切了单元，也不能把确认弹窗
+            // 换成新仓库的同名分支（评审 P1：延迟的 branch_not_merged 重开场景）
             const ok = await op(
               "删除分支",
-              () => deleteGitBranch({ rootPath: root, name: dialog.name, force: dialog.forceReason !== undefined }),
+              () =>
+                deleteGitBranch({ rootPath: dialog.root, name: dialog.name, force: dialog.forceReason !== undefined }),
             );
-            // 第一次 -d 失败不是流程终点：转成「未合并 → 强删确认」
-            if (!ok && useGit.getState().error?.code === "branch_not_merged") {
+            if (ok) {
+              setDialog(null);
+              return;
+            }
+            // 第一次 -d 失败不是流程终点：转成「未合并 → 强删确认」（仍钉在原仓库）
+            if (useGit.getState().error?.code === GIT_ERROR_CODES.branchNotMerged) {
               useGit.getState().setError(null);
-              setDialog({ kind: "deleteBranch", name: dialog.name, forceReason: "该分支还有未合入的提交" });
+              setDialog({ ...dialog, forceReason: "该分支还有未合入的提交" });
             }
           }}
         />
@@ -368,14 +403,18 @@ export function SourceControlPage() {
               "删除工作树",
               () =>
                 removeGitWorktree({
-                  rootPath: root,
+                  rootPath: dialog.root,
                   path: dialog.wt.path,
                   force: dialog.forceReason !== undefined,
                 }),
             );
-            if (!ok && useGit.getState().error?.code === "worktree_dirty") {
+            if (ok) {
+              setDialog(null);
+              return;
+            }
+            if (useGit.getState().error?.code === GIT_ERROR_CODES.worktreeDirty) {
               useGit.getState().setError(null);
-              setDialog({ kind: "deleteWorktree", wt: dialog.wt, forceReason: "该工作树里有未提交改动" });
+              setDialog({ ...dialog, forceReason: "该工作树里有未提交改动" });
             }
           }}
         />
@@ -446,7 +485,7 @@ function BranchRow(props: {
     <div
       className={cn(
         "group flex items-center gap-2 border-b border-line-soft px-3 py-2 last:border-b-0",
-        isCurrent ? "bg-teal-tint/50" : "hover:bg-line-soft/60",
+        isCurrent ? "bg-teal-tint" : "hover:bg-line-soft/60",
         branch.kind === "remote" && "text-ash",
       )}
     >
@@ -455,7 +494,7 @@ function BranchRow(props: {
       ) : (
         <GitBranch size={13} className={cn("shrink-0", isCurrent ? "text-teal" : "text-graphite")} />
       )}
-      <span className={cn("shrink-0 truncate text-body-sm", isCurrent ? "font-medium text-ink" : "text-ink")}>
+      <span className={cn("min-w-0 truncate text-body-sm", isCurrent ? "font-medium text-ink" : "text-ink")}>
         {branch.name}
       </span>
       {isCurrent && <Check size={12} className="shrink-0 text-teal" />}
@@ -511,7 +550,7 @@ function WorktreeRow(props: {
   return (
     <div className="group flex items-center gap-2 border-b border-line-soft px-3 py-2 last:border-b-0 hover:bg-line-soft/60">
       <FolderGit2 size={13} className="shrink-0 text-graphite" />
-      <span className="shrink-0 truncate text-body-sm text-ink" title={wt.path}>
+      <span className="min-w-0 max-w-[30%] truncate text-body-sm text-ink" title={wt.path}>
         {name}
       </span>
       {wt.branch !== null ? (
@@ -573,7 +612,7 @@ function RowBtn(props: {
       onClick={props.onClick}
       className={cn(
         "rounded-btn p-1 text-ash hover:bg-line hover:text-ink disabled:opacity-30",
-        props.danger && "hover:text-red-500",
+        props.danger && "hover:text-loss",
       )}
     >
       <Icon size={12} />
@@ -595,9 +634,17 @@ function SectionHeader(props: { icon: ReactNode; title: string; count?: number; 
 }
 
 function EmptyState({ text, inset }: { text: string; inset?: boolean }) {
+  const body = (
+    <>
+      <FolderGit2 size={18} className="mx-auto mb-2 text-graphite" />
+      <p className="text-body-sm text-ash">{text}</p>
+    </>
+  );
+  // 列表内嵌空态（inset）保持轻量单行；页面级空态包卡片，与 Backlog/Automations 同构
+  if (inset) return <div className="py-8 text-center">{body}</div>;
   return (
-    <div className={cn("py-10 text-center text-body-sm text-ash", inset ? undefined : "flex-1 content-center")}>
-      {text}
+    <div className="flex flex-1 items-center justify-center p-6">
+      <div className="rounded-card border border-line bg-card px-6 py-10 text-center">{body}</div>
     </div>
   );
 }
@@ -616,23 +663,51 @@ function LoadingRow() {
 // ---------------------------------------------------------------------------
 
 function DialogShell(props: { title: string; children: ReactNode; onClose: () => void }) {
+  // Esc 关闭：bindShellShortcuts 的 Esc 链只认 shell 级弹窗，页面级对话框自管
+  // （与 AddBotDialog / ImportBotDialog 的最新约定一致）
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === "Escape") props.onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [props.onClose]);
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs" onClick={props.onClose}>
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6 backdrop-blur-xs"
+      onClick={props.onClose}
+    >
       <div
         role="dialog"
+        aria-modal="true"
         aria-label={props.title}
         onClick={(e) => e.stopPropagation()}
-        className="w-[520px] max-w-[92vw] overflow-hidden rounded-card border border-line bg-card shadow-2xl"
+        className="flex max-h-[92vh] w-[520px] max-w-[92vw] flex-col overflow-hidden rounded-card border border-line bg-card shadow-2xl"
       >
-        <div className="flex h-10 items-center justify-between border-b border-line px-4">
-          <span className="text-body-sm font-medium text-ink">{props.title}</span>
-          <button onClick={props.onClose} aria-label="关闭" className="rounded-btn p-1 text-ash hover:bg-line-soft hover:text-ink">
+        <div className="flex h-10 shrink-0 items-center justify-between gap-2 border-b border-line px-4">
+          <span className="min-w-0 flex-1 truncate text-body-sm font-medium text-ink" title={props.title}>
+            {props.title}
+          </span>
+          <button onClick={props.onClose} aria-label="关闭" className="shrink-0 rounded-btn p-1 text-ash hover:bg-line-soft hover:text-ink">
             <X size={13} />
           </button>
         </div>
-        {props.children}
+        {/* 矮视口下内容可滚 —— 外层 overflow-hidden 会直接裁掉（对齐 BacklogDialog 壳） */}
+        <div className="min-h-0 flex-1 overflow-y-auto">{props.children}</div>
       </div>
     </div>
+  );
+}
+
+/** 五个对话框共用的取消按钮（原先五份逐字重复的 className） */
+function DialogCancelBtn(props: { onClick: () => void }) {
+  return (
+    <button
+      onClick={props.onClick}
+      className="rounded-btn border border-line px-3 py-1.5 text-body-sm text-graphite hover:bg-line-soft hover:text-ink"
+    >
+      取消
+    </button>
   );
 }
 
@@ -651,8 +726,8 @@ function NameField(props: {
         onChange={(e) => props.onChange(e.target.value)}
         placeholder={props.placeholder}
         className={cn(
-          "w-full rounded-btn border bg-rail px-3 py-2 text-body-sm text-ink outline-none placeholder:text-graphite",
-          props.value.length > 0 && !v.ok ? "border-red-400" : "border-line focus:border-teal",
+          "w-full rounded-input border border-line bg-rail px-3 py-2 text-body-sm text-ink outline-none placeholder:text-ash",
+          props.value.length > 0 && !v.ok ? "border-loss" : "border-line focus:border-teal",
         )}
       />
       {props.value.length > 0 && !v.ok && (
@@ -690,7 +765,7 @@ function CreateBranchDialog(props: {
           <select
             value={ref}
             onChange={(e) => setRef(e.target.value)}
-            className="w-full rounded-btn border border-line bg-rail px-3 py-2 text-body-sm text-ink outline-none focus:border-teal"
+            className="w-full rounded-input border border-line bg-rail px-3 py-2 text-body-sm text-ink outline-none focus:border-teal"
           >
             <option value="">当前 HEAD</option>
             {props.refs.map((b) => (
@@ -706,9 +781,7 @@ function CreateBranchDialog(props: {
           创建后立即切换过去（VSCode 默认行为）
         </label>
         <div className="flex justify-end gap-2 pt-1">
-          <button onClick={props.onClose} className="rounded-btn border border-line px-3 py-1.5 text-body-sm text-graphite hover:bg-line-soft hover:text-ink">
-            取消
-          </button>
+          <DialogCancelBtn onClick={props.onClose} />
           <button
             disabled={!v.ok || props.busy}
             onClick={async () => {
@@ -739,9 +812,7 @@ function RenameDialog(props: {
       <div className="flex flex-col gap-3 p-4">
         <NameField value={name} onChange={setName} existing={props.existing.filter((n) => n !== props.current)} placeholder="新分支名" />
         <div className="flex justify-end gap-2">
-          <button onClick={props.onClose} className="rounded-btn border border-line px-3 py-1.5 text-body-sm text-graphite hover:bg-line-soft hover:text-ink">
-            取消
-          </button>
+          <DialogCancelBtn onClick={props.onClose} />
           <button
             disabled={!v.ok || props.busy}
             onClick={async () => {
@@ -762,12 +833,14 @@ function RenameDialog(props: {
 function CreateWorktreeDialog(props: {
   branches: readonly GitBranchInfo[];
   defaultBranch?: string;
+  /** 远程分支行入口：作为新分支的基点（commitish），不是可检出的本地分支 */
+  defaultCommitish?: string;
   rootPath: string;
   busy: boolean;
   onClose: () => void;
   onSubmit: (payload: { path?: string; branch?: string; commitish?: string }) => Promise<boolean>;
 }) {
-  // mode=new：建新分支；mode=existing：检出已有分支（被别的树占用的禁选）
+  // mode=new：建新分支（可带 commitish 基点）；mode=existing：检出已有本地分支
   const defaultIsExisting =
     props.defaultBranch !== undefined && props.branches.some((b) => b.name === props.defaultBranch);
   const [mode, setMode] = useState<"new" | "existing">(defaultIsExisting ? "existing" : "new");
@@ -775,6 +848,8 @@ function CreateWorktreeDialog(props: {
   const [existingBranch, setExistingBranch] = useState(
     defaultIsExisting ? (props.defaultBranch ?? "") : (props.branches.find((b) => b.checkedOutIn === null)?.name ?? ""),
   );
+  /** 新分支的基点：远程分支入口预填；清空 = 当前 HEAD */
+  const [commitish, setCommitish] = useState(props.defaultCommitish ?? "");
   const [path, setPath] = useState("");
 
   const repoSegs = props.rootPath.split(/[\\/]/).filter(Boolean);
@@ -796,7 +871,7 @@ function CreateWorktreeDialog(props: {
               onClick={() => setMode(m)}
               aria-pressed={mode === m}
               className={cn(
-                "rounded-chip border px-2.5 py-1 text-caption",
+                "flex h-7 items-center rounded-chip border px-2.5 text-caption",
                 mode === m ? "border-teal-edge bg-teal-tint text-ink" : "border-line text-graphite hover:bg-line-soft",
               )}
             >
@@ -805,12 +880,23 @@ function CreateWorktreeDialog(props: {
           ))}
         </div>
         {mode === "new" ? (
-          <NameField value={newBranch} onChange={setNewBranch} existing={props.branches.map((b) => b.name)} placeholder="工作树用的分支名" />
+          <>
+            <NameField value={newBranch} onChange={setNewBranch} existing={props.branches.map((b) => b.name)} placeholder="工作树用的分支名" />
+            <label className="flex flex-col gap-1">
+              <span className="text-caption text-graphite">基于（留空 = 当前 HEAD）</span>
+              <input
+                value={commitish}
+                onChange={(e) => setCommitish(e.target.value)}
+                placeholder="如 origin/release 或某次提交"
+                className="w-full rounded-input border border-line bg-rail px-3 py-2 text-body-sm text-ink outline-none placeholder:text-ash focus:border-teal"
+              />
+            </label>
+          </>
         ) : (
           <select
             value={existingBranch}
             onChange={(e) => setExistingBranch(e.target.value)}
-            className="w-full rounded-btn border border-line bg-rail px-3 py-2 text-body-sm text-ink outline-none focus:border-teal"
+            className="w-full rounded-input border border-line bg-rail px-3 py-2 text-body-sm text-ink outline-none focus:border-teal"
           >
             {props.branches.map((b) => (
               <option key={b.name} value={b.name} disabled={b.checkedOutIn !== null}>
@@ -826,19 +912,21 @@ function CreateWorktreeDialog(props: {
             value={path}
             onChange={(e) => setPath(e.target.value)}
             placeholder={defaultPath}
-            className="w-full rounded-btn border border-line bg-rail px-3 py-2 text-body-sm text-ink outline-none placeholder:text-graphite focus:border-teal"
+            className="w-full rounded-input border border-line bg-rail px-3 py-2 text-body-sm text-ink outline-none placeholder:text-ash focus:border-teal"
           />
         </label>
         <div className="flex justify-end gap-2">
-          <button onClick={props.onClose} className="rounded-btn border border-line px-3 py-1.5 text-body-sm text-graphite hover:bg-line-soft hover:text-ink">
-            取消
-          </button>
+          <DialogCancelBtn onClick={props.onClose} />
           <button
             disabled={!canSubmit || props.busy}
             onClick={async () => {
               const payload =
                 mode === "new"
-                  ? { branch: newBranch.trim(), ...(path.trim() ? { path: path.trim() } : {}) }
+                  ? {
+                      branch: newBranch.trim(),
+                      ...(commitish.trim() ? { commitish: commitish.trim() } : {}),
+                      ...(path.trim() ? { path: path.trim() } : {}),
+                    }
                   : { commitish: existingBranch, ...(path.trim() ? { path: path.trim() } : {}) };
               if (await props.onSubmit(payload)) props.onClose();
             }}
@@ -867,15 +955,13 @@ function ConfirmDialog(props: {
       <div className="flex flex-col gap-4 p-4">
         <p className="text-body-sm text-ink">{props.body}</p>
         <div className="flex justify-end gap-2">
-          <button onClick={props.onClose} className="rounded-btn border border-line px-3 py-1.5 text-body-sm text-graphite hover:bg-line-soft hover:text-ink">
-            取消
-          </button>
+          <DialogCancelBtn onClick={props.onClose} />
           <button
             disabled={props.busy}
             onClick={() => void props.onConfirm()}
             className={cn(
               "flex items-center gap-1.5 rounded-btn px-3 py-1.5 text-body-sm font-medium",
-              props.danger ? "bg-red-600 text-white hover:opacity-90" : "bg-ink text-canvas hover:opacity-90",
+              props.danger ? "bg-loss text-on-accent hover:opacity-90" : "bg-ink text-canvas hover:opacity-90",
               "disabled:opacity-40",
             )}
           >
@@ -908,12 +994,10 @@ function StartSessionDialog(props: {
           onChange={(e) => setPrompt(e.target.value)}
           placeholder="要它做什么？（留空则发「在这个工作树中工作」）"
           rows={3}
-          className="w-full resize-none rounded-btn border border-line bg-rail px-3 py-2 text-body-sm text-ink outline-none placeholder:text-graphite focus:border-teal"
+          className="w-full resize-none rounded-input border border-line bg-rail px-3 py-2 text-body-sm text-ink outline-none placeholder:text-ash focus:border-teal"
         />
         <div className="flex justify-end gap-2">
-          <button onClick={props.onClose} className="rounded-btn border border-line px-3 py-1.5 text-body-sm text-graphite hover:bg-line-soft hover:text-ink">
-            取消
-          </button>
+          <DialogCancelBtn onClick={props.onClose} />
           <button
             disabled={props.busy}
             onClick={() => props.onSubmit(prompt)}

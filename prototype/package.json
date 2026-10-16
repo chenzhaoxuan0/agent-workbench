@@ -11,7 +11,8 @@
     "typecheck": "tsc -b",
     "check:models": "node --experimental-strip-types scripts/check-models.ts",
     "check": "pnpm check:models",
-    "check:bridge": "node --experimental-strip-types scripts/check-daemon-bridge.ts"
+    "check:bridge": "node --experimental-strip-types scripts/check-daemon-bridge.ts",
+    "check:git-names": "node --experimental-strip-types scripts/check-git-names.ts"
   },
   "dependencies": {
     "@xterm/addon-canvas": "^0.7.0",

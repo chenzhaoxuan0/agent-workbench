@@ -113,11 +113,13 @@
 | `git.branch.rename` | **已实现** | params `{rootPath, name}`；重命名**当前分支**（VSCode 同款语义） |
 | `git.branch.delete` | **已实现** | params `{rootPath, name, force?}`；先 `-d`，未合入报 `branch_not_merged` 由 UI 确认后带 `force:true`（`-D`）重试。`branch_is_current` = 删当前分支被拒 |
 | `git.merge` / `git.merge.abort` | **已实现** | params `{rootPath, name}` / `{rootPath}`；冲突报 `merge_conflicts`（UI 提供「放弃合并」与「在终端解决」出口），abort 即 `merge --abort` |
-| `git.worktrees.list` | **已实现** | params `{rootPath}`；result `{worktrees[]}`：path / branch / headShort / dirty（逐树 status 探测）/ isMain |
-| `git.worktree.create` | **已实现** | params `{rootPath, path?, branch?, commitish?}`；`branch` 建新分支、`commitish` 检出已有 ref（二选一）。路径缺省用 VSCode 约定 `<仓库父目录>/<仓库名>.worktrees/<分支>`。错误码：`worktree_path_exists` / `branch_checked_out_elsewhere`（data.path 指向占用分支的工作树） |
+| `git.worktrees.list` | **已实现** | params `{rootPath}`；result `{worktrees[]}`：path / branch / headShort / dirty（逐树 `--no-optional-locks status` 探测，探测失败按不保证干净=dirty）/ isMain。非 git 仓库会报 `not_a_repo`（status 是唯一诚实缺席的入口） |
+| `git.worktree.create` | **已实现** | params `{rootPath, path?, branch?, commitish?}`；`branch` 建新分支（可叠 `commitish` 定基点）、`commitish` 检出已有 ref、都不给则从当前 HEAD 建 detached 工作树。路径相对时按仓库根解析；缺省用 VSCode 约定 `<仓库父目录>/<仓库名>.worktrees/<分支>`。result `{path, branch}`（branch 原样带回 branch/commitish）。错误码：`worktree_path_exists` / `invalid_branch_name` / `branch_checked_out_elsewhere`（data.path 指向占用分支的工作树，不带引号） |
 | `git.worktree.remove` | **已实现** | params `{rootPath, path, force?}`；有未提交改动报 `worktree_dirty`，UI 确认后 `force:true`（`--force`）重试；`worktree_is_main` = 主工作树拒删 |
 | `git.worktree.reveal` | **已实现** | params `{path}`；在系统文件管理器中显示（explorer / open / xdg-open） |
 | 自动化 / Ops / 记忆方法 | Phase 5–7 | 落地时在此表登记 schema |
+
+**git.* 的公共错误码**（全表见 prototype/src/core/git.ts 的 `GIT_ERROR_CODES`，daemon 与前端共用一份词表）：`bad_params`（参数缺失/类型不符）、`not_a_repo`、`invalid_branch_name`（含前导 "-" 的选项注入防护）、`git_unavailable`（PATH 无 git / spawn 失败；Windows NTSTATUS 级失败自动重试 3 次）、`git_timeout`、`git_error`（未识别话术原样透传首行）。工作树路径一律走 `--porcelain -z`（NUL 分隔，路径不 C-quote），中文/空格路径不会带引号脏数据。
 
 **为什么有 `daemon.stop`**：Windows 上跨进程 SIGTERM 不可投递（冒烟实证，`child.kill("SIGTERM")` 后子进程无动于衷）。程序化退出一律走协议；SIGINT/SIGTERM 处理器保留给终端 Ctrl+C 与 Unix。这是 Phase 0 的一个硬结论，后续 PTY / 子进程管理会反复遇到，处置口径一致：**能走协议的走协议，信号只当人肉兜底**。
 

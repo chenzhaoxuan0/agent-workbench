@@ -54,6 +54,32 @@ export interface GitWorktree {
   readonly isMain: boolean;
 }
 
+// ---- git.* 的稳定错误码词表（ADR 0008） ------------------------------------
+// daemon 的 mapError 产生、SourceControlPage 按码走确认流、smoke-git 按码断言。
+// 三处曾各写裸字符串，一处改名其余静默退化 —— 收进唯一词表。
+
+export const GIT_ERROR_CODES = {
+  badParams: "bad_params",
+  notARepo: "not_a_repo",
+  gitUnavailable: "git_unavailable",
+  gitTimeout: "git_timeout",
+  gitError: "git_error",
+  invalidBranchName: "invalid_branch_name",
+  branchExists: "branch_exists",
+  branchIsCurrent: "branch_is_current",
+  branchNotMerged: "branch_not_merged",
+  branchCheckedOutElsewhere: "branch_checked_out_elsewhere",
+  dirtyWorktree: "dirty_worktree",
+  mergeConflicts: "merge_conflicts",
+  noMergeInProgress: "no_merge_in_progress",
+  worktreeDirty: "worktree_dirty",
+  worktreeIsMain: "worktree_is_main",
+  worktreePathExists: "worktree_path_exists",
+  pathMissing: "path_missing",
+} as const;
+
+export type GitErrorCode = (typeof GIT_ERROR_CODES)[keyof typeof GIT_ERROR_CODES];
+
 // ---- 分支名校验（对齐 VSCode git.branchValidation 的 sanitize-and-inform） --
 
 /** 非法字符 → "-"（VSCode 默认 git.branchWhitespaceChar）。只做替换，不 trim 尾部点 */

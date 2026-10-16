@@ -855,10 +855,10 @@ export class RuntimeHost {
     let injected: InjectedPrompt | null = null;
     if (this.memory !== undefined && !isNativeCommand) {
       try {
-      injected = await this.memory.build(rootPath, input.prompt, input.memoryOptions);
-    } catch (err: unknown) {
-      log.warn("memory injection skipped", {
-        root: rootPath,
+        injected = await this.memory.build(rootPath, input.prompt, input.memoryOptions);
+      } catch (err: unknown) {
+        log.warn("memory injection skipped", {
+          root: rootPath,
           error: err instanceof Error ? err.message : String(err),
         });
         injected = null;

@@ -20,6 +20,7 @@
  */
 
 import type { NativeCommandInfo, RuntimeCapabilities } from "../../core/adapter.ts";
+import type { GitBranchesResult, GitStatusResult, GitWorktree } from "../../core/git.ts";
 import type { RuntimeEvent } from "../../core/events.ts";
 import { ruleFromCron, type Automation, type AutomationRun, type ScheduleRule } from "../../core/automation.ts";
 import type { BacklogConfig, BacklogItem, BacklogProposal, BacklogSignal, BacklogStateSnapshot, QuotaHeadroom, QuotaResumeConfig } from "../../core/backlog.ts";
@@ -672,7 +673,7 @@ export async function ensureBotGitignore(
 export async function fetchGitStatus(
   rootPath: string,
   endpoint: string = defaultDaemonEndpoint(),
-): Promise<import("../../core/git.ts").GitStatusResult> {
+): Promise<GitStatusResult> {
   const client = DaemonClient.get(endpoint);
   return client.rpc("git.status", { rootPath }, 20000);
 }
@@ -680,7 +681,7 @@ export async function fetchGitStatus(
 export async function fetchGitBranches(
   rootPath: string,
   endpoint: string = defaultDaemonEndpoint(),
-): Promise<import("../../core/git.ts").GitBranchesResult> {
+): Promise<GitBranchesResult> {
   const client = DaemonClient.get(endpoint);
   return client.rpc("git.branches.list", { rootPath }, 20000);
 }
@@ -737,7 +738,7 @@ export async function abortGitMerge(
 export async function fetchGitWorktrees(
   rootPath: string,
   endpoint: string = defaultDaemonEndpoint(),
-): Promise<{ worktrees: readonly import("../../core/git.ts").GitWorktree[] }> {
+): Promise<{ worktrees: readonly GitWorktree[] }> {
   const client = DaemonClient.get(endpoint);
   return client.rpc("git.worktrees.list", { rootPath }, 30000);
 }

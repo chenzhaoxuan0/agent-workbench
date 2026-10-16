@@ -52,6 +52,17 @@ interface GitState {
 const BADGE_TTL_MS = 15000;
 const badgeFetchedAt = new Map<string, number>();
 
+/** 同仓库 refresh 的代际计数（见 refresh 注释） */
+let refreshGen = 0;
+
+/** 旧 daemon（没有 git.* 方法）的报错翻成人话，其余原样 */
+function friendlyGitError(err: unknown): GitPanelError {
+  if (err instanceof Error && (err as { code?: string }).code === "unknown_method") {
+    return { text: "当前 daemon 版本不支持源代码管理（git.*）—— 请重启新版 daemon 后再试", code: "unknown_method" };
+  }
+  return { text: err instanceof Error ? err.message : String(err) };
+}
+
 export const useGit = create<GitState>((set, get) => ({
   rootPath: null,
   status: null,
@@ -74,12 +85,17 @@ export const useGit = create<GitState>((set, get) => ({
   refresh: async () => {
     const rootPath = get().rootPath;
     if (rootPath === null) return;
+    // 代际计数：同仓库内 checkout 后的 refresh 可能被更早一轮慢响应覆盖
+    // （rootPath 守卫只挡换仓库，挡不住同仓库的乱序）—— 每轮自增，结算时
+    // 只有最新一代允许写入，过期响应（含错误）整轮丢弃
+    const gen = ++refreshGen;
     set({ loading: true });
+    const stale = (): boolean => get().rootPath !== rootPath || gen !== refreshGen;
     try {
       // 非 git 仓库是正常态（诚实缺席），不是错误：status 先行判定，
       // 不再让后续 branches/worktrees 的 not_a_repo 把整个面板打成错误横幅
       const status = await fetchGitStatus(rootPath);
-      if (get().rootPath !== rootPath) return;
+      if (stale()) return;
       if (!status.isRepo) {
         set({
           status,
@@ -96,8 +112,7 @@ export const useGit = create<GitState>((set, get) => ({
         fetchGitBranches(rootPath),
         fetchGitWorktrees(rootPath),
       ]);
-      // 换仓库竞态：晚到的旧仓库数据不能覆盖新仓库
-      if (get().rootPath !== rootPath) return;
+      if (stale()) return;
       set({
         status,
         branches,
@@ -111,8 +126,8 @@ export const useGit = create<GitState>((set, get) => ({
       });
       badgeFetchedAt.set(rootPath, Date.now());
     } catch (err: unknown) {
-      if (get().rootPath !== rootPath) return;
-      set({ loading: false, error: { text: err instanceof Error ? err.message : String(err) } });
+      if (stale()) return;
+      set({ loading: false, error: friendlyGitError(err) });
     }
   },
 
@@ -121,16 +136,20 @@ export const useGit = create<GitState>((set, get) => ({
     if (Date.now() - last < BADGE_TTL_MS) return;
     try {
       const status = await fetchGitStatus(rootPath);
-      // 只在成功后占坑：冷启动时 UnitRow 先于 daemon WS 就绪挂载，第一次调用
+      // 只在成功后占坑：冷启动时 UnitRow 早于 daemon WS 就绪挂载，第一次调用
       // 会静默失败 —— 失败若也记时间戳，这个会话期内的重试全被 TTL 挡死
       badgeFetchedAt.set(rootPath, Date.now());
-      if (status.isRepo && get().rootPath === rootPath) {
-        set({ status, branchByRoot: { ...get().branchByRoot, [rootPath]: status.branch } });
-        return;
-      }
+      // 徽章路径**只写 branchByRoot**：写 status 会用跨越用户操作的旧快照
+      // 覆盖面板头部（checkout 成功后头部倒退回旧分支名），status 归 refresh() 管
       set({ branchByRoot: { ...get().branchByRoot, [rootPath]: status.isRepo ? status.branch : null } });
-    } catch {
-      badgeFetchedAt.delete(rootPath); // daemon 不在 / 目录消失：留空位给下次重试
+    } catch (err: unknown) {
+      // unknown_method = daemon 是没有 git.* 的旧版本：负缓存满 TTL，
+      // 别让 60s 轮询每轮都去撞一个注定失败的 RPC
+      if (err instanceof Error && (err as { code?: string }).code === "unknown_method") {
+        badgeFetchedAt.set(rootPath, Date.now());
+      } else {
+        badgeFetchedAt.delete(rootPath); // daemon 不在 / 目录消失：留空位给下次重试
+      }
     }
   },
 

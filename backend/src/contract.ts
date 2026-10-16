@@ -70,6 +70,17 @@ export type {
   SharedChromeStatus,
 } from "../../prototype/src/core/control.ts";
 
+export type {
+  GitBranchInfo,
+  GitBranchesResult,
+  GitStatus,
+  GitStatusResult,
+  GitWorktree,
+} from "../../prototype/src/core/git.ts";
+
+/** git.* 的稳定错误码词表（ADR 0008）：daemon 产生、前端按码走确认流 */
+export { GIT_ERROR_CODES } from "../../prototype/src/core/git.ts";
+
 import { isShellTool as coreIsShellTool } from "../../prototype/src/core/events.ts";
 
 /**

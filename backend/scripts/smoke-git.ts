@@ -2,18 +2,24 @@
  * 源代码管理（git.*）冒烟 —— Phase：源代码管理（ADR 0008）。
  *
  *   自起 daemon（随机空闲端口）→ 临时 git 仓库夹具
- *   → git.status / branches.list
- *   → 分支：创建（含立即切换）/ 切换 / 未合并删除拒绝（branch_not_merged）→ 强删
- *   → 工作树：创建（默认路径约定）/ 列表（dirty 探测）/ 脏删除拒绝（worktree_dirty）→ 强删
- *   → session.start 带 worktree（mockperm 夹具执行器）→ 工作树被 ensure 出来
- *   → 非 git 目录 status 返回 {isRepo:false}（诚实缺席，不抛错）
- *   → daemon.stop 优雅退出
+ *   → 状态：干净仓库 / 非 git 目录 isRepo:false / bare 与 unborn 由契约约定
+ *   → 参数面：bad_params（缺 rootPath、空 name、半个 worktree spec、worktree:null）
+ *   → 分支：创建（含立即切换）/ 切换 / 选项注入防护（"--force" 不是分支名）/
+ *     未合并删除拒绝（branch_not_merged）→ 强删 / 删当前分支拒绝 /
+ *     分支重名（branch_exists）/ detached HEAD 解析
+ *   → 合并：冲突 → merge_conflicts → merge.abort → 状态还原干净
+ *   → 工作树：创建（默认路径约定）/ 分支被占用（branch_checked_out_elsewhere 带
+ *     data.path）/ dirty 探测 / 脏删除拒绝（worktree_dirty）→ 强删 /
+ *     主工作树拒删 / 目标路径已存在
+ *   → 会话工作树：session.start 带 worktree（mockperm 夹具执行器）→ 工作树被
+ *     ensure 出来并注册；同 spec 二连发幂等复用
+ *   → daemon.stop 优雅退出 → 夹具清理
  *
  * 全程只碰临时目录，不碰任何真实仓库。用法：cd backend && pnpm smoke:git
  */
 
 import { spawn, execSync, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -124,6 +130,11 @@ function wsOpen(url: string): Promise<WebSocket> {
   });
 }
 
+/** git 输出正斜杠、path.join 是反斜杠：比较前统一分隔符 */
+function norm(p: string): string {
+  return p.replace(/\\/g, "/");
+}
+
 // ---- 主流程 -----------------------------------------------------------------
 
 async function main(): Promise<void> {
@@ -136,6 +147,7 @@ async function main(): Promise<void> {
   writeFileSync(path.join(fixture, "readme.md"), "# smoke\n");
   g("git add . && git commit -m init");
   const worktreeHome = path.join(os.tmpdir(), `awb-smoke-git-home-${Date.now()}`);
+  const notRepo = mkdtempSync(path.join(os.tmpdir(), "awb-smoke-norepo-"));
 
   const port = await freePort();
   console.log(`smoke: starting daemon on 127.0.0.1:${port}`);
@@ -157,24 +169,38 @@ async function main(): Promise<void> {
       if (r["ok"] !== true) throw new Error(`${method} failed: ${JSON.stringify(r["error"])}`);
       return r["result"] as T;
     };
-    const expectError = async (method: string, params: unknown, code: string): Promise<WsFrame> => {
+    const errorOf = async (method: string, params: unknown): Promise<{ code?: string; data?: { path?: string }; message?: string }> => {
       const r = await call(method, params);
-      check(`${method} → ${code}`, r["ok"] === false && (r["error"] as { code?: string } | undefined)?.code === code, r["error"]);
-      return r;
+      check(`${method} → ${(r["error"] as { code?: string } | undefined)?.code ?? "(no error)"}`, r["ok"] === false, r);
+      return (r["error"] ?? {}) as { code?: string; data?: { path?: string }; message?: string };
     };
 
     // 1. 状态
     const st1 = await ok<{ isRepo: boolean; branch: string; dirty: boolean }>("git.status", { rootPath: fixture });
     check("git.status on clean repo", st1.isRepo === true && st1.branch === "main" && st1.dirty === false, st1);
-
-    const notRepo = mkdtempSync(path.join(os.tmpdir(), "awb-smoke-norepo-"));
     const st0 = await ok<{ isRepo: boolean }>("git.status", { rootPath: notRepo });
     check("git.status on non-repo → isRepo:false（诚实缺席）", st0.isRepo === false, st0);
 
-    // 2. 分支：创建（立即切换）→ 列表 → 未合并删除 → 强删
+    // 2. 参数面：bad_params 一族（不改动仓库状态，先测）
+    await errorOf("git.status", {});
+    await errorOf("git.branch.create", { rootPath: fixture, name: "" });
+    await errorOf("session.start", {
+      runtimeId: "mockperm", unitId: "smoke-git", rootPath: fixture, prompt: "x",
+      worktree: { path: path.join(worktreeHome, "half") }, // 半个 spec
+    });
+    await errorOf("session.start", {
+      runtimeId: "mockperm", unitId: "smoke-git", rootPath: fixture, prompt: "x",
+      worktree: null, // null 不是合法 spec，也不该 TypeError → internal
+    });
+
+    // 3. 分支：创建（立即切换）→ 选项注入防护 → 列表
     await ok("git.branch.create", { rootPath: fixture, name: "feat/smoke", checkout: true });
     const st2 = await ok<{ branch: string }>("git.status", { rootPath: fixture });
     check("branch.create(checkout) switched HEAD", st2.branch === "feat/smoke", st2);
+
+    // 前导 "-" 的"分支名"会被 git 当选项：必须拦成 invalid_branch_name 而不是执行
+    const inj = await errorOf("git.branch.checkout", { rootPath: fixture, name: "--force" });
+    check("option-looking branch name rejected", inj.code === "invalid_branch_name", inj);
 
     writeFileSync(path.join(fixture, "feat.txt"), "x");
     g("git add . && git commit -m feat");
@@ -185,22 +211,51 @@ async function main(): Promise<void> {
       { rootPath: fixture },
     );
     check(
-      "branches.list has current + local + checkedOutIn",
-      list1.current === "main" && list1.branches.some((b) => b.name === "feat/smoke" && b.checkedOutIn === null),
+      "branches.list has current + checkedOutIn",
+      list1.current === "main" &&
+        list1.branches.some((b) => b.name === "main" && b.checkedOutIn !== null) &&
+        list1.branches.some((b) => b.name === "feat/smoke" && b.checkedOutIn === null),
       list1,
     );
 
-    await expectError("git.branch.delete", { rootPath: fixture, name: "feat/smoke" }, "branch_not_merged");
+    // 4. 分支删除：重名 / 当前分支 / 未合并 → 强删
+    await errorOf("git.branch.create", { rootPath: fixture, name: "main" }).then((e) =>
+      check("duplicate branch → branch_exists", e.code === "branch_exists", e));
+    await errorOf("git.branch.delete", { rootPath: fixture, name: "main" }).then((e) =>
+      check("delete current → branch_is_current", e.code === "branch_is_current", e));
+    await errorOf("git.branch.delete", { rootPath: fixture, name: "feat/smoke" }).then((e) =>
+      check("delete unmerged → branch_not_merged", e.code === "branch_not_merged", e));
     await ok("git.branch.delete", { rootPath: fixture, name: "feat/smoke", force: true });
     const list2 = await ok<{ branches: { name: string }[] }>("git.branches.list", { rootPath: fixture });
     check("branch gone after force delete", !list2.branches.some((b) => b.name === "feat/smoke"), list2);
 
-    // 3. 工作树：创建（默认路径约定）→ dirty 探测 → 脏删除拒绝 → 强删
+    // 5. detached HEAD 解析
+    g("git checkout -q --detach");
+    const stD = await ok<{ isRepo: boolean; branch: string | null; detached: boolean }>("git.status", { rootPath: fixture });
+    check("status on detached HEAD", stD.isRepo === true && stD.branch === null && stD.detached === true, stD);
+    const lbD = await ok<{ current: string | null; detached: boolean }>("git.branches.list", { rootPath: fixture });
+    check("branches.list on detached HEAD", lbD.current === null && lbD.detached === true, lbD);
+    g("git checkout -q main");
+
+    // 6. 工作树：创建（默认路径约定）→ 分支被占用 → dirty → 脏删除 → 强删 → 主树拒删 → 路径已存在
     const wt = await ok<{ path: string; branch: string }>("git.worktree.create", {
       rootPath: fixture,
       branch: "wt/smoke",
     });
     check("worktree default path follows <repo>.worktrees/<branch>", wt.path.includes(".worktrees") && wt.path.endsWith("wt-smoke"), wt);
+
+    // 同一分支再开一棵树：branch_checked_out_elsewhere + data.path（不带引号）
+    const dup = await errorOf("git.worktree.create", {
+      rootPath: fixture,
+      path: path.join(worktreeHome, "dup-wt"),
+      commitish: "wt/smoke",
+    });
+    check(
+      "checked-out branch → branch_checked_out_elsewhere + clean data.path",
+      dup.code === "branch_checked_out_elsewhere" &&
+        typeof dup.data?.path === "string" && dup.data.path.length > 0 && !dup.data.path.includes("'"),
+      dup,
+    );
 
     const wl1 = await ok<{ worktrees: { path: string; branch: string; isMain: boolean; dirty: boolean }[] }>(
       "git.worktrees.list",
@@ -214,16 +269,32 @@ async function main(): Promise<void> {
 
     writeFileSync(path.join(wt.path, "dirty.txt"), "x");
     const wl2 = await ok<{ worktrees: { path: string; dirty: boolean }[] }>("git.worktrees.list", { rootPath: fixture });
-    // git 输出正斜杠、path.join 是反斜杠：比较前统一分隔符
-    const norm = (p: string): string => p.replace(/\\/g, "/");
     check("worktrees.list detects dirty", wl2.worktrees.find((w) => norm(w.path) === norm(wt.path))?.dirty === true, wl2);
 
-    await expectError("git.worktree.remove", { rootPath: fixture, path: wt.path }, "worktree_dirty");
+    await errorOf("git.worktree.remove", { rootPath: fixture, path: wt.path }).then((e) =>
+      check("remove dirty → worktree_dirty", e.code === "worktree_dirty", e));
+    await errorOf("git.worktree.remove", { rootPath: fixture, path: fixture }).then((e) =>
+      check("remove main → worktree_is_main", e.code === "worktree_is_main", e));
+    await errorOf("git.worktree.create", { rootPath: fixture, path: fixture, branch: "wt/again" }).then((e) =>
+      check("create on existing path → worktree_path_exists", e.code === "worktree_path_exists", e));
     await ok("git.worktree.remove", { rootPath: fixture, path: wt.path, force: true });
     const wl3 = await ok<{ worktrees: unknown[] }>("git.worktrees.list", { rootPath: fixture });
     check("worktree gone after force remove", wl3.worktrees.length === 1, wl3);
 
-    // 4. 会话工作树：session.start 带 worktree（mockperm 夹具执行器）→ ensure 出目录
+    // 7. 合并冲突 → merge_conflicts → abort → 干净
+    g("git checkout -q -b feat/c2");
+    writeFileSync(path.join(fixture, "readme.md"), "# conflict-branch\n");
+    g("git add . && git commit -m c2");
+    g("git checkout -q main");
+    writeFileSync(path.join(fixture, "readme.md"), "# conflict-main\n");
+    g("git add . && git commit -m m2");
+    await errorOf("git.merge", { rootPath: fixture, name: "feat/c2" }).then((e) =>
+      check("conflicting merge → merge_conflicts", e.code === "merge_conflicts", e));
+    await ok("git.merge.abort", { rootPath: fixture });
+    const stM = await ok<{ dirty: boolean }>("git.status", { rootPath: fixture });
+    check("merge.abort restores clean state", stM.dirty === false, stM);
+
+    // 8. 会话工作树：ensure 创建 → 注册可见 → 同 spec 二连发幂等
     const sessionWt = path.join(worktreeHome, "session-wt");
     const session = await ok<{ id: string; status: string }>("session.start", {
       runtimeId: "mockperm",
@@ -234,10 +305,25 @@ async function main(): Promise<void> {
       worktree: { path: sessionWt, branch: "session/smoke" },
     });
     check("session.start with worktree returns session", typeof session.id === "string", session);
-    check("session worktree ensured on disk", existsSync(path.join(sessionWt, ".git")) || existsSync(sessionWt), sessionWt);
+    check("session worktree is a real git worktree", existsSync(path.join(sessionWt, ".git")), sessionWt);
+    const wlS = await ok<{ worktrees: { path: string; branch: string | null }[] }>("git.worktrees.list", { rootPath: fixture });
+    check(
+      "session worktree registered with its branch",
+      wlS.worktrees.some((w) => norm(w.path) === norm(sessionWt) && w.branch === "session/smoke"),
+      wlS,
+    );
+    const session2 = await ok<{ id: string }>("session.start", {
+      runtimeId: "mockperm",
+      unitId: "smoke-git2",
+      rootPath: fixture,
+      prompt: "再开",
+      worktree: { path: sessionWt, branch: "session/smoke" },
+    });
+    check("second session.start reuses worktree (idempotent)", typeof session2.id === "string", session2);
     await call("session.cancel", { sessionId: session.id }).catch(() => undefined);
+    await call("session.cancel", { sessionId: session2.id }).catch(() => undefined);
 
-    // 5. 优雅退出
+    // 9. 优雅退出
     ws.send(JSON.stringify({ v: 1, id: "smoke-git-stop", method: "daemon.stop" }));
     const stopAck = await nextMessage(ws, (f) => f["id"] === "smoke-git-stop");
     check("daemon.stop acks", stopAck["ok"] === true, stopAck);
@@ -250,6 +336,16 @@ async function main(): Promise<void> {
     if (exitCode !== 0) await stopDaemon();
   } finally {
     await stopDaemon();
+    // 夹具清理：daemon 已退（避免 Windows 上执行器还占着工作树目录导致 EPERM），
+    // 先 prune 让 git 忘掉外链工作树，再删目录。清不掉不能掩盖测试结果。
+    try {
+      execSync("git worktree prune", { cwd: fixture, stdio: "ignore" });
+    } catch { /* 夹具已坏也无所谓 */ }
+    for (const dir of [fixture, notRepo, worktreeHome]) {
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch { /* 留给系统临时目录清理 */ }
+    }
   }
 
   if (failures > 0) {
