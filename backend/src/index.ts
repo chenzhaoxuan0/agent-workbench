@@ -2289,8 +2289,9 @@ registerMethod("bot.gitignore.ensure", (params) => {
 });
 
 // ---- git.* —— 源代码管理面板（分支 / 工作树），见 backend/src/git/repo.ts ----
-// 危险操作的错误码约定（UI 据此走确认流）：branch_not_merged → 确认后 force=true
-// 重试；worktree_dirty → 确认后 force=true 重试；branch_checked_out_elsewhere 带
+// 分支面对齐 ZCode 窄模型（ADR 0009）：只做列出 / 新建即切换 / 切换；合并、
+// 改名、删除留给终端。危险操作的错误码约定（UI 据此走确认流）：
+// worktree_dirty → 确认后 force=true 重试；branch_checked_out_elsewhere 带
 // data.path → 引导打开那个工作树。全表见 docs/07-wire-protocol.md。
 
 function gitRoot(params: unknown): string {
@@ -2301,7 +2302,7 @@ function gitRoot(params: unknown): string {
   return p.rootPath;
 }
 
-/** 必填字符串参数的统一校验：八个 git.* 方法共用，别再复制粘贴四行块 */
+/** 必填字符串参数的统一校验：四个 git.* 方法共用，别再复制粘贴四行块 */
 function reqStr(params: unknown, key: string): string {
   const p = (params ?? {}) as Record<string, unknown>;
   const v = p[key];
@@ -2324,33 +2325,22 @@ function optStr(params: unknown, key: string): string | undefined {
 
 registerMethod("git.status", (params) => gitRepo.status(gitRoot(params)));
 registerMethod("git.branches.list", (params) => gitRepo.listBranches(gitRoot(params)));
-registerMethod("git.branch.create", (params) => {
-  const name = reqStr(params, "name");
-  const checkout = (params as { checkout?: unknown } | null)?.checkout;
-  if (checkout !== undefined && typeof checkout !== "boolean") {
-    throw Object.assign(new Error("checkout must be a boolean"), { code: "bad_params" });
-  }
-  return gitRepo.createBranch(gitRoot(params), name, { ref: optStr(params, "ref"), checkout: checkout === undefined ? undefined : checkout });
-});
+registerMethod("git.branch.create", (params) =>
+  gitRepo.createBranch(gitRoot(params), reqStr(params, "name"), { ref: optStr(params, "ref") }),
+);
 registerMethod("git.branch.checkout", (params) => gitRepo.checkoutBranch(gitRoot(params), reqStr(params, "name")));
-registerMethod("git.branch.rename", (params) => gitRepo.renameBranch(gitRoot(params), reqStr(params, "name")));
-registerMethod("git.branch.delete", (params) => {
-  const force = (params as { force?: unknown } | null)?.force;
-  if (force !== undefined && typeof force !== "boolean") {
-    throw Object.assign(new Error("force must be a boolean"), { code: "bad_params" });
-  }
-  return gitRepo.deleteBranch(gitRoot(params), reqStr(params, "name"), force === true);
-});
-registerMethod("git.merge", (params) => gitRepo.merge(gitRoot(params), reqStr(params, "name")));
-registerMethod("git.merge.abort", (params) => gitRepo.mergeAbort(gitRoot(params)));
 registerMethod("git.worktrees.list", async (params) => ({ worktrees: await gitRepo.listWorktrees(gitRoot(params)) }));
-registerMethod("git.worktree.create", (params) =>
-  gitRepo.createWorktree(gitRoot(params), {
+registerMethod("git.worktree.create", (params) => {
+  const spec = {
     path: optStr(params, "path"),
     branch: optStr(params, "branch"),
     commitish: optStr(params, "commitish"),
-  }),
-);
+  };
+  if (spec.branch === undefined && spec.commitish === undefined) {
+    throw Object.assign(new Error("branch or commitish is required"), { code: "bad_params" });
+  }
+  return gitRepo.createWorktree(gitRoot(params), spec);
+});
 registerMethod("git.worktree.remove", (params) => {
   const force = (params as { force?: unknown } | null)?.force;
   if (force !== undefined && typeof force !== "boolean") {

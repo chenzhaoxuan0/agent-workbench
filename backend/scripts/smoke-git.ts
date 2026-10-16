@@ -3,11 +3,10 @@
  *
  *   自起 daemon（随机空闲端口）→ 临时 git 仓库夹具
  *   → 状态：干净仓库 / 非 git 目录 isRepo:false / bare 与 unborn 由契约约定
- *   → 参数面：bad_params（缺 rootPath、空 name、半个 worktree spec、worktree:null）
- *   → 分支：创建（含立即切换）/ 切换 / 选项注入防护（"--force" 不是分支名）/
- *     未合并删除拒绝（branch_not_merged）→ 强删 / 删当前分支拒绝 /
- *     分支重名（branch_exists）/ detached HEAD 解析
- *   → 合并：冲突 → merge_conflicts → merge.abort → 状态还原干净
+ *   → 参数面：bad_params（缺 rootPath、空 name、半个 worktree spec、worktree:null、
+ *     worktree.create 无 branch 无 commitish）
+ *   → 分支（ADR 0009 窄面）：创建（新建即切换）/ 切换 / 选项注入防护
+ *     （"--force" 不是分支名）/ 分支重名（branch_exists）/ detached HEAD 解析
  *   → 工作树：创建（默认路径约定）/ 分支被占用（branch_checked_out_elsewhere 带
  *     data.path）/ dirty 探测 / 脏删除拒绝（worktree_dirty）→ 强删 /
  *     主工作树拒删 / 目标路径已存在
@@ -192,11 +191,13 @@ async function main(): Promise<void> {
       runtimeId: "mockperm", unitId: "smoke-git", rootPath: fixture, prompt: "x",
       worktree: null, // null 不是合法 spec，也不该 TypeError → internal
     });
+    await errorOf("git.worktree.create", { rootPath: fixture }).then((e) =>
+      check("worktree.create without branch/commitish → bad_params", e.code === "bad_params", e));
 
-    // 3. 分支：创建（立即切换）→ 选项注入防护 → 列表
-    await ok("git.branch.create", { rootPath: fixture, name: "feat/smoke", checkout: true });
+    // 3. 分支：创建（新建即切换）→ 选项注入防护 → 列表
+    await ok("git.branch.create", { rootPath: fixture, name: "feat/smoke" });
     const st2 = await ok<{ branch: string }>("git.status", { rootPath: fixture });
-    check("branch.create(checkout) switched HEAD", st2.branch === "feat/smoke", st2);
+    check("branch.create switched HEAD", st2.branch === "feat/smoke", st2);
 
     // 前导 "-" 的"分支名"会被 git 当选项：必须拦成 invalid_branch_name 而不是执行
     const inj = await errorOf("git.branch.checkout", { rootPath: fixture, name: "--force" });
@@ -218,16 +219,9 @@ async function main(): Promise<void> {
       list1,
     );
 
-    // 4. 分支删除：重名 / 当前分支 / 未合并 → 强删
+    // 4. 分支重名（分支面收窄后无删除/改名/合并，见 ADR 0009）
     await errorOf("git.branch.create", { rootPath: fixture, name: "main" }).then((e) =>
       check("duplicate branch → branch_exists", e.code === "branch_exists", e));
-    await errorOf("git.branch.delete", { rootPath: fixture, name: "main" }).then((e) =>
-      check("delete current → branch_is_current", e.code === "branch_is_current", e));
-    await errorOf("git.branch.delete", { rootPath: fixture, name: "feat/smoke" }).then((e) =>
-      check("delete unmerged → branch_not_merged", e.code === "branch_not_merged", e));
-    await ok("git.branch.delete", { rootPath: fixture, name: "feat/smoke", force: true });
-    const list2 = await ok<{ branches: { name: string }[] }>("git.branches.list", { rootPath: fixture });
-    check("branch gone after force delete", !list2.branches.some((b) => b.name === "feat/smoke"), list2);
 
     // 5. detached HEAD 解析
     g("git checkout -q --detach");
@@ -281,20 +275,7 @@ async function main(): Promise<void> {
     const wl3 = await ok<{ worktrees: unknown[] }>("git.worktrees.list", { rootPath: fixture });
     check("worktree gone after force remove", wl3.worktrees.length === 1, wl3);
 
-    // 7. 合并冲突 → merge_conflicts → abort → 干净
-    g("git checkout -q -b feat/c2");
-    writeFileSync(path.join(fixture, "readme.md"), "# conflict-branch\n");
-    g("git add . && git commit -m c2");
-    g("git checkout -q main");
-    writeFileSync(path.join(fixture, "readme.md"), "# conflict-main\n");
-    g("git add . && git commit -m m2");
-    await errorOf("git.merge", { rootPath: fixture, name: "feat/c2" }).then((e) =>
-      check("conflicting merge → merge_conflicts", e.code === "merge_conflicts", e));
-    await ok("git.merge.abort", { rootPath: fixture });
-    const stM = await ok<{ dirty: boolean }>("git.status", { rootPath: fixture });
-    check("merge.abort restores clean state", stM.dirty === false, stM);
-
-    // 8. 会话工作树：ensure 创建 → 注册可见 → 同 spec 二连发幂等
+    // 7. 会话工作树：ensure 创建 → 注册可见 → 同 spec 二连发幂等
     const sessionWt = path.join(worktreeHome, "session-wt");
     const session = await ok<{ id: string; status: string }>("session.start", {
       runtimeId: "mockperm",
@@ -323,7 +304,7 @@ async function main(): Promise<void> {
     await call("session.cancel", { sessionId: session.id }).catch(() => undefined);
     await call("session.cancel", { sessionId: session2.id }).catch(() => undefined);
 
-    // 9. 优雅退出
+    // 8. 优雅退出
     ws.send(JSON.stringify({ v: 1, id: "smoke-git-stop", method: "daemon.stop" }));
     const stopAck = await nextMessage(ws, (f) => f["id"] === "smoke-git-stop");
     check("daemon.stop acks", stopAck["ok"] === true, stopAck);

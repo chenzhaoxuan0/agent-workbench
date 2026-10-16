@@ -4,8 +4,10 @@
  * 决策（ADR 0008）：spawn 本机 git CLI，不引入 JS git 库 —— 行为与命令行完全
  * 一致、零抽象税，代价是依赖用户 PATH 里有 git（与依赖各执行器 CLI 同一前提）。
  *
- * 交互范式对齐 VSCode SCM：
- * - 删除未合并分支先 `branch -d`，失败回 branch_not_merged，由 UI 确认后转 `-D`
+ * 分支面对齐 ZCode 的窄模型（ADR 0009）：只做「在哪个分支上工作」——
+ * 列出 / 新建即切换 / 切换。合并、改名、删除等低频操作留给终端，不做面板入口。
+ *
+ * 工作树是会话隔离的承重墙，完整保留：
  * - 删除有未提交改动的工作树先普通 remove，失败回 worktree_dirty，UI 确认后 --force
  * - 一个分支同时只能被一个工作树检出：git 报错映射为
  *   branch_checked_out_elsewhere（带 data.path），UI 引导「打开那个工作树」
@@ -162,21 +164,12 @@ function mapError(args: readonly string[], r: RunResult): GitError {
     return new GitError(GIT_ERROR_CODES.branchCheckedOutElsewhere, "该分支已被另一个工作树检出", { path: elsewhere });
   }
   if (/not a git repository/i.test(text)) return new GitError(GIT_ERROR_CODES.notARepo, "该目录不是 git 仓库");
-  if (/not fully merged/i.test(text)) {
-    return new GitError(GIT_ERROR_CODES.branchNotMerged, "该分支还有未合入的提交，普通删除被拒绝（需强制删除）");
-  }
   // 只认分支专属话术：裸 "already exists" 可能是路径/引用冲突，误报成分支重名会误导确认流
   if (/a branch named .+ already exists/i.test(text)) {
     return new GitError(GIT_ERROR_CODES.branchExists, "同名分支已存在");
   }
   if (/would be overwritten by checkout|Please commit your changes or stash them/i.test(text)) {
     return new GitError(GIT_ERROR_CODES.dirtyWorktree, "本地有未提交改动会被切换覆盖，请先提交或暂存");
-  }
-  if (/Automatic merge failed|CONFLICT \(|merge conflict/i.test(text)) {
-    return new GitError(GIT_ERROR_CODES.mergeConflicts, "合并出现冲突，请到终端解决后提交（或放弃合并）");
-  }
-  if (/There is no merge to abort/i.test(text)) {
-    return new GitError(GIT_ERROR_CODES.noMergeInProgress, "当前没有进行中的合并");
   }
   if (/is not a valid branch name|invalid branch name|funny ref/i.test(text)) {
     return new GitError(GIT_ERROR_CODES.invalidBranchName, "分支名不合法");
@@ -323,20 +316,12 @@ async function symbolicRef(root: string): Promise<string | null> {
   });
 }
 
-export async function createBranch(
-  root: string,
-  name: string,
-  opts: { readonly ref?: string; readonly checkout?: boolean } = {},
-): Promise<void> {
+export async function createBranch(root: string, name: string, opts: { readonly ref?: string } = {}): Promise<void> {
   await assertValidBranchName(root, name);
   const ref = opts.ref?.trim() || undefined;
   if (ref !== undefined) assertNotOptionArg(ref, "基点 ref");
-  if (opts.checkout === false) {
-    await run(root, ["branch", name, ...(ref ? [ref] : [])]);
-  } else {
-    // VSCode 同款：checkout -b --no-track，从远程 ref 建时不自动挂 upstream
-    await run(root, ["checkout", "-q", "-b", name, "--no-track", ...(ref ? [ref] : [])]);
-  }
+  // VSCode/ZCode 同款语义：新建即切换；从远程 ref 建时不自动挂 upstream
+  await run(root, ["checkout", "-q", "-b", name, "--no-track", ...(ref ? [ref] : [])]);
 }
 
 export async function checkoutBranch(root: string, name: string): Promise<void> {
@@ -344,30 +329,6 @@ export async function checkoutBranch(root: string, name: string): Promise<void> 
   // 绕过 dirty_worktree 确认流直接丢改动
   await assertValidBranchName(root, name);
   await run(root, ["checkout", "-q", name]);
-}
-
-/** 只重命名当前分支（VSCode 同款语义，不给 ref 选择器） */
-export async function renameBranch(root: string, newName: string): Promise<void> {
-  await assertValidBranchName(root, newName);
-  await run(root, ["branch", "-m", newName]);
-}
-
-export async function deleteBranch(root: string, name: string, force = false): Promise<void> {
-  await assertValidBranchName(root, name);
-  const current = await symbolicRef(root);
-  if (current === name) {
-    throw new GitError(GIT_ERROR_CODES.branchIsCurrent, "不能删除当前所在分支，请先切换到别的分支");
-  }
-  await run(root, ["branch", force ? "-D" : "-d", name]);
-}
-
-export async function merge(root: string, name: string): Promise<void> {
-  await assertValidBranchName(root, name);
-  await run(root, ["merge", name]);
-}
-
-export async function mergeAbort(root: string): Promise<void> {
-  await run(root, ["merge", "--abort"]);
 }
 
 async function assertValidBranchName(root: string, name: string): Promise<void> {
@@ -467,13 +428,18 @@ export async function createWorktree(
   const branch = opts.branch?.trim() || undefined;
   const commitish = opts.commitish?.trim() || undefined;
   if (commitish !== undefined) assertNotOptionArg(commitish, "commitish");
+  // 新分支名与检出 ref 至少其一：没有「从当前 HEAD 凭空 detached」的形态（UI 也无入口）
+  const seg = branch ?? commitish;
+  if (seg === undefined) {
+    throw new GitError(GIT_ERROR_CODES.badParams, "worktree.create 需要 branch 或 commitish 至少其一");
+  }
 
   // 校验先行：分支名非法时不该先去看磁盘
   if (branch !== undefined) await assertValidBranchName(root, branch);
 
   // 路径缺省：VSCode 约定 <仓库父目录>/<仓库名>.worktrees/<分支名>。
   // 用户给了相对路径时按 **仓库根** 解析（git -C root 的口径），而不是 daemon cwd。
-  const branchSeg = (branch ?? commitish ?? "worktree").replace(/[\\/]/g, "-");
+  const branchSeg = seg.replace(/[\\/]/g, "-");
   const target = path.resolve(
     root,
     opts.path?.trim() ||
@@ -488,9 +454,6 @@ export async function createWorktree(
   } else if (commitish !== undefined) {
     // 从已有分支/ref 检出（该分支不能已被别的工作树占用，否则 branch_checked_out_elsewhere）
     await run(root, ["worktree", "add", target, commitish]);
-  } else {
-    // 既没给新分支也没给 ref：从当前 HEAD 建一个 detached 工作树（少用但合法）
-    await run(root, ["worktree", "add", "--detach", target]);
   }
   return { path: target, branch: branch ?? commitish ?? null };
 }

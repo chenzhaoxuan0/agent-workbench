@@ -66,12 +66,8 @@ export const GIT_ERROR_CODES = {
   gitError: "git_error",
   invalidBranchName: "invalid_branch_name",
   branchExists: "branch_exists",
-  branchIsCurrent: "branch_is_current",
-  branchNotMerged: "branch_not_merged",
   branchCheckedOutElsewhere: "branch_checked_out_elsewhere",
   dirtyWorktree: "dirty_worktree",
-  mergeConflicts: "merge_conflicts",
-  noMergeInProgress: "no_merge_in_progress",
   worktreeDirty: "worktree_dirty",
   worktreeIsMain: "worktree_is_main",
   worktreePathExists: "worktree_path_exists",
@@ -98,7 +94,7 @@ export type BranchNameValidation =
   | { readonly ok: true }
   | { readonly ok: false; readonly reason: string; readonly sanitized: string };
 
-/** 新建/重命名分支前的前端实时校验；最终裁决仍在 daemon 侧 git check-ref-format */
+/** 新建分支前的前端实时校验；最终裁决仍在 daemon 侧 git check-ref-format */
 export function validateBranchName(name: string, existing: readonly string[] = []): BranchNameValidation {
   const trimmed = name.trim();
   if (trimmed.length === 0) return { ok: false, reason: "分支名不能为空", sanitized: "" };

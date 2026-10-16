@@ -1,18 +1,16 @@
-import { Check, Cloud, FolderGit2, GitBranch, GitMerge, Pencil, Trash2 } from "lucide-react";
+import { Check, Cloud, FolderGit2, GitBranch } from "lucide-react";
 import type { GitBranchInfo } from "../../core/git.ts";
 import { formatRelative } from "../../core/automation.ts";
 import { cn } from "../cn.ts";
 import { RowBtn } from "./RowBtn.tsx";
 
-/** 分支列表行：当前分支高亮 + 勾选，hash·相对时间·提交摘要；hover 出行内操作 */
+/** 分支列表行：当前分支高亮 + 勾选，hash·相对时间·提交摘要；hover 出行内操作。
+ * 分支面收窄后（ADR 0009）只留「切换」与「基于此分支新建工作树」两个动作 */
 export function BranchRow(props: {
   branch: GitBranchInfo;
   current: string | null;
   disabled: boolean;
   onCheckout: () => void;
-  onRename: () => void;
-  onDelete: () => void;
-  onMerge: () => void;
   onCreateWorktreeFrom: () => void;
 }) {
   const { branch, current, disabled } = props;
@@ -44,16 +42,12 @@ export function BranchRow(props: {
         {branch.shortHash} · {Number.isFinite(ts) ? formatRelative(ts) : ""} · {branch.subject}
       </span>
 
-      {/* 行内操作：hover 浮现，当前分支只留「重命名」 */}
+      {/* 行内操作：hover 浮现；当前分支没有行内动作 */}
       <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
         {!isCurrent && (
           <>
             {branch.kind === "local" && (
-              <>
-                <RowBtn label={`切换到 ${branch.name}`} icon={Check} disabled={disabled} onClick={props.onCheckout} />
-                <RowBtn label={`合并 ${branch.name} 到当前分支`} icon={GitMerge} disabled={disabled} onClick={props.onMerge} />
-                <RowBtn label="删除分支" icon={Trash2} disabled={disabled} onClick={props.onDelete} danger />
-              </>
+              <RowBtn label={`切换到 ${branch.name}`} icon={Check} disabled={disabled} onClick={props.onCheckout} />
             )}
             <RowBtn
               label="基于此分支新建工作树"
@@ -62,9 +56,6 @@ export function BranchRow(props: {
               onClick={props.onCreateWorktreeFrom}
             />
           </>
-        )}
-        {isCurrent && (
-          <RowBtn label="重命名当前分支" icon={Pencil} disabled={disabled} onClick={props.onRename} />
         )}
       </div>
     </div>

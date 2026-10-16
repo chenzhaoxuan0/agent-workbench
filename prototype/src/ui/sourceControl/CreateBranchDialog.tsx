@@ -9,11 +9,10 @@ export function CreateBranchDialog(props: {
   defaultRef?: string;
   busy: boolean;
   onClose: () => void;
-  onSubmit: (name: string, ref: string | undefined, checkout: boolean) => Promise<boolean>;
+  onSubmit: (name: string, ref: string | undefined) => Promise<boolean>;
 }) {
   const [name, setName] = useState("");
   const [ref, setRef] = useState(props.defaultRef ?? "");
-  const [checkout, setCheckout] = useState(true);
   const v = validateBranchName(name, props.existing);
   return (
     <DialogShell title="新建分支" onClose={props.onClose}>
@@ -35,16 +34,13 @@ export function CreateBranchDialog(props: {
             ))}
           </select>
         </label>
-        <label className="flex cursor-pointer items-center gap-2 text-body-sm text-ink">
-          <input type="checkbox" checked={checkout} onChange={(e) => setCheckout(e.target.checked)} className="accent-teal" />
-          创建后立即切换过去（VSCode 默认行为）
-        </label>
         <div className="flex justify-end gap-2 pt-1">
           <DialogCancelBtn onClick={props.onClose} />
           <button
             disabled={!v.ok || props.busy}
             onClick={async () => {
-              if (await props.onSubmit(name.trim(), ref || undefined, checkout)) props.onClose();
+              // 新建即切换（ZCode 同款语义，ADR 0009）：没有「建完留在原分支」的选项
+              if (await props.onSubmit(name.trim(), ref || undefined)) props.onClose();
             }}
             className="flex items-center gap-1.5 rounded-btn bg-ink px-3 py-1.5 text-body-sm font-medium text-canvas hover:opacity-90 disabled:opacity-40"
           >

@@ -1,5 +1,7 @@
 # git 操作走 daemon spawn git CLI + wire 协议 RPC，不引入 JS git 库
 
+> **修订（ADR 0009）**：本文「Considerations / Consequences」中的执行面决策（spawn git CLI、错误码交互契约、`--porcelain -z`、会话工作树 ensure 语义）继续有效；但「v1 范围」里的分支操作面已收窄——合并 / 分支改名 / 分支删除已移除，新建分支固定为「新建即切换」，见 `0009-narrow-branch-surface.md`。错误码词表随之删去 `branch_not_merged` / `branch_is_current` / `merge_conflicts` / `no_merge_in_progress`。
+
 「源代码管理」（分支 / 工作树管理，交互范式对齐 VSCode SCM）的执行面全部由 daemon spawn 本机 `git` 二进制完成（`backend/src/git/repo.ts`，经 `runtime/exec.ts` 的 resolveCommand 解析 PATH），以 `git.*` 方法族暴露到 wire 协议（docs/07 已登记全表）。前端只拿结构化 result 与带错误码的 error，不知道任何命令行细节。
 
 ## Considered Options

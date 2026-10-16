@@ -2,14 +2,10 @@ import { useEffect, useState, type ReactNode } from "react";
 import { FolderGit2, GitBranch, Loader2, Plus, RefreshCw, TriangleAlert, X } from "lucide-react";
 import { GIT_ERROR_CODES, type GitStatus, type GitWorktree } from "../core/git.ts";
 import {
-  abortGitMerge,
   checkoutGitBranch,
   createGitBranch,
   createGitWorktree,
-  deleteGitBranch,
-  mergeGitBranch,
   removeGitWorktree,
-  renameGitBranch,
   revealGitWorktree,
 } from "../adapters/daemon/client.ts";
 import { useGit } from "../store/useGit.ts";
@@ -19,7 +15,6 @@ import { selectActiveUnit, useWorkbench } from "../store/useWorkbench.ts";
 import { BranchRow } from "./sourceControl/BranchRow.tsx";
 import { WorktreeRow, worktreeTitle } from "./sourceControl/WorktreeRow.tsx";
 import { CreateBranchDialog } from "./sourceControl/CreateBranchDialog.tsx";
-import { RenameDialog } from "./sourceControl/RenameDialog.tsx";
 import { CreateWorktreeDialog } from "./sourceControl/CreateWorktreeDialog.tsx";
 import { ConfirmDialog } from "./sourceControl/ConfirmDialog.tsx";
 import { StartSessionDialog } from "./sourceControl/StartSessionDialog.tsx";
@@ -27,10 +22,11 @@ import { StartSessionDialog } from "./sourceControl/StartSessionDialog.tsx";
 /**
  * 源代码管理主视图 —— 激活单元仓库的分支 / 工作树管理。
  *
- * 交互范式对齐 VSCode SCM（ADR 0008）：
- * - 分支行内操作：切换 / 重命名（仅当前分支）/ 删除 / 合并；远程分支只读展示，
- *   可作为新建分支 / 新建工作树的基点
- * - 删除未合并分支：`-d` 失败（branch_not_merged）→ 确认 → `-D`
+ * 分支面对齐 ZCode 窄模型（ADR 0009）：只做「在哪个分支上工作」——
+ * 列出 / 新建即切换 / 切换；合并、改名、删除留给终端。远程分支只读展示，
+ * 可作为新建工作树的基点。
+ *
+ * 工作树是会话隔离的承重墙（ADR 0008），完整保留：
  * - 删除有改动的工作树：remove 失败（worktree_dirty）→ 确认 → --force；
  *   有活跃会话跑在该树里时直接拒绝（Windows 强删会拔掉执行器的 cwd）
  * - 分支已被别的工作树检出（branch_checked_out_elsewhere，带 data.path）→
@@ -73,10 +69,8 @@ function samePath(a: string, b: string): boolean {
 
 type Dialog =
   | { kind: "createBranch"; ref?: string }
-  | { kind: "rename"; name: string }
   | { kind: "createWorktree"; branch?: string; commitish?: string }
-  /** root 在打开时快照：删除确认跨仓库重试会强删错仓库的同名分支（评审 P1） */
-  | { kind: "deleteBranch"; root: string; name: string; forceReason?: string }
+  /** root 在打开时快照：删除确认期间切了单元，也不能操作到别的仓库（评审 P1） */
   | { kind: "deleteWorktree"; root: string; wt: GitWorktree; forceReason?: string }
   | { kind: "startSession"; wt: GitWorktree }
   | null;
@@ -173,27 +167,11 @@ export function SourceControlPage() {
         </div>
       </header>
 
-      {/* 错误横幅（合并冲突时给「放弃合并」出口） */}
+      {/* 错误横幅（分支被别的工作树占用时给「打开那个工作树」出口） */}
       {error !== null && (
         <div className="mx-4 mt-3 flex items-start gap-2 rounded-card border border-line bg-card px-3 py-2 text-body-sm text-ink">
           <TriangleAlert size={14} className="mt-0.5 shrink-0 text-loss" />
           <span className="min-w-0 flex-1 break-all">{error.text}</span>
-          {error.code === GIT_ERROR_CODES.mergeConflicts && (
-            <>
-              <button
-                onClick={() => void op("放弃合并", () => abortGitMerge(root))}
-                className="shrink-0 rounded-btn border border-line px-2 py-0.5 text-caption text-graphite hover:bg-line-soft hover:text-ink"
-              >
-                放弃合并
-              </button>
-              <button
-                onClick={() => openTerminalAt(root, "解决合并冲突")}
-                className="shrink-0 rounded-btn border border-line px-2 py-0.5 text-caption text-graphite hover:bg-line-soft hover:text-ink"
-              >
-                在终端解决
-              </button>
-            </>
-          )}
           {error.code === GIT_ERROR_CODES.branchCheckedOutElsewhere && error.data?.path !== undefined && (
             <button
               onClick={() => void revealGitWorktree(error.data?.path ?? "")}
@@ -244,9 +222,6 @@ export function SourceControlPage() {
                     current={branches.current}
                     disabled={busy}
                     onCheckout={() => void op(`切换到 ${b.name}`, () => checkoutGitBranch({ rootPath: root, name: b.name }))}
-                    onRename={() => setDialog({ kind: "rename", name: b.name })}
-                    onDelete={() => setDialog({ kind: "deleteBranch", root, name: b.name })}
-                    onMerge={() => void op(`合并 ${b.name}`, () => mergeGitBranch({ rootPath: root, name: b.name }))}
                     onCreateWorktreeFrom={() =>
                       // 远程分支不是本地分支，不能走「检出已有分支」模式：
                       // 作为新分支的 commitish 基点传下去，否则会静默从当前 HEAD 建树
@@ -315,18 +290,9 @@ export function SourceControlPage() {
           defaultRef={dialog.ref}
           busy={busy}
           onClose={() => setDialog(null)}
-          onSubmit={(name, ref, checkout) =>
-            op("新建分支", () => createGitBranch({ rootPath: root, name, ...(ref ? { ref } : {}), checkout }))
+          onSubmit={(name, ref) =>
+            op("新建分支", () => createGitBranch({ rootPath: root, name, ...(ref ? { ref } : {}) }))
           }
-        />
-      )}
-      {dialog?.kind === "rename" && (
-        <RenameDialog
-          current={dialog.name}
-          existing={branches?.branches.filter((b) => b.kind === "local").map((b) => b.name) ?? []}
-          busy={busy}
-          onClose={() => setDialog(null)}
-          onSubmit={(name) => op("重命名", () => renameGitBranch({ rootPath: root, name }))}
         />
       )}
       {dialog?.kind === "createWorktree" && (
@@ -338,38 +304,6 @@ export function SourceControlPage() {
           busy={busy}
           onClose={() => setDialog(null)}
           onSubmit={(payload) => op("新建工作树", () => createGitWorktree({ rootPath: root, ...payload }))}
-        />
-      )}
-      {dialog?.kind === "deleteBranch" && (
-        <ConfirmDialog
-          title={`删除分支 ${dialog.name}`}
-          body={
-            dialog.forceReason !== undefined
-              ? `${dialog.forceReason}。强制删除（git branch -D）后未合入的提交将只能靠 hash 找回，确定？`
-              : `删除本地分支 ${dialog.name}？（未合入主线的分支会再向你确认一次）`
-          }
-          confirmLabel={dialog.forceReason !== undefined ? "强制删除" : "删除"}
-          danger
-          busy={busy}
-          onClose={() => setDialog(null)}
-          onConfirm={async () => {
-            // 用打开对话框时快照的 root：op 期间切了单元，也不能把确认弹窗
-            // 换成新仓库的同名分支（评审 P1：延迟的 branch_not_merged 重开场景）
-            const ok = await op(
-              "删除分支",
-              () =>
-                deleteGitBranch({ rootPath: dialog.root, name: dialog.name, force: dialog.forceReason !== undefined }),
-            );
-            if (ok) {
-              setDialog(null);
-              return;
-            }
-            // 第一次 -d 失败不是流程终点：转成「未合并 → 强删确认」（仍钉在原仓库）
-            if (useGit.getState().error?.code === GIT_ERROR_CODES.branchNotMerged) {
-              useGit.getState().setError(null);
-              setDialog({ ...dialog, forceReason: "该分支还有未合入的提交" });
-            }
-          }}
         />
       )}
       {dialog?.kind === "deleteWorktree" && (() => {

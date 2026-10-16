@@ -108,13 +108,10 @@
 | `bot.ask` | **已实现** | params `{botId, text, waitMs?}`；给 bot 发文本等轮落定，result `{sessionId, reply}`（WP-9：webhook/MCP 共用内核） |
 | `git.status` | **已实现** | params `{rootPath}`；result `{isRepo, branch?, detached, headShort, upstream?, ahead, behind, dirty}`（porcelain v2 解析）。非 git 仓库返回 `{isRepo:false}` 而非报错 |
 | `git.branches.list` | **已实现** | params `{rootPath}`；result `{current, detached, branches[]}`，分支行含 `kind: local\|remote`、shortHash、dateIso、author、subject、`checkedOutIn`（被哪个工作树检出，含主仓库） |
-| `git.branch.create` | **已实现** | params `{rootPath, name, ref?, checkout?}`；缺省 `checkout=true` 即 `checkout -b --no-track`（VSCode 同款）。错误码：`invalid_branch_name` / `branch_exists` |
+| `git.branch.create` | **已实现** | params `{rootPath, name, ref?}`；新建即切换（`checkout -b --no-track`，ADR 0009 收窄后无 checkout 选项）。错误码：`invalid_branch_name` / `branch_exists` |
 | `git.branch.checkout` | **已实现** | params `{rootPath, name}`。错误码：`dirty_worktree`（本地改动会被覆盖） |
-| `git.branch.rename` | **已实现** | params `{rootPath, name}`；重命名**当前分支**（VSCode 同款语义） |
-| `git.branch.delete` | **已实现** | params `{rootPath, name, force?}`；先 `-d`，未合入报 `branch_not_merged` 由 UI 确认后带 `force:true`（`-D`）重试。`branch_is_current` = 删当前分支被拒 |
-| `git.merge` / `git.merge.abort` | **已实现** | params `{rootPath, name}` / `{rootPath}`；冲突报 `merge_conflicts`（UI 提供「放弃合并」与「在终端解决」出口），abort 即 `merge --abort` |
 | `git.worktrees.list` | **已实现** | params `{rootPath}`；result `{worktrees[]}`：path / branch / headShort / dirty（逐树 `--no-optional-locks status` 探测，探测失败按不保证干净=dirty）/ isMain。非 git 仓库会报 `not_a_repo`（status 是唯一诚实缺席的入口） |
-| `git.worktree.create` | **已实现** | params `{rootPath, path?, branch?, commitish?}`；`branch` 建新分支（可叠 `commitish` 定基点）、`commitish` 检出已有 ref、都不给则从当前 HEAD 建 detached 工作树。路径相对时按仓库根解析；缺省用 VSCode 约定 `<仓库父目录>/<仓库名>.worktrees/<分支>`。result `{path, branch}`（branch 原样带回 branch/commitish）。错误码：`worktree_path_exists` / `invalid_branch_name` / `branch_checked_out_elsewhere`（data.path 指向占用分支的工作树，不带引号） |
+| `git.worktree.create` | **已实现** | params `{rootPath, path?, branch?, commitish?}`；`branch` 与 `commitish` **至少其一**（两者都不给报 `bad_params`，ADR 0009 起不再支持从当前 HEAD 凭空建 detached 树）：`branch` 建新分支（可叠 `commitish` 定基点）、仅 `commitish` 检出已有 ref。路径相对时按仓库根解析；缺省用 VSCode 约定 `<仓库父目录>/<仓库名>.worktrees/<分支>`。result `{path, branch}`（branch 原样带回 branch/commitish）。错误码：`worktree_path_exists` / `invalid_branch_name` / `branch_checked_out_elsewhere`（data.path 指向占用分支的工作树，不带引号） |
 | `git.worktree.remove` | **已实现** | params `{rootPath, path, force?}`；有未提交改动报 `worktree_dirty`，UI 确认后 `force:true`（`--force`）重试；`worktree_is_main` = 主工作树拒删 |
 | `git.worktree.reveal` | **已实现** | params `{path}`；在系统文件管理器中显示（explorer / open / xdg-open） |
 | 自动化 / Ops / 记忆方法 | Phase 5–7 | 落地时在此表登记 schema |
