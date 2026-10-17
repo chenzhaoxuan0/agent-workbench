@@ -35,6 +35,9 @@ import {
   type GitChangesResult,
   type GitCommitResult,
   type GitDiffResult,
+  type GitGraphCommit,
+  type GitGraphRef,
+  type GitGraphResult,
   type GitIdentity,
   type GitPushResult,
   type GitStatusResult,
@@ -981,4 +984,127 @@ export async function identity(root: string): Promise<GitIdentity | null> {
   if (name === null || email === null) return null;
   if (name.trim().length === 0 || email.trim().length === 0) return null;
   return { name, email };
+}
+
+// ---- 提交图 -----------------------------------------------------------------
+
+/**
+ * 仓库的 git 目录（供 watch.ts 挂监听）。链接工作树的 gitDir 在主仓
+ * `.git/worktrees/` 之下、commonDir 即主仓 `.git`；普通仓库两者相同。
+ * 非 git 仓库 / git 不可用返回 null。
+ */
+export async function gitDirs(root: string): Promise<{ gitDir: string; commonDir: string } | null> {
+  try {
+    const out = await run(root, ["rev-parse", "--git-dir", "--git-common-dir"], 10000);
+    const lines = out.trim().split(/\r?\n/);
+    if (lines.length < 2 || lines[0] === undefined || lines[1] === undefined) return null;
+    return { gitDir: path.resolve(root, lines[0].trim()), commonDir: path.resolve(root, lines[1].trim()) };
+  } catch {
+    return null;
+  }
+}
+
+const GRAPH_RECORD_SEP = "\x1e";
+const GRAPH_FIELD_SEP = "\x00";
+const GRAPH_DEFAULT_MAX_COUNT = 50;
+const GRAPH_MAX_MAX_COUNT = 200;
+const GRAPH_LOG_TIMEOUT_MS = 30000;
+
+/** %D 里的一个装饰 → 结构化 ref。带斜杠又无 refs/ 前缀的按远端分支论（ZCode 同判） */
+function graphDecorationRef(raw: string): GitGraphRef | null {
+  const ref = raw.trim();
+  if (ref.length === 0) return null;
+  if (ref === "HEAD") return { name: "HEAD", kind: "head" };
+  if (ref.startsWith("tag: ")) {
+    const name = ref.slice("tag: ".length).trim().replace(/^refs\/tags\//, "");
+    return name.length > 0 ? { name, kind: "tag" } : null;
+  }
+  if (ref.startsWith("refs/heads/")) return { name: ref.slice("refs/heads/".length), kind: "branch" };
+  if (ref.startsWith("refs/remotes/")) return { name: ref.slice("refs/remotes/".length), kind: "remote" };
+  if (ref.startsWith("refs/tags/")) return { name: ref.slice("refs/tags/".length), kind: "tag" };
+  return { name: ref, kind: ref.includes("/") ? "remote" : "branch" };
+}
+
+/** %D 整行（逗号分隔）→ refs[]。`HEAD -> main` 拆成 head + branch 两条 */
+function parseGraphRefs(decorations: string): GitGraphRef[] {
+  const refs: GitGraphRef[] = [];
+  const push = (r: GitGraphRef): void => {
+    if (!refs.some((x) => x.kind === r.kind && x.name === r.name)) refs.push(r);
+  };
+  for (const part of decorations.split(",")) {
+    const d = part.trim();
+    if (d.length === 0) continue;
+    if (d.startsWith("HEAD -> ")) {
+      push({ name: "HEAD", kind: "head" });
+      const pointed = graphDecorationRef(d.slice("HEAD -> ".length));
+      if (pointed !== null) push(pointed);
+      continue;
+    }
+    const parsed = graphDecorationRef(d);
+    if (parsed !== null) push(parsed);
+  }
+  return refs;
+}
+
+/**
+ * 提交图（docs/16）：`HEAD --branches --tags --remotes` 的可见历史分页。
+ *
+ * 不用 `--all`：它会把 stash / 各类内部 hidden refs 卷进图里，图只展示用户
+ * 可见历史（ZCode 同款限定）。`--max-count=N+1` 探测 hasMore。unborn HEAD
+ * （一条提交都没有）是诚实缺席，返回空列表而不是错误。
+ */
+export async function graph(
+  root: string,
+  opts: { readonly skip?: number; readonly maxCount?: number } = {},
+): Promise<GitGraphResult> {
+  const skip = Number.isFinite(opts.skip) ? Math.max(0, Math.floor(opts.skip as number)) : 0;
+  const rawMax = Number.isFinite(opts.maxCount) ? (opts.maxCount as number) : GRAPH_DEFAULT_MAX_COUNT;
+  const maxCount = Math.min(GRAPH_MAX_MAX_COUNT, Math.max(1, Math.floor(rawMax)));
+
+  let out: string;
+  try {
+    out = await run(
+      root,
+      [
+        "--no-optional-locks",
+        "log",
+        "HEAD",
+        "--branches",
+        "--tags",
+        "--remotes",
+        "--date-order",
+        "--topo-order",
+        `--skip=${skip}`,
+        `--max-count=${maxCount + 1}`,
+        `--format=%H%x00%P%x00%an%x00%at%x00%s%x00%D${GRAPH_RECORD_SEP}`,
+      ],
+      GRAPH_LOG_TIMEOUT_MS,
+    );
+  } catch (err) {
+    if (
+      err instanceof GitError &&
+      /does not have any commits yet|your current branch|bad default revision|ambiguous argument 'HEAD'/i.test(err.message)
+    ) {
+      return { commits: [], hasMore: false };
+    }
+    throw err;
+  }
+
+  const commits: GitGraphCommit[] = [];
+  for (const record of out.split(GRAPH_RECORD_SEP)) {
+    const trimmed = record.trim();
+    if (trimmed.length === 0) continue;
+    const [hash, parents, authorName, authorAt, subject, decorations] = trimmed.split(GRAPH_FIELD_SEP);
+    if (hash === undefined || hash.length === 0) continue;
+    const sec = Number.parseInt(authorAt ?? "", 10);
+    commits.push({
+      hash,
+      parents: parents !== undefined && parents.length > 0 ? parents.split(" ").filter((p) => p.length > 0) : [],
+      refs: parseGraphRefs(decorations ?? ""),
+      subject: subject ?? "",
+      authorName: authorName ?? "",
+      authorAtSec: Number.isNaN(sec) ? 0 : sec,
+    });
+  }
+  return { commits: commits.slice(0, maxCount), hasMore: commits.length > maxCount };
 }

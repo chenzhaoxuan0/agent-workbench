@@ -14,6 +14,8 @@
  *     stage → commit → push 全链（远端是**本地 bare 仓库**，全程不碰网络）/
  *     首推 setUpstream / non-fast-forward → push_rejected / nothing_to_commit /
  *     identity 缺失 / no_remote / 路径越界与选项注入的 bad_params
+ *   → 提交图（docs/16）：分页 / hasMore / skip / refs 解析 / unborn 空列表
+ *   → 自动刷新（docs/16）：status 心跳挂监听 → 改文件 → git.changed 广播
  *   → 会话工作树：session.start 带 worktree（mockperm 夹具执行器）→ 工作树被
  *     ensure 出来并注册；同 spec 二连发幂等复用
  *   → daemon.stop 优雅退出 → 夹具清理
@@ -79,6 +81,9 @@ function startDaemon(port: number): void {
       // identity_missing 这个码真的会抛出来）。文件本身是空的，放临时目录。
       GIT_CONFIG_GLOBAL: emptyGlobalConfig,
       GIT_CONFIG_NOSYSTEM: "1",
+      // 自动刷新的节流窗压到 250ms：smoke 里「改文件 → 等 git.changed 广播」
+      // 不用等默认的 60s（docs/16）
+      AGENT_WORKBENCH_GIT_WATCH_INTERVAL_MS: "250",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -489,7 +494,55 @@ async function main(): Promise<void> {
       rej,
     );
 
-    // 9. 优雅退出
+    // 9. 提交图（docs/16）：可见历史分页 + parents/refs。cRepo 的线性历史此刻是
+    //    diverged → 带上未跟踪 → 提交面冒烟 → init，且 HEAD 在 main 上
+    type SmokeGraphCommit = { hash: string; parents: string[]; subject: string; refs: { name: string; kind: string }[] };
+    const g1 = await ok<{ commits: SmokeGraphCommit[]; hasMore: boolean }>("git.graph", { rootPath: cRepo });
+    check(
+      "graph: HEAD first with head+branch refs",
+      g1.commits[0]?.subject === "diverged" &&
+        (g1.commits[0]?.refs.some((r) => r.kind === "head" && r.name === "HEAD") ?? false) &&
+        (g1.commits[0]?.refs.some((r) => r.kind === "branch" && r.name === "main") ?? false),
+      g1.commits[0],
+    );
+    check(
+      "graph: linear parents chain links to next row",
+      (g1.commits[0]?.parents.length ?? 0) === 1 && g1.commits[0]?.parents[0] === g1.commits[1]?.hash,
+      { p: g1.commits[0]?.parents, next: g1.commits[1]?.hash },
+    );
+    const g1full = await ok<{ commits: unknown[]; hasMore: boolean }>("git.graph", { rootPath: cRepo, maxCount: 200 });
+    check("graph: full page covers all 4 commits, no more", g1full.commits.length === 4 && g1full.hasMore === false, g1full);
+    const gPage = await ok<{ commits: SmokeGraphCommit[]; hasMore: boolean }>("git.graph", { rootPath: cRepo, maxCount: 1 });
+    check("graph: max-count truncates and flags hasMore", gPage.commits.length === 1 && gPage.hasMore === true, gPage);
+    const gSkip = await ok<{ commits: SmokeGraphCommit[] }>("git.graph", { rootPath: cRepo, skip: 1, maxCount: 1 });
+    check("graph: skip pages past HEAD", gSkip.commits[0]?.subject === "带上未跟踪", gSkip.commits[0]);
+    const gUnborn = await ok<{ commits: unknown[]; hasMore: boolean }>("git.graph", { rootPath: noIdRepo });
+    check("graph: unborn repo → empty (honest absence)", gUnborn.commits.length === 0 && gUnborn.hasMore === false, gUnborn);
+    await errorOf("git.graph", { rootPath: cRepo, maxCount: "1" }).then((e) =>
+      check("graph: string maxCount → bad_params", e.code === "bad_params", e));
+    await errorOf("git.graph", { rootPath: notRepo }).then((e) =>
+      check("graph: non-repo → not_a_repo", e.code === "not_a_repo", e));
+
+    // 10. 自动刷新（docs/16）：status 心跳挂监听 → 改文件 → 节流广播 git.changed。
+    //     节流窗由 env 压到 250ms（见 startDaemon），前沿即触发，不用等窗
+    const graphEvt = nextMessage(
+      ws,
+      (f) =>
+        f["type"] === "event" &&
+        (f["event"] as { type?: string } | undefined)?.type === "git.changed" &&
+        (f["event"] as { rootPath?: string } | undefined)?.rootPath === path.resolve(cRepo),
+      5000,
+    );
+    await sleep(400); // 让上一轮（non-ff 期间的写入）事件先过窗，别认领到旧事件
+    writeFileSync(path.join(cRepo, "watch-probe.txt"), "watch\n");
+    const evt = await graphEvt;
+    check(
+      "git.changed broadcast after fs change",
+      evt["type"] === "event" && (evt["event"] as { rootPath?: string }).rootPath === path.resolve(cRepo),
+      evt,
+    );
+
+    // 11. 优雅退出
     ws.send(JSON.stringify({ v: 1, id: "smoke-git-stop", method: "daemon.stop" }));
     const stopAck = await nextMessage(ws, (f) => f["id"] === "smoke-git-stop");
     check("daemon.stop acks", stopAck["ok"] === true, stopAck);

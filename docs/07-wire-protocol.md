@@ -59,6 +59,10 @@
   `apps/server/src/orchestration/Layers/ProviderCommandReactor.ts` 与
   `docs/internals/overview.md`。
 - `terminal` 帧是终端数据流（`kind: "data" | "exit"`，exit 带 `exitCode`）——高频且非契约事件，独立于 `event` 流，不落轨迹。
+- **`git.changed`（docs/16）是唯一无 `sessionId` 的 RuntimeEvent**：daemon 侧文件监听发现某仓库
+  （`git.status` 心跳到达过的）工作树 / .git 有变化，节流后（默认 60s 一条，前沿即发、尾沿合并）
+  广播 `{type:"git.changed", rootPath}`。它是「该刷新了」的信号不是数据本身，前端拉 `git.status` /
+  `git.changes` 收敛；不落盘、不参与 `(sessionId, seq)` 判重补拉（seq 由独立计数器填充）。
 - **解析不出 `id` 的帧**（非 JSON / envelope 不合法）回 `id: null` 的错误帧——这是唯一允许 `id` 为 null 的场景。
 
 ## 三、错误码
@@ -106,7 +110,7 @@
 | `bot.put` / `bot.list` | **已实现** | bot 定义落盘面（WP-5）：`<rootPath>/.agent-workbench/bot.json`；put 校验 id/rootPath/name 并自动把父目录登记为扫描根 |
 | `bot.roots.add` | **已实现** | 登记扫描根目录 |
 | `bot.ask` | **已实现** | params `{botId, text, waitMs?}`；给 bot 发文本等轮落定，result `{sessionId, reply}`（WP-9：webhook/MCP 共用内核） |
-| `git.status` | **已实现** | params `{rootPath}`；result `{isRepo, branch?, detached, headShort, upstream?, ahead, behind, dirty, dirtyFileCount}`（porcelain v2 解析）。非 git 仓库返回 `{isRepo:false}` 而非报错。`dirtyFileCount` = 改动条目数（ADR 0010 加，旧 daemon 缺省由前端 client 补齐） |
+| `git.status` | **已实现** | params `{rootPath}`；result `{isRepo, branch?, detached, headShort, upstream?, ahead, behind, dirty, dirtyFileCount}`（porcelain v2 解析）。非 git 仓库返回 `{isRepo:false}` 而非报错。`dirtyFileCount` = 改动条目数（ADR 0010 加，旧 daemon 缺省由前端 client 补齐）。副作用：isRepo 的仓库会被 daemon 挂上文件监听（自动刷新，见 `git.changed` 帧说明与 docs/16） |
 | `git.branches.list` | **已实现** | params `{rootPath}`；result `{current, detached, branches[]}`，分支行含 `kind: local\|remote`、shortHash、dateIso、author、subject、`checkedOutIn`（被哪个工作树检出，含主仓库） |
 | `git.branch.create` | **已实现** | params `{rootPath, name, ref?}`；新建即切换（`checkout -b --no-track`，ADR 0009 收窄后无 checkout 选项）。错误码：`invalid_branch_name` / `branch_exists` |
 | `git.branch.checkout` | **已实现** | params `{rootPath, name}`。错误码：`dirty_worktree`（本地改动会被覆盖） |
@@ -120,6 +124,7 @@
 | `git.commit` | **已实现** | params `{rootPath, message, paths[], stagedOnly?}`；result `{commitHash, branchName}`。`stagedOnly:true` = 只提交索引当前内容、不碰工作区（**这是默认语义，不做 `commit -a`**）；`stagedOnly:false` 时 `paths` 必填，先 `add -A` 这些路径再提交索引 —— 未跟踪文件因此也能进这次提交，且不会波及其他路径。错误码：`nothing_to_commit` / `identity_missing` |
 | `git.push` | **已实现** | params `{rootPath, remote?}`；result `{branchName, remoteName, trackingBranchName, setUpstream}`。remote 判定顺序：显式参数 → 已配置的 upstream → 仓库里唯一的 remote；都没有报 `no_remote`。无 upstream 时自动补 `-u` 并置 `setUpstream:true`。detached HEAD 拒绝。错误码：`push_rejected`（`data.detail` 带远端原话，供对话框展示与复制）/ `no_remote` |
 | `git.identity` | **已实现** | params `{rootPath}`；result `{name, email}` 或 **null**（任一项缺失）。提交对话框据此显示身份缺失警告条 |
+| `git.graph` | **已实现** | params `{rootPath, skip?, maxCount?}`（数值参数非有限数字报 `bad_params`；maxCount 夹在 1..200，缺省 50）；result `{commits[], hasMore}`。可见历史（`HEAD --branches --tags --remotes`，`--date-order --topo-order`，刻意不用 `--all` 以排除 stash / 内部 ref），每行 `{hash, parents[], refs[{name,kind: head\|branch\|remote\|tag}], subject, authorName, authorAtSec}`（`%D` 解析，epoch 秒）。多取一条探测 `hasMore`；unborn 仓库返回空列表（诚实缺席）。前端据此画提交图泳道（docs/16） |
 | 自动化 / Ops / 记忆方法 | Phase 5–7 | 落地时在此表登记 schema |
 
 **git.* 的公共错误码**（全表见 prototype/src/core/git.ts 的 `GIT_ERROR_CODES`，daemon 与前端共用一份词表）：`bad_params`（参数缺失/类型不符）、`not_a_repo`、`invalid_branch_name`（含前导 "-" 的选项注入防护）、`git_unavailable`（PATH 无 git / spawn 失败；Windows NTSTATUS 级失败自动重试 3 次）、`git_timeout`、`git_error`（未识别话术原样透传首行）。工作树路径一律走 `--porcelain -z`（NUL 分隔，路径不 C-quote），中文/空格路径不会带引号脏数据。提交面另加 4 个（ADR 0010）：`nothing_to_commit`、`identity_missing`、`push_rejected`（`data.detail` 带远端原话）、`no_remote`。

@@ -1171,6 +1171,8 @@ export class RuntimeHost {
   /** sink 工厂：start 与 resume 共用同一套盖章/落盘/广播/闸路径 */
   private makeSink(h: HostSession): (event: RuntimeEvent) => void {
     return (event: RuntimeEvent): void => {
+      // 仓库级事件（git.changed，无 sessionId）不经会话 sink —— 类型面收窄
+      if (!("sessionId" in event)) return;
       const cur = this.sessions.get(event.sessionId);
       if (cur === undefined) return;
       this.emitStamped(cur, event);

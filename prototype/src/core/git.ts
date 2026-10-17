@@ -109,6 +109,31 @@ export interface GitIdentity {
   readonly email: string;
 }
 
+// ---- 提交图 -----------------------------------------------------------------
+
+/** 提交上的 ref 装饰（git log %D 解析）。head = HEAD 指针（含 detached） */
+export interface GitGraphRef {
+  readonly name: string;
+  readonly kind: "head" | "branch" | "remote" | "tag";
+}
+
+/** 提交图的一行。parents 供前端画泳道连线；分页窗口外的 parent 就是 truncated 边 */
+export interface GitGraphCommit {
+  readonly hash: string;
+  readonly parents: readonly string[];
+  readonly refs: readonly GitGraphRef[];
+  readonly subject: string;
+  readonly authorName: string;
+  /** author date 的 epoch 秒（%at）；前端展示时转毫秒 */
+  readonly authorAtSec: number;
+}
+
+export interface GitGraphResult {
+  readonly commits: readonly GitGraphCommit[];
+  /** 再往下还有历史（按 maxCount+1 探测），前端据此出「加载更多」 */
+  readonly hasMore: boolean;
+}
+
 // ---- git.* 的稳定错误码词表（ADR 0008） ------------------------------------
 // daemon 的 mapError 产生、SourceControlPage 按码走确认流、smoke-git 按码断言。
 // 三处曾各写裸字符串，一处改名其余静默退化 —— 收进唯一词表。

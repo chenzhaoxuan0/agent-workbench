@@ -25,6 +25,7 @@ import type {
   GitChangesResult,
   GitCommitResult,
   GitDiffResult,
+  GitGraphResult,
   GitIdentity,
   GitPushResult,
   GitStatusResult,
@@ -298,8 +299,17 @@ export class DaemonClient {
     }
     if (frame["type"] === "event") {
       const event = frame["event"] as RuntimeEvent | undefined;
-      // 评审 P3：最小形状校验——半实现 daemon / wscat 手发帧不至于在监听器里抛 TypeError
-      if (event === undefined || typeof event !== "object" || typeof event.sessionId !== "string") return;
+      // 评审 P3：最小形状校验——半实现 daemon / wscat 手发帧不至于在监听器里抛 TypeError。
+      // git.changed 是仓库级事件（无 sessionId，docs/16），凭 rootPath 放行
+      if (
+        event === undefined ||
+        typeof event !== "object" ||
+        (event.type === "git.changed"
+          ? typeof (event as { rootPath?: unknown }).rootPath !== "string"
+          : typeof (event as { sessionId?: unknown }).sessionId !== "string")
+      ) {
+        return;
+      }
       const seq = typeof frame["seq"] === "number" ? frame["seq"] : undefined;
       for (const fn of this.#eventListeners) fn(event, seq);
       return;
@@ -808,6 +818,15 @@ export async function fetchGitIdentity(
 ): Promise<GitIdentity | null> {
   const client = DaemonClient.get(endpoint);
   return client.rpc("git.identity", { rootPath }, 20000);
+}
+
+/** 提交图一页（docs/16）。大仓库的 log 全量较慢，超时给足 */
+export async function fetchGitGraph(
+  params: { rootPath: string; skip?: number; maxCount?: number },
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<GitGraphResult> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc("git.graph", params, 60000);
 }
 
 export interface ChannelStatus {

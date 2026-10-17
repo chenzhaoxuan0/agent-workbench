@@ -131,6 +131,9 @@ class DaemonRuntimeAdapter implements RuntimeAdapter {
     if (this.#pumpInstalled) return;
     this.#pumpInstalled = true;
     this.#client.onEvent((event, seq) => {
+      // git.changed 是仓库级事件（无 sessionId，docs/16）：会话泵不处理，
+      // 消费方（useGit 的自动刷新安装器）直接订阅 DaemonClient
+      if (event.type === "git.changed") return;
       // WP-2 按 seq 判重：daemon 广播全量事件，重放/补拉的重叠在此挡住。
       // 补拉进行中的会话（评审 P1）帧进 stash——若照常推进游标，补拉响应会被整体判重丢洞
       if (seq !== undefined) {
@@ -265,9 +268,11 @@ class DaemonRuntimeAdapter implements RuntimeAdapter {
         60000,
       );
       this.#sessions.add(session.id);
-      // 认领自己的事件，并把它们从缓冲里摘掉（并发的另一次 startSession 不受影响）
-      const mine = this.#inflight.filter((e) => e.sessionId === session.id);
-      this.#inflight = this.#inflight.filter((e) => e.sessionId !== session.id);
+      // 认领自己的事件，并把它们从缓冲里摘掉（并发的另一次 startSession 不受影响）。
+      // 泵已挡掉无 sessionId 的仓库级事件（git.changed），这里 `"sessionId" in e`
+      // 只是让类型面也这么说
+      const mine = this.#inflight.filter((e) => "sessionId" in e && e.sessionId === session.id);
+      this.#inflight = this.#inflight.filter((e) => !("sessionId" in e) || e.sessionId !== session.id);
       for (const e of mine) this.#admit(e);
       // ⚠ daemon 返回的会话带的是**裸执行器 id**（host 侧 `runtimeId: adapter.id`，
       // 实测 "codex"），而前端注册表里的键是带命名空间的 `daemon:codex`。

@@ -224,6 +224,18 @@ export type RuntimeEvent =
       readonly text: string;
       readonly level?: "info" | "success" | "warn";
       readonly meta?: Readonly<Record<string, string>>;
+    }
+
+  // ---- git 状态通知（无 sessionId：仓库级，不属任何会话） ----
+  /**
+   * daemon 侧文件监听发现某仓库的工作树 / .git 有变化（docs/16）。
+   * 这是「该刷新了」的信号而不是数据本身 —— 前端收到后自行拉 git.status /
+   * git.changes，daemon 不在事件里带货（拉取已有 TTL/代际守卫，带货反而两套口径）。
+   * 不落盘、不参与 seq 判重补拉（订阅者直接消费；漏一条的代价只是晚一轮刷新）。
+   */
+  | {
+      readonly type: "git.changed";
+      readonly rootPath: string;
     };
 
 export type RuntimeEventType = RuntimeEvent["type"];

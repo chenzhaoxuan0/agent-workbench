@@ -41,6 +41,7 @@ import { CursorAdapter } from "./runtime/adapters/cursor.ts";
 import { OpenclawAdapter } from "./runtime/adapters/openclaw.ts";
 import { buildSkillsInventory, copySkill, setSkillDisabled } from "./skills/inventory.ts";
 import * as gitRepo from "./git/repo.ts";
+import { GitWatcher } from "./git/watch.ts";
 import {
   mcpCopy,
   mcpInventory,
@@ -2333,7 +2334,20 @@ function reqStrArray(params: unknown, key: string): string[] {
   return v as string[];
 }
 
-registerMethod("git.status", (params) => gitRepo.status(gitRoot(params)));
+// git 状态自动刷新（docs/16）：status 心跳到达过的仓库自动挂文件监听，
+// 变化经节流广播 git.changed（无 sessionId 的 RuntimeEvent，仓库级）。
+// seq 用独立计数器 —— git 事件不参与会话内 seq 判重补拉，消费方直取。
+let gitWatcherSeq = 0;
+const gitWatcher = new GitWatcher((rootPath) => {
+  broadcastEvent(wss, { type: "git.changed", rootPath }, ++gitWatcherSeq);
+});
+
+registerMethod("git.status", async (params) => {
+  const result = await gitRepo.status(gitRoot(params));
+  // isRepo 才监听：非仓库目录没有状态可刷新（诚实缺席，见 repo.ts status 注释）
+  if (result.isRepo) void gitWatcher.ensure(gitRoot(params));
+  return result;
+});
 registerMethod("git.branches.list", (params) => gitRepo.listBranches(gitRoot(params)));
 registerMethod("git.branch.create", (params) =>
   gitRepo.createBranch(gitRoot(params), reqStr(params, "name"), { ref: optStr(params, "ref") }),
@@ -2386,6 +2400,21 @@ registerMethod("git.commit", (params) => {
 });
 registerMethod("git.push", (params) => gitRepo.push(gitRoot(params), optStr(params, "remote")));
 registerMethod("git.identity", (params) => gitRepo.identity(gitRoot(params)));
+
+// 提交图（docs/16，ZCode GitGraph 同款数据面）：可见历史分页 + 每条提交的
+// parents / refs（%D 解析），前端据此画泳道。unborn 仓库返回空列表。
+registerMethod("git.graph", (params) => {
+  const p = (params ?? {}) as Record<string, unknown>;
+  const num = (key: string): number | undefined => {
+    const v = p[key];
+    if (v === undefined || v === null) return undefined;
+    if (typeof v !== "number" || !Number.isFinite(v)) {
+      throw Object.assign(new Error(`${key} must be a finite number`), { code: "bad_params" });
+    }
+    return v;
+  };
+  return gitRepo.graph(gitRoot(params), { skip: num("skip"), maxCount: num("maxCount") });
+});
 
 // 渠道运行态：bot.json 声明了什么 vs 网关实际起没起。docs/09 §五的状态徽标要靠它
 registerMethod("channel.status", async () => {
@@ -2896,6 +2925,7 @@ async function shutdown(signal: string): Promise<void> {
   log.info("shutting down", { signal });
   scheduler.stop();
   quotaResumeWatcher.stop();
+  gitWatcher.stop();
   backlogEngine?.stop();
   memoryScheduler?.stop(); // 之前漏了：60s interval 会活到 process.exit，正在跑的日报/curator 被从中间砍断
   telegramGateway.stop();
