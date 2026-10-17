@@ -36,3 +36,8 @@ backend/scripts/verify-merge-ui.ts
 backend/scripts/e2e-automation-ui-last.png
 
 backend/scripts/.tmp/
+
+# 本机运行态 —— bot.json 可能含渠道明文密钥（backend/src/bots/registry.ts 的
+# ensureGitignore 同一口径），.zcode/ 是 CLI 会话状态，都只在本机有意义
+.agent-workbench/
+.zcode/
