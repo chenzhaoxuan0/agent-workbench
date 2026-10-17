@@ -25,6 +25,7 @@ import { botAvatarStyle } from "./Sidebar.tsx";
 import { MarkdownContent } from "./MarkdownContent.tsx";
 import { AttachmentsBar } from "./AttachmentsBar.tsx";
 import type { ChatAttachment } from "../core/attachments.ts";
+import { SessionReadinessBadge } from "./SessionReadinessBadge.tsx";
 import { cn } from "./cn.ts";
 
 /**
@@ -256,6 +257,26 @@ function groupTimelineEvents(
 
 /* ------------------------------------------------------------- 行渲染 */
 
+/** 段边界 divider 行：执行器切换点 + 上一段 readiness（从 sessions 台账读） */
+function SegmentDividerRow({
+  data,
+}: {
+  data: { from: string; to: string; fromId: string; toId: string };
+}) {
+  const fromSession = useWorkbench((s) => s.sessions.find((x) => String(x.id) === data.fromId));
+  return (
+    <div className="my-6 flex items-center gap-3" role="separator" aria-label={`已切换执行器：${data.from} → ${data.to}`}>
+      <span className="h-px flex-1 bg-line" />
+      <span className="flex shrink-0 items-center gap-2 rounded-full border border-line bg-card px-3 py-1 text-caption text-graphite shadow-xs">
+        已切换执行器 · {data.from} → <span className="font-medium text-ink">{data.to}</span>
+        <span className="text-ash">· 上一段保留在上方</span>
+        <SessionReadinessBadge live={fromSession?.live} resumable={fromSession?.resumable} />
+      </span>
+      <span className="h-px flex-1 bg-line" />
+    </div>
+  );
+}
+
 function parseSlashCommand(text: string): { isCommand: boolean; name: string; args: string } {
   const trimmed = text.trim();
   if (!trimmed.startsWith("/") || trimmed.startsWith("//") || trimmed.includes("\n")) {
@@ -336,16 +357,7 @@ function TimelineItemRow({ item, unitName, busy }: { item: GroupedItem; unitName
       );
 
     case "segment.divider":
-      return (
-        <div className="my-6 flex items-center gap-3" role="separator" aria-label={`已切换执行器：${item.data.from} → ${item.data.to}`}>
-          <span className="h-px flex-1 bg-line" />
-          <span className="shrink-0 rounded-full border border-line bg-card px-3 py-1 text-caption text-graphite shadow-xs">
-            已切换执行器 · {item.data.from} → <span className="font-medium text-ink">{item.data.to}</span>
-            <span className="text-ash"> · 上一段保留在上方</span>
-          </span>
-          <span className="h-px flex-1 bg-line" />
-        </div>
-      );
+      return <SegmentDividerRow data={item.data} />;
 
     case "user.message":
       return <UserMessageBubble text={item.data.text} attachments={item.data.attachments} />;

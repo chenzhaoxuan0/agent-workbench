@@ -24,6 +24,7 @@ import { dispatchTerminal, fetchUnitHistory, type UnitHistoryEntry } from "../ad
 import {
   asModelId,
   asRuntimeId,
+  asSessionId,
   asUnitId,
   type UnitId,
   type WorkUnit,
@@ -41,7 +42,7 @@ import { ChannelMark, channelIdentityLabel } from "./ChannelMark.tsx";
 import { HistoryDialog, resumeArgsFor } from "./HistoryDialog.tsx";
 import { executorIconSrc } from "./executorIcon.ts";
 import { useHistoryPrefs } from "../store/useHistoryPrefs.ts";
-import { RotateCcw } from "lucide-react";
+import { MessageSquare, RotateCcw } from "lucide-react";
 import { cn } from "./cn.ts";
 
 /**
@@ -874,6 +875,17 @@ function UnitRow({
                   setHistoryFocus(e.key);
                   setHistoryDialogOpen(true);
                 }}
+                {...(e.sessionId !== null && e.unitId !== undefined
+                  ? {
+                      onOpenInChat: () => {
+                        // ADR 0012 resume-in-chat：从账本重建时间线并接回（可恢复时）
+                        void useWorkbench
+                          .getState()
+                          .openSession({ sessionId: asSessionId(e.sessionId!), unitId: asUnitId(e.unitId!), runtimeId: e.runtimeId });
+                        useShell.getState().setMainView("chat");
+                      },
+                    }
+                  : {})}
                 {...(args !== null && self !== undefined
                   ? {
                       onResume: () => {
@@ -1009,15 +1021,18 @@ function formatHistoryTime(ts: number): string {
 }
 
 /** 历史子列表的单行：执行器图标 + 状态点 + 标题 + 紧凑时间；点开进对话详情弹窗。
- *  可恢复的条目（zcode/claude/codex/mcode 后台/TUI 会话）行尾带 ⟲ 图标，点击即在 TUI 重现。 */
+ *  可恢复的条目（zcode/claude/codex/mcode 后台/TUI 会话）行尾带 ⟲ 图标，点击即在 TUI 重现。
+ *  headless 条目另带 💬 图标：接回聊天页续聊（ADR 0012 resume-in-chat）。 */
 function HistoryListRow({
   entry,
   onOpenDetail,
   onResume,
+  onOpenInChat,
 }: {
   entry: UnitHistoryEntry;
   onOpenDetail: () => void;
   onResume?: () => void;
+  onOpenInChat?: () => void;
 }): ReactElement {
   const kindLabel = entry.kind === "automation" ? "定时" : entry.kind === "backlog" ? "待办" : entry.kind === "manual" ? "手动" : "会话";
   const dot =
@@ -1053,6 +1068,27 @@ function HistoryListRow({
       <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", dot)} />
       <span className="min-w-0 flex-1 truncate text-[11px] text-graphite">{entry.title}</span>
       <span className="shrink-0 text-[9px] text-ash/70">{formatHistoryTime(entry.startedAt)}</span>
+      {onOpenInChat !== undefined && (
+        <span
+          role="button"
+          tabIndex={0}
+          data-no-drag
+          onClick={(ev) => {
+            ev.stopPropagation();
+            onOpenInChat();
+          }}
+          onKeyDown={(ev) => {
+            if (ev.key === "Enter" || ev.key === " ") {
+              ev.stopPropagation();
+              onOpenInChat();
+            }
+          }}
+          title="接回聊天页：可恢复时续聊原会话，否则打开只读历史"
+          className="shrink-0 cursor-pointer rounded p-0.5 text-ash opacity-0 transition hover:bg-teal-tint hover:text-teal group-hover/hrow:opacity-100"
+        >
+          <MessageSquare size={10} />
+        </span>
+      )}
       {onResume !== undefined && (
         <span
           role="button"

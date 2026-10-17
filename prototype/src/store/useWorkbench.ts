@@ -182,6 +182,12 @@ interface WorkbenchState {
   selectSession: (id: SessionId | null) => void;
   /** 切换执行器。返回是否成功 —— 门禁（本轮未落定）时拒绝并推 notice（ADR 0012） */
   selectRuntime: (id: string) => boolean;
+  /**
+   * 在聊天页打开一个历史会话（ADR 0012 resume-in-chat）：
+   * 从 daemon 账本重建时间线；会话可恢复（live / cli_ref）时接回执行器续聊，
+   * 仅历史时打开只读视图 —— 新消息将在同一谱系开新段。
+   */
+  openSession: (input: { sessionId: SessionId; unitId: UnitId; runtimeId: string }) => Promise<void>;
   /** 换模型。非法组合（该执行器不接这个模型）静默拒绝，不改状态 */
   selectModel: (model: ModelId) => void;
   /** 改某个 CLI 的模型偏好。动作原子，不合法的输入原样返回由调用方处理 */
@@ -699,6 +705,71 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
     return true;
   },
 
+  openSession: async (input) => {
+    // 与切换执行器同一道门禁：正在跑的对话不该被打开历史会话顶掉
+    if (runtimeSwitchBlocked(get())) {
+      get().pushNotice("先让当前这一轮落定", "正在执行或等待裁决时不能打开历史会话。", { level: "warn" });
+      return;
+    }
+    const unit = get().units.find((u) => u.id === input.unitId);
+    if (unit === undefined) {
+      get().pushNotice("找不到所属 bot", `会话 ${input.sessionId} 所属的单元不在列表里。`, { level: "warn" });
+      return;
+    }
+    const adapter = await runtimeRegistry.getOrCreate(asRuntimeId(`daemon:${input.runtimeId}`) as never);
+    // 事件泵必须在 resume 之前挂上：resume 后 daemon 推的任何事件都要能进时间线
+    consumeEvents(adapter);
+
+    // ① 尝试接回：live 会话直接返回；死会话凭 cli_ref reattach；都没有则抛（no_cli_ref）
+    let session: Session | undefined;
+    let historyOnly = false;
+    try {
+      session = await adapter.resumeSession(input.sessionId);
+    } catch {
+      // ② 仅历史：从台账拉这行（拿 status/stats/conversationId 等元数据）
+      historyOnly = true;
+      try {
+        const listed = await adapter.listSessions(unit);
+        session = listed.find((s) => s.id === input.sessionId);
+      } catch {
+        session = undefined;
+      }
+    }
+    if (session === undefined) {
+      get().pushNotice("打不开这个会话", "daemon 台账里没有它，或执行器已不可用。", { level: "warn" });
+      return;
+    }
+
+    // ③ 账本回放重建时间线（openSession 不经事件泵，用户轮 delta 原样进时间线）
+    let rebuilt: { id: number; event: RuntimeEvent; at: number }[] = [];
+    try {
+      const replay = adapter.eventsSince !== undefined ? await adapter.eventsSince(input.sessionId) : [];
+      rebuilt = replay.map((r) => ({ id: r.seq, event: r.event, at: r.at }));
+      // 本地合成序号跳过回放占用的区间，防 React key 撞车
+      for (const r of replay) if (r.seq > seq) seq = r.seq;
+    } catch (err: unknown) {
+      console.warn("[workbench] 账本回放失败（时间线将为空）", err instanceof Error ? err.message : err);
+    }
+
+    get().selectUnit(input.unitId);
+    set((s) => ({
+      timeline: rebuilt,
+      busy: session!.status === "running" && session!.live === true,
+      sessions: s.sessions.some((x) => x.id === session!.id)
+        ? s.sessions.map((x) => (x.id === session!.id ? session! : x))
+        : [...s.sessions, session!],
+      activeSessionId: session!.id,
+    }));
+    // 执行器也要跟着会话走：续聊判定比对 activeRuntimeId
+    get().selectRuntime(String(adapter.id));
+    if (historyOnly) {
+      get().pushNotice(
+        "已打开历史对话（只读段）",
+        "这个会话接不回执行器了 —— 时间线可回看；发新消息将在同一对话线开新段。",
+      );
+    }
+  },
+
   selectModel: (model) =>
     set((s) => {
       const entry = s.runtimes.find((r) => r.id === s.activeRuntimeId);
@@ -878,10 +949,13 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
 
     // 续聊：活跃会话开着（未 done/failed）且属于当前执行器。
     // 工作树会话例外：它永远是新开的（daemon 按 path+branch ensure 工作树）。
+    // live === false（ADR 0012 仅历史段）也不续聊 —— daemon 侧 impl 已死，
+    // session.send 必抛 session_not_live，直接走同谱系开新段。
     const active = activeSessionId !== null ? get().sessions.find((s) => s.id === activeSessionId) : undefined;
     if (
       opts?.worktree === undefined &&
       active !== undefined &&
+      active.live !== false &&
       active.runtimeId === activeRuntimeId &&
       active.status !== "done" &&
       active.status !== "failed"

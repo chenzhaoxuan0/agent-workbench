@@ -336,6 +336,14 @@ export interface Session {
   readonly modelHintDropped?: string;
   /** 是否为项目模式下的短寿会话（worktree 隔离） */
   readonly ephemeral: boolean;
+  /**
+   * ADR 0012 readiness 事实（host 台账判定）：
+   * live = daemon 进程内 impl 存活（可直接续聊）；
+   * resumable = 有执行器原生引用（cli_ref）可接回。
+   * 两者皆缺 = 仅历史（时间线可回看，新消息开新段）。缺省 = 旧 daemon / mock。
+   */
+  readonly live?: boolean;
+  readonly resumable?: boolean;
   readonly worktree?: { readonly path: string; readonly branch: string };
   /**
    * 会话的实际工作目录（cwd）：普通会话 = 单元 rootPath，会话工作树 = ensure 后的

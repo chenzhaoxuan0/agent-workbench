@@ -172,8 +172,8 @@ interface HostSession {
   turnOpen: boolean;
   /** 用户请求取消当前轮 —— 落定时把 turn.completed 标为 cancelled（各家 CLI 的取消口径不一，host 统一） */
   cancelRequested: boolean;
-  /** 会话事件环（上限 500，带 seq），eval 断言与前端重放共用 */
-  readonly events: Array<{ seq: number; event: RuntimeEvent }>;
+  /** 会话事件环（上限 500，带 seq 与 at），eval 断言与前端重放共用 */
+  readonly events: Array<{ seq: number; at: number; event: RuntimeEvent }>;
 }
 
 export interface StartSessionInput {
@@ -350,7 +350,7 @@ export class RuntimeHost {
    * gap=true 表示请求的游标已滑出环外（环最老 seq > afterSeq+1 且客户端确有前情），
    * 调用方应回落到落盘账本（session.trace 的 afterSeq 路径）。
    */
-  hotEventsSince(sessionId: SessionId, afterSeq: number): { items: Array<{ seq: number; event: RuntimeEvent }>; gap: boolean } {
+  hotEventsSince(sessionId: SessionId, afterSeq: number): { items: Array<{ seq: number; at: number; event: RuntimeEvent }>; gap: boolean } {
     const h = this.sessions.get(sessionId);
     if (h === undefined) throw adapterError("unknown_session", `no such session: ${sessionId}`);
     const items = h.events.filter((e) => e.seq > afterSeq);
@@ -393,7 +393,8 @@ export class RuntimeHost {
         impl: null,
         adapter,
         lastTool: null,
-        lastCliRef: null,
+        // 行上的 cli_ref 即恢复凭据（ADR 0012 readiness：lastCliRef 非空 = resumable）
+        lastCliRef: row.cliRef,
         pendingSends: [],
         turnBusy: false,
         turnCount: 0,
@@ -847,6 +848,10 @@ export class RuntimeHost {
       modelActual: h.modelActual ?? undefined,
       modelHintDropped: h.modelHintDropped ?? undefined,
       ephemeral: false,
+      // ADR 0012 readiness 事实（host 台账判定，不依赖适配器自觉发 ended）：
+      // live = 进程内 impl 存活；resumable = 有执行器原生引用可接回
+      live: h.impl !== null,
+      resumable: h.lastCliRef !== null,
       stats: { ...h.stats },
     };
   }
@@ -1284,7 +1289,8 @@ export class RuntimeHost {
    */
   private emitStamped(h: HostSession, event: RuntimeEvent): void {
     const seq = ++h.seq;
-    h.events.push({ seq, event });
+    const at = Date.now();
+    h.events.push({ seq, at, event });
     if (h.events.length > 500) h.events.splice(0, h.events.length - 500);
     // 推送订阅者（飞书流式用它把增量文本刷到 IM）。**回调一律包 try**：
     // 订阅方是自己的代码，它炸了不能反过来掀翻这一轮派发。

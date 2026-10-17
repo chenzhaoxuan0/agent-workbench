@@ -2891,6 +2891,7 @@ registerMethod("session.trace", (params) => {
   return traceSink.readSessionNdjson(asSessionId(p.sessionId), typeof p.afterSeq === "number" ? p.afterSeq : 0);
 });
 // 断线补拉（WP-2）：热路径读事件环；游标滑出环外（gap）时回落落盘账本。
+// ADR 0012：返回 {seq, at, event} —— at 供前端重建时间线（TimelineItem 需要）。
 registerMethod("session.events.since", async (params) => {
   const p = (params ?? {}) as { sessionId?: string; afterSeq?: number };
   if (typeof p.sessionId !== "string") throw Object.assign(new Error("sessionId is required"), { code: "bad_params" });
@@ -2902,8 +2903,8 @@ registerMethod("session.events.since", async (params) => {
     .split("\n")
     .filter((l) => l !== "")
     .map((l) => {
-      const r = JSON.parse(l) as { seq: number; event: unknown };
-      return { seq: r.seq, event: r.event };
+      const r = JSON.parse(l) as { seq: number; at?: number; event: unknown };
+      return { seq: r.seq, at: r.at ?? 0, event: r.event };
     });
 });
 // 孤儿治理面（WP-10）：列出可回收的死会话 / 回收指定会话（轨迹文件永不删）。

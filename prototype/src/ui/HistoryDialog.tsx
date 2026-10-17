@@ -29,7 +29,8 @@ import {
 } from "../adapters/daemon/client.ts";
 import { useWorkbench } from "../store/useWorkbench.ts";
 import { useHistoryPrefs } from "../store/useHistoryPrefs.ts";
-import { asUnitId } from "../core/units.ts";
+import { asSessionId, asUnitId } from "../core/units.ts";
+import { useShell } from "../store/useShell.ts";
 import { cn } from "./cn.ts";
 
 /**
@@ -164,6 +165,20 @@ export function HistoryDialog({
       })
       .catch((err2: unknown) => console.error("[HistoryDialog] TUI 恢复失败:", err2))
       .finally(() => setResumeBusy(null));
+  };
+
+  /**
+   * 在聊天页继续（ADR 0012 resume-in-chat）：headless 会话从 daemon 账本重建
+   * 时间线；可恢复（live / cli_ref）时接回执行器，否则打开只读段。
+   * 与 TUI 恢复互补：TUI 走执行器自己的存储（原生原味），这里走 host 账本投影。
+   */
+  const handleOpenInChat = (e: UnitHistoryEntry): void => {
+    if (e.sessionId === null || e.unitId === undefined) return;
+    void useWorkbench
+      .getState()
+      .openSession({ sessionId: asSessionId(e.sessionId), unitId: asUnitId(e.unitId), runtimeId: e.runtimeId });
+    useShell.getState().setMainView("chat");
+    onClose();
   };
 
   useEffect(() => {
@@ -367,6 +382,7 @@ export function HistoryDialog({
               resumable={resumable(e)}
               resumeBusy={resumeBusy === e.key}
               onResume={() => handleResume(e)}
+              onOpenInChat={e.sessionId !== null && e.unitId !== undefined ? () => handleOpenInChat(e) : undefined}
             />
           ))}
         </div>
@@ -526,6 +542,7 @@ function HistoryRow({
   resumable,
   resumeBusy,
   onResume,
+  onOpenInChat,
 }: {
   entry: UnitHistoryEntry;
   expanded: boolean;
@@ -533,6 +550,8 @@ function HistoryRow({
   resumable: boolean;
   resumeBusy: boolean;
   onResume: () => void;
+  /** ADR 0012 resume-in-chat：headless 会话才有（TUI 条目没有我们的账本） */
+  onOpenInChat?: () => void;
 }): ReactElement {
   const kind = KIND_META[entry.kind];
   const st = useMemo(() => statusMeta(entry.status), [entry.status]);
@@ -562,7 +581,28 @@ function HistoryRow({
             <span className={cn("shrink-0 text-caption", st.cls)}>{st.label}</span>
             {dur !== null && <span className="shrink-0 text-caption text-ash">{dur}</span>}
             <span className="shrink-0 text-caption text-ash">{formatWhen(entry.startedAt)}</span>
-            {/* 在 TUI 中恢复：行根是 button，内嵌动作用 span 实现（button 套 button 非法） */}
+            {/* 在聊天页继续 / 在 TUI 中恢复：行根是 button，内嵌动作用 span 实现（button 套 button 非法） */}
+            {onOpenInChat !== undefined && (
+              <span
+                role="button"
+                tabIndex={0}
+                onClick={(ev) => {
+                  ev.stopPropagation();
+                  onOpenInChat();
+                }}
+                onKeyDown={(ev) => {
+                  if (ev.key === "Enter" || ev.key === " ") {
+                    ev.stopPropagation();
+                    onOpenInChat();
+                  }
+                }}
+                title="把这段对话接回聊天页：可恢复时续聊原会话，否则打开只读历史（发消息将开新段）"
+                className="flex shrink-0 cursor-pointer items-center gap-0.5 rounded-chip bg-teal-tint px-1.5 py-px text-[10px] text-teal transition hover:bg-teal hover:text-canvas"
+              >
+                <MessageSquare size={9} />
+                在聊天页继续
+              </span>
+            )}
             {resumable && (
               <span
                 role="button"

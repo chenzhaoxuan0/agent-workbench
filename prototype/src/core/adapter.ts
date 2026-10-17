@@ -230,6 +230,13 @@ export interface RuntimeAdapter {
    */
   events(): AsyncIterable<RuntimeEvent>;
 
+  /**
+   * 账本回放（ADR 0012）：从 daemon 账本读该会话的全量已盖章事件
+   * （热环 + 落盘账本双路径），供聊天页重建时间线（openSession）。
+   * 可选 —— 非 daemon 适配器没有账本，不实现。
+   */
+  eventsSince?(sessionId: SessionId): Promise<readonly { seq: number; at: number; event: RuntimeEvent }[]>;
+
   // ---- 轨迹（eval 闭环）----
   /** 导出该会话的完整轨迹，供 LLM judge 消费 */
   exportTrace(sessionId: SessionId): Promise<string>;
