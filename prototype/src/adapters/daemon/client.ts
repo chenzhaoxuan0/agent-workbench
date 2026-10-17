@@ -1313,6 +1313,29 @@ export async function fetchSessionMessages(
   return client.rpc<Array<{ at: number; role: string; text: string }>>("session.messages", { sessionId }, 15000);
 }
 
+/**
+ * daemon 全量会话台账（跨执行器，ADR 0012 谱系查询用）。
+ * 带 conversationId（谱系归属）与 live/resumable（readiness 事实）。
+ * 与 DaemonRuntimeAdapter.listSessions 的区别：那边按单执行器过滤且翻译 runtimeId，
+ * 这里是原始形状 —— 谱系匹配要跨执行器，过滤在调用方做。
+ */
+export interface DaemonSessionRow {
+  readonly id: string;
+  readonly unitId: string;
+  readonly runtimeId: string;
+  readonly conversationId?: string | null;
+  readonly status: string;
+  readonly live?: boolean;
+  readonly resumable?: boolean;
+}
+
+export async function fetchSessions(
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<readonly DaemonSessionRow[]> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<readonly DaemonSessionRow[]>("session.list", null, 15000);
+}
+
 /** 读取终端会话的输出文本快照（ANSI 过滤后的纯文本日志） */
 export async function fetchTerminalTranscript(
   terminalId: string,

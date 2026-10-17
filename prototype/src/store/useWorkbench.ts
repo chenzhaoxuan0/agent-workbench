@@ -982,6 +982,60 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
     // （selectUnit/addUnit）。工作树会话是显式的新隔离对话，不延续谱系。
     set({ busy: true });
 
+    // 「切回来还在」（ADR 0012 per-executor retention）：同谱系里若已有
+    // 该执行器的段且可接回（live / cli_ref 可恢复且未终结），续接那段而非新开。
+    // 查 daemon 台账（session.list 带谱系与 readiness），不用前端 sessions ——
+    // 刷新后它是空的，且谱系事实只归 daemon。
+    const lineageId = active !== undefined ? (active.conversationId ?? String(active.id)) : null;
+    if (lineageId !== null && opts?.worktree === undefined) {
+      const bareTarget = String(activeRuntimeId).replace(/^daemon:/, "");
+      let target: { id: string } | undefined;
+      try {
+        const { fetchSessions, defaultDaemonEndpoint } = await import("../adapters/daemon/client.ts");
+        const all = await fetchSessions(defaultDaemonEndpoint());
+        target = all.find(
+          (s) =>
+            (s.conversationId ?? s.id) === lineageId &&
+            s.runtimeId === bareTarget &&
+            // 已终结（done/failed）的段即使 impl 还活着也不续 —— 会话已收口，
+            // 新消息应当开新段（谱系延续），而不是往死会话里塞
+            s.status !== "done" && s.status !== "failed" &&
+            (s.live === true || s.resumable === true),
+        );
+      } catch {
+        // 台账拉不到（daemon 忙/不可达）：按新段走，不在这里报错 ——
+        // 真正的连接错误由随后的 startSession 统一上报
+        target = undefined;
+      }
+      if (target !== undefined) {
+        // 若目标段正跑着轮（别的端续上了它）：session.send 会按 T3 steer 排队，无需特判
+        try {
+          const resumed = await adapter.resumeSession(asSessionId(target.id));
+          const normalized: Session = { ...resumed, runtimeId: adapter.id as never };
+          set((s) => ({
+            busy: true,
+            sessions: s.sessions.some((x) => x.id === normalized.id)
+              ? s.sessions.map((x) => (x.id === normalized.id ? normalized : x))
+              : [...s.sessions, normalized],
+            activeSessionId: normalized.id,
+          }));
+          pushUserBubble(normalized.id);
+          await adapter.sendMessage({
+            sessionId: normalized.id,
+            text: fullPrompt,
+            attachments,
+            loop: {
+              ...(loop.reasoningLevel ? { reasoningLevel: loop.reasoningLevel } : {}),
+            },
+          });
+          return;
+        } catch (err: unknown) {
+          // 续接失败显式回落新段（不静默）
+          get().pushNotice("旧段接不回去，改为开新段", err instanceof Error ? err.message : String(err), { level: "warn" });
+        }
+      }
+    }
+
     let session: Awaited<ReturnType<RuntimeAdapter["startSession"]>>;
     try {
       session = await adapter.startSession({
