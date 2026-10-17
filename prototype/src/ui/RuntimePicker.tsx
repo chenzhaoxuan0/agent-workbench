@@ -5,7 +5,7 @@ import { formatContext, formatPrice, type ModelSpec } from "../core/models.ts";
 import { prefsOf, resolveVisibleModels } from "../core/modelPrefs.ts";
 import type { RuntimeEntry } from "../core/registry.ts";
 import { useShell } from "../store/useShell.ts";
-import { modelSpecFor, selectVisibleModels, useWorkbench, visibleModelsFor, isHiddenByUser } from "../store/useWorkbench.ts";
+import { modelSpecFor, runtimeSwitchBlocked, selectVisibleModels, useWorkbench, visibleModelsFor, isHiddenByUser } from "../store/useWorkbench.ts";
 import { cn } from "./cn.ts";
 import { RuntimeIcon } from "./RuntimeIcon.tsx";
 
@@ -88,7 +88,9 @@ export function RuntimePanel({ onDone, fillHeight = false }: { onDone?: () => vo
   const pick = (row: PickerRow) => {
     const s = useWorkbench.getState();
     if (row.runtime.state.status === "not_installed") return;
-    if (row.runtime.id !== s.activeRuntimeId) s.selectRuntime(row.runtime.id);
+    // 门禁拒绝时不能继续 selectModel：那会把「别家执行器的模型」写进当前执行器
+    // 的 runtimeModels（ADR 0012 的 idle-only 切换门禁）
+    if (row.runtime.id !== s.activeRuntimeId && !s.selectRuntime(row.runtime.id)) return;
     s.selectModel(row.spec.id);
     onDone?.();
   };
@@ -193,7 +195,7 @@ export function RuntimePanel({ onDone, fillHeight = false }: { onDone?: () => vo
         </div>
 
         <div className="shrink-0 border-t border-line-soft px-2.5 py-2">
-          <p className="text-caption text-ash">切换只影响下一条消息</p>
+          <SwitchHintCopy />
           <button
             onClick={() => {
               useShell.getState().openSettings("models");
@@ -403,6 +405,23 @@ function RailButton({
 }
 
 const TIER_LABEL = { frontier: "旗舰", balanced: "均衡", fast: "快速" } as const;
+
+/**
+ * 面板底部切换语义文案 —— 三态（ADR 0012）：
+ * 门禁中（本轮未落定，切换会被拒）/ 有活跃段（切换 = 开新段，上一段保留）/ 无段（首段前的切换无边界）。
+ * 替换掉旧文案「切换只影响下一条消息」——它低估了后果（实际会开新段，旧段不再续）。
+ */
+function SwitchHintCopy() {
+  const blocked = useWorkbench(runtimeSwitchBlocked);
+  const hasActiveSegment = useWorkbench((s) => s.activeSessionId !== null && s.sessions.some((x) => x.id === s.activeSessionId));
+  if (blocked) {
+    return <p className="text-caption text-amber-600">本轮进行中 —— 落定后才能切换执行器</p>;
+  }
+  if (hasActiveSegment) {
+    return <p className="text-caption text-ash">切换执行器 = 下一条消息开启新对话段；上一段保留、可回看</p>;
+  }
+  return <p className="text-caption text-ash">同执行器换模型不影响上下文；切换只影响下一条消息</p>;
+}
 
 function ModelRow({
   row,

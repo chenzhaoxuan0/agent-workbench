@@ -171,6 +171,11 @@ export interface StartSessionRequest {
    * 不想让用户选，就该在注册时把 `models` 声明成只有一个。
    */
   readonly model: ModelId;
+  /**
+   * 会话谱系（ADR 0012）：切换执行器开新段时传旧段所属谱系 id（旧段的
+   * conversationId ?? 旧段自身 id）。缺省 = 新谱系。时间线按谱系连续渲染。
+   */
+  readonly conversationId?: string;
   /** 项目模式：指定 worktree 以实现并行隔离 */
   readonly worktree?: { readonly path: string; readonly branch: string };
   /** agent loop 参数（省略 = 各执行器默认；mode 缺省视为 build） */

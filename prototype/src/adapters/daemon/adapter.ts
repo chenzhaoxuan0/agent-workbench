@@ -263,6 +263,8 @@ class DaemonRuntimeAdapter implements RuntimeAdapter {
           reasoningLevel: req.loop?.reasoningLevel,
           // 源代码管理面板「在此工作树启动会话」：daemon 侧 ensure 后以工作树为 cwd
           ...(req.worktree !== undefined ? { worktree: req.worktree } : {}),
+          // ADR 0012：谱系关联 —— 切换执行器开新段时延续同一对话线
+          ...(req.conversationId !== undefined ? { conversationId: req.conversationId } : {}),
           memoryOptions: req.memoryOptions,
         },
         60000,

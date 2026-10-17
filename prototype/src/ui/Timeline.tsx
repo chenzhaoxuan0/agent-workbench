@@ -40,9 +40,21 @@ export function Timeline() {
   const timeline = useWorkbench((s) => s.timeline);
   const busy = useWorkbench((s) => s.busy);
   const unit = useWorkbench(selectActiveUnit);
+  const sessions = useWorkbench((s) => s.sessions);
+  const runtimes = useWorkbench((s) => s.runtimes);
+
+  // sessionId → 执行器显示名（divider 合成用；Map 每次渲染重建，sessions 规模下可忽略）
+  const nameOf = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const s of sessions) {
+      const rt = runtimes.find((r) => r.id === s.runtimeId);
+      map.set(String(s.id), rt?.presentation.displayName ?? String(s.runtimeId));
+    }
+    return (sid: string): string | undefined => map.get(sid);
+  }, [sessions, runtimes]);
 
   // 事件流归并处理：合并流式连续思考片段，配对工具调用
-  const items = useMemo(() => groupTimelineEvents(timeline), [timeline]);
+  const items = useMemo(() => groupTimelineEvents(timeline, nameOf), [timeline, nameOf]);
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
@@ -79,6 +91,7 @@ interface GroupedItem {
   kind:
     | "session.start"
     | "session.end"
+    | "segment.divider"
     | "user.message"
     | "thinking"
     | "assistant.message"
@@ -95,11 +108,35 @@ interface GroupedItem {
   data: any;
 }
 
-function groupTimelineEvents(events: readonly { id: number | string; event: RuntimeEvent; at: number }[]): GroupedItem[] {
+/**
+ * 段边界 divider（ADR 0012）：时间线是整条对话（谱系）的投影，sessionId 从一段
+ * 换到另一段 = 执行器切换点。divider 是渲染层聚合产物，不进账本。
+ * 只在两侧会话都「认识」（在 sessions 台账里）时插入 —— 本地合成的 sys notice
+ * 等无主事件不产生边界。
+ */
+function groupTimelineEvents(
+  events: readonly { id: number | string; event: RuntimeEvent; at: number }[],
+  sessionNameOf?: (sessionId: string) => string | undefined,
+): GroupedItem[] {
   const result: GroupedItem[] = [];
+  let prevSessionId: string | null = null;
 
   for (const entry of events) {
     const { id, event, at } = entry;
+
+    // 段边界：已知段 → 另一已知段（渲染层合成，不入账本）
+    if ("sessionId" in event && sessionNameOf !== undefined) {
+      const sid = String(event.sessionId);
+      if (prevSessionId !== null && sid !== prevSessionId && sessionNameOf(sid) !== undefined && sessionNameOf(prevSessionId) !== undefined) {
+        result.push({
+          id: `divider-${id}`,
+          kind: "segment.divider",
+          at,
+          data: { from: sessionNameOf(prevSessionId), to: sessionNameOf(sid), fromId: prevSessionId, toId: sid },
+        });
+      }
+      prevSessionId = sid;
+    }
 
     switch (event.type) {
       case "session.started":
@@ -294,6 +331,18 @@ function TimelineItemRow({ item, unitName, busy }: { item: GroupedItem; unitName
         <div className="my-6 flex items-center gap-4">
           <span className="h-px flex-1 bg-line" />
           <span className="tnum shrink-0 text-caption text-ash">会话结束 · {item.data.reason}</span>
+          <span className="h-px flex-1 bg-line" />
+        </div>
+      );
+
+    case "segment.divider":
+      return (
+        <div className="my-6 flex items-center gap-3" role="separator" aria-label={`已切换执行器：${item.data.from} → ${item.data.to}`}>
+          <span className="h-px flex-1 bg-line" />
+          <span className="shrink-0 rounded-full border border-line bg-card px-3 py-1 text-caption text-graphite shadow-xs">
+            已切换执行器 · {item.data.from} → <span className="font-medium text-ink">{item.data.to}</span>
+            <span className="text-ash"> · 上一段保留在上方</span>
+          </span>
           <span className="h-px flex-1 bg-line" />
         </div>
       );

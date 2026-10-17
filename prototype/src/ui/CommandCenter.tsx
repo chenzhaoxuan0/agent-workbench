@@ -361,6 +361,7 @@ function useCommands(): readonly Command[] {
   // 只订阅业务侧的必要字段；shell 走 getState()，避免无 selector 的全量订阅
   const units = useWorkbench((s) => s.units);
   const runtimes = useWorkbench((s) => s.runtimes);
+  const hasActiveSegment = useWorkbench((s) => s.activeSessionId !== null && s.sessions.some((x) => x.id === s.activeSessionId));
 
   return useMemo(() => {
     const shell = () => useShell.getState();
@@ -429,7 +430,8 @@ function useCommands(): readonly Command[] {
       out.push({
         id: `runtime-${r.id}`,
         label: `切换执行器 · ${r.presentation.displayName}`,
-        hint: `${caps.filter(Boolean).length}/${caps.length} 能力`,
+        // ADR 0012：有活跃段时切换 = 开新段（上一段保留）；门禁期间选择会被拒并提示
+        hint: `${caps.filter(Boolean).length}/${caps.length} 能力${hasActiveSegment ? " · 开新对话段" : ""}`,
         group: "执行器",
         run: () => useWorkbench.getState().selectRuntime(r.id),
       });

@@ -180,7 +180,8 @@ interface WorkbenchState {
    */
   reloadUnit: (id: UnitId) => Promise<WorkUnit | null>;
   selectSession: (id: SessionId | null) => void;
-  selectRuntime: (id: string) => void;
+  /** 切换执行器。返回是否成功 —— 门禁（本轮未落定）时拒绝并推 notice（ADR 0012） */
+  selectRuntime: (id: string) => boolean;
   /** 换模型。非法组合（该执行器不接这个模型）静默拒绝，不改状态 */
   selectModel: (model: ModelId) => void;
   /** 改某个 CLI 的模型偏好。动作原子，不合法的输入原样返回由调用方处理 */
@@ -542,7 +543,9 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
   },
 
   selectUnit: (activeUnitId) => {
-    set({ activeUnitId, activeSessionId: null });
+    // 切单元 = 切对话视图：时间线跟着换（ADR 0012 后时间线不再随开新段清空，
+    // 单元边界成了唯一的显式清空点之一）
+    set({ activeUnitId, activeSessionId: null, timeline: [] });
     try {
       localStorage.setItem("agent-workbench:active-unit", activeUnitId);
     } catch {}
@@ -578,6 +581,7 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
       units: [...s.units, u],
       activeUnitId: u.id,
       activeSessionId: null,
+      timeline: [],
     }));
     // WP-5 写穿：落盘 <rootPath>/.agent-workbench/bot.json 与 <rootPath>/AGENTS.md。
     // 这里**不吞异常**——目录不存在（root_not_found）时侧栏会多一个刷新即逝的幽灵 bot，
@@ -651,17 +655,48 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
   selectSession: (activeSessionId) => set({ activeSessionId }),
 
   selectRuntime: (activeRuntimeId) => {
+    const s = get();
+    // ADR 0012 切换门禁（idle-only）：turn 进行中 / 等权限 / 等输入时切换，
+    // 上一段会被丢在半空。同执行器的重复选择不是切换，不受门禁。
+    const prevId = s.activeRuntimeId;
+    if (activeRuntimeId !== prevId && runtimeSwitchBlocked(s)) {
+      get().pushNotice(
+        "先让这一轮落定再切换执行器",
+        "当前对话正在执行或等待裁决 —— 此时切换会把这一段丢在半空。",
+        { level: "warn" },
+      );
+      return false;
+    }
     // 换执行器时保证模型组合合法。
     // runtimeModels 是按执行器存的，所以理论上不会串；
     // 但工作单元的 modelHint、注册表热更新都可能引入非法值，这里兜住。
     const entry = get().runtimes.find((r) => r.id === activeRuntimeId);
-    if (!entry) return set({ activeRuntimeId });
+    if (!entry) {
+      set({ activeRuntimeId });
+      return true;
+    }
     const cur = get().runtimeModels[activeRuntimeId];
-    if (canRuntimeUse(entry.models, cur)) return set({ activeRuntimeId });
-    set({
-      activeRuntimeId,
-      runtimeModels: { ...get().runtimeModels, [activeRuntimeId]: entry.defaultModel },
-    });
+    const nextModel = canRuntimeUse(entry.models, cur) ? undefined : entry.defaultModel;
+    set(
+      nextModel === undefined
+        ? { activeRuntimeId }
+        : {
+            activeRuntimeId,
+            runtimeModels: { ...get().runtimeModels, [activeRuntimeId]: entry.defaultModel },
+          },
+    );
+    // 切换反馈：活跃会话存在时，下一条消息将是同一对话的新段 —— 把边界说清楚
+    //（替换掉旧文案「切换只影响下一条消息」的误导：它低估了后果）。
+    if (activeRuntimeId !== prevId) {
+      const active = s.activeSessionId !== null ? s.sessions.find((x) => x.id === s.activeSessionId) : undefined;
+      if (active !== undefined) {
+        get().pushNotice(
+          `已切换到 ${entry.presentation.displayName}`,
+          "下一条消息将开启新对话段（新执行器不带上一段的记忆）；上一段保留在时间线上，可随时回看。",
+        );
+      }
+    }
+    return true;
   },
 
   selectModel: (model) =>
@@ -745,7 +780,8 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
   /**
    * 发一条消息 —— T3 语义：**活跃会话仍开着就同会话续聊**（agent loop 保持
    * 上下文，工具记得前文），只有首条消息 / 上个会话已结束 / 换了执行器才
-   * startSession 开新会话。时间线在开新会话时重置，续聊时追加。
+   * startSession 开新段。时间线跨段连续（ADR 0012）：开新段不清空，段边界由
+   * 渲染层合成 divider；清空只发生在单元切换。
    */
   run: async (prompt, opts) => {
     const { activeUnitId, activeRuntimeId, runtimeModels, activeSessionId } = get();
@@ -867,8 +903,10 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
       return;
     }
 
-    // 新会话：时间线重置（新对话）
-    set({ busy: true, timeline: [] });
+    // 新段（ADR 0012）：时间线**不再清空** —— 同一对话跨执行器段的投影，
+    // 段边界由渲染层按 sessionId 变化合成 divider。清空只发生在单元切换
+    // （selectUnit/addUnit）。工作树会话是显式的新隔离对话，不延续谱系。
+    set({ busy: true });
 
     let session: Awaited<ReturnType<RuntimeAdapter["startSession"]>>;
     try {
@@ -876,6 +914,12 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
         unit,
         prompt: fullPrompt,
         model,
+        // ADR 0012 谱系延续：上一段存在（含已 done/failed —— 对话线不因段终结而断）
+        // 就把它的谱系 id 传给新段；worktree 分支显式开新谱系
+        conversationId:
+          opts?.worktree === undefined && active !== undefined
+            ? (active.conversationId ?? active.id)
+            : undefined,
         // 仅源代码管理面板显式传入：在此工作树开新会话（ADR 0008）
         worktree: opts?.worktree,
         loop,
@@ -982,6 +1026,16 @@ function mapTurnStatus(raw: string): SessionStatus {
   if (raw.startsWith("failed")) return "failed";
   if (raw === "idle" || raw === "running" || raw === "done" || raw === "awaiting_permission" || raw === "awaiting_input") return raw;
   return "running";
+}
+
+/**
+ * 执行器切换门禁（ADR 0012，idle-only）：活跃段正在执行 / 等裁决 / 等输入，或
+ * 本轮 busy 未落定时禁止切换。RuntimePicker 与 ⌘K 两处入口共用这一份判定。
+ */
+export function runtimeSwitchBlocked(s: { busy: boolean; activeSessionId: SessionId | null; sessions: readonly { id: SessionId; status: SessionStatus }[] }): boolean {
+  if (s.busy) return true;
+  const active = s.activeSessionId !== null ? s.sessions.find((x) => x.id === s.activeSessionId) : undefined;
+  return active !== undefined && (active.status === "running" || active.status === "awaiting_permission" || active.status === "awaiting_input");
 }
 
 /** 归一化事件流消费循环 —— UI 唯一的数据入口。每适配器挂一次，跨轮次常驻。 */
