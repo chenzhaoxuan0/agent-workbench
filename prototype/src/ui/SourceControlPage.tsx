@@ -226,9 +226,12 @@ export function SourceControlPage() {
       {status !== null && !status.isRepo ? (
         <EmptyState text="该目录不是 git 仓库（没有 .git）" />
       ) : (
-        <div className="flex min-h-0 flex-1 flex-col gap-4 p-4">
+        /* 整页滚动语义：链路上不压 min-h-0 —— 那会解除 flex 子项「不压缩到
+            内容高度以下」的默认下限，矮窗口时三个 section 被按比例压扁，
+            内容溢出盖到下一个 section 上（改动列表叠上分支/工作树） */
+        <div className="flex flex-col gap-4 p-4">
           {/* ---- 改动（ADR 0010 的 ③：改了什么）—— 在分支区之上 ---- */}
-          <section className="min-h-0">
+          <section>
             <SectionHeader
               icon={<Files size={13} className="text-teal" />}
               title="改动"
@@ -302,7 +305,7 @@ export function SourceControlPage() {
           </section>
 
           {/* ---- 分支 ---- */}
-          <section className="min-h-0">
+          <section>
             <SectionHeader
               icon={<GitBranch size={13} className="text-teal" />}
               title="分支"
@@ -345,7 +348,7 @@ export function SourceControlPage() {
           </section>
 
           {/* ---- 工作树 ---- */}
-          <section className="min-h-0">
+          <section>
             <SectionHeader
               icon={<FolderGit2 size={13} className="text-teal" />}
               title="工作树"
