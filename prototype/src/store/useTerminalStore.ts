@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { terminalSessionRegistry } from "./TerminalSessionManager.ts";
+import { terminalSessionRegistry, CHAT_DOCK_UNIT_ID } from "./TerminalSessionManager.ts";
 
 export type SplitDirection = "horizontal" | "vertical"; // horizontal = 左右 (row), vertical = 上下 (col)
 
@@ -608,7 +608,10 @@ export const useTerminalStore = create<TerminalStoreState>((set, get) => ({
 
     // 全面放开：每个存活的 PTY 都还原成标签 —— 同一 Bot 的多终端
     // （手动一个 + 定时任务 TUI 一个）是合法并存，不在这里替用户清理。
-    const adopted = list.map((t) => adoptTermRow(t, units));
+    // 对话页小终端除外：它归 ChatTerminalDock 自己认领（unitId 标记）。
+    const adopted = list
+      .filter((t) => t.unitId !== CHAT_DOCK_UNIT_ID)
+      .map((t) => adoptTermRow(t, units));
 
     const activeUnitId = useWorkbench.getState().activeUnitId;
     const initialActiveInst = activeUnitId
@@ -641,6 +644,9 @@ export const useTerminalStore = create<TerminalStoreState>((set, get) => ({
       client.onTerminalFrame((f) => {
         if (f.kind !== "created") return;
         if (get().instances.some((i) => i.id === f.terminalId)) return;
+        // 对话页小终端不进标签树：它有自己的挂载点（ChatTerminalDock），
+        // 认领成 TUI 标签会出现两处 xterm 抢同一块 PTY 画布
+        if (f.unitId === CHAT_DOCK_UNIT_ID) return;
         void (async () => {
           try {
             // created 帧只带档案字段；补拉一次 list 拿 scrollback —— 认领前的

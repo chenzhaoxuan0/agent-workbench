@@ -11,6 +11,7 @@ import { SettingsPage } from "./ui/SettingsPage.tsx";
 import { SourceControlPage } from "./ui/SourceControlPage.tsx";
 import { PermissionDialog } from "./ui/PermissionDialog.tsx";
 import { Timeline } from "./ui/Timeline.tsx";
+import { ChatTerminalDock } from "./ui/ChatTerminalDock.tsx";
 import { useWorkbench } from "./store/useWorkbench.ts";
 import { useTerminalStore } from "./store/useTerminalStore.ts";
 import { Sidebar } from "./ui/Sidebar.tsx";
@@ -219,6 +220,8 @@ function ConversationSlot() {
             <div className="flex min-h-0 flex-1 flex-col">
               <Timeline />
               <PermissionDialog />
+              {/* 对话页小终端：折叠在 Composer 正上方，与 TUI 终端页互相独立 */}
+              <ChatTerminalDock />
               <Composer />
             </div>
           )}

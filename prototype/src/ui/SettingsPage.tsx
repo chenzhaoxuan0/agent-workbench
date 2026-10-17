@@ -19,6 +19,7 @@ import {
   Plus,
   Settings2,
   Shield,
+  SquareTerminal,
   Wand,
 } from "lucide-react";
 import {
@@ -40,6 +41,8 @@ import { ComputerControlSection } from "./ComputerControlSection.tsx";
 import { ImageSettingsSection } from "./ImageSettingsSection.tsx";
 import { AppearanceSettingsSection } from "./AppearanceSettingsSection.tsx";
 import { useHistoryPrefs } from "../store/useHistoryPrefs.ts";
+import { useChatTerminal } from "../store/useChatTerminal.ts";
+import { SUPPORTED_TERMINAL_PROFILES } from "../store/useTerminalStore.ts";
 import { cn } from "./cn.ts";
 
 const ICONS: Record<string, typeof Settings2> = {
@@ -57,6 +60,7 @@ const ICONS: Record<string, typeof Settings2> = {
   history: History,
   layers: Layers,
   plug: Plug,
+  terminal: SquareTerminal,
   globe: Globe,
   monitor: Monitor,
 };
@@ -241,6 +245,8 @@ function SectionBody({ section }: { section: SettingsSectionDef }) {
       return <ShortcutsSection />;
     case "history":
       return <HistorySettingsSection />;
+    case "terminal":
+      return <TerminalSettingsSection />;
     case "skills":
       return <SkillsSettingsSection />;
     case "mcp":
@@ -696,6 +702,64 @@ function HistorySettingsSection() {
           }
         />
       </GroupCard>
+    </div>
+  );
+}
+
+/**
+ * 终端分区 —— 对话页小终端（Composer 左下角 SquareTerminal 唤起）的 Shell 档案。
+ *
+ * Windows daemon 侧 defaultShell 本就优先 PowerShell 7（backend/src/terminal/terminals.ts），
+ * 前端默认档与其对齐：profileId 缺省 "pwsh"，落不到 pwsh 时 daemon 自动回退
+ * powershell → cmd，终端永远起得来。改动立即生效：现有对话终端会被杀掉重建。
+ */
+function TerminalSettingsSection() {
+  const profileId = useChatTerminal((s) => s.profileId);
+  const setProfileId = useChatTerminal((s) => s.setProfileId);
+  const open = useChatTerminal((s) => s.open);
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h3 className="text-body-sm font-semibold text-ink">对话终端</h3>
+        <p className="mt-1 text-caption text-ash">
+          对话页输入框工具栏的终端按钮唤起的快捷小终端（与「终端」主视图的 TUI 标签页互相独立）。
+          默认 PowerShell 7；机器上没装 pwsh 时 daemon 会自动回退到 Windows PowerShell / CMD。
+        </p>
+      </div>
+
+      <GroupCard>
+        <SettingsRow
+          label="Shell 类型"
+          description="对话终端新会话使用的 Shell。切换后现有对话终端立即按新 Shell 重建（未打开则下次打开生效）。"
+          control={
+            <select
+              value={profileId}
+              onChange={(e) => setProfileId(e.target.value)}
+              aria-label="对话终端 Shell 类型"
+              className="h-8 w-full max-w-[200px] rounded-btn border border-line bg-canvas px-2 text-body-sm text-ink focus:border-teal/60 focus:outline-none"
+            >
+              {SUPPORTED_TERMINAL_PROFILES.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                  {p.id === "pwsh" ? "（默认）" : ""}
+                </option>
+              ))}
+            </select>
+          }
+        />
+        <SettingsRow
+          label="进程保留"
+          description="收起对话终端面板时进程保持运行，再次打开瞬达不丢现场；点面板里的重启按钮才会真正结束进程。"
+          control={<Toggle on disabled />}
+        />
+      </GroupCard>
+
+      {open && (
+        <p className="text-caption text-ash">
+          对话终端当前已打开 —— 刚才的 Shell 变更已立即生效。
+        </p>
+      )}
     </div>
   );
 }

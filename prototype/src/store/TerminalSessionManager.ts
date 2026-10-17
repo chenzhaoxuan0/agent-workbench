@@ -659,3 +659,12 @@ class TerminalSessionRegistry {
 
 export const terminalSessionRegistry = new TerminalSessionRegistry();
 export const TerminalSessionManager = terminalSessionRegistry;
+
+/**
+ * 对话页小终端（Chat Terminal Dock）在 daemon 侧的 unitId 标记。
+ *
+ * 放这个叶子模块而不是 useChatTerminal：TUI 的 useTerminalStore（created 帧认领 /
+ * F5 重挂）要按它跳过对话终端，而 useChatTerminal 又要引这里的注册表 ——
+ * 标记若挂在这两个 store 任何一边都是环，这里是它们共同的叶子依赖。
+ */
+export const CHAT_DOCK_UNIT_ID = "__chatdock__";

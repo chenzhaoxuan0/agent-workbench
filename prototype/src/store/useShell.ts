@@ -46,6 +46,7 @@ export type SettingsSectionId =
   | "appearance"
   | "models"
   | "history"
+  | "terminal"
   | "image"
   | "shortcuts"
   | "memory"
@@ -81,6 +82,7 @@ export const SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
   { id: "appearance", title: "外观", desc: "预设主题、十组配色、透明度、背景壁纸与表面排版", groupId: "basics", icon: "palette" },
   { id: "models", title: "执行器与模型", desc: "执行器实例、供应商与每个 CLI 的模型清单", groupId: "basics", icon: "brain" },
   { id: "history", title: "历史会话", desc: "会话时间轴过滤、失败记录隐藏与展示偏好", groupId: "basics", icon: "history" },
+  { id: "terminal", title: "终端", desc: "对话页小终端的 Shell 类型（默认 PowerShell 7）与终端页共享的档案", groupId: "basics", icon: "terminal" },
   { id: "shortcuts", title: "快捷键", desc: "全局与工作区级键位", groupId: "basics", icon: "keyboard" },
 
   { id: "memory", title: "记忆", desc: "语义事实 / 情节事件 / 程序性技能 三层记忆（对齐 waku）", groupId: "agentCapabilities", icon: "brain" },

@@ -20,6 +20,7 @@ import { PermissionModePicker } from "./PermissionModePicker.tsx";
 import { SlashCommandMenu, filterNativeCommands } from "./SlashCommandMenu.tsx";
 import { AttachmentsBar } from "./AttachmentsBar.tsx";
 import { PathMentionMenu } from "./PathMentionMenu.tsx";
+import { ChatTerminalToggleButton } from "./ChatTerminalDock.tsx";
 import type { ChatAttachment } from "../core/attachments.ts";
 import { MAX_ATTACHMENTS, categorizeAttachment, inferAttachmentMimeType } from "../core/attachments.ts";
 import {
@@ -592,6 +593,9 @@ export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
 
               {/* 权限模式选择器（计划模式 / 变更确认 / 自主模式 / 完全访问） */}
               <PermissionModePicker compact={isMobile} align="left" />
+
+              {/* 对话终端唤起按钮：对话页底部快捷小终端（Shell 在设置 → 终端里选，默认 PowerShell 7） */}
+              <ChatTerminalToggleButton />
             </div>
 
             {/* 右侧操作：执行器与模型（单图标） + 推理力度（单图标） + 发送/停止按钮 */}
