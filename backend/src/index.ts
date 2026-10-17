@@ -2807,6 +2807,18 @@ registerMethod("session.start", (params) => {
         : (() => {
             throw Object.assign(new Error("worktree requires both path and branch"), { code: "bad_params" });
           })();
+  // ADR 0012：谱系/交接参数。给了但不合法 = bad_params（与 worktree 同口径，
+  // 不静默吞 —— 前端勾了交接却因字段畸形静默失效，用户无从得知，review P2）
+  if (p.conversationId !== undefined && (typeof p.conversationId !== "string" || p.conversationId === "")) {
+    throw Object.assign(new Error("conversationId must be a non-empty string"), { code: "bad_params" });
+  }
+  if (
+    p.handoff !== undefined &&
+    (p.handoff === null || typeof p.handoff !== "object" || Array.isArray(p.handoff) ||
+      typeof p.handoff.fromSessionId !== "string" || p.handoff.fromSessionId === "")
+  ) {
+    throw Object.assign(new Error("handoff requires fromSessionId (non-empty string)"), { code: "bad_params" });
+  }
   return host.startSession({
     runtimeId: p.runtimeId,
     unitId: asUnitId(p.unitId),
@@ -2902,15 +2914,25 @@ registerMethod("session.events.since", async (params) => {
   if (typeof p.sessionId !== "string") throw Object.assign(new Error("sessionId is required"), { code: "bad_params" });
   const afterSeq = typeof p.afterSeq === "number" ? p.afterSeq : 0;
   const hot = host.hotEventsSince(asSessionId(p.sessionId), afterSeq);
+  const parseLedger = (nd: string): Array<{ seq: number; at: number; event: unknown }> =>
+    nd
+      .split("\n")
+      .filter((l) => l !== "")
+      .map((l) => {
+        const r = JSON.parse(l) as { seq: number; at?: number; event: unknown };
+        return { seq: r.seq, at: r.at ?? 0, event: r.event };
+      });
+  if (afterSeq === 0) {
+    // 全量重建（openSession / 换代重拉，review P0）：以落盘账本为准 —— 热环只
+    // 保留最近 500 条，直接吃环会静默截断长对话；trace append 是异步的，
+    // 账本可能还没写到最后几条，用热环补尾部消除竞态。
+    const records = parseLedger(await traceSink.readSessionNdjson(asSessionId(p.sessionId), 0));
+    const maxLedgerSeq = records.reduce((m, r) => Math.max(m, r.seq), 0);
+    const tail = hot.items.filter((e) => e.seq > maxLedgerSeq);
+    return [...records, ...tail];
+  }
   if (!hot.gap) return hot.items;
-  const nd = await traceSink.readSessionNdjson(asSessionId(p.sessionId), afterSeq);
-  return nd
-    .split("\n")
-    .filter((l) => l !== "")
-    .map((l) => {
-      const r = JSON.parse(l) as { seq: number; at?: number; event: unknown };
-      return { seq: r.seq, at: r.at ?? 0, event: r.event };
-    });
+  return parseLedger(await traceSink.readSessionNdjson(asSessionId(p.sessionId), afterSeq));
 });
 // 孤儿治理面（WP-10）：列出可回收的死会话 / 回收指定会话（轨迹文件永不删）。
 registerMethod("session.gc", (params) => {

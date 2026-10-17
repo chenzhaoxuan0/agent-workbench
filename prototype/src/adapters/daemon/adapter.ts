@@ -243,7 +243,10 @@ class DaemonRuntimeAdapter implements RuntimeAdapter {
 
   async listSessions(_unit: WorkUnit): Promise<readonly Session[]> {
     const all = await this.#client.rpc<Session[]>("session.list", null, 15000);
-    return all.filter((s) => s.runtimeId === this.#executorId);
+    // 翻译放适配器边界（同 startSession/resumeSession 的约定，review P1）：
+    // 裸执行器 id 落进前端 sessions[] 会让续聊判定永远不匹配 + 时间线 divider
+    // 认不出执行器显示名
+    return all.filter((s) => s.runtimeId === this.#executorId).map((s) => ({ ...s, runtimeId: this.id }));
   }
 
   async startSession(req: StartSessionRequest): Promise<Session> {
@@ -300,11 +303,16 @@ class DaemonRuntimeAdapter implements RuntimeAdapter {
 
   /** 账本回放（ADR 0012）：热环 + 落盘账本，重建聊天页时间线用 */
   async eventsSince(sessionId: SessionId): Promise<readonly { seq: number; at: number; event: RuntimeEvent }[]> {
-    return this.#client.rpc<Array<{ seq: number; at: number; event: RuntimeEvent }>>(
+    const rows = await this.#client.rpc<Array<{ seq: number; at: number; event: RuntimeEvent }>>(
       "session.events.since",
       { sessionId, afterSeq: 0 },
       30000,
     );
+    // 回放终点即游标（review P2）：openSession 的回放不经泵，泵内该会话游标
+    // 还是 undefined —— 不推进的话，回放后~重连前的实时帧会被 resync 整体跳过
+    const maxSeq = (rows ?? []).reduce((m, r) => Math.max(m, r.seq), 0);
+    if (maxSeq > 0) this.#lastSeq.set(String(sessionId), Math.max(this.#lastSeq.get(String(sessionId)) ?? 0, maxSeq));
+    return rows ?? [];
   }
 
   async sendMessage(req: SendMessageRequest): Promise<void> {

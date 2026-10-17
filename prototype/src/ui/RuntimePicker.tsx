@@ -426,7 +426,7 @@ function SwitchHintCopy() {
         <p className="text-caption text-ash">切换执行器 = 下一条消息开启新对话段；上一段保留、可回看</p>
         <label
           className="mt-0.5 flex cursor-pointer items-center gap-1 text-caption text-graphite"
-          title="把上一段的最近对话以只读转录拼进新执行器的首条消息（有损摘要式交接；该内容会成为新执行器原生历史的一部分）"
+          title="把上一段的最近对话以只读转录拼进新执行器的首条消息（有损交接；该内容会成为新执行器原生历史的一部分）。触发面是所有开新段的场景（含切换执行器、旧段终结后重开），不只切换"
         >
           <input
             type="checkbox"
@@ -434,7 +434,7 @@ function SwitchHintCopy() {
             onChange={(e) => setHandoffOn(e.target.checked)}
             className="h-3 w-3 accent-teal"
           />
-          切换时携带上文（只读转录，进入新执行器历史）
+          开新段时携带上文（只读转录，进入新执行器历史）
         </label>
       </div>
     );

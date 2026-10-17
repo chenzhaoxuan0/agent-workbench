@@ -725,7 +725,15 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
       get().pushNotice("找不到所属 bot", `会话 ${input.sessionId} 所属的单元不在列表里。`, { level: "warn" });
       return;
     }
-    const adapter = await runtimeRegistry.getOrCreate(asRuntimeId(`daemon:${input.runtimeId}`) as never);
+    // 执行器可能已不在注册表（daemon 下线了它 / 注册部分失败）：兜住再提示，
+    // 否则 HistoryDialog/Sidebar 的 void 调用变成静默 unhandled rejection（review P2）
+    let adapter: RuntimeAdapter;
+    try {
+      adapter = await runtimeRegistry.getOrCreate(asRuntimeId(`daemon:${input.runtimeId}`) as never);
+    } catch (err: unknown) {
+      get().pushNotice("这个执行器当前不可用", err instanceof Error ? err.message : String(err), { level: "warn" });
+      return;
+    }
     // 事件泵必须在 resume 之前挂上：resume 后 daemon 推的任何事件都要能进时间线
     consumeEvents(adapter);
 
@@ -749,28 +757,70 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
       return;
     }
 
-    // ③ 账本回放重建时间线（openSession 不经事件泵，用户轮 delta 原样进时间线）
-    let rebuilt: { id: number; event: RuntimeEvent; at: number }[] = [];
+    // ③ 谱系聚合回放（review P1）：只回放点击的段，跨执行器对话的旧段与 divider
+    // 会在刷新后消失。拉全谱系、按 startedAt 归并逐段回放（eventsSince 是
+    // 会话级 RPC，任一 daemon 适配器实例都能回放任意段）。台账拉不到就退化为
+    // 只回放本段。回放条目统一用本地序号重编 id —— 各段 seq 独立从 1 计数，
+    // 直接拼会撞 React key。
+    const lineageRoot = session.conversationId ?? String(session.id);
+    let segmentIds: string[] = [String(session.id)];
+    let lineageRows: Array<{ id: string; runtimeId: string; startedAt: number; status: string; live?: boolean; resumable?: boolean; title?: string; conversationId?: string | null }> = [];
     try {
-      const replay = adapter.eventsSince !== undefined ? await adapter.eventsSince(input.sessionId) : [];
-      rebuilt = replay.map((r) => ({ id: r.seq, event: r.event, at: r.at }));
-      // 本地合成序号跳过回放占用的区间，防 React key 撞车
-      for (const r of replay) if (r.seq > seq) seq = r.seq;
-    } catch (err: unknown) {
-      console.warn("[workbench] 账本回放失败（时间线将为空）", err instanceof Error ? err.message : err);
+      const { fetchSessions, defaultDaemonEndpoint } = await import("../adapters/daemon/client.ts");
+      const all = await fetchSessions(defaultDaemonEndpoint());
+      lineageRows = all
+        .filter((s) => (s.conversationId ?? s.id) === lineageRoot)
+        .sort((a, b) => a.startedAt - b.startedAt);
+      segmentIds = lineageRows.map((s) => s.id);
+      if (!segmentIds.includes(String(session.id))) segmentIds.push(String(session.id));
+    } catch {
+      lineageRows = [];
+    }
+    const rebuilt: { id: number; event: RuntimeEvent; at: number }[] = [];
+    for (const segId of segmentIds) {
+      try {
+        const replay = adapter.eventsSince !== undefined ? await adapter.eventsSince(asSessionId(segId)) : [];
+        for (const r of replay) rebuilt.push({ id: ++seq, event: r.event, at: r.at });
+      } catch (err: unknown) {
+        console.warn("[workbench] 该段账本回放失败（跳过）", segId, err instanceof Error ? err.message : err);
+      }
     }
 
+    // ④ 落位。顺序要紧（review P0）：selectRuntime 必须在大 set **之前** ——
+    // 先 set busy/activeSessionId 再切执行器，会被自家门禁按「本轮进行中」拦下，
+    // activeRuntimeId 留在旧执行器上，续聊判定从此错位。selectUnit 先清
+    // activeSessionId（门禁的会话半边恒 false）、busy 尚未置位 → 切换必成。
     get().selectUnit(input.unitId);
-    set((s) => ({
-      timeline: rebuilt,
-      busy: session!.status === "running" && session!.live === true,
-      sessions: s.sessions.some((x) => x.id === session!.id)
-        ? s.sessions.map((x) => (x.id === session!.id ? session! : x))
-        : [...s.sessions, session!],
-      activeSessionId: session!.id,
-    }));
-    // 执行器也要跟着会话走：续聊判定比对 activeRuntimeId
     get().selectRuntime(String(adapter.id));
+    set((s) => {
+      // 谱系内全部段进 sessions[]：divider 的执行器名/readiness 都从这里查
+      const segSessions: Session[] = lineageRows.map((row) => ({
+        id: asSessionId(row.id),
+        unitId: input.unitId,
+        runtimeId: asRuntimeId(`daemon:${row.runtimeId}`) as never,
+        title: row.title ?? "",
+        status: mapTurnStatus(row.status),
+        startedAt: row.startedAt,
+        ephemeral: false,
+        live: row.live,
+        resumable: row.resumable,
+        conversationId: row.conversationId ?? undefined,
+        stats: { messages: 0, toolCalls: 0, inputTokens: 0, outputTokens: 0, costUsd: 0, durationMs: 0 },
+      }));
+      let sessions = s.sessions.slice();
+      for (const seg of [...segSessions, session!]) {
+        const i = sessions.findIndex((x) => x.id === seg.id);
+        // 主段（点击打开的）用完整对象覆盖；其余段仅补缺
+        if (i >= 0) sessions = sessions.map((x, j) => (j === i && seg.id === session!.id ? session! : x));
+        else sessions = [...sessions, seg];
+      }
+      return {
+        timeline: rebuilt,
+        busy: session!.status === "running" && session!.live === true,
+        sessions,
+        activeSessionId: session!.id,
+      };
+    });
     if (historyOnly) {
       get().pushNotice(
         "已打开历史对话（只读段）",
@@ -936,12 +986,17 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
       fullPrompt = prompt.trim() ? `${prompt}\n\n${parts.join("\n")}` : parts.join("\n");
     }
 
-    const pushUserBubble = (sessionId: SessionId) => {
+    const pushUserBubble = (sessionId: SessionId): number => {
+      // 回显登记（ADR 0012 review 修复）：daemon 会把用户轮 delta 广播回来，
+      // 本地已渲染的这条登记进窗口，回显到达时消费掉 —— 只滤自己的回声，
+      // 渠道/其他端发起的用户轮不会被误杀（见 consumeEvents 的过滤）
+      registerEcho(sessionId, prompt);
+      const itemId = ++seq;
       set((s) => ({
         timeline: [
           ...s.timeline,
           {
-            id: ++seq,
+            id: itemId,
             event: {
               type: "message.delta",
               sessionId,
@@ -954,6 +1009,7 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
           },
         ],
       }));
+      return itemId;
     };
 
     // 续聊：活跃会话开着（未 done/failed）且属于当前执行器。
@@ -981,7 +1037,18 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
           },
         });
       } catch (err: unknown) {
-        fail(err);
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.includes("session_not_live") || msg.includes("not live")) {
+          // live 字段陈旧（daemon 换代杀掉了 impl，前端快照不知道）：标记死段，
+          // 下一条消息自然走同谱系开新段（与续聊判定注释宣称的行为对齐，review P2）
+          set((s) => ({
+            sessions: s.sessions.map((x) => (x.id === active.id ? { ...x, live: false } : x)),
+            busy: false,
+          }));
+          get().pushNotice("这段对话已不在运行中", "已标记为只读段 —— 再发一次将在同一对话线开新段。", { level: "warn" });
+        } else {
+          fail(err);
+        }
       }
       return;
     }
@@ -1018,6 +1085,7 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
       }
       if (target !== undefined) {
         // 若目标段正跑着轮（别的端续上了它）：session.send 会按 T3 steer 排队，无需特判
+        let bubbleId: number | null = null;
         try {
           const resumed = await adapter.resumeSession(asSessionId(target.id));
           const normalized: Session = { ...resumed, runtimeId: adapter.id as never };
@@ -1028,7 +1096,7 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
               : [...s.sessions, normalized],
             activeSessionId: normalized.id,
           }));
-          pushUserBubble(normalized.id);
+          bubbleId = pushUserBubble(normalized.id);
           await adapter.sendMessage({
             sessionId: normalized.id,
             text: fullPrompt,
@@ -1039,7 +1107,11 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
           });
           return;
         } catch (err: unknown) {
-          // 续接失败显式回落新段（不静默）
+          // 续接失败显式回落新段（不静默）；本地已推的用户气泡撤回，
+          // 否则回落后同一条消息在时间线上出现两次（review P3）
+          if (bubbleId !== null) {
+            set((s) => ({ timeline: s.timeline.filter((t) => t.id !== bubbleId) }));
+          }
           get().pushNotice("旧段接不回去，改为开新段", err instanceof Error ? err.message : String(err), { level: "warn" });
         }
       }
@@ -1163,6 +1235,33 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
 /** 已挂事件消费循环的适配器 —— 每个 CLI 一条，进程内不重复挂（多挂会分抢单队列） */
 const consumerAttached = new WeakSet<RuntimeAdapter>();
 
+/**
+ * 本端待回声窗口（ADR 0012 review 修复）：pushUserBubble 本地合成时登记，
+ * daemon 的用户轮回显到达时消费一条。只滤**自己的回声**——渠道/其他端发起的
+ * 用户轮（askBot 续聊、断线期间的 IM 消息回放）照常渲染，不会被全局过滤吞掉。
+ * 匹配用「同会话 + 文本相等或前缀（附件拼进 fullPrompt 的场景）」。
+ */
+const pendingEcho: Array<{ sessionId: string; text: string; at: number }> = [];
+
+function registerEcho(sessionId: SessionId, text: string): void {
+  pendingEcho.push({ sessionId: String(sessionId), text, at: Date.now() });
+  while (pendingEcho.length > 8) pendingEcho.shift();
+  const cutoff = Date.now() - 30_000;
+  while (pendingEcho.length > 0 && (pendingEcho[0]?.at ?? Infinity) < cutoff) pendingEcho.shift();
+}
+
+function consumeEcho(event: RuntimeEvent): boolean {
+  if (event.type !== "message.delta") return false;
+  const idx = pendingEcho.findIndex(
+    (p) =>
+      p.sessionId === String(event.sessionId) &&
+      (event.text === p.text || (p.text !== "" && event.text.startsWith(`${p.text}\n`))),
+  );
+  if (idx < 0) return false;
+  pendingEcho.splice(idx, 1);
+  return true;
+}
+
 /** 归一化 turn 完成态 → 契约 SessionStatus */
 function mapTurnStatus(raw: string): SessionStatus {
   if (raw.startsWith("failed")) return "failed";
@@ -1186,10 +1285,10 @@ function consumeEvents(adapter: RuntimeAdapter): void {
   consumerAttached.add(adapter);
   void (async () => {
     for await (const event of adapter.events()) {
-      // 用户轮的 daemon 回显不进时间线（ADR 0012 不变量 2）：本地 pushUserBubble
-      // 先渲染（附件以原样带 chips，而不是拼进 prompt 的文本块），回显与之重复。
-      // 账本回放（openSession 重建走 session.events.since，不经此泵）不受影响。
-      if (event.type === "message.delta" && event.role === "user") continue;
+      // 用户轮回显：只丢「本端刚发的那条」（回声窗口匹配）——本地 pushUserBubble
+      // 已渲染且带附件 chips。窗口不匹配的用户轮（渠道发起、断线期间其他端的
+      // 消息经 resync 补拉）照常渲染，不再全局丢弃（review P1）。
+      if (event.type === "message.delta" && event.role === "user" && consumeEcho(event)) continue;
       useWorkbench.setState((s) => ({
         timeline: [...s.timeline, { id: ++seq, event, at: Date.now() }],
       }));

@@ -34,6 +34,8 @@ export interface SessionRow {
   readonly conversationId: string | null;
   /** 账本 seq 持久化（ADR 0012 不变量 3）：quiesce 点落盘，daemon 换代续号不重置 */
   readonly lastSeq: number;
+  /** 轮号持久化（ADR 0012）：turn.started/completed 凭 turn 配对，换代不得重号 */
+  readonly turnCount: number;
   readonly stats: {
     messages: number;
     toolCalls: number;
@@ -252,10 +254,11 @@ export class Store {
     } catch {
       // 列已存在
     }
-    // ADR 0012：谱系关联 + 账本 seq 持久化（conversation_id 不可变；last_seq 只增）
+    // ADR 0012：谱系关联 + 账本 seq/轮号持久化（conversation_id 不可变；last_seq/turn_count 只增）
     for (const stmt of [
       `ALTER TABLE sessions ADD COLUMN conversation_id TEXT`,
       `ALTER TABLE sessions ADD COLUMN last_seq INTEGER NOT NULL DEFAULT 0`,
+      `ALTER TABLE sessions ADD COLUMN turn_count INTEGER NOT NULL DEFAULT 0`,
     ]) {
       try {
         this.db.exec(stmt);
@@ -316,11 +319,11 @@ export class Store {
   upsertSession(row: SessionRow): void {
     this.db
       .prepare(
-        `INSERT INTO sessions (id, unit_id, runtime_id, title, status, started_at, ended_at, cli_ref, root_path, conversation_id, last_seq, stats_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO sessions (id, unit_id, runtime_id, title, status, started_at, ended_at, cli_ref, root_path, conversation_id, last_seq, turn_count, stats_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET title=excluded.title, status=excluded.status,
            ended_at=excluded.ended_at, cli_ref=excluded.cli_ref, root_path=excluded.root_path,
-           last_seq=MAX(last_seq, excluded.last_seq), stats_json=excluded.stats_json`,
+           last_seq=MAX(last_seq, excluded.last_seq), turn_count=MAX(turn_count, excluded.turn_count), stats_json=excluded.stats_json`,
       )
       .run(
         row.id,
@@ -334,17 +337,20 @@ export class Store {
         row.rootPath,
         row.conversationId,
         row.lastSeq,
+        row.turnCount,
         JSON.stringify(row.stats),
       );
   }
 
   /**
-   * 账本 seq 持久化（ADR 0012）：quiesce 点（轮落定/消息完成/usage/收尾）调用。
-   * daemon 换代后 loadPersisted 用它续号，afterSeq 补拉语义跨代成立。
+   * 账本进度持久化（ADR 0012）：quiesce 点（轮落定/消息完成/usage/收尾）调用。
+   * daemon 换代后 loadPersisted 用它续号，afterSeq 补拉与 turn 配对跨代成立。
    * 只增不减：并发/乱序写入取大值，防倒退。
    */
-  setSessionSeq(id: string, seq: number): void {
-    this.db.prepare(`UPDATE sessions SET last_seq = MAX(last_seq, ?) WHERE id = ?`).run(seq, id);
+  setSessionProgress(id: string, seq: number, turnCount: number): void {
+    this.db
+      .prepare(`UPDATE sessions SET last_seq = MAX(last_seq, ?), turn_count = MAX(turn_count, ?) WHERE id = ?`)
+      .run(seq, turnCount, id);
   }
 
   setSessionCliRef(id: string, cliRef: string): void {
@@ -1241,6 +1247,7 @@ export class Store {
       rootPath: r["root_path"] === null || r["root_path"] === undefined ? null : String(r["root_path"]),
       conversationId: r["conversation_id"] === null || r["conversation_id"] === undefined ? null : String(r["conversation_id"]),
       lastSeq: Number(r["last_seq"] ?? 0),
+      turnCount: Number(r["turn_count"] ?? 0),
       stats,
     };
   }

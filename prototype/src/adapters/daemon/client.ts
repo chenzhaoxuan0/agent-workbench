@@ -1325,6 +1325,8 @@ export interface DaemonSessionRow {
   readonly runtimeId: string;
   readonly conversationId?: string | null;
   readonly status: string;
+  readonly startedAt: number;
+  readonly title?: string;
   readonly live?: boolean;
   readonly resumable?: boolean;
 }

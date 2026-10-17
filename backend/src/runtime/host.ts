@@ -353,18 +353,18 @@ export class RuntimeHost {
 
   /**
    * 断线补拉的热路径（WP-2）：返回环内 seq > afterSeq 的事件。
-   * gap=true 表示请求的游标已滑出环外（环最老 seq > afterSeq+1 且客户端确有前情），
-   * 调用方应回落到落盘账本（session.trace 的 afterSeq 路径）。
+   * gap=true 表示请求的游标已滑出环外（环最老 seq > afterSeq+1 且客户端确有前情，
+   * 或环为空），调用方应回落到落盘账本（session.trace 的 afterSeq 路径）。
    */
   hotEventsSince(sessionId: SessionId, afterSeq: number): { items: Array<{ seq: number; at: number; event: RuntimeEvent }>; gap: boolean } {
     const h = this.sessions.get(sessionId);
     if (h === undefined) throw adapterError("unknown_session", `no such session: ${sessionId}`);
     const items = h.events.filter((e) => e.seq > afterSeq);
     const oldest = h.events[0]?.seq ?? Number.POSITIVE_INFINITY;
-    // afterSeq>0（客户端真有前情）且环为空或最老事件仍比游标新 → 中段缺了。
-    // 空环分支（评审 P1）：daemon 重启后事件环从零开始，客户端旧游标必然落空——
-    // 不判 gap 会静默返回 []，永不回落落盘账本。
-    const gap = afterSeq > 0 && (h.events.length === 0 || oldest > afterSeq + 1);
+    // 环为空 → 热路径必然不完整（daemon 刚起 / 冷会话），一律 gap（review P0：
+    // 旧判定要求 afterSeq>0，afterSeq=0 的全量重建会被静默返回空）。
+    // 环非空且客户端真有前情（afterSeq>0）但最老事件仍比游标新 → 中段缺了。
+    const gap = h.events.length === 0 || (afterSeq > 0 && oldest > afterSeq + 1);
     return { items, gap };
   }
 
@@ -394,8 +394,10 @@ export class RuntimeHost {
         modelActual: null,
         modelHintDropped: null,
         stats: { ...row.stats },
-        // ADR 0012 不变量 3：seq 从落库值续号，换代不重置（afterSeq 补拉跨代成立）
+        // ADR 0012 不变量 3：seq/轮号从落库值续号，换代不重置（afterSeq 补拉与
+        // turn 配对跨代成立）
         seq: row.lastSeq,
+        turnCount: row.turnCount,
         impl: null,
         adapter,
         lastTool: null,
@@ -403,13 +405,36 @@ export class RuntimeHost {
         lastCliRef: row.cliRef,
         pendingSends: [],
         turnBusy: false,
-        turnCount: 0,
         turnOpen: false,
         cancelRequested: false,
         events: [],
       });
     }
     if (this.sessions.size > 0) log.info("sessions loaded from store", { count: this.sessions.size });
+    // 崩溃对账（review P1）：quiesce 落库可能落后于 trace 已写盘的 seq（进程暴毙），
+    // 直接续号会与账本已有记录重号。以 canonical 账本为准扫一遍，把 seq 抬到
+    // max(row.lastSeq, 账本尾)。启动时全部 impl=null（无并发发号），无竞态。
+    for (const h of this.sessions.values()) {
+      void this.trace
+        .readSessionNdjson(h.id, 0)
+        .then((nd) => {
+          let maxSeq = 0;
+          for (const line of nd.split("\n")) {
+            if (line === "") continue;
+            try {
+              const r = JSON.parse(line) as { seq?: number };
+              if (typeof r.seq === "number" && r.seq > maxSeq) maxSeq = r.seq;
+            } catch {
+              // 坏行跳过（账本扫描要容忍个别残行）
+            }
+          }
+          if (maxSeq > h.seq) {
+            h.seq = maxSeq;
+            this.store.setSessionProgress(h.id, maxSeq, h.turnCount);
+          }
+        })
+        .catch(() => {});
+    }
   }
 
   /** 注册执行器。重复 id 与空模型清单都是编程错误，注册即拒（契约原文）。 */
@@ -911,9 +936,11 @@ export class RuntimeHost {
       input.handoff !== undefined && !isNativeCommand
         ? this.buildHandoffBlock(input.handoff.fromSessionId)
         : null;
-    const effectivePrompt = [handoffBlock, injected === null ? null : injected.prompt, input.prompt]
-      .filter((p): p is string => p !== null)
-      .join("\n\n");
+    // ⚠ injected.prompt 已含用户原话（block + 分隔 + 原话）——只整体前置 HANDOFF，
+    // 绝不能再 join input.prompt（review P0：曾把用户指令拼两遍发给执行器）。
+    // handoff 关闭时保持逐字节旧行为。
+    const base = injected === null ? input.prompt : injected.prompt;
+    const effectivePrompt = handoffBlock === null ? base : `${handoffBlock}\n\n${base}`;
 
     // modelHint 的回落在这里一次解决，并把「实际生效」与「被丢掉的 hint」都算出来。
     // 契约原文说 hint 失效会被静默忽略——那正是 docs/09 §六.1 要补掉的静默：
@@ -983,6 +1010,7 @@ export class RuntimeHost {
       rootPath,
       conversationId: h.conversationId,
       lastSeq: 0,
+      turnCount: h.turnCount,
       stats: { ...h.stats },
     });
     this.store.insertMessage(h.id, Date.now(), "user", input.prompt);
@@ -996,16 +1024,19 @@ export class RuntimeHost {
       // 磁盘满就会让已启动的 CLI 子进程永远收不到 prompt，UI 上表现为
       // 「会话已开但没反应」）。红线 2 的 fail-open 在这里同样成立。
       try {
+        // injectedBlock 与 injectedChars 同口径：都按最终写入的文本算
+        //（handoff 块存 redact 后的版本，字符数就不该再按 redact 前算 —— review P2）
+        const finalBlock = [
+          ...(handoffBlock !== null ? [redactText(handoffBlock)] : []),
+          ...(injected !== null ? [injected.block] : []), // 已在 injection 侧遮蔽过
+        ].join("\n\n");
         this.store.insertDispatch({
           sessionId: h.id,
           runtimeId: h.runtimeId,
           rootPath,
           userText: redactText(input.prompt),
-          injectedBlock: [
-            ...(handoffBlock !== null ? [redactText(handoffBlock)] : []),
-            ...(injected !== null ? [injected.block] : []), // 已在 injection 侧遮蔽过
-          ].join("\n\n"),
-          injectedChars: (handoffBlock?.length ?? 0) + (injected?.injectedChars ?? 0),
+          injectedBlock: finalBlock,
+          injectedChars: finalBlock.length,
           parts: injected?.parts ?? [],
           createdAt: h.startedAt,
         });
@@ -1114,9 +1145,9 @@ export class RuntimeHost {
       }
       // seq quiesce 落盘（ADR 0012 不变量 3）：低频事实点持久化，daemon 换代续号。
       // 不逐事件写 —— 流式 delta 每秒几百条，逐条 UPDATE 的代价配不上收益；
-      // 崩溃时最多回退到上个 quiesce 点，前端换代走全量重拉兜底。
+      // 崩溃缺口由 loadPersisted 的账本尾对账兜底（canonical 以 trace 为准）。
       if (event.type === "message.completed" || event.type === "usage" || event.type === "turn.completed" || event.type === "session.ended") {
-        this.store.setSessionSeq(h.id, h.seq);
+        this.store.setSessionProgress(h.id, h.seq, h.turnCount);
       }
     } catch (err: unknown) {
       log.warn("persist failed", { sessionId: h.id, error: err instanceof Error ? err.message : String(err) });
@@ -1311,10 +1342,16 @@ export class RuntimeHost {
         (event.type === "session.status" && (event.status === "idle" || event.status.startsWith("failed"))) ||
         event.type === "session.ended"
       ) {
-        this.settleTurn(
-          cur,
-          event.type === "session.ended" ? "error" : event.status.startsWith("failed") ? "failed" : "idle",
-        );
+        // session.ended 的 reason 与 track() 同口径：良性收尾（completed/closed 等）
+        // 不算 error 轮 —— mockperm 每轮以 ended:"completed" 落定、zcode 以 "closed"，
+        // 一律标 error 会把成功轮全部记成失败（review P1）
+        const turnReason: "idle" | "failed" | "error" =
+          event.type === "session.ended"
+            ? (event.reason === "error" || event.reason.endsWith("_error") || event.reason === "executor_exited" ? "error" : "idle")
+            : event.status.startsWith("failed")
+              ? "failed"
+              : "idle";
+        this.settleTurn(cur, turnReason);
         cur.turnBusy = false;
         this.flushPendingSends(cur);
       }
@@ -1359,7 +1396,7 @@ export class RuntimeHost {
       }
     }
     void this.trace
-      .append({ seq, at: Date.now(), sessionId: h.id, unitId: h.unitId, runtimeId: h.runtimeId, event })
+      .append({ seq, at, sessionId: h.id, unitId: h.unitId, runtimeId: h.runtimeId, event })
       .catch((err: unknown) => {
         // canonical 账本写失败必须可观测（ADR 0012）：以前吞错，坏盘/权限问题时
         // 账本静默缺行，投影重放会无声丢历史。日志 + kv 计数器双留痕。
@@ -1541,12 +1578,12 @@ export class RuntimeHost {
         error: err instanceof Error ? err.message : String(err),
       }));
     }
-    // 收尾把全部会话的 seq 落库（ADR 0012）：正常停机不丢 quiesce 点之后的进度
+    // 收尾把全部会话的账本进度落库（ADR 0012）：正常停机不丢 quiesce 点之后的进度
     for (const h of this.sessions.values()) {
       try {
-        this.store.setSessionSeq(h.id, h.seq);
+        this.store.setSessionProgress(h.id, h.seq, h.turnCount);
       } catch (err: unknown) {
-        log.warn("session seq flush failed on shutdown", { sessionId: h.id, error: err instanceof Error ? err.message : String(err) });
+        log.warn("session progress flush failed on shutdown", { sessionId: h.id, error: err instanceof Error ? err.message : String(err) });
       }
     }
     this.store.close();
