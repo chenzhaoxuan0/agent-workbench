@@ -220,9 +220,9 @@ function ConversationSlot() {
             <div className="flex min-h-0 flex-1 flex-col">
               <Timeline />
               <PermissionDialog />
-              {/* 对话页小终端：折叠在 Composer 正上方，与 TUI 终端页互相独立 */}
-              <ChatTerminalDock />
               <Composer />
+              {/* 对话页小终端：在输入框下方（ZCode 同款），与 TUI 终端页互相独立 */}
+              <ChatTerminalDock />
             </div>
           )}
 

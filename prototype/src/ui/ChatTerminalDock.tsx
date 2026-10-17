@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Eraser, Loader2, RotateCw, SquareTerminal, X } from "lucide-react";
+import { useCallback, useEffect, useRef } from "react";
+import { Plus, SquareTerminal, X } from "lucide-react";
 import {
   CHAT_DOCK_UNIT_ID,
   terminalSessionRegistry,
@@ -7,24 +7,22 @@ import {
 import {
   CHAT_DOCK_MIN_HEIGHT,
   chatTerminalProfile,
-  readChatTerminalId,
+  formatChatTerminalTabTitle,
   useChatTerminal,
-  writeChatTerminalId,
+  type ChatTerminalTab,
 } from "../store/useChatTerminal.ts";
-import { useWorkbench, selectActiveUnit } from "../store/useWorkbench.ts";
+import { useWorkbench } from "../store/useWorkbench.ts";
 import { useAppearance } from "../store/useAppearance.ts";
 import { useIsMobile } from "./mobile/useIsMobile.ts";
 import { cn } from "./cn.ts";
 
 /**
- * 对话页小终端 —— 对话底部可折叠的快捷终端（Composer 左下角 SquareTerminal 按钮唤起）。
+ * 对话页小终端 —— Composer 下方带标签页的快捷终端（Composer 工具栏按钮唤起）。
  *
- * 定位与 TUI 终端页刻意区分：这里只放「顺手敲两条命令」的小场景，不起 TUI、
- * 不分屏、不进标签树（daemon 侧按 unitId 标记与 TUI 认领互相看不见）。
- * 复用 TerminalSession 全套设施（PTY / 帧订阅 / 主题 / 自适应尺寸）：
- * - 关面板只收起 UI，PTY 留活；
- * - 换 Shell（设置页）或点重启 → 旧 PTY 杀掉重建；
- * - F5 刷新后按 sessionStorage 记的 id 从 terminal.list 认领回放。
+ * 布局与语义对齐 ZCode 的 Terminal.tsx：标题行「终端 + Shell 名」+ 可滚动标签
+ * （标题 = 工作区目录名，第 2 个起带最小编号）+「+」新建 +「×」收面板；
+ * 关末签 = 收面板保活，PTY 自退 = 移标签（末签自退连面板一起收）。
+ * 与 TUI 终端页互相隔离（daemon 侧 unitId 标记）；收面板不杀任何 PTY。
  */
 export function ChatTerminalDock() {
   const { isMobile } = useIsMobile();
@@ -33,88 +31,115 @@ export function ChatTerminalDock() {
   const setHeight = useChatTerminal((s) => s.setHeight);
   const profileId = useChatTerminal((s) => s.profileId);
   const restartSeq = useChatTerminal((s) => s.restartSeq);
-  const restart = useChatTerminal((s) => s.restart);
-  const setOpen = useChatTerminal((s) => s.setOpen);
-  const unit = useWorkbench(selectActiveUnit);
+  const tabs = useChatTerminal((s) => s.tabs);
+  const activeTabId = useChatTerminal((s) => s.activeTabId);
   const resolvedTheme = useAppearance((s) => s.resolvedAppearance);
 
   const profile = chatTerminalProfile(profileId);
   const mountRef = useRef<HTMLDivElement>(null);
-  /** 当前面板绑定的 PTY id（重启/换 Shell 后会变） */
-  const activeIdRef = useRef<string | null>(null);
-  const [booting, setBooting] = useState(false);
+  /** 当前 attach 在容器里的会话 id（切标签时给前一个 detach） */
+  const attachedIdRef = useRef<string | null>(null);
+  /** F5 认领到的输出回放（getOrCreate 时消费一次） */
+  const scrollbackRef = useRef<Map<string, string>>(new Map());
 
-  /** 建会话（或认领刷新前留下的 PTY）并挂载到容器 */
-  const boot = useCallback(async () => {
-    const container = mountRef.current;
-    if (!container) return;
-    setBooting(true);
-    try {
-      // 会话 id 以 sessionStorage 为唯一事实源（重启/换 Shell 时 store 会先清它）：
-      // - registry 里还活着（面板反复开关）→ 直接重挂，瞬达；
-      // - registry 没有（F5 刷新）→ 查 terminal.list 认领 daemon 存活的 PTY，带回放；
-      // - 都没有 → 新建。
-      let sessionId = readChatTerminalId();
-      let attachScrollback: string | undefined;
+  /** 当前工作区目录名（新标签标题主体） */
+  const cwdLeaf = useCallback((): string => {
+    const { units, activeUnitId } = useWorkbench.getState();
+    const root = units.find((u) => u.id === activeUnitId)?.rootPath ?? "";
+    const leaf = root.split(/[\\/]+/).filter(Boolean).pop();
+    return leaf || "终端";
+  }, []);
 
-      if (sessionId && !terminalSessionRegistry.get(sessionId)) {
+  const ensureSession = useCallback(
+    (tab: ChatTerminalTab, opts?: { attachScrollback?: string }) => {
+      const existing = terminalSessionRegistry.get(tab.id);
+      if (existing) return existing;
+      return terminalSessionRegistry.getOrCreate({
+        terminalId: tab.id,
+        shell: chatTerminalProfile(useChatTerminal.getState().profileId).shell,
+        // cwd 只在「新建 PTY」那一刻有意义；getState 直取，换 bot 不重建已活着的终端
+        cwd: useWorkbench.getState().units.find((u) => u.id === useWorkbench.getState().activeUnitId)?.rootPath ?? "",
+        unitId: CHAT_DOCK_UNIT_ID,
+        attachScrollback: opts?.attachScrollback,
+        onExit: () => {
+          // PTY 自身退出是会话生命周期终点：同步删标签（末签自退连面板一起收）
+          useChatTerminal.getState().removeExitedTab(tab.id);
+        },
+      });
+    },
+    [],
+  );
+
+  // 面板展开 / 换 Shell（restartSeq）→ 校正标签与会话；收起 → 全部 detach（保活）
+  useEffect(() => {
+    if (!open) {
+      const id = attachedIdRef.current;
+      if (id) terminalSessionRegistry.get(id)?.detach();
+      attachedIdRef.current = null;
+      return;
+    }
+    // 同步过程不取消防抖：中途收起面板时，会话留在 registry 保活（与收面板语义一致），
+    // attach effect 的 open=false 分支不会把它挂到任何容器
+    void (async () => {
+      // 1. F5 校正：registry 里没有的标签查 terminal.list —— 活着的认领回放，
+      //    已死的就地换新 id（kill 异步往返期间 list 里可能还有将死的 PTY，
+      //    所以这里以 list 实测为准，而不是盲目当重挂）
+      const state0 = useChatTerminal.getState();
+      const missing = state0.tabs.filter((t) => !terminalSessionRegistry.get(t.id));
+      if (missing.length > 0) {
+        const aliveScrollback = new Map<string, string>();
         try {
           const { DaemonClient, defaultDaemonEndpoint } = await import("../adapters/daemon/client.ts");
           const list = await DaemonClient.get(defaultDaemonEndpoint()).rpc<
             Array<{ terminalId: string; unitId?: string; scrollback?: string }>
           >("terminal.list", null, 8000);
-          const row = list.find((t) => t.terminalId === sessionId && t.unitId === CHAT_DOCK_UNIT_ID);
-          if (row) {
-            attachScrollback = row.scrollback ?? "";
-          } else {
-            sessionId = null; // 旧 PTY 已没了（daemon 重启 / 被清）：老老实实新建
+          for (const row of list) {
+            if (row.unitId !== CHAT_DOCK_UNIT_ID) continue;
+            aliveScrollback.set(row.terminalId, row.scrollback ?? "");
           }
         } catch {
-          sessionId = null; // daemon 不可达也照常新建 —— 面板不该打不开
+          // daemon 不可达：全部按死处理，就地新建（面板不该打不开）
         }
+        const deadIds = missing.filter((m) => !aliveScrollback.has(m.id)).map((m) => m.id);
+        if (deadIds.length > 0) useChatTerminal.getState().replaceDeadTabs(deadIds);
+        for (const [id, sb] of aliveScrollback) scrollbackRef.current.set(id, sb);
       }
 
-      if (!sessionId) {
-        sessionId = `chtdk_${Math.random().toString(36).slice(2, 9)}_${Date.now().toString(36)}`;
+      // 2. 换 Shell 后标签被清空 → 懒建第 1 个
+      if (useChatTerminal.getState().tabs.length === 0) {
+        useChatTerminal.getState().addTab(cwdLeaf());
       }
-      writeChatTerminalId(sessionId);
-      activeIdRef.current = sessionId;
 
-      const session = terminalSessionRegistry.getOrCreate({
-        terminalId: sessionId,
-        shell: profile.shell,
-        // cwd 只在「新建 PTY」那一刻有意义：取当下活跃工作单元的根目录
-        // （getState 直取而非闭包依赖 —— 换 bot 不该重建一个已活着的终端）
-        cwd: useWorkbench.getState().units.find((u) => u.id === useWorkbench.getState().activeUnitId)?.rootPath ?? "",
-        unitId: CHAT_DOCK_UNIT_ID,
-        attachScrollback,
-      });
-      session.attachTo(container);
-      session.focus();
-    } finally {
-      setBooting(false);
-    }
-  }, [profile.shell]);
+      // 3. 为所有标签建会话（ZCode forceMount 同款：非激活标签也常驻 PTY）
+      for (const t of useChatTerminal.getState().tabs) {
+        ensureSession(t, { attachScrollback: scrollbackRef.current.get(t.id) });
+        scrollbackRef.current.delete(t.id);
+      }
+    })();
+  }, [open, restartSeq, cwdLeaf, ensureSession]);
 
-  // 面板展开时建会话；换 Shell / 重启（restartSeq 变化）→ 杀旧建新
+  // 激活标签切换 → 换挂载（前一个 detach 保活），无会话的新标签就地建
+  const tabsKey = tabs.map((t) => t.id).join("|");
   useEffect(() => {
     if (!open) return;
-    void boot();
-  }, [open, restartSeq, boot]);
+    const container = mountRef.current;
+    if (!container) return;
+    const activeId = useChatTerminal.getState().activeTabId ?? tabs[0]?.id ?? null;
+    if (attachedIdRef.current && attachedIdRef.current !== activeId) {
+      terminalSessionRegistry.get(attachedIdRef.current)?.detach();
+    }
+    attachedIdRef.current = activeId;
+    if (!activeId) return;
+    const tab = tabs.find((t) => t.id === activeId);
+    const session = tab ? ensureSession(tab) : null;
+    session?.attachTo(container);
+    session?.focus();
+  }, [open, tabsKey, activeTabId, tabs, ensureSession]);
 
-  // 收起时只 detach（PTY 留活，重开瞬达）；重启/换 Shell 后旧会话由 restart 的 dispose 负责清理
+  // 主题切换跟随（registry.updateAllThemes 只刷挂载中的画布，这里补 detach 态口径）
   useEffect(() => {
-    if (open) return;
-    const id = activeIdRef.current;
-    if (id) terminalSessionRegistry.get(id)?.detach();
-  }, [open]);
-
-  // 主题切换跟随（registry.updateAllThemes 只刷新挂载中的画布，这里补收起态的口径）
-  useEffect(() => {
-    const id = activeIdRef.current;
-    if (!id) return;
-    terminalSessionRegistry.get(id)?.applyTheme(resolvedTheme === "dark");
-  }, [resolvedTheme]);
+    for (const t of tabs) terminalSessionRegistry.get(t.id)?.applyTheme(resolvedTheme === "dark");
+  }, [resolvedTheme, tabs]);
 
   // 顶部拖拽改高度（移动端固定 40vh，不出拖拽手柄）
   const dragRef = useRef<{ startY: number; startH: number } | null>(null);
@@ -139,10 +164,11 @@ export function ChatTerminalDock() {
   const dockHeight = isMobile
     ? Math.min(320, Math.max(CHAT_DOCK_MIN_HEIGHT, Math.round(window.innerHeight * 0.4)))
     : height;
+  const activeProfile = chatTerminalProfile(useChatTerminal.getState().profileId);
 
   return (
     <div
-      className="shrink-0 flex flex-col rounded-t-xl border border-b-0 border-line bg-card shadow-subtle overflow-hidden mx-1"
+      className="shrink-0 flex flex-col rounded-t-xl border border-b-0 border-line bg-card shadow-subtle overflow-hidden"
       style={{ height: `${dockHeight}px` }}
       aria-label="对话终端"
     >
@@ -157,49 +183,65 @@ export function ChatTerminalDock() {
         />
       )}
 
-      {/* 头部：标题 + Shell 徽标 + 操作 */}
-      <div className="flex h-8 shrink-0 items-center justify-between border-b border-line-soft bg-rail/70 px-2.5 select-none">
-        <div className="flex min-w-0 items-center gap-1.5">
+      {/* 标题行（ZCode Terminal.tsx 同款节奏）：终端 + Shell 名 | 标签 | + | × */}
+      <div className="flex h-9 shrink-0 items-center gap-2 border-b border-line-soft bg-rail/70 pl-3 pr-1.5 select-none">
+        <div className="flex shrink-0 items-center gap-2 min-w-0">
           <SquareTerminal size={13} className="shrink-0 text-teal" />
-          <span className="text-xs font-semibold text-ink">对话终端</span>
-          <span className="rounded bg-line-soft px-1.5 py-0.5 font-mono text-[10px] text-graphite font-medium truncate max-w-[140px]">
-            {profile.name}
-          </span>
-          {unit?.rootPath && (
-            <span
-              className="hidden sm:inline truncate font-mono text-[10px] text-ash"
-              title={unit.rootPath}
-            >
-              {unit.rootPath}
-            </span>
-          )}
-          {booting && <Loader2 size={12} className="shrink-0 animate-spin text-ash" />}
+          <span className="text-xs font-semibold text-ink">终端</span>
+          <span className="shrink-0 text-[11px] text-graphite">{activeProfile.name}</span>
+        </div>
+
+        <div className="min-w-0 flex-1 overflow-x-auto flex items-center gap-1 py-1">
+          {tabs.map((tab) => {
+            const isActive = tab.id === (activeTabId ?? tabs[0]?.id);
+            const title = formatChatTerminalTabTitle(tab);
+            return (
+              <div
+                key={tab.id}
+                onClick={() => useChatTerminal.getState().setActiveTab(tab.id)}
+                className={cn(
+                  "group relative inline-flex h-7 w-auto max-w-36 min-w-0 flex-none shrink-0 cursor-default items-center gap-1 overflow-hidden whitespace-nowrap rounded-lg pl-2 pr-1 text-xs font-medium transition-colors",
+                  isActive
+                    ? "bg-line-soft text-ink shadow-xs"
+                    : "text-graphite hover:bg-line-soft/60 hover:text-ink",
+                )}
+                title={title}
+              >
+                <span className="min-w-0 flex-1 overflow-hidden truncate">{title}</span>
+                <button
+                  type="button"
+                  aria-label={`关闭终端 ${title}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    useChatTerminal.getState().closeTab(tab.id);
+                  }}
+                  className={cn(
+                    "flex h-4 w-4 shrink-0 items-center justify-center rounded text-ash hover:bg-line hover:text-loss transition",
+                    !isActive && "opacity-0 group-hover:opacity-100",
+                  )}
+                >
+                  <X size={11} />
+                </button>
+              </div>
+            );
+          })}
         </div>
 
         <div className="flex shrink-0 items-center gap-0.5">
           <button
             type="button"
-            onClick={() => terminalSessionRegistry.get(activeIdRef.current ?? "")?.clear()}
-            aria-label="清屏"
-            title="清屏"
+            onClick={() => useChatTerminal.getState().addTab(cwdLeaf())}
+            aria-label="新建终端"
+            title="新建终端"
             className="flex h-6 w-6 items-center justify-center rounded-md text-ash hover:bg-line-soft hover:text-ink active:scale-90 transition"
           >
-            <Eraser size={13} />
+            <Plus size={14} />
           </button>
           <button
             type="button"
-            onClick={restart}
-            aria-label="重启终端"
-            title="重启终端（按当前 Shell 重建）"
-            className="flex h-6 w-6 items-center justify-center rounded-md text-ash hover:bg-line-soft hover:text-ink active:scale-90 transition"
-          >
-            <RotateCw size={13} />
-          </button>
-          <button
-            type="button"
-            onClick={() => setOpen(false)}
+            onClick={() => useChatTerminal.getState().setOpen(false)}
             aria-label="收起对话终端"
-            title="收起（进程保留，再开瞬达）"
+            title="收起面板（全部终端进程保留，再开瞬达）"
             className="flex h-6 w-6 items-center justify-center rounded-md text-ash hover:bg-rose-500/15 hover:text-loss active:scale-90 transition"
           >
             <X size={14} />
@@ -207,8 +249,8 @@ export function ChatTerminalDock() {
         </div>
       </div>
 
-      {/* xterm 挂载点：TerminalSession 的常驻 DOM 直接 append 进来 */}
-      <div ref={mountRef} className={cn("min-h-0 flex-1 overflow-hidden relative")} />
+      {/* xterm 挂载点：激活标签的 TerminalSession 常驻 DOM 直接 append 进来 */}
+      <div ref={mountRef} className="min-h-0 flex-1 overflow-hidden relative" />
     </div>
   );
 }
@@ -224,7 +266,7 @@ export function ChatTerminalToggleButton() {
       onClick={toggle}
       aria-label="对话终端"
       aria-pressed={open}
-      title="对话终端 —— 在对话底部唤起快捷终端（Shell 在设置 → 终端里选）"
+      title="对话终端 —— 在对话输入框下方唤起终端（Shell 在设置 → 终端里选）"
       className={cn(
         "flex shrink-0 items-center justify-center rounded-lg border border-line-soft bg-card/60 active:scale-95 transition",
         "h-7 w-7 sm:h-8 sm:w-8",

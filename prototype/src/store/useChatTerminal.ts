@@ -1,27 +1,37 @@
 /**
- * 对话页小终端（Chat Terminal Dock）—— 对话底部快捷终端的状态与偏好。
+ * 对话页小终端（Chat Terminal Dock）—— Composer 下方多标签终端的状态与偏好。
  *
- * 与 TUI 终端页刻意隔离：同一个 daemon 只多一条 PTY（terminal.* RPC 全复用），
- * 但不进 useTerminalStore 的标签树 —— created 帧推送认领与 F5 重挂都按
- * CHAT_DOCK_UNIT_ID 标记跳过它，避免对话终端在终端页里开出重复标签。
+ * 交互对齐 ZCode 的 Terminal.tsx + terminalPanelState.ts：
+ * - 标签题 = 创建时工作区目录名，第 2 个起追加最小编号（"xxx 2"）；
+ * - 「+」新建终端并激活；关非末签 = 杀 PTY 并激活相邻标签；
+ *   关末签 = 只收面板、标签与会话保活；PTY 自退 = 移除标签（末签自退连面板一起收）；
+ * - 收面板不 dispose 任何会话 —— workspace 切换/面板收起不打断长命令。
  *
- * 会话生命周期：
- * - 关闭面板（X）只收起 UI，PTY 留活 —— 再打开瞬达，不重起进程；
- * - 「重启」按钮 / 设置里换 Shell：dispose 旧会话（杀 PTY），下次挂载按新 Shell 重建；
- * - F5 刷新：PTY 在 daemon 还活着，面板挂载时按 sessionStorage 记的 id
- *   从 terminal.list 认领回放（与 TUI 重挂同一思路，省一个孤儿进程）。
+ * 与 TUI 终端页刻意隔离：daemon 侧 unitId=CHAT_DOCK_UNIT_ID（见 TerminalSessionManager），
+ * created 帧认领与 F5 重挂都按标记跳过，互不开重复标签。
+ *
+ * F5 重挂：tabs（id/编号/目录名）记在 sessionStorage，面板挂载时对照 terminal.list
+ * 认领还活着的 PTY（带回放）；已死的条目就地转新建。
  */
 import { create } from "zustand";
 import { SUPPORTED_TERMINAL_PROFILES } from "./useTerminalStore.ts";
 import { terminalSessionRegistry } from "./TerminalSessionManager.ts";
 
 const CHAT_TERMINAL_PREFS_KEY = "agent-workbench:chat-terminal-prefs";
-/** sessionStorage 记当前 PTY id（刷新后认领用；关浏览器即丢，不跨标签串） */
-const CHAT_TERMINAL_SESSION_KEY = "agent-workbench:chat-terminal-id";
+const CHAT_TERMINAL_TABS_KEY = "agent-workbench:chat-terminal-tabs";
 
 export const CHAT_DOCK_MIN_HEIGHT = 160;
 export const CHAT_DOCK_DEFAULT_HEIGHT = 300;
 const CHAT_DOCK_MAX_HEIGHT_RATIO = 0.7;
+
+/** 一个终端标签 = 一条 PTY。id 即 daemon terminalId */
+export interface ChatTerminalTab {
+  readonly id: string;
+  /** 最小编号（ZCode getNextTerminalSessionIndex 同款）：标题后缀，1 不显示 */
+  readonly index: number;
+  /** 创建时工作区目录名（标题主体） */
+  readonly cwdLeaf: string;
+}
 
 interface ChatTerminalPrefs {
   profileId: string;
@@ -56,30 +66,48 @@ function persistPrefs(prefs: ChatTerminalPrefs): void {
   }
 }
 
-export function readChatTerminalId(): string | null {
-  if (typeof window === "undefined") return null;
+export function readChatTerminalTabs(): { tabs: ChatTerminalTab[]; activeTabId: string | null } {
+  if (typeof window === "undefined") return { tabs: [], activeTabId: null };
   try {
-    const v = window.sessionStorage.getItem(CHAT_TERMINAL_SESSION_KEY);
-    return v === "" ? null : v;
+    const raw = window.sessionStorage.getItem(CHAT_TERMINAL_TABS_KEY);
+    if (!raw) return { tabs: [], activeTabId: null };
+    const parsed = JSON.parse(raw) as { tabs?: ChatTerminalTab[]; activeTabId?: string | null };
+    const tabs = (Array.isArray(parsed.tabs) ? parsed.tabs : []).filter(
+      (t) => t && typeof t.id === "string" && typeof t.index === "number" && typeof t.cwdLeaf === "string",
+    );
+    const activeTabId =
+      parsed.activeTabId && tabs.some((t) => t.id === parsed.activeTabId)
+        ? parsed.activeTabId
+        : (tabs[0]?.id ?? null);
+    return { tabs, activeTabId };
   } catch {
-    return null;
+    return { tabs: [], activeTabId: null };
   }
 }
 
-export function writeChatTerminalId(id: string): void {
+function persistTabs(tabs: readonly ChatTerminalTab[], activeTabId: string | null): void {
   try {
-    window.sessionStorage.setItem(CHAT_TERMINAL_SESSION_KEY, id);
+    window.sessionStorage.setItem(CHAT_TERMINAL_TABS_KEY, JSON.stringify({ tabs, activeTabId }));
   } catch {
     /* ignore */
   }
 }
 
-function clearChatTerminalId(): void {
+function clearTabs(): void {
   try {
-    window.sessionStorage.removeItem(CHAT_TERMINAL_SESSION_KEY);
+    window.sessionStorage.removeItem(CHAT_TERMINAL_TABS_KEY);
   } catch {
     /* ignore */
   }
+}
+
+function nextTerminalId(): string {
+  return `chtdk_${Math.random().toString(36).slice(2, 9)}_${Date.now().toString(36)}`;
+}
+
+/** ZCode formatTerminalTabTitle 同款：编号 1 不显示，从 2 起追加 */
+export function formatChatTerminalTabTitle(tab: ChatTerminalTab): string {
+  return tab.index === 1 ? tab.cwdLeaf : `${tab.cwdLeaf} ${tab.index}`;
 }
 
 interface ChatTerminalState {
@@ -89,24 +117,37 @@ interface ChatTerminalState {
   readonly height: number;
   /** Shell 档案 id（SUPPORTED_TERMINAL_PROFILES 之一，默认 pwsh = PowerShell 7） */
   readonly profileId: string;
-  /** 重启代际：+1 逼迫面板 effect 重建会话（换 Shell / 手动重启共用） */
+  /** 终端标签（含历史已死待清理的 id，由面板挂载时校正） */
+  readonly tabs: readonly ChatTerminalTab[];
+  readonly activeTabId: string | null;
+  /** 重建代际（换 Shell）：+1 逼迫面板 dispose 全部会话后重建 */
   readonly restartSeq: number;
 
   toggle: () => void;
   setOpen: (open: boolean) => void;
   setHeight: (height: number) => void;
-  /** 换 Shell：立即杀掉现有 PTY，面板开着就按新 Shell 重建 */
+  /** 换 Shell：杀掉全部会话并清空标签，面板开着就按新 Shell 重建 */
   setProfileId: (profileId: string) => void;
-  /** 手动重启（杀进程重开），Shell 不变 */
-  restart: () => void;
+  /** 「+」新建终端（编号取现存标签的最小空位），并激活 */
+  addTab: (cwdLeaf: string) => void;
+  /** 标签上的 ×：非末签杀 PTY 并激活相邻；末签只收面板（ZCode 同款保活语义） */
+  closeTab: (id: string) => void;
+  /** PTY 自退：移除标签；末签自退连面板一起收（ZCode exitTerminalSession 同款） */
+  removeExitedTab: (id: string) => void;
+  setActiveTab: (id: string) => void;
+  /** 面板挂载时把「daemon 里已死」的标签就地替换成新建（F5 校正），返回新表 */
+  replaceDeadTabs: (deadIds: readonly string[]) => ChatTerminalTab[];
 }
 
 const initialPrefs = readPrefs();
+const initialTabs = readChatTerminalTabs();
 
 export const useChatTerminal = create<ChatTerminalState>((set, get) => ({
   open: false,
   height: initialPrefs.height,
   profileId: initialPrefs.profileId,
+  tabs: initialTabs.tabs,
+  activeTabId: initialTabs.activeTabId,
   restartSeq: 0,
 
   toggle: () => set((s) => ({ open: !s.open })),
@@ -127,19 +168,83 @@ export const useChatTerminal = create<ChatTerminalState>((set, get) => ({
     const prev = get().profileId;
     set({ profileId });
     persistPrefs({ profileId, height: get().height });
-    if (prev !== profileId) get().restart();
+    if (prev === profileId) return;
+    // 全部杀掉 + 清标签：面板 effect 按 restartSeq 重建第 1 个标签
+    for (const t of get().tabs) terminalSessionRegistry.dispose(t.id);
+    clearTabs();
+    set({ tabs: [], activeTabId: null, restartSeq: get().restartSeq + 1 });
   },
 
-  restart: () => {
-    const id = readChatTerminalId();
-    if (id) {
-      terminalSessionRegistry.dispose(id);
-      // 先清 id 再 bump：boot 的认领分支查 terminal.list 时，被杀的 PTY 可能
-      // 还在 daemon 清单里（kill 是异步往返）—— id 不清就会把将死的 PTY
-      // 当成「刷新重挂」认领，而 attachScrollback 模式绝不再 create → 死终端。
-      clearChatTerminalId();
+  addTab: (cwdLeaf) => {
+    const { tabs } = get();
+    // ZCode getNextTerminalSessionIndex：从现存编号推导最小空位（只增不减会漂移）
+    const used = new Set(tabs.map((t) => t.index));
+    let index = 1;
+    while (used.has(index)) index += 1;
+    const tab: ChatTerminalTab = { id: nextTerminalId(), index, cwdLeaf };
+    const next = [...tabs, tab];
+    set({ tabs: next, activeTabId: tab.id });
+    persistTabs(next, tab.id);
+  },
+
+  closeTab: (id) => {
+    const { tabs, activeTabId } = get();
+    if (!tabs.some((t) => t.id === id)) return;
+    if (tabs.length === 1) {
+      // 末签的关闭语义 = 收起整个面板并保活会话（与收面板按钮一致）
+      get().setOpen(false);
+      return;
     }
-    set((s) => ({ restartSeq: s.restartSeq + 1 }));
+    terminalSessionRegistry.dispose(id);
+    const idx = tabs.findIndex((t) => t.id === id);
+    const next = tabs.filter((t) => t.id !== id);
+    const fallback = next[Math.max(0, idx - 1)] ?? next[0]!;
+    const nextActive = activeTabId === id ? fallback.id : activeTabId;
+    set({ tabs: next, activeTabId: nextActive });
+    persistTabs(next, nextActive);
+  },
+
+  removeExitedTab: (id) => {
+    const { tabs, activeTabId } = get();
+    if (!tabs.some((t) => t.id === id)) return;
+    const idx = tabs.findIndex((t) => t.id === id);
+    const next = tabs.filter((t) => t.id !== id);
+    if (next.length === 0) {
+      // PTY 自身退出时最后一个标签不能只收起保活：清记录，重开面板时懒建新终端
+      clearTabs();
+      set({ tabs: [], activeTabId: null, open: false });
+      return;
+    }
+    const fallback = next[Math.max(0, idx - 1)] ?? next[0]!;
+    const nextActive = activeTabId === id ? fallback.id : activeTabId;
+    set({ tabs: next, activeTabId: nextActive });
+    persistTabs(next, nextActive);
+  },
+
+  setActiveTab: (id) => {
+    if (!get().tabs.some((t) => t.id === id)) return;
+    set({ activeTabId: id });
+    persistTabs(get().tabs, id);
+  },
+
+  replaceDeadTabs: (deadIds) => {
+    const dead = new Set(deadIds);
+    const { tabs, activeTabId } = get();
+    const survivors = tabs.filter((t) => !dead.has(t.id));
+    // 对每个死条目：保持标题与编号语义，就地换一条新 PTY（新 id）
+    const rebuilt = survivors.map((t) => ({ ...t }));
+    const additions: ChatTerminalTab[] = [];
+    for (const id of deadIds) {
+      const old = tabs.find((t) => t.id === id);
+      if (!old) continue;
+      additions.push({ id: nextTerminalId(), index: old.index, cwdLeaf: old.cwdLeaf });
+    }
+    const next = [...rebuilt, ...additions];
+    const nextActive =
+      activeTabId && dead.has(activeTabId) ? (additions[0]?.id ?? next[0]?.id ?? null) : activeTabId;
+    set({ tabs: next, activeTabId: nextActive ?? next[0]?.id ?? null });
+    persistTabs(next, get().activeTabId);
+    return next;
   },
 }));
 

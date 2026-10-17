@@ -102,13 +102,13 @@ export function MobileLayout({
             <Timeline />
           </div>
 
-          {/* 对话页小终端：与桌面同款，折叠在输入框上方 */}
-          <ChatTerminalDock />
-
           {/* 底部输入框（防键盘顶起，100dvh） */}
           <div className="shrink-0 border-t border-line/40 bg-canvas">
             <Composer onOpenDrawer={() => setDrawerOpen(true)} />
           </div>
+
+          {/* 对话页小终端：输入框下方（与桌面同款） */}
+          <ChatTerminalDock />
 
           {/* 底部手势审批确认门浮层 */}
           <MobileConfirmationGate />
