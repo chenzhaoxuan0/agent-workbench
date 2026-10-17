@@ -21,6 +21,7 @@
     "smoke:hermes": "tsx scripts/smoke-hermes.ts",
     "smoke:image": "tsx scripts/smoke-image-proxy.ts",
     "smoke:inspect": "tsx scripts/smoke-inspect.ts",
+    "smoke:workspace-paths": "tsx scripts/smoke-workspace-paths.ts",
     "smoke:kimi": "tsx scripts/smoke-kimi.ts",
     "smoke:mcpadmin": "tsx scripts/smoke-mcpadmin.ts",
     "smoke:memory1": "tsx scripts/smoke-memory1.ts",

@@ -42,6 +42,7 @@ import { OpenclawAdapter } from "./runtime/adapters/openclaw.ts";
 import { buildSkillsInventory, copySkill, setSkillDisabled } from "./skills/inventory.ts";
 import * as gitRepo from "./git/repo.ts";
 import { GitWatcher } from "./git/watch.ts";
+import { listWorkspacePaths } from "./workspacePaths.ts";
 import {
   mcpCopy,
   mcpInventory,
@@ -2414,6 +2415,22 @@ registerMethod("git.graph", (params) => {
     return v;
   };
   return gitRepo.graph(gitRoot(params), { skip: num("skip"), maxCount: num("maxCount") });
+});
+
+// ---- workspace.paths.list —— 对话输入 @ 提及的工作区路径建议 ----------------
+// 移植 ZCode 的 file-mention provider：一次列一层目录，token 带 `/` 时前半段
+// 定位目录。安全闸（绝对路径 / .. / 越出 rootPath 一律空清单）在
+// workspacePaths.ts 内实现；目录读不到返回空清单而非报错，菜单不该空转报错。
+registerMethod("workspace.paths.list", (params) => {
+  const p = (params ?? {}) as { rootPath?: unknown; token?: unknown; limit?: unknown };
+  if (typeof p.rootPath !== "string" || p.rootPath === "") {
+    throw Object.assign(new Error("rootPath is required"), { code: "bad_params" });
+  }
+  if (typeof p.token !== "string") {
+    throw Object.assign(new Error("token is required"), { code: "bad_params" });
+  }
+  const limit = typeof p.limit === "number" && Number.isFinite(p.limit) ? p.limit : undefined;
+  return listWorkspacePaths(p.rootPath, p.token, limit);
 });
 
 // 渠道运行态：bot.json 声明了什么 vs 网关实际起没起。docs/09 §五的状态徽标要靠它

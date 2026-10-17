@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowUp,
   ChevronDown,
-  Command,
   FolderGit2,
   Paperclip,
   Plus,
@@ -11,6 +10,7 @@ import {
 import { useWorkbench, selectActiveUnit } from "../store/useWorkbench.ts";
 import { useShell } from "../store/useShell.ts";
 import { nativeCommandsFor, useNativeCommands } from "../store/useNativeCommands.ts";
+import { fetchWorkspacePaths } from "../adapters/daemon/client.ts";
 import type { NativeCommandInfo } from "../core/adapter.ts";
 import { RuntimePicker } from "./RuntimePicker.tsx";
 import { BranchPicker } from "./BranchPicker.tsx";
@@ -19,8 +19,15 @@ import { ReasoningEffortPicker } from "./LoopParamsPicker.tsx";
 import { PermissionModePicker } from "./PermissionModePicker.tsx";
 import { SlashCommandMenu, filterNativeCommands } from "./SlashCommandMenu.tsx";
 import { AttachmentsBar } from "./AttachmentsBar.tsx";
+import { PathMentionMenu } from "./PathMentionMenu.tsx";
 import type { ChatAttachment } from "../core/attachments.ts";
-import { MAX_ATTACHMENTS } from "../core/attachments.ts";
+import { MAX_ATTACHMENTS, categorizeAttachment, inferAttachmentMimeType } from "../core/attachments.ts";
+import {
+  type ActiveMention,
+  type WorkspacePathSuggestion,
+  draftWithMentionReplaced,
+  resolveActiveMention,
+} from "../core/workspacePaths.ts";
 import { createAttachmentFromFile } from "./attachmentFile.ts";
 import { useIsMobile } from "./mobile/useIsMobile.ts";
 import { cn } from "./cn.ts";
@@ -59,6 +66,21 @@ export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
   const [inputHeight, setInputHeight] = useState(baseH);
   const [slashMenuDismissed, setSlashMenuDismissed] = useState(false);
   const [plusMenuOpen, setPlusMenuOpen] = useState(false);
+
+  // ---- @ 路径提及（交互对齐 ZCode file-mention）----------------------------
+  // 光标位置单独跟踪：@ 触发看「光标前最近的一个 @」，光标移动（点击/方向键）
+  // 都要重算，不能只靠 draft 变化。
+  const [cursorOffset, setCursorOffset] = useState(draft.length);
+  const [mentionDismissedKey, setMentionDismissedKey] = useState<string | null>(null);
+  const [mention, setMention] = useState<{
+    readonly items: readonly WorkspacePathSuggestion[];
+    readonly status: "loading" | "ready" | "error";
+    readonly truncated: boolean;
+    readonly error?: string;
+  }>({ items: [], status: "loading", truncated: false });
+  const [mentionIndex, setMentionIndex] = useState(0);
+  /** 补全后待恢复的光标位置（受控 textarea 值替换后光标会跳到末尾） */
+  const pendingCaretRef = useRef<number | null>(null);
 
   const handleAddFiles = async (files: FileList | File[]) => {
     const incoming = Array.from(files);
@@ -184,6 +206,89 @@ export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
     taRef.current?.focus();
   };
 
+  // ---- @ 路径提及：触发解析 + 建议（ZCode file-mention 同款语义）------------
+
+  const activeMention: ActiveMention | undefined = useMemo(
+    () => (unit?.rootPath ? resolveActiveMention(draft, cursorOffset) : undefined),
+    [draft, cursorOffset, unit?.rootPath],
+  );
+  const mentionKey = activeMention
+    ? `${activeMention.triggerIndex}:${activeMention.endOffset}:${activeMention.token}`
+    : "";
+  /** Esc 关过一次的同一个提及（key 相同）不再自动弹出，挪光标/改 token 即恢复 */
+  const mentionOpen = activeMention !== undefined && mentionDismissedKey !== mentionKey;
+
+  // token 变化即拉取（上一笔 abort 掉；本地 readdir 快路径，不做防抖 —— ZCode 同款）
+  useEffect(() => {
+    if (!mentionOpen || !activeMention || !unit?.rootPath) return;
+    const controller = new AbortController();
+    setMention((cur) => ({ ...cur, status: "loading", error: undefined }));
+    setMentionIndex(0);
+    void fetchWorkspacePaths(unit.rootPath, activeMention.token, { signal: controller.signal })
+      .then((result) => {
+        if (controller.signal.aborted) return;
+        setMention({ items: result.items, status: "ready", truncated: result.truncated });
+        setMentionIndex(0);
+      })
+      .catch((err: unknown) => {
+        if (controller.signal.aborted) return;
+        setMention({
+          items: [],
+          status: "error",
+          truncated: false,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+    return () => controller.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mentionKey 已覆盖 token/位置变化
+  }, [mentionKey, mentionOpen, unit?.rootPath]);
+
+  /** 补全 @ 提及：目录 → 落 `@dir/` 继续下钻；文件 → 加附件 + 落 `@path `（ZCode 同款） */
+  const completeMention = (item: WorkspacePathSuggestion) => {
+    if (!activeMention) return;
+    const { draft: next, caret } = draftWithMentionReplaced(
+      draft,
+      activeMention,
+      item.path,
+      item.kind === "directory",
+    );
+    setDraft(next);
+    setCursorOffset(caret);
+    pendingCaretRef.current = caret;
+    if (item.kind === "file") {
+      setAttachments((prev) => {
+        if (prev.length >= MAX_ATTACHMENTS) return prev;
+        // 同一路径只挂一份（ZCode 按 placeholder 判重，这里按工作区相对路径）
+        if (prev.some((a) => a.localPath === item.path)) return prev;
+        const mimeType = inferAttachmentMimeType(item.name);
+        return [
+          ...prev,
+          {
+            id: `att_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+            name: item.name,
+            size: item.size ?? 0,
+            mimeType,
+            category: categorizeAttachment(item.name, mimeType),
+            // 工作区相对路径 —— 执行器 cwd 就是工作区根，按路径自读（ZCode local_ref 语义）
+            localPath: item.path,
+          },
+        ];
+      });
+    }
+    taRef.current?.focus();
+  };
+
+  // 受控 textarea 的值被程序替换后光标会跳到末尾，这里恢复到补全位置
+  useEffect(() => {
+    if (pendingCaretRef.current === null) return;
+    const pos = pendingCaretRef.current;
+    pendingCaretRef.current = null;
+    const ta = taRef.current;
+    if (!ta) return;
+    ta.focus();
+    ta.setSelectionRange(pos, pos);
+  });
+
   /** 提交输入内容："/" 开头的文本原样发给执行器（原生命令透传语义），支持仅带附件或图文混发。 */
   const submit = () => {
     const v = draft.trim();
@@ -193,6 +298,8 @@ export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
     setAttachments([]);
     setSlashMenuDismissed(false);
     setPlusMenuOpen(false);
+    setMentionDismissedKey(null);
+    setCursorOffset(0);
     void run(v, { attachments: currentAttachments });
   };
 
@@ -309,13 +416,34 @@ export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
             />
           )}
 
+          {/* @ 路径提及弹出菜单（工作区文件/目录引用） */}
+          {mentionOpen && activeMention && (
+            <PathMentionMenu
+              workspaceName={unit?.name ?? "工作区"}
+              items={mention.items}
+              status={mention.status}
+              truncated={mention.truncated}
+              error={mention.error}
+              query={activeMention.token}
+              activeIndex={Math.min(mentionIndex, Math.max(0, mention.items.length - 1))}
+              onSelect={completeMention}
+              onHover={setMentionIndex}
+              onClose={() => setMentionDismissedKey(mentionKey)}
+            />
+          )}
+
           <textarea
             ref={taRef}
             value={draft}
             onChange={(e) => {
               setDraft(e.target.value);
               setSlashMenuDismissed(false);
+              setCursorOffset(e.target.selectionStart ?? e.target.value.length);
             }}
+            // 光标移动（方向键/点击/选区）都要重算 @ 触发：提及看的是「光标前最近的一个 @」
+            onSelect={(e) => setCursorOffset(e.currentTarget.selectionStart ?? 0)}
+            onKeyUp={(e) => setCursorOffset(e.currentTarget.selectionStart ?? 0)}
+            onClick={(e) => setCursorOffset(e.currentTarget.selectionStart ?? 0)}
             onPaste={(e) => {
               if (e.clipboardData.files && e.clipboardData.files.length > 0) {
                 void handleAddFiles(e.clipboardData.files);
@@ -323,6 +451,29 @@ export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
             }}
             onKeyDown={(e) => {
               if (e.nativeEvent.isComposing) return;
+              // @ 提及菜单开着且有可选项：↑↓ 导航，Enter/Tab 选定（焦点留在输入框）
+              if (mentionOpen && mention.items.length > 0) {
+                const picked = mention.items[Math.min(mentionIndex, mention.items.length - 1)];
+                if (e.key === "ArrowDown") {
+                  e.preventDefault();
+                  setMentionIndex((i) => (i + 1) % mention.items.length);
+                  return;
+                }
+                if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  setMentionIndex((i) => (i - 1 + mention.items.length) % mention.items.length);
+                  return;
+                }
+                if ((e.key === "Enter" || e.key === "Tab") && picked) {
+                  e.preventDefault();
+                  completeMention(picked);
+                  return;
+                }
+              }
+              if (e.key === "Escape" && mentionOpen) {
+                setMentionDismissedKey(mentionKey);
+                return;
+              }
               if (e.key === "Enter" && !e.shiftKey) {
                 const menuHasItems =
                   isSlashActive && filterNativeCommands(nativeEntry.commands, slashFilter).length > 0;
@@ -360,7 +511,7 @@ export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
 
           {/* 底部工具栏 */}
           <div className="mt-2 flex items-center justify-between gap-1.5">
-            {/* 左侧操作：+ 添加命令/附件 + 快捷 / + 模式形式 (plan / accept edits / ask / bypass) */}
+            {/* 左侧操作：[+] 扩展菜单（附件/斜杠指令/@引用） + 模式形式 (plan / accept edits / ask / bypass) */}
             <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
               <div className="relative" ref={plusMenuRef}>
                 <button
@@ -368,7 +519,7 @@ export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
                   onClick={() => setPlusMenuOpen((v) => !v)}
                   aria-expanded={plusMenuOpen}
                   aria-label="添加指令或附件"
-                  title="添加文件与图片附件、快捷指令与技能"
+                  title="添加附件、快捷指令，或 @ 引用工作区文件"
                   className={cn(
                     "flex shrink-0 items-center justify-center rounded-lg border border-line-soft bg-card/60 text-teal hover:bg-line-soft active:scale-95 transition",
                     "h-7 w-7 sm:h-8 sm:w-8",
@@ -419,7 +570,10 @@ export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
                       type="button"
                       onClick={() => {
                         setPlusMenuOpen(false);
-                        setDraft(draft ? `${draft} @` : "@");
+                        const next = draft ? `${draft} @` : "@";
+                        setDraft(next);
+                        setCursorOffset(next.length);
+                        setMentionDismissedKey(null);
                         taRef.current?.focus();
                       }}
                       className="mt-0.5 flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs text-graphite hover:bg-line-soft hover:text-ink transition"
@@ -428,42 +582,13 @@ export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
                         @
                       </span>
                       <div className="min-w-0 flex-1">
-                        <span className="block font-medium text-ink">添加上下文引用 (@)</span>
-                        <span className="block text-[10px] text-ash">文件引用功能即将上线</span>
+                        <span className="block font-medium text-ink">引用工作区文件 (@)</span>
+                        <span className="block text-[10px] text-ash">输入 @ 选择文件或目录作为上下文</span>
                       </div>
-                      <span className="rounded bg-teal-tint px-1 py-0.2 text-[9px] font-medium text-teal shrink-0">
-                        后续
-                      </span>
                     </button>
                   </div>
                 )}
               </div>
-
-              {/* 独立的添加附件快捷按钮（桌面端/中等宽度快捷入口） */}
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                aria-label="添加附件"
-                title="添加图片或代码文件附件（支持拖拽与粘贴）"
-                className="flex shrink-0 items-center justify-center rounded-lg border border-line-soft bg-card/60 text-graphite hover:text-teal hover:bg-line-soft active:scale-95 transition h-7 w-7 sm:h-8 sm:w-8"
-              >
-                <Paperclip size={isMobile ? 13 : 15} />
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  setDraft("/");
-                  setSlashMenuDismissed(false);
-                  taRef.current?.focus();
-                }}
-                aria-label="快捷指令"
-                title="查看与运行快捷指令 · 输入 /"
-                className="hidden sm:flex shrink-0 items-center gap-1 rounded-btn px-2 py-1 text-xs text-graphite hover:bg-line-soft hover:text-ink font-mono transition h-7 sm:h-8"
-              >
-                <Command size={13} className="text-teal" />
-                <span className="font-bold text-teal">/</span>
-              </button>
 
               {/* 权限模式选择器（计划模式 / 变更确认 / 自主模式 / 完全访问） */}
               <PermissionModePicker compact={isMobile} align="left" />

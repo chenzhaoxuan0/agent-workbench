@@ -32,6 +32,7 @@ import type {
   GitWorktree,
 } from "../../core/git.ts";
 import type { RuntimeEvent } from "../../core/events.ts";
+import type { WorkspacePathsResult } from "../../core/workspacePaths.ts";
 import { ruleFromCron, type Automation, type AutomationRun, type ScheduleRule } from "../../core/automation.ts";
 import type { BacklogConfig, BacklogItem, BacklogProposal, BacklogSignal, BacklogStateSnapshot, QuotaHeadroom, QuotaResumeConfig } from "../../core/backlog.ts";
 import type { WorkUnit } from "../../core/units.ts";
@@ -452,6 +453,29 @@ export async function fetchExecutorCommands(
 ): Promise<readonly NativeCommandInfo[]> {
   const client = DaemonClient.get(endpoint);
   return client.rpc<readonly NativeCommandInfo[]>("adapter.commands", { runtimeId, rootPath }, 30000);
+}
+
+/**
+ * 拉工作区路径建议（输入 @ 提及的菜单数据源，交互对齐 ZCode file-mention）。
+ *
+ * token 是 `@` 之后的已输入片段：带 `/` 时前半段定位目录、末段过滤名字。
+ * 本地 readdir 快路径，5s 足够；失败由调用方决定展示（菜单不该因抖动报错）。
+ */
+export async function fetchWorkspacePaths(
+  rootPath: string,
+  token: string,
+  opts?: { limit?: number; signal?: AbortSignal },
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<WorkspacePathsResult> {
+  const client = DaemonClient.get(endpoint);
+  if (opts?.signal?.aborted) throw new DOMException("Aborted", "AbortError");
+  const pending = client.rpc<WorkspacePathsResult>(
+    "workspace.paths.list",
+    { rootPath, token, ...(opts?.limit !== undefined ? { limit: opts.limit } : {}) },
+    5000,
+  );
+  opts?.signal?.addEventListener("abort", () => pending.catch(() => undefined), { once: true });
+  return pending;
 }
 
 /**

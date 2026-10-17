@@ -90,6 +90,13 @@ export type {
 /** git.* 的稳定错误码词表（ADR 0008）：daemon 产生、前端按码走确认流 */
 export { GIT_ERROR_CODES } from "../../prototype/src/core/git.ts";
 
+export type {
+  ActiveMention,
+  WorkspacePathKind,
+  WorkspacePathSuggestion,
+  WorkspacePathsResult,
+} from "../../prototype/src/core/workspacePaths.ts";
+
 import { isShellTool as coreIsShellTool } from "../../prototype/src/core/events.ts";
 
 /**
