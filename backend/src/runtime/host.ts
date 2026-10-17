@@ -130,6 +130,8 @@ interface HostSession {
   readonly id: SessionId;
   readonly unitId: UnitId;
   readonly runtimeId: RuntimeId;
+  /** 会话谱系（ADR 0012）：NULL = 自身为根；切换执行器开的新段指向旧段谱系 */
+  readonly conversationId: string | null;
   /** 会话实际 cwd（worktree 会话 = 工作树路径）；源代码管理删树前的活跃会话判定用 */
   readonly rootPath: string;
   title: string;
@@ -164,6 +166,12 @@ interface HostSession {
   readonly pendingSends: Array<{ text: string; loop?: { readonly reasoningLevel?: string } }>;
   /** 当前是否有未落定的轮 */
   turnBusy: boolean;
+  /** 会话内单调轮号（ADR 0012：turn.started/completed 凭它配对） */
+  turnCount: number;
+  /** 是否有一轮已开始未收口 —— 杂散 status 不产生幽灵 turn.completed */
+  turnOpen: boolean;
+  /** 用户请求取消当前轮 —— 落定时把 turn.completed 标为 cancelled（各家 CLI 的取消口径不一，host 统一） */
+  cancelRequested: boolean;
   /** 会话事件环（上限 500，带 seq），eval 断言与前端重放共用 */
   readonly events: Array<{ seq: number; event: RuntimeEvent }>;
 }
@@ -175,6 +183,11 @@ export interface StartSessionInput {
   readonly rootPath: string;
   readonly prompt: string;
   readonly model: ModelId | null;
+  /**
+   * 会话谱系（ADR 0012）：切换执行器开新段时传旧段所属谱系 id。
+   * 缺省 = 新谱系（自身为根）。
+   */
+  readonly conversationId?: string;
   readonly mode?: StartRequest["mode"];
   readonly reasoningLevel?: string;
   /**
@@ -359,6 +372,7 @@ export class RuntimeHost {
         id: row.id as SessionId,
         unitId: row.unitId as UnitId,
         runtimeId: row.runtimeId as RuntimeId,
+        conversationId: row.conversationId,
         // 老行可能没写 rootPath（列后加的）：空串 = 未知，删树防拆判定自然不命中
         rootPath: row.rootPath ?? "",
         title: row.title,
@@ -374,13 +388,17 @@ export class RuntimeHost {
         modelActual: null,
         modelHintDropped: null,
         stats: { ...row.stats },
-        seq: 0,
+        // ADR 0012 不变量 3：seq 从落库值续号，换代不重置（afterSeq 补拉跨代成立）
+        seq: row.lastSeq,
         impl: null,
         adapter,
         lastTool: null,
         lastCliRef: null,
         pendingSends: [],
         turnBusy: false,
+        turnCount: 0,
+        turnOpen: false,
+        cancelRequested: false,
         events: [],
       });
     }
@@ -819,6 +837,7 @@ export class RuntimeHost {
       id: h.id,
       unitId: h.unitId,
       runtimeId: h.runtimeId,
+      conversationId: h.conversationId ?? undefined,
       rootPath: h.rootPath,
       title: h.title,
       status: h.status,
@@ -907,6 +926,7 @@ export class RuntimeHost {
       id: impl.id,
       unitId: input.unitId,
       runtimeId: adapter.id as RuntimeId,
+      conversationId: input.conversationId ?? null,
       rootPath,
       title: input.prompt.length > 60 ? input.prompt.slice(0, 60) + "…" : input.prompt,
       status: "running",
@@ -923,7 +943,10 @@ export class RuntimeHost {
       lastTool: null,
       lastCliRef: null,
       pendingSends: [],
-      turnBusy: false,
+      turnBusy: true,
+      turnCount: 1,
+      turnOpen: true,
+      cancelRequested: false,
       events: [],
     };
     this.sessions.set(h.id, h);
@@ -939,6 +962,8 @@ export class RuntimeHost {
       endedAt: null,
       cliRef: null,
       rootPath,
+      conversationId: h.conversationId,
+      lastSeq: 0,
       stats: { ...h.stats },
     });
     this.store.insertMessage(h.id, Date.now(), "user", input.prompt);
@@ -999,7 +1024,11 @@ export class RuntimeHost {
         log.warn("onSessionReady hook threw (turn continues)", { sessionId: h.id, error: err instanceof Error ? err.message : String(err) });
       }
     }
-    h.turnBusy = true;
+    // 首轮 turn 边界 + 用户轮入账本（ADR 0012）：时间线重建（session.events.since）
+    // 从此完整 —— 用户消息是账本事实，不再只存在于前端本地合成。
+    // delta 记用户原话 input.prompt，不是记忆注入后的 effectivePrompt（与 messages 表口径一致）。
+    this.emitStamped(h, { type: "turn.started", sessionId: h.id, turn: h.turnCount });
+    this.emitStamped(h, { type: "message.delta", sessionId: h.id, messageId: `user-${h.turnCount}`, role: "user", text: input.prompt });
     void impl.send(effectivePrompt).catch((err: unknown) => {
       log.error("first turn failed", { sessionId: h.id, error: err instanceof Error ? err.message : String(err) });
       const errorEvent: RuntimeEvent = { type: "error", sessionId: h.id, message: err instanceof Error ? err.message : String(err), recoverable: false };
@@ -1010,7 +1039,7 @@ export class RuntimeHost {
     return this.toSession(h);
   }
 
-  /** 事件驱动的持久化钩子：assistant 消息 / usage 账本 / 终态与会话引用 */
+  /** 事件驱动的持久化钩子：assistant 消息 / usage 账本 / 终态与会话引用 / seq quiesce 落盘 */
   private persistOnEvent(h: HostSession, event: RuntimeEvent): void {
     try {
       switch (event.type) {
@@ -1057,6 +1086,12 @@ export class RuntimeHost {
         }
         default:
           break;
+      }
+      // seq quiesce 落盘（ADR 0012 不变量 3）：低频事实点持久化，daemon 换代续号。
+      // 不逐事件写 —— 流式 delta 每秒几百条，逐条 UPDATE 的代价配不上收益；
+      // 崩溃时最多回退到上个 quiesce 点，前端换代走全量重拉兜底。
+      if (event.type === "message.completed" || event.type === "usage" || event.type === "turn.completed" || event.type === "session.ended") {
+        this.store.setSessionSeq(h.id, h.seq);
       }
     } catch (err: unknown) {
       log.warn("persist failed", { sessionId: h.id, error: err instanceof Error ? err.message : String(err) });
@@ -1149,6 +1184,10 @@ export class RuntimeHost {
     h.turnBusy = true;
     h.status = "running";
     this.emitStamped(h, { type: "session.status", sessionId: h.id, status: "running" });
+    h.turnCount += 1;
+    h.turnOpen = true;
+    this.emitStamped(h, { type: "turn.started", sessionId: h.id, turn: h.turnCount });
+    this.emitStamped(h, { type: "message.delta", sessionId: h.id, messageId: `user-${h.turnCount}`, role: "user", text });
     this.store.insertMessage(h.id, Date.now(), "user", text);
     void h.impl!.send(text, loop === undefined ? undefined : { reasoningLevel: loop.reasoningLevel }).catch((err: unknown) => {
       log.error("turn failed", { sessionId: h.id, error: err instanceof Error ? err.message : String(err) });
@@ -1174,6 +1213,27 @@ export class RuntimeHost {
     return this.toSession(h);
   }
 
+  /**
+   * 收口当前轮（ADR 0012）：把 turn.completed 作为账本事实发出去。
+   * 只在确有一轮开着时发出 —— 空闲会话的杂散 status（如 resume 后的 idle）不产生幽灵轮。
+   * cancelRequested 在这里消费：各家 CLI 的取消口径不一（zcode 报 failed:cancelled、
+   * 其余报 idle），host 统一标 cancelled。
+   */
+  private settleTurn(h: HostSession, reason: "idle" | "failed" | "cancelled" | "error"): void {
+    if (!h.turnOpen) return;
+    h.turnOpen = false;
+    const cancelled = h.cancelRequested;
+    h.cancelRequested = false;
+    const ev: RuntimeEvent = {
+      type: "turn.completed",
+      sessionId: h.id,
+      turn: h.turnCount,
+      reason: cancelled ? "cancelled" : reason,
+    };
+    this.emitStamped(h, ev);
+    this.persistOnEvent(h, ev);
+  }
+
   /** sink 工厂：start 与 resume 共用同一套盖章/落盘/广播/闸路径 */
   private makeSink(h: HostSession): (event: RuntimeEvent) => void {
     return (event: RuntimeEvent): void => {
@@ -1185,11 +1245,15 @@ export class RuntimeHost {
       this.track(cur, event);
       this.persistOnEvent(cur, event);
       if (event.type === "permission.requested") this.evaluateGate(cur, event);
-      // 轮落定（status idle/failed 或 ended）→ 清 turnBusy → 自动发出排队消息（T3 steer）
+      // 轮落定（status idle/failed 或 ended）→ 收口 turn → 清 turnBusy → 自动发出排队消息（T3 steer）
       if (
         (event.type === "session.status" && (event.status === "idle" || event.status.startsWith("failed"))) ||
         event.type === "session.ended"
       ) {
+        this.settleTurn(
+          cur,
+          event.type === "session.ended" ? "error" : event.status.startsWith("failed") ? "failed" : "idle",
+        );
         cur.turnBusy = false;
         this.flushPendingSends(cur);
       }
@@ -1234,8 +1298,27 @@ export class RuntimeHost {
     }
     void this.trace
       .append({ seq, at: Date.now(), sessionId: h.id, unitId: h.unitId, runtimeId: h.runtimeId, event })
-      .catch(() => {});
+      .catch((err: unknown) => {
+        // canonical 账本写失败必须可观测（ADR 0012）：以前吞错，坏盘/权限问题时
+        // 账本静默缺行，投影重放会无声丢历史。日志 + kv 计数器双留痕。
+        log.warn("trace append failed (ledger gap risk)", {
+          sessionId: h.id,
+          seq,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        this.countTraceFailure();
+      });
     this.broadcast(event, seq);
+  }
+
+  /** 账本写失败计数（kv: trace_append_failures）—— daemon 健康面可查 */
+  private countTraceFailure(): void {
+    try {
+      const cur = Number(this.store.kvGet("trace_append_failures") ?? "0");
+      this.store.kvSet("trace_append_failures", String(cur + 1));
+    } catch {
+      // 计数也写不进去就只剩日志了，不再升级
+    }
   }
 
   /**
@@ -1288,6 +1371,8 @@ export class RuntimeHost {
    * （bot.ask / webhook 的 waitMs）也只能干等到超时。
    */
   private endSession(h: HostSession, reason: string): void {
+    // 派发失败收口：先把开着的那一轮按 error 落进账本，再记会话终态
+    this.settleTurn(h, "error");
     const ended: RuntimeEvent = { type: "session.ended", sessionId: h.id, reason };
     this.emitStamped(h, ended);
     this.track(h, ended);
@@ -1334,7 +1419,15 @@ export class RuntimeHost {
     const h = this.sessions.get(sessionId);
     if (h === undefined) throw adapterError("unknown_session", `no such session: ${sessionId}`);
     if (h.impl === null) throw adapterError("session_not_live", `session ${sessionId} is not live`);
-    await h.impl.cancel();
+    // 取消意图先记号：后续落定事件（各家口径不一）统一翻成 turn.completed: cancelled
+    const wasBusy = h.turnBusy;
+    if (wasBusy) h.cancelRequested = true;
+    try {
+      await h.impl.cancel();
+    } catch (err: unknown) {
+      if (wasBusy) h.cancelRequested = false;
+      throw err;
+    }
   }
 
   async resolvePermission(sessionId: SessionId, requestId: string, decision: "allow" | "deny" | "always"): Promise<void> {
@@ -1385,6 +1478,14 @@ export class RuntimeHost {
         adapter: adapter.id,
         error: err instanceof Error ? err.message : String(err),
       }));
+    }
+    // 收尾把全部会话的 seq 落库（ADR 0012）：正常停机不丢 quiesce 点之后的进度
+    for (const h of this.sessions.values()) {
+      try {
+        this.store.setSessionSeq(h.id, h.seq);
+      } catch (err: unknown) {
+        log.warn("session seq flush failed on shutdown", { sessionId: h.id, error: err instanceof Error ? err.message : String(err) });
+      }
     }
     this.store.close();
   }

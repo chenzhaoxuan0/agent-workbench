@@ -990,6 +990,10 @@ function consumeEvents(adapter: RuntimeAdapter): void {
   consumerAttached.add(adapter);
   void (async () => {
     for await (const event of adapter.events()) {
+      // 用户轮的 daemon 回显不进时间线（ADR 0012 不变量 2）：本地 pushUserBubble
+      // 先渲染（附件以原样带 chips，而不是拼进 prompt 的文本块），回显与之重复。
+      // 账本回放（openSession 重建走 session.events.since，不经此泵）不受影响。
+      if (event.type === "message.delta" && event.role === "user") continue;
       useWorkbench.setState((s) => ({
         timeline: [...s.timeline, { id: ++seq, event, at: Date.now() }],
       }));

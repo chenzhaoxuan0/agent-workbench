@@ -27,6 +27,13 @@ export interface SessionRow {
   readonly endedAt: number | null;
   readonly cliRef: string | null;
   readonly rootPath: string | null;
+  /**
+   * 会话谱系（ADR 0012）：切换执行器开新段时指向旧段的谱系 id。NULL = 自身为根。
+   * 不可变 —— 行创建后改谱系等于改写历史，账本不允许。
+   */
+  readonly conversationId: string | null;
+  /** 账本 seq 持久化（ADR 0012 不变量 3）：quiesce 点落盘，daemon 换代续号不重置 */
+  readonly lastSeq: number;
   readonly stats: {
     messages: number;
     toolCalls: number;
@@ -245,6 +252,17 @@ export class Store {
     } catch {
       // 列已存在
     }
+    // ADR 0012：谱系关联 + 账本 seq 持久化（conversation_id 不可变；last_seq 只增）
+    for (const stmt of [
+      `ALTER TABLE sessions ADD COLUMN conversation_id TEXT`,
+      `ALTER TABLE sessions ADD COLUMN last_seq INTEGER NOT NULL DEFAULT 0`,
+    ]) {
+      try {
+        this.db.exec(stmt);
+      } catch {
+        // 列已存在
+      }
+    }
     // 自动化 v2（对齐 ZCode 的调度状态机）：
     // 「下次何时跑」是持久化事实（next_run_at），scheduler 只认 DB 不靠内存推算，
     // daemon 重启 / 崩溃不丢拍；recurring/max_runs/run_count 收口一次性与有限次任务；
@@ -298,10 +316,11 @@ export class Store {
   upsertSession(row: SessionRow): void {
     this.db
       .prepare(
-        `INSERT INTO sessions (id, unit_id, runtime_id, title, status, started_at, ended_at, cli_ref, root_path, stats_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO sessions (id, unit_id, runtime_id, title, status, started_at, ended_at, cli_ref, root_path, conversation_id, last_seq, stats_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET title=excluded.title, status=excluded.status,
-           ended_at=excluded.ended_at, cli_ref=excluded.cli_ref, root_path=excluded.root_path, stats_json=excluded.stats_json`,
+           ended_at=excluded.ended_at, cli_ref=excluded.cli_ref, root_path=excluded.root_path,
+           last_seq=MAX(last_seq, excluded.last_seq), stats_json=excluded.stats_json`,
       )
       .run(
         row.id,
@@ -313,8 +332,19 @@ export class Store {
         row.endedAt,
         row.cliRef,
         row.rootPath,
+        row.conversationId,
+        row.lastSeq,
         JSON.stringify(row.stats),
       );
+  }
+
+  /**
+   * 账本 seq 持久化（ADR 0012）：quiesce 点（轮落定/消息完成/usage/收尾）调用。
+   * daemon 换代后 loadPersisted 用它续号，afterSeq 补拉语义跨代成立。
+   * 只增不减：并发/乱序写入取大值，防倒退。
+   */
+  setSessionSeq(id: string, seq: number): void {
+    this.db.prepare(`UPDATE sessions SET last_seq = MAX(last_seq, ?) WHERE id = ?`).run(seq, id);
   }
 
   setSessionCliRef(id: string, cliRef: string): void {
@@ -1209,6 +1239,8 @@ export class Store {
       endedAt: r["ended_at"] === null || r["ended_at"] === undefined ? null : Number(r["ended_at"]),
       cliRef: r["cli_ref"] === null || r["cli_ref"] === undefined ? null : String(r["cli_ref"]),
       rootPath: r["root_path"] === null || r["root_path"] === undefined ? null : String(r["root_path"]),
+      conversationId: r["conversation_id"] === null || r["conversation_id"] === undefined ? null : String(r["conversation_id"]),
+      lastSeq: Number(r["last_seq"] ?? 0),
       stats,
     };
   }

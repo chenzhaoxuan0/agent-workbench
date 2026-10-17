@@ -318,6 +318,12 @@ export interface Session {
   readonly status: SessionStatus;
   readonly startedAt: number;
   readonly endedAt?: number;
+  /**
+   * 会话谱系（ADR 0012）：一条对话可跨多个执行器段（segment），每段是一个 Session，
+   * 切换执行器开新段时把旧段的谱系 id 传进来。缺省 = 自身为谱系根。
+   * 时间线、历史回看按谱系聚合渲染。
+   */
+  readonly conversationId?: string;
   /** 缺省 = 工作台 Composer 起的。IM/webhook/MCP 起的带各自标记，时间轴上显示徽标 */
   readonly source?: SessionSource;
   /** 实际生效的模型。hint 指向该 CLI 不接的模型时，这是回落后的那一个 */

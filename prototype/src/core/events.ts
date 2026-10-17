@@ -55,6 +55,23 @@ export type RuntimeEvent =
   | { readonly type: "session.ref"; readonly sessionId: SessionId; readonly ref: string }
   | { readonly type: "session.ended"; readonly sessionId: SessionId; readonly reason: string }
 
+  // ---- 轮边界（host 自产；ADR 0012：turn 是账本一等事实，不再借用 session.status 表达）----
+  /**
+   * 一轮开始：host 派发用户消息的时刻（含新会话首轮）。
+   * `turn` 是会话内单调轮号，started/completed 凭它配对。
+   */
+  | { readonly type: "turn.started"; readonly sessionId: SessionId; readonly turn: number }
+  /**
+   * 一轮落定：idle（正常）/ failed（执行器报失败）/ cancelled（用户取消）/ error（派发失败收口）。
+   * 只在确有一轮开着时发出 —— 空闲会话的杂散 status 不产生幽灵轮。
+   */
+  | {
+      readonly type: "turn.completed";
+      readonly sessionId: SessionId;
+      readonly turn: number;
+      readonly reason: "idle" | "failed" | "cancelled" | "error";
+    }
+
   // ---- 消息 ----
   | {
       readonly type: "message.delta";
