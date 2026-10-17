@@ -410,15 +410,34 @@ const TIER_LABEL = { frontier: "旗舰", balanced: "均衡", fast: "快速" } as
  * 面板底部切换语义文案 —— 三态（ADR 0012）：
  * 门禁中（本轮未落定，切换会被拒）/ 有活跃段（切换 = 开新段，上一段保留）/ 无段（首段前的切换无边界）。
  * 替换掉旧文案「切换只影响下一条消息」——它低估了后果（实际会开新段，旧段不再续）。
+ * 有活跃段时附「携带上文」勾选（opt-in，默认关）。
  */
 function SwitchHintCopy() {
   const blocked = useWorkbench(runtimeSwitchBlocked);
   const hasActiveSegment = useWorkbench((s) => s.activeSessionId !== null && s.sessions.some((x) => x.id === s.activeSessionId));
+  const handoffOn = useWorkbench((s) => s.handoffOnSwitch);
+  const setHandoffOn = useWorkbench((s) => s.setHandoffOnSwitch);
   if (blocked) {
     return <p className="text-caption text-amber-600">本轮进行中 —— 落定后才能切换执行器</p>;
   }
   if (hasActiveSegment) {
-    return <p className="text-caption text-ash">切换执行器 = 下一条消息开启新对话段；上一段保留、可回看</p>;
+    return (
+      <div>
+        <p className="text-caption text-ash">切换执行器 = 下一条消息开启新对话段；上一段保留、可回看</p>
+        <label
+          className="mt-0.5 flex cursor-pointer items-center gap-1 text-caption text-graphite"
+          title="把上一段的最近对话以只读转录拼进新执行器的首条消息（有损摘要式交接；该内容会成为新执行器原生历史的一部分）"
+        >
+          <input
+            type="checkbox"
+            checked={handoffOn}
+            onChange={(e) => setHandoffOn(e.target.checked)}
+            className="h-3 w-3 accent-teal"
+          />
+          切换时携带上文（只读转录，进入新执行器历史）
+        </label>
+      </div>
+    );
   }
   return <p className="text-caption text-ash">同执行器换模型不影响上下文；切换只影响下一条消息</p>;
 }

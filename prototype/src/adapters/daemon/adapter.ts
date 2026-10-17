@@ -265,6 +265,8 @@ class DaemonRuntimeAdapter implements RuntimeAdapter {
           ...(req.worktree !== undefined ? { worktree: req.worktree } : {}),
           // ADR 0012：谱系关联 —— 切换执行器开新段时延续同一对话线
           ...(req.conversationId !== undefined ? { conversationId: req.conversationId } : {}),
+          // ADR 0012：只读转录交接（opt-in）
+          ...(req.handoff !== undefined ? { handoff: { fromSessionId: req.handoff.fromSessionId } } : {}),
           memoryOptions: req.memoryOptions,
         },
         60000,

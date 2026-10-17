@@ -2780,6 +2780,7 @@ registerMethod("session.start", (params) => {
     prompt?: string; model?: string; mode?: "plan" | "build" | "edit" | "yolo";
     reasoningLevel?: string;
     conversationId?: string;
+    handoff?: { fromSessionId?: string };
     worktree?: { path?: string; branch?: string };
     memoryOptions?: {
       scopes?: readonly ("semantic" | "daily" | "procedural")[];
@@ -2816,6 +2817,10 @@ registerMethod("session.start", (params) => {
     mode: p.mode,
     reasoningLevel: p.reasoningLevel,
     conversationId: typeof p.conversationId === "string" && p.conversationId !== "" ? p.conversationId : undefined,
+    handoff:
+      p.handoff !== null && typeof p.handoff === "object" && typeof p.handoff.fromSessionId === "string" && p.handoff.fromSessionId !== ""
+        ? { fromSessionId: asSessionId(p.handoff.fromSessionId) }
+        : undefined,
     worktree,
     memoryOptions: p.memoryOptions,
   });

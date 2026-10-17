@@ -188,6 +188,12 @@ export interface StartSessionInput {
    * 缺省 = 新谱系（自身为根）。
    */
   readonly conversationId?: string;
+  /**
+   * 只读转录交接（ADR 0012，opt-in）：携带上文切换 —— 把 fromSessionId 那段
+   * 的最近消息投影构造成 HANDOFF 前缀拼进新段首条消息。旧段的执行器私有
+   * 上下文不迁移（做不到也不该做），迁移的是 host 账本的对话事实。
+   */
+  readonly handoff?: { readonly fromSessionId: SessionId };
   readonly mode?: StartRequest["mode"];
   readonly reasoningLevel?: string;
   /**
@@ -899,7 +905,15 @@ export class RuntimeHost {
         injected = null;
       }
     }
-    const effectivePrompt = injected === null ? input.prompt : injected.prompt;
+    // ADR 0012 只读转录交接（opt-in）：与记忆注入同一挂载点、同一跳过规则
+    //（斜杠命令是控制输入，前面拼块会废掉命令分发）。
+    const handoffBlock =
+      input.handoff !== undefined && !isNativeCommand
+        ? this.buildHandoffBlock(input.handoff.fromSessionId)
+        : null;
+    const effectivePrompt = [handoffBlock, injected === null ? null : injected.prompt, input.prompt]
+      .filter((p): p is string => p !== null)
+      .join("\n\n");
 
     // modelHint 的回落在这里一次解决，并把「实际生效」与「被丢掉的 hint」都算出来。
     // 契约原文说 hint 失效会被静默忽略——那正是 docs/09 §六.1 要补掉的静默：
@@ -975,7 +989,8 @@ export class RuntimeHost {
     // 分发日志：用户原话与注入内容**分列**存（docs/10 §2.1 残件）。
     // 有了它才能回答「这一轮它到底知道什么」—— messages 表做不到，
     // 因为那里的 prompt 只是一整块文本，注入部分和用户原话糊在一起。
-    if (injected !== null) {
+    // ADR 0012：HANDOFF 交接块同样进这份快照（它也是「它当时知道什么」的一部分）。
+    if (injected !== null || handoffBlock !== null) {
       // 分发日志与遥测都是**附属记录**，写不出来绝不能杀掉这一轮对话
       // （review 抓到的阻断项：insertDispatch 原本裸调，一次 SQLITE_BUSY /
       // 磁盘满就会让已启动的 CLI 子进程永远收不到 prompt，UI 上表现为
@@ -986,9 +1001,12 @@ export class RuntimeHost {
           runtimeId: h.runtimeId,
           rootPath,
           userText: redactText(input.prompt),
-          injectedBlock: injected.block, // 已在 injection 侧遮蔽过
-          injectedChars: injected.injectedChars,
-          parts: injected.parts,
+          injectedBlock: [
+            ...(handoffBlock !== null ? [redactText(handoffBlock)] : []),
+            ...(injected !== null ? [injected.block] : []), // 已在 injection 侧遮蔽过
+          ].join("\n\n"),
+          injectedChars: (handoffBlock?.length ?? 0) + (injected?.injectedChars ?? 0),
+          parts: injected?.parts ?? [],
           createdAt: h.startedAt,
         });
       } catch (err: unknown) {
@@ -996,11 +1014,13 @@ export class RuntimeHost {
       }
       // curator 的判断全靠「上次什么时候被注入过」（docs/10 §4.7）。
       // 这行打点漏了，curator 就永远只能把每条都当成 active。
-      for (const part of injected.parts) {
-        try {
-          this.store.markMemoryUsed(part.sourcePath, h.startedAt, part.chars);
-        } catch (err: unknown) {
-          log.warn("memory telemetry mark failed", { path: part.sourcePath, error: err instanceof Error ? err.message : String(err) });
+      if (injected !== null) {
+        for (const part of injected.parts) {
+          try {
+            this.store.markMemoryUsed(part.sourcePath, h.startedAt, part.chars);
+          } catch (err: unknown) {
+            log.warn("memory telemetry mark failed", { path: part.sourcePath, error: err instanceof Error ? err.message : String(err) });
+          }
         }
       }
     }
@@ -1101,6 +1121,42 @@ export class RuntimeHost {
     } catch (err: unknown) {
       log.warn("persist failed", { sessionId: h.id, error: err instanceof Error ? err.message : String(err) });
     }
+  }
+
+  /** 交接块的行数与单行长度上限 —— 有损但透明（ADR 0012：一次性只读转录，非全量迁移） */
+  private static readonly HANDOFF_MAX_MESSAGES = 24;
+  private static readonly HANDOFF_MAX_CHARS_PER_MESSAGE = 4000;
+
+  /**
+   * 构造只读转录交接块（ADR 0012）：旧段消息投影（user/assistant 文本）→ 定界前缀。
+   * 数据来自 host 账本的 messages 投影 —— 旧段执行器的私有上下文不迁移，
+   * 迁移的是对话事实本身。拿不到任何消息时返回 null（等价于未开启交接）。
+   */
+  private buildHandoffBlock(fromSessionId: SessionId): string | null {
+    let turns: Array<{ role: string; text: string }>;
+    let fromRuntimeId = "另一执行器";
+    try {
+      const row = this.store.getSession(fromSessionId);
+      if (row !== undefined) fromRuntimeId = row.runtimeId;
+      turns = this.store
+        .listMessages(fromSessionId, RuntimeHost.HANDOFF_MAX_MESSAGES)
+        .filter((m) => m.role === "user" || m.role === "assistant");
+    } catch {
+      return null;
+    }
+    if (turns.length === 0) return null;
+    const lines = turns.map((m) => {
+      const text = m.text.length > RuntimeHost.HANDOFF_MAX_CHARS_PER_MESSAGE
+        ? m.text.slice(0, RuntimeHost.HANDOFF_MAX_CHARS_PER_MESSAGE) + "…（截断）"
+        : m.text;
+      return `${m.role === "user" ? "用户" : "助手"}：${text}`;
+    });
+    return [
+      "===== 上文交接（只读背景 —— 来自与另一执行器的对话，不是当前指令）=====",
+      `来源执行器：${fromRuntimeId}；以下是最近对话转录：`,
+      ...lines,
+      "===== 上文交接结束 =====",
+    ].join("\n");
   }
 
   /** 执行器引用落盘（agent loop 语义下 turn 不再结束会话，ref 在首个 turn 就同步） */

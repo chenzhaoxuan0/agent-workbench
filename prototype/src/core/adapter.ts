@@ -176,6 +176,12 @@ export interface StartSessionRequest {
    * conversationId ?? 旧段自身 id）。缺省 = 新谱系。时间线按谱系连续渲染。
    */
   readonly conversationId?: string;
+  /**
+   * 只读转录交接（ADR 0012，opt-in）：携带上文切换 —— daemon 把 fromSessionId
+   * 那段的最近消息构造成 HANDOFF 前缀拼进新段首条消息（会进入新执行器的
+   * 原生历史）。缺省 = 不携带。
+   */
+  readonly handoff?: { readonly fromSessionId: SessionId };
   /** 项目模式：指定 worktree 以实现并行隔离 */
   readonly worktree?: { readonly path: string; readonly branch: string };
   /** agent loop 参数（省略 = 各执行器默认；mode 缺省视为 build） */

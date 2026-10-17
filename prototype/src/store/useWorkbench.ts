@@ -183,6 +183,12 @@ interface WorkbenchState {
   /** 切换执行器。返回是否成功 —— 门禁（本轮未落定）时拒绝并推 notice（ADR 0012） */
   selectRuntime: (id: string) => boolean;
   /**
+   * 携带上文切换（ADR 0012，opt-in，默认关）：开新段时把上一段的最近对话
+   * 以只读转录前缀交给新执行器（有损、透明 —— 会成为其首条消息的一部分）。
+   */
+  handoffOnSwitch: boolean;
+  setHandoffOnSwitch: (on: boolean) => void;
+  /**
    * 在聊天页打开一个历史会话（ADR 0012 resume-in-chat）：
    * 从 daemon 账本重建时间线；会话可恢复（live / cli_ref）时接回执行器续聊，
    * 仅历史时打开只读视图 —— 新消息将在同一谱系开新段。
@@ -660,6 +666,9 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
 
   selectSession: (activeSessionId) => set({ activeSessionId }),
 
+  handoffOnSwitch: false,
+  setHandoffOnSwitch: (on) => set({ handoffOnSwitch: on }),
+
   selectRuntime: (activeRuntimeId) => {
     const s = get();
     // ADR 0012 切换门禁（idle-only）：turn 进行中 / 等权限 / 等输入时切换，
@@ -1047,6 +1056,11 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
         conversationId:
           opts?.worktree === undefined && active !== undefined
             ? (active.conversationId ?? active.id)
+            : undefined,
+        // ADR 0012 携带上文切换（opt-in）：把上一段的只读转录交给新执行器
+        handoff:
+          get().handoffOnSwitch && opts?.worktree === undefined && active !== undefined
+            ? { fromSessionId: active.id }
             : undefined,
         // 仅源代码管理面板显式传入：在此工作树开新会话（ADR 0008）
         worktree: opts?.worktree,
