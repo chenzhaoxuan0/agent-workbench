@@ -19,7 +19,7 @@ export function UnitViewSegment({ value, onChange }: { value: ViewMode; onChange
       role="group"
       aria-label="单元视图"
       data-no-drag
-      className="flex shrink-0 items-center rounded-btn border border-line/40 bg-line-soft/80 p-0.5"
+      className="flex shrink-0 items-center whitespace-nowrap rounded-btn border border-line/40 bg-line-soft/80 p-0.5"
     >
       {UNIT_VIEWS.map((v) => {
         const active = value === v.id;
@@ -31,7 +31,9 @@ export function UnitViewSegment({ value, onChange }: { value: ViewMode; onChange
             aria-pressed={active}
             title={v.id === "bot" ? "bot 视图（默认）：数字 bot 与常驻服务" : "项目视图：手动标注为项目的单元"}
             className={cn(
-              "flex h-4 items-center rounded-btn px-1.5 text-caption font-medium leading-none transition",
+              // shrink-0 + nowrap：侧栏收窄时不许压缩按钮——中文按字换行会把
+              // 「项目」竖排，按钮宁可溢出也不折行
+              "flex h-4 shrink-0 items-center whitespace-nowrap rounded-btn px-1.5 text-caption font-medium leading-none transition",
               active ? "border border-teal/25 bg-card text-teal shadow-xs" : "text-graphite hover:text-ink",
             )}
           >

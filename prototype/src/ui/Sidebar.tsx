@@ -151,7 +151,6 @@ export function Sidebar() {
     [allUnits, unitView],
   );
   const activeView = UNIT_VIEWS.find((v) => v.id === unitView) ?? UNIT_VIEWS[0]!;
-  const ActiveViewIcon = activeView.icon;
 
   // 侧栏分支标记的自愈轮询：冷启动时 UnitRow 挂载可能早于 daemon WS 就绪，
   // 首次拉取静默失败 —— 每 60s 补一轮（TTL 内的单元不会重复起 git 进程）
@@ -269,17 +268,15 @@ export function Sidebar() {
       )}
 
       {/* 单元列表标题行 —— h-9 与右侧终端工具栏同高，横向对齐。
-          [bot|项目] 迷你分段收在这行（docs/04）：图标、标题与计数跟随视图 */}
-      <div className="flex h-9 shrink-0 items-center justify-between gap-1 px-2.5">
-        <div className="flex items-center gap-1 min-w-0">
-          <ActiveViewIcon size={13} className="text-teal shrink-0" />
-          <span className="text-caption font-medium text-ink truncate">{activeView.label}</span>
-          <span className="tnum text-[11px] text-ash shrink-0">({visibleUnits.length})</span>
-          <div className="ml-1">
-            <UnitViewSegment value={unitView} onChange={switchUnitView} />
-          </div>
+          [bot|项目] 分段即标题：最左侧点击即切视图（docs/04 + ADR 0011），
+          右侧只留认领/新建。收窄时的取舍（容器查询）：先藏计数，四个按钮
+          （bot/项目/认领/新建）永不折行、永不挤压——要按的东西必须可按 */}
+      <div className="@container flex h-9 shrink-0 items-center justify-between gap-1 px-2.5">
+        <div className="flex shrink-0 items-center gap-1.5">
+          <UnitViewSegment value={unitView} onChange={switchUnitView} />
+          <span className="tnum hidden text-caption text-ash @min-[240px]:inline">({visibleUnits.length})</span>
         </div>
-        <div className="flex items-center gap-1 shrink-0">
+        <div className="flex shrink-0 items-center gap-1">
           <button
             onClick={() => useShell.getState().openImportBot()}
             aria-label="认领已有目录"
