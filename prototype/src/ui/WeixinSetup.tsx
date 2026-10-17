@@ -127,7 +127,7 @@ export function WeixinSetup({
           </div>
           <div className="flex items-center gap-1.5 text-[11px] text-emerald-600">
             <ShieldCheck size={13} />
-            <span>Token 已受本地 0600 保险库保护，不在工作区配置文件留存明文。</span>
+            <span>Token 已受本地 0600 保险库保护，不在单元配置文件留存明文。</span>
           </div>
         </div>
       ) : (

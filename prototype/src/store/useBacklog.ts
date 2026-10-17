@@ -274,7 +274,7 @@ export const useBacklog = create<BacklogState>((set, get) => ({
       set({
         notice: {
           kind: r.created > 0 ? "success" : "info",
-          text: `统合完成：新收录 ${r.created} 条，合并重复 ${r.duplicates} 条（扫描 ${r.scanned} 个工作空间）`,
+          text: `统合完成：新收录 ${r.created} 条，合并重复 ${r.duplicates} 条（扫描 ${r.scanned} 个单元）`,
         },
       });
       await get().refresh();

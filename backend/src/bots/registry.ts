@@ -23,6 +23,15 @@ const BOT_FILE = "bot.json";
 /** 岗位说明书的规范文件名（相对 rootPath）。bot.json 只存指针，内容住这个文件。 */
 const AGENTS_FILE = "AGENTS.md";
 
+/**
+ * 最小占位 AGENTS.md（ADR 0011：AGENTS.md 从必填降级为可选增强）。
+ * 创建时没给内容就静默落这份——文件即数据库不破：规矩文件的落点始终在单元自己
+ * 文件夹里，内容克制到一句话，等用户想清楚再回来补。
+ */
+function placeholderAgentsMd(name: string): string {
+  return `# ${name}\n\n（这是 ${name} 的 AGENTS.md——bot 的规矩文件。现在先空着，想清楚要它遵守什么时再回来补。）\n`;
+}
+
 /** bot.json 的行形态 = WorkUnit 的可持久化子集（松散类型：文件是手可编辑的） */
 export type BotDefinition = Record<string, unknown> & {
   id?: string;
@@ -118,6 +127,26 @@ export class BotRegistry {
     log.info("bot root added", { dir: norm });
   }
 
+  // ---- 自动安置（ADR 0011 第 4 条）----
+
+  /**
+   * 新建流的默认安置位置：<homeDir>/bots 下一个不冲突的建议目录。
+   * 幂等建出默认根并登记为扫描根——零门槛新建（用户不动输入框）落位的 bot
+   * 天然在 listBots 的扫描范围内；putBot 落笔时也会把 rootPath 的父目录再登记
+   * 一次（幂等），两条路径都闭环。
+   */
+  async defaultPlacement(homeDir: string): Promise<{ defaultRoot: string; suggestedPath: string }> {
+    const base = path.join(homeDir, "bots");
+    await mkdir(base, { recursive: true });
+    this.addRoot(base);
+    let name = "bot";
+    for (let i = 2; i < 50 && existsSync(path.join(base, name)); i++) name = `bot-${i}`;
+    if (existsSync(path.join(base, name))) name = `bot-${Date.now().toString(36)}`;
+    const suggestedPath = path.join(base, name);
+    log.info("default placement resolved", { defaultRoot: base, suggestedPath });
+    return { defaultRoot: base, suggestedPath };
+  }
+
   // ---- 写 ----
 
   /**
@@ -132,16 +161,27 @@ export class BotRegistry {
    * **乐观锁**：opts.ifRevision 比对 bot.json 自增版本号（抓 UI 侧并发），
    * opts.ifAgentsMdHash 比对 AGENTS.md 内容 hash（抓用户在这期间改了文件）。
    * 任一不符抛 BotConflictError，不覆盖盘上真值。
+   *
+   * **opts.createRoot**（自动安置，ADR 0011）：rootPath 不存在时幂等创建而非报错——
+   * 新建流的唯一必填交互是文件夹，预填的默认位置本来就不存在，daemon 落位时建出来。
+   * 只对显式声明的调用方开（新建），编辑/导入仍报 root_not_found 抓手误路径。
+   *
+   * **AGENTS.md 可选**：正文为空或缺省、且盘上还没有这个文件时，静默写一份最小占位
+   * （见 placeholderAgentsMd）；盘上已有文件则不碰——局部更新（渠道开关等）不许顺手清掉。
    */
   async putBot(
     unit: BotDefinition,
-    opts: { ifRevision?: number; ifAgentsMdHash?: string } = {},
+    opts: { ifRevision?: number; ifAgentsMdHash?: string; createRoot?: boolean } = {},
   ): Promise<{ path: string; revision: number }> {
     if (typeof unit.id !== "string" || unit.id === "") throw Object.assign(new Error("bot.id required"), { code: "bad_params" });
     if (typeof unit.rootPath !== "string" || unit.rootPath === "") throw Object.assign(new Error("bot.rootPath required"), { code: "bad_params" });
     if (typeof unit.name !== "string" || unit.name === "") throw Object.assign(new Error("bot.name required"), { code: "bad_params" });
     const root = path.resolve(unit.rootPath);
-    if (!existsSync(root)) throw Object.assign(new Error(`rootPath not found: ${root}`), { code: "root_not_found" });
+    if (!existsSync(root)) {
+      if (opts.createRoot !== true) throw Object.assign(new Error(`rootPath not found: ${root}`), { code: "root_not_found" });
+      await mkdir(root, { recursive: true });
+      log.info("bot root created (auto-placement)", { root });
+    }
 
     // docs/09 §七.4：同路径重复注册拒绝。允许「同一 id 原地更新」（那才是保存），
     // 但不允许 A bot 和 B bot 抢同一个工作目录——它们会互相覆写 bot.json。
@@ -182,13 +222,31 @@ export class BotRegistry {
     // 1) 岗位说明书落盘（原子：先写 .tmp 再 rename，避免半截文件被 listBots 读到）
     const nextAgents = typeof unit.agentsMd === "string" ? unit.agentsMd : null;
     let agentsRel: string;
-    if (nextAgents !== null) {
+    const writeAgentsAtomic = async (content: string): Promise<void> => {
       const tmp = `${agentsAbs}.tmp`;
-      await writeFile(tmp, nextAgents, "utf8");
+      await writeFile(tmp, content, "utf8");
       await rename(tmp, agentsAbs);
+    };
+    if (nextAgents !== null && nextAgents.trim() !== "") {
+      await writeAgentsAtomic(nextAgents);
       agentsRel = AGENTS_FILE;
+    } else if (currentAgents === null) {
+      const prevRel = sourcePathOf(prev ?? unit);
+      if (prevRel !== null && prevRel !== AGENTS_FILE) {
+        // 老定义指着自定义文件：维持既有语义（不擅自改指 AGENTS.md，也不补占位）
+        agentsRel = prevRel;
+      } else {
+        // 没带正文（或全空白）、盘上也没有规范文件：静默补最小占位（ADR 0011 第 1 条）。
+        // 覆盖创建与「指针在、规范文件没了」的修复保存两种情形——文件即数据库不破，
+        // 规矩文件的落点始终在单元自己的文件夹里。
+        await writeAgentsAtomic(placeholderAgentsMd(String(unit.name)));
+        agentsRel = AGENTS_FILE;
+        log.info("agents placeholder written", { root });
+      }
     } else {
-      // 没带 agentsMd 的写（渠道开关等局部更新）不许顺手清掉已有文件
+      // 带了空正文但盘上已有文件：不碰它。局部更新不许顺手清掉已有文件。
+      // 已知取舍：编辑模式清空 AGENTS.md 正文保存＝「不再主动维护」而非「删除」，
+      // 盘上文件保留、重开对话框旧文复现——删文件是破坏性动作，不静默执行。
       agentsRel = sourcePathOf(prev ?? unit) ?? (currentAgents !== null ? AGENTS_FILE : "");
     }
 

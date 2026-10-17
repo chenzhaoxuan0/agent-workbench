@@ -69,7 +69,7 @@ export interface SettingsSectionDef {
 /** 分组定义，顺序即侧栏显示顺序 */
 export const SETTINGS_GROUPS: readonly { id: SettingsGroupId; title: string }[] = [
   { id: "basics", title: "基础" },
-  { id: "agentCapabilities", title: "Agent 能力" },
+  { id: "agentCapabilities", title: "bot 能力" },
 ];
 
 /**
@@ -83,7 +83,7 @@ export const SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
   { id: "models", title: "执行器与模型", desc: "执行器实例、供应商与每个 CLI 的模型清单", groupId: "basics", icon: "brain" },
   { id: "history", title: "历史会话", desc: "会话时间轴过滤、失败记录隐藏与展示偏好", groupId: "basics", icon: "history" },
   { id: "terminal", title: "终端", desc: "对话页小终端的 Shell 类型（默认 PowerShell 7）与终端页共享的档案", groupId: "basics", icon: "terminal" },
-  { id: "shortcuts", title: "快捷键", desc: "全局与工作区级键位", groupId: "basics", icon: "keyboard" },
+  { id: "shortcuts", title: "快捷键", desc: "全局键位速查", groupId: "basics", icon: "keyboard" },
 
   { id: "memory", title: "记忆", desc: "语义事实 / 情节事件 / 程序性技能 三层记忆（对齐 waku）", groupId: "agentCapabilities", icon: "brain" },
   { id: "skills", title: "技能", desc: "按技能源分组的技能清单与停用开关（.disabled/ 搬运）", groupId: "agentCapabilities", icon: "layers" },

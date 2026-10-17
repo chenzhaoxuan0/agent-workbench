@@ -57,12 +57,12 @@ export function Timeline() {
         ) : (
           <div className="space-y-4">
             {items.map((item) => (
-              <TimelineItemRow key={item.id} item={item} unitName={unit?.name ?? "Agent"} busy={busy} />
+              <TimelineItemRow key={item.id} item={item} unitName={unit?.name ?? "bot"} busy={busy} />
             ))}
             {busy && (
               <div className="flex items-center gap-2 text-body-sm text-teal">
                 <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-teal" aria-hidden />
-                <span>{unit?.name ?? "Agent"} 正在思考与执行…</span>
+                <span>{unit?.name ?? "bot"} 正在思考与执行…</span>
               </div>
             )}
           </div>
@@ -728,11 +728,11 @@ function EmptyState() {
       )}
       <p className="text-caption text-ash">{greeting}</p>
       <p className="mt-1 text-body-lg font-medium text-ink">
-        {!unit ? "选一个 Agent 开始" : `向「${unit.name}」交代任务`}
+        {!unit ? "选一个 bot 开始" : `向「${unit.name}」交代任务`}
       </p>
       <p className="mt-1 text-body-sm text-graphite">
         {!unit
-          ? "新建一个 Agent，或认领已有目录"
+          ? "新建一个 bot，或认领已有目录"
           : unit.identity?.role
             ? `已装载岗位：${unit.identity.role} · 读 AGENTS.md`
             : "从对话或快捷任务开始"}

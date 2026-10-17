@@ -30,15 +30,15 @@ export function WorkspaceHeader() {
         "flex h-12 shrink-0 items-center gap-2 border-b border-line/60 bg-rail transition-[padding] duration-300",
         sidebarCollapsed ? "pl-[152px]" : "px-4",
       )}
-      aria-label="工作区"
+      aria-label="单元"
     >
-      {/* ---- 左区：Agent 身份卡片 ---- */}
+      {/* ---- 左区：单元身份卡片 ---- */}
       {unit ? (
         <div className="flex min-w-0 items-center gap-2">
-          {/* 可点击的 Agent 头衔（点击打开 Agent 设置） */}
+          {/* 可点击的单元头衔（点击打开单元设置） */}
           <button
             onClick={() => useShell.getState().openUnitSettings(unit.id)}
-            title="查看与编辑 Agent 设置（身份 / 执行器 / 模型 / AGENTS.md / 渠道）"
+            title="查看与编辑单元设置（身份 / 执行器 / 模型 / AGENTS.md / 渠道）"
             className="group flex min-w-0 items-center gap-2 rounded-btn px-2 py-1 transition hover:bg-line-soft"
           >
             {/* 名字 */}
@@ -47,15 +47,15 @@ export function WorkspaceHeader() {
             </span>
             {/* 身份/角色徽标 */}
             <span className="shrink-0 rounded-chip bg-line-soft px-1.5 py-0.5 text-[10px] text-graphite group-hover:bg-teal-tint group-hover:text-teal">
-              {isSteward ? "总管" : unit.identity?.role || "Agent"}
+              {isSteward ? "总管" : unit.identity?.role || "bot"}
             </span>
           </button>
 
-          {/* 工作区：单击直接在资源管理器中打开，路径悬停可见 */}
+          {/* 单元目录：单击直接在资源管理器中打开，路径悬停可见 */}
           {unit && <OpenWorkspaceFolder path={unit.rootPath} />}
         </div>
       ) : (
-        <span className="text-body-sm text-ash">未选择 Agent</span>
+        <span className="text-body-sm text-ash">未选择单元</span>
       )}
 
       {/* ---- 会话形态切换（结构化对话 | 终端 TUI）：紧跟身份卡左对齐 ----
@@ -77,7 +77,7 @@ export function WorkspaceHeader() {
 
         <button
           onClick={() => setConversationView("terminal")}
-          title="交互终端模式：直接在工作空间运行 Agent CLI，享有原生 TUI 与斜杠命令"
+          title="交互终端模式：直接在单元根目录运行 Agent CLI，享有原生 TUI 与斜杠命令"
           className={cn(
             "flex items-center gap-1.5 rounded-btn px-2.5 py-1 text-[12px] font-medium transition",
             conversationView === "terminal"
@@ -264,7 +264,7 @@ function BackgroundGuardianBadge() {
               </p>
               <p className="flex items-start gap-1.5">
                 <span className="text-teal font-bold">✓</span>
-                <span><b>每日会话精炼</b>：每日提取对话并更新工作区记忆。</span>
+                <span><b>每日会话精炼</b>：每日提取对话并更新单元记忆。</span>
               </p>
               <p className="mt-2 pt-1.5 border-t border-line-soft text-ash text-[10px]">
                 前台终端（TUI）为专享直控界面，后台任务在独立进程中运行，永不抢夺前台标准输入输出。
@@ -296,8 +296,8 @@ function OpenWorkspaceFolder({ path }: { path: string }) {
           })
           .catch((err: unknown) => console.error("[WorkspaceHeader] 打开文件夹失败:", err));
       }}
-      aria-label="在资源管理器中打开工作区文件夹"
-      title={`工作区路径：${path}
+      aria-label="在资源管理器中打开单元文件夹"
+      title={`单元路径：${path}
 单击在资源管理器中打开`}
       className={cn(iconBtn, opened && "text-gain")}
     >

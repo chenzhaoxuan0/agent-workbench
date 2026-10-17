@@ -608,12 +608,17 @@ export async function putBotDefinition(
   unit: unknown,
   endpoint: string = defaultDaemonEndpoint(),
   guards: { ifRevision?: number; ifAgentsMdHash?: string } = {},
+  opts: { createRoot?: boolean } = {},
 ): Promise<RawBotPutResult> {
   const client = DaemonClient.get(endpoint);
   // ⚠ 必须把 daemon 的返回值透出去：调用方要用新 revision/agentsMd 回写 store，
   // 否则第二次保存带着过期 revision 走 ifRevision 守卫，被判成
   // 「文件被外部改过」—— 明明是自己刚存的，却每次都要人手确认一遍。
-  return client.rpc<RawBotPutResult>("bot.put", { unit, ...guards }, 15000);
+  return client.rpc<RawBotPutResult>(
+    "bot.put",
+    { unit, ...guards, ...(opts.createRoot === true ? { createRoot: true } : {}) },
+    15000,
+  );
 }
 
 /** daemon `bot.put` 的回执：新 revision 与 AGENTS.md 指纹（写回 store 用） */
@@ -651,6 +656,26 @@ export async function listBotDefinitions(endpoint: string = defaultDaemonEndpoin
   const client = DaemonClient.get(endpoint);
   const raw = await client.rpc<unknown[]>("bot.list", null, 15000);
   return raw.map(flattenBotDef);
+}
+
+/** daemon `bot.defaultRoot` 的回执：自动安置的默认位置 + 目录浏览器起始根候选 */
+export interface BotDefaultRootResult {
+  /** 默认安置根（<homeDir>/bots）。daemon 侧已幂等创建并登记为扫描根。 */
+  readonly defaultRoot: string;
+  /** 预填进新建对话框文件夹输入框的建议路径（defaultRoot 下不冲突的新目录名） */
+  readonly suggestedPath: string;
+  /** 目录浏览器（FolderPickerField）的起始根候选：homeDir + 各盘符根 */
+  readonly browseRoots: readonly string[];
+}
+
+/**
+ * 要一份「自动安置默认位置」（ADR 0011 第 4 条）。新建对话框打开时调用：
+ * 用户不动输入框就是自动安置，改了就是自定义指位。
+ * daemon 未连接时抛错——调用方回落手输路径。
+ */
+export async function fetchBotDefaultRoot(endpoint: string = defaultDaemonEndpoint()): Promise<BotDefaultRootResult> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<BotDefaultRootResult>("bot.defaultRoot", null, 8000);
 }
 
 // ---------------------------------------------------------------------------

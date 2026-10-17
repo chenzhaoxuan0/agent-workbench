@@ -2193,15 +2193,39 @@ registerMethod("bot.put", (params) => {
     unit?: Record<string, unknown>;
     ifRevision?: number;
     ifAgentsMdHash?: string;
+    /** 自动安置（ADR 0011）：rootPath 不存在时幂等创建。只给新建流用。 */
+    createRoot?: boolean;
   };
   if (p.unit === undefined || typeof p.unit !== "object") {
     throw Object.assign(new Error("unit is required"), { code: "bad_params" });
   }
-  const opts: { ifRevision?: number; ifAgentsMdHash?: string } = {};
+  const opts: { ifRevision?: number; ifAgentsMdHash?: string; createRoot?: boolean } = {};
   if (typeof p.ifRevision === "number") opts.ifRevision = p.ifRevision;
   if (typeof p.ifAgentsMdHash === "string") opts.ifAgentsMdHash = p.ifAgentsMdHash;
+  if (p.createRoot === true) opts.createRoot = true;
   return botRegistry.putBot(p.unit, opts);
 });
+// 自动安置默认位置（ADR 0011 第 4 条）：新建对话框打开时要的预填值。
+// 默认根 <homeDir>/bots 幂等创建并登记扫描根（新 bot 天然可被 bot.list 扫出）；
+// browseRoots 是目录浏览器的起始根候选（homeDir + 盘符根），浏览本身复用
+// workspace.paths.list 的防逃逸约束（rootPath 参数本身可为任意存在的目录）。
+registerMethod("bot.defaultRoot", async () => {
+  const placement = await botRegistry.defaultPlacement(config.homeDir);
+  return { ...placement, browseRoots: browseRootCandidates(config.homeDir) };
+});
+/** 目录浏览器的起始根候选：homeDir + 各盘符根（win32 探测存在性；其他平台给 /） */
+function browseRootCandidates(homeDir: string): string[] {
+  const roots = [homeDir];
+  if (process.platform === "win32") {
+    for (let code = 65; code <= 90; code++) {
+      const drive = `${String.fromCharCode(code)}:\\`;
+      if (existsSync(drive)) roots.push(drive);
+    }
+  } else {
+    roots.push("/");
+  }
+  return [...new Set(roots)];
+}
 // 渠道连通性诊断（向导第三步 / docs/09 §五）。配错了以前只有一行 warn，
 // 界面上表现为「绑了没反应」，两边对不上。
 registerMethod("channel.diagnose", async (params) => {

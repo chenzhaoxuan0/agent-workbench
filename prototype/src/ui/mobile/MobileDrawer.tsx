@@ -117,7 +117,7 @@ export function MobileDrawer({
         <div className="flex-1 overflow-y-auto p-3 space-y-1">
           <div className="flex items-center justify-between px-2 py-1">
             <span className="text-[11px] font-semibold text-ash uppercase tracking-wider">
-              Agent 机器人列表
+              bot 列表
             </span>
             <button
               type="button"
@@ -130,7 +130,7 @@ export function MobileDrawer({
                 }
               }}
               disabled={isRefreshing}
-              title="从 PC 端同步 Agent 列表"
+              title="从 PC 端同步 bot 列表"
               className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-medium text-teal hover:bg-teal-tint transition disabled:opacity-50"
             >
               <RefreshCw size={11} className={cn(isRefreshing && "animate-spin")} />
@@ -143,7 +143,7 @@ export function MobileDrawer({
               <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-xl bg-teal-tint text-teal mb-2">
                 <Bot size={20} />
               </div>
-              <p className="text-body-sm font-semibold text-ink">暂未发现 Agent 机器人</p>
+              <p className="text-body-sm font-semibold text-ink">暂未发现 bot</p>
               <p className="mt-1 text-[11px] text-ash leading-relaxed">
                 数据正从桌面端同步。若列表未出现，请确保手机与电脑在同一局域网并点击重试。
               </p>
@@ -193,7 +193,7 @@ export function MobileDrawer({
                   <div className="min-w-0 flex-1">
                     <span className="block truncate text-body-sm">{u.name}</span>
                     <span className="block truncate text-[11px] text-ash">
-                      {isSteward ? "系统总管" : u.identity?.role || "Agent"}
+                      {isSteward ? "系统总管" : u.identity?.role || "bot"}
                     </span>
                   </div>
                   {isSelected && <span className="h-2 w-2 rounded-full bg-teal" />}

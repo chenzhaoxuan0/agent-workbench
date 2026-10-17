@@ -44,9 +44,11 @@ import {
 } from "../core/units.ts";
 import {
   ensureBotGitignore,
+  fetchBotDefaultRoot,
   inspectBotFolder,
   type BotInspectReport,
 } from "../adapters/daemon/client.ts";
+import { FolderPickerField } from "./FolderPickerField.tsx";
 import { cn } from "./cn.ts";
 
 /** 探测结果决定走哪一支 */
@@ -87,6 +89,8 @@ export function ImportBotDialog({
   const addUnit = useWorkbench((s) => s.addUnit);
 
   const [pathInput, setPathInput] = useState("");
+  /** 目录浏览器起始根（bot.defaultRoot 的 browseRoots）。daemon 未连接则浏览禁用、手输兜底 */
+  const [browseRoots, setBrowseRoots] = useState<readonly string[]>([]);
   const [report, setReport] = useState<BotInspectReport | null>(null);
   const [existing, setExisting] = useState<WorkUnit | null>(null);
   const [probing, setProbing] = useState(false);
@@ -107,6 +111,7 @@ export function ImportBotDialog({
   useEffect(() => {
     if (!open) return;
     setPathInput("");
+    setBrowseRoots([]);
     setReport(null);
     setExisting(null);
     setProbing(false);
@@ -118,6 +123,10 @@ export function ImportBotDialog({
     setScaffoldWriteMd(true);
     setGitignoreFixed(false);
     setRuntimeId(useWorkbench.getState().runtimes.length > 0 ? useWorkbench.getState().activeRuntimeId : "");
+    // 浏览器起始根：要一份自动安置候选（顺带幂等确保默认根存在），失败静默——手输路径始终可用
+    void fetchBotDefaultRoot()
+      .then((r) => setBrowseRoots(r.browseRoots))
+      .catch(() => undefined);
   }, [open]);
 
   useEffect(() => {
@@ -275,7 +284,7 @@ export function ImportBotDialog({
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto p-4">
-          {/* ---- 步骤一：填路径 ---- */}
+          {/* ---- 步骤一：选/填路径 ---- */}
           {report === null ? (
             <div className="space-y-3">
               <p className="text-body-sm text-graphite">
@@ -283,16 +292,15 @@ export function ImportBotDialog({
               </p>
               <label className="block space-y-1">
                 <span className="block text-caption font-medium text-graphite">文件夹路径</span>
-                <input
+                <FolderPickerField
                   value={pathInput}
-                  onChange={(e) => setPathInput(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && void probe()}
+                  onChange={setPathInput}
+                  browseRoots={browseRoots}
                   placeholder="D:/work/old-repo"
-                  spellCheck={false}
-                  aria-label="文件夹路径"
-                  className="w-full rounded-input border border-transparent bg-rail px-2.5 py-1.5 font-mono text-caption text-ink outline-none placeholder:text-ash focus:border-teal"
+                  ariaLabel="文件夹路径"
+                  onEnter={() => void probe()}
                 />
-                <span className="block text-caption text-ash">Electron 阶段这里会换成原生目录选择器</span>
+                <span className="block text-caption text-ash">点「浏览」选，或直接手输路径（Enter 探测）</span>
               </label>
               {error !== null && <p className="text-caption text-loss">{error}</p>}
             </div>

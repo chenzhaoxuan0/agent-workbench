@@ -73,7 +73,7 @@ const CLI_GUIDES: Record<string, CliGuide> = {
   },
   mcode: {
     desc: "MCode 研发套件与私有化模型调度执行器。",
-    tips: "自动适配本地工作空间与内网环境，保持稳定开箱即用状态。",
+    tips: "自动适配本机与内网环境，保持稳定开箱即用状态。",
   },
   agy: {
     desc: "Google 官方 Antigravity Agent 执行器，提供强大的全功能代码与多模态模型调度。",

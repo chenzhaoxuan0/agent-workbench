@@ -236,6 +236,40 @@ export function isSyntheticUnit(u?: WorkUnit | null): boolean {
   return u.synthetic === true || u.id === "steward" || u.id === "heartbeat";
 }
 
+/**
+ * 项目判定（ADR 0011 弱标签）：kind 缺省按 bot 算——bot.json 手改缺字段
+ * 不该把 bot 画成项目形态。侧栏分段器、⌘K 分组、Composer 占位符共用此判据。
+ */
+export function isProjectUnit(u?: WorkUnit | null): boolean {
+  return u?.kind === "project";
+}
+
+/**
+ * 侧栏与单元切换器共用的列表排序（两侧同序才好选）：常驻节在前（总管 steward
+ * 最前，其余跟定义序），普通节跟用户拖拽序 —— unitOrder 未记录的单元排末尾。
+ * unitOrder 由 useWorkbench 持有（会话内记忆，侧栏拖拽写入，两侧共享读取）。
+ */
+export function orderUnitsLikeSidebar(
+  units: readonly WorkUnit[],
+  unitOrder: readonly string[] | null,
+): { residentUnits: WorkUnit[]; normalUnits: WorkUnit[] } {
+  const residents: WorkUnit[] = [];
+  const normals: WorkUnit[] = [];
+  for (const u of units) (isResidentUnit(u) ? residents : normals).push(u);
+  const stewardFirst = (list: WorkUnit[]): WorkUnit[] =>
+    [...list].sort((a, b) => {
+      const as = a.id === "steward" || (a.tags ?? []).includes("steward");
+      const bs = b.id === "steward" || (b.tags ?? []).includes("steward");
+      return as === bs ? 0 : as ? -1 : 1;
+    });
+  const orderedNormals = unitOrder
+    ? stewardFirst(normals).sort(
+        (a, b) => (unitOrder.indexOf(a.id) + 1 || 99) - (unitOrder.indexOf(b.id) + 1 || 99),
+      )
+    : stewardFirst(normals);
+  return { residentUnits: stewardFirst(residents), normalUnits: orderedNormals };
+}
+
 // ---------------------------------------------------------------------------
 // 会话
 // ---------------------------------------------------------------------------

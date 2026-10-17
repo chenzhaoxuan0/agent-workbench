@@ -345,7 +345,7 @@ export function SkillsSettingsSection() {
 
       {activeRoot !== null && (
         <p className="text-caption leading-relaxed text-ash">
-          项目级技能源按当前工作区（{activeUnit?.name}）列出；切换侧栏 bot 后此处随之更新。
+          项目级技能源按当前单元（{activeUnit?.name}）列出；切换侧栏单元后此处随之更新。
         </p>
       )}
     </div>

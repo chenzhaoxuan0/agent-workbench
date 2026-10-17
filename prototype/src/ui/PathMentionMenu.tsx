@@ -65,7 +65,7 @@ export function PathMentionMenu({
             @
           </span>
           <span className="text-xs font-semibold text-ink truncate">{workspaceName}</span>
-          <span className="text-[11px] text-graphite font-normal shrink-0">引用工作区文件</span>
+          <span className="text-[11px] text-graphite font-normal shrink-0">引用文件</span>
           {items.length > 0 && (
             <span className="font-mono text-[10px] px-1.5 py-0.5 rounded-full bg-line-soft text-graphite font-medium shrink-0">
               {items.length}
@@ -142,7 +142,7 @@ export function PathMentionMenu({
         {status === "loading" && items.length === 0 && (
           <div className="flex items-center justify-center gap-2 py-6 text-xs text-graphite">
             <Loader2 size={14} className="animate-spin text-teal" />
-            <span>正在列出工作区路径…</span>
+            <span>正在列出路径…</span>
           </div>
         )}
         {status === "error" && (
@@ -152,7 +152,7 @@ export function PathMentionMenu({
         )}
         {status !== "loading" && status !== "error" && items.length === 0 && (
           <div className="py-6 text-center text-xs text-graphite leading-relaxed">
-            {query === "" ? "工作区根目录是空的" : `未找到与 "${query}" 匹配的路径`}
+            {query === "" ? "根目录是空的" : `未找到与 "${query}" 匹配的路径`}
             <span className="mt-1 block text-[10px] text-ash">输入 / 进入子目录，或继续输入名字过滤</span>
           </div>
         )}

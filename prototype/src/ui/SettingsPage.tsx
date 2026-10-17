@@ -76,7 +76,7 @@ const FRAME_HEAD = "mx-auto w-full max-w-5xl px-6";
 
 /**
  * 设置页 —— 骨架对齐 ZCode 的 settingsPageConfig + SettingsPageParts：
- *   左导航三组（基础 / Agent 能力 / 数据与统计）
+ *   左导航三组（基础 / bot 能力 / 数据与统计）
  *   max-w-4xl 内容列 + 面包屑头
  *   SettingsRow（label + description ｜ control，border-t 分隔）
  *   SettingsGroupCard 包裹

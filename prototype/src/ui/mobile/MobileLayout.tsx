@@ -52,7 +52,7 @@ export function MobileLayout({
               {unit.name}
             </span>
           ) : (
-            <span className="text-caption text-ash">未选择 Agent</span>
+            <span className="text-caption text-ash">未选择单元</span>
           )}
         </div>
 

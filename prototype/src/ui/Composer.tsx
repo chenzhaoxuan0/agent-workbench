@@ -1,20 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowUp,
-  ChevronDown,
-  FolderGit2,
   Paperclip,
   Plus,
   Square,
 } from "lucide-react";
 import { useWorkbench, selectActiveUnit } from "../store/useWorkbench.ts";
-import { useShell } from "../store/useShell.ts";
 import { nativeCommandsFor, useNativeCommands } from "../store/useNativeCommands.ts";
 import { fetchWorkspacePaths } from "../adapters/daemon/client.ts";
 import type { NativeCommandInfo } from "../core/adapter.ts";
+import { isProjectUnit } from "../core/units.ts";
 import { RuntimePicker } from "./RuntimePicker.tsx";
 import { BranchPicker } from "./BranchPicker.tsx";
 import { GitActionTrigger } from "./GitActionTrigger.tsx";
+import { UnitSwitcher } from "./UnitSwitcher.tsx";
 import { ReasoningEffortPicker } from "./LoopParamsPicker.tsx";
 import { PermissionModePicker } from "./PermissionModePicker.tsx";
 import { SlashCommandMenu, filterNativeCommands } from "./SlashCommandMenu.tsx";
@@ -37,7 +36,7 @@ import { cn } from "./cn.ts";
  * 输入区 —— 全页焦点元素。
  *
  * 移动端结构：
- * - 顶部卡片栏：工作空间文件夹名称 + 分支 (Branch) + 角色徽标
+ * - 顶部卡片栏：单元文件夹名称 + 分支 (Branch) + 角色徽标
  * - 核心文本输入框 (自动高度)
  * - 底部工具栏：
  *   - 左侧：[+] 扩展菜单（斜杠指令/附件/技能） + 运行模式形式（计划模式/变更确认/自主模式/完全访问）
@@ -315,8 +314,8 @@ export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
   };
 
   const placeholder = !unit
-    ? "先选一个工作单元，或新建一个 bot… (输入 / 查看命令/技能/子智能体)"
-    : unit.kind === "bot"
+    ? "先选一个 bot 或项目，或新建一个 bot… (输入 / 查看命令/技能/子智能体)"
+    : !isProjectUnit(unit)
       ? `给「${unit.name}」派活…（可添加图片/代码附件，输入 / 调出 ${executorName} 命令面板）`
       : `对「${unit.name}」下任务…（可添加图片/代码附件，输入 / 调出 ${executorName} 命令面板）`;
 
@@ -348,28 +347,11 @@ export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
             }}
           />
 
-          {/* 对话卡片顶栏：工作空间文件夹名称 + 分支 (Branch) */}
+          {/* 对话卡片顶栏：单元切换器 + 分支 (Branch) */}
           <div className="mb-2 flex items-center justify-between border-b border-line-soft pb-1.5 px-0.5 select-none">
             <div className="flex items-center gap-2 min-w-0">
-              <button
-                type="button"
-                onClick={() => {
-                  if (isMobile) {
-                    onOpenDrawer?.();
-                  } else {
-                    useShell.getState().setCommandOpen(true);
-                  }
-                }}
-                className={cn(
-                  "flex items-center gap-1.5 rounded-lg bg-line-soft/80 px-2.5 py-1 text-xs text-ink font-semibold truncate hover:bg-line-soft active:scale-95 transition",
-                  "max-w-[150px] sm:max-w-[240px]",
-                )}
-                title="点击切换工作空间或 Agent"
-              >
-                <FolderGit2 size={13} className="text-teal shrink-0" />
-                <span className="truncate">{unit?.name || "agent-workbench"}</span>
-                <ChevronDown size={10} className="text-ash shrink-0" />
-              </button>
+              {/* 专属 bot/项目切换面板（与 ⌘K 搜索分家）；移动端点开抽屉 */}
+              <UnitSwitcher current={unit} isMobile={isMobile} onOpenDrawer={onOpenDrawer} />
 
               {/* 分支选择器（ZCode 同款交互，ADR 0009 窄面）：非 git 仓库时自动隐藏 */}
               <BranchPicker rootPath={unit?.rootPath} />
@@ -430,7 +412,7 @@ export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
           {/* @ 路径提及弹出菜单（工作区文件/目录引用） */}
           {mentionOpen && activeMention && (
             <PathMentionMenu
-              workspaceName={unit?.name ?? "工作区"}
+              workspaceName={unit?.name ?? "单元"}
               items={mention.items}
               status={mention.status}
               truncated={mention.truncated}
@@ -530,7 +512,7 @@ export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
                   onClick={() => setPlusMenuOpen((v) => !v)}
                   aria-expanded={plusMenuOpen}
                   aria-label="添加指令或附件"
-                  title="添加附件、快捷指令，或 @ 引用工作区文件"
+                  title="添加附件、快捷指令，或 @ 引用文件"
                   className={cn(
                     "flex shrink-0 items-center justify-center rounded-lg border border-line-soft bg-card/60 text-teal hover:bg-line-soft active:scale-95 transition",
                     "h-7 w-7 sm:h-8 sm:w-8",
@@ -593,7 +575,7 @@ export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
                         @
                       </span>
                       <div className="min-w-0 flex-1">
-                        <span className="block font-medium text-ink">引用工作区文件 (@)</span>
+                        <span className="block font-medium text-ink">引用文件 (@)</span>
                         <span className="block text-[10px] text-ash">输入 @ 选择文件或目录作为上下文</span>
                       </div>
                     </button>

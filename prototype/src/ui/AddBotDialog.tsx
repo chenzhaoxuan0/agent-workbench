@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
+  Bot,
   Brain,
   Check,
   FileText,
   FolderOpen,
   ImagePlus,
+  Package,
   Pin,
   Plus,
   RefreshCw,
@@ -14,24 +16,23 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { useWorkbench, selectVisibleModels, BOT_CONFLICT, type BotWriteGuards } from "../store/useWorkbench.ts";
-import { type WorkUnit, type BotChannel, isSyntheticUnit } from "../core/units.ts";
-import { openFolder } from "../adapters/daemon/client.ts";
+import { type WorkUnit, type UnitKind, type BotChannel } from "../core/units.ts";
+import { fetchBotDefaultRoot, openFolder } from "../adapters/daemon/client.ts";
 import { ChannelSection } from "./ChannelSection.tsx";
+import { FolderPickerField } from "./FolderPickerField.tsx";
 import { cn } from "./cn.ts";
 
 /**
- * 新建 bot 对话框 —— 高度自定义的创建流程。
+ * 新建 / 编辑 bot 对话框 —— 单轨零门槛（ADR 0011 第 1、2、4 条）。
  *
- * 可定制面对齐 waku-agent 的四个正交旋钮（SOUL.md 人设 / 记忆三柱 /
- * 模型 / 技能），映射到本项目的数据模型：
+ * 新建的唯一必填交互 = 文件夹：打开时向 daemon 要「自动安置默认位置」
+ * （`<homeDir>/bots/<建议名>`）预填进输入框——用户不动就是自动安置，改了
+ * （手输或点「浏览」目录浏览器）就是自定义指位。名字默认跟随文件夹名，可改。
+ * 其余一切（persona / AGENTS.md / 渠道 / 记忆 / 绑定）全部可选、后补；
+ * AGENTS.md 留空保存时 daemon 静默生成最小占位（文件即数据库不破）。
  *
- * - **身份**：名称（决定头像色形）/ 一句话角色 / 工作目录 / 主执行器 + 默认模型
- * - **系统提示词**：persona 人设与语气（对应 waku 的 SOUL.md——运行时
- *   拼进 system prompt 的部分，与 AGENTS.md 岗位说明书刻意分开：
- *   「agent 的人设在 SOUL，规矩在 AGENTS.md」是 waku 的教学要点）
- * - **记忆接入**（可选开关）：语义事实 / 情节记忆 / 程序性技能
- *   （waku 的 semantic / episodic / procedural 三柱；真运行时据此接后端）
- * - **AGENTS.md**：岗位说明书本体（agents.md 开放约定的 markdown 段落）
+ * 编辑模式额外暴露 kind 切换（bot ↔ 项目，弱标签）：判据问句文案，
+ * 保存走既有 putBot 乐观锁链路。
  */
 
 export interface BotMemoryPolicy {
@@ -50,18 +51,21 @@ export interface AddBotDraft {
   readonly modelHint: string | null;
   readonly persona: string;
   readonly memory: BotMemoryPolicy;
-  readonly agentsMd: string;
+  /** 留空 = 不写正文，daemon 落盘时静默补最小占位（AGENTS.md 可选化，ADR 0011） */
+  readonly agentsMd?: string;
   readonly channels: readonly BotChannel[];
   readonly resident?: boolean;
+  /** 弱标签（ADR 0011 第 2 条）：新建恒 "bot"；编辑模式的切换由对话框自己补写 */
+  readonly kind: UnitKind;
 }
 
 type Section = "identity" | "persona" | "memory" | "agentsmd" | "channels";
 
 const SECTIONS: readonly { id: Section; label: string; icon: LucideIcon; hint: string }[] = [
   { id: "identity", label: "身份", icon: FileText, hint: "名称、角色、目录、执行器" },
-  { id: "persona", label: "系统提示词", icon: Wand2, hint: "人设与语气（SOUL）" },
+  { id: "persona", label: "系统提示词", icon: Wand2, hint: "人设与语气（SOUL），可后补" },
   { id: "memory", label: "记忆", icon: Brain, hint: "接入哪几类记忆" },
-  { id: "agentsmd", label: "AGENTS.md", icon: FileText, hint: "岗位说明书本体" },
+  { id: "agentsmd", label: "AGENTS.md", icon: FileText, hint: "岗位说明书（可选，可后补）" },
   { id: "channels", label: "渠道", icon: Radio, hint: "把 bot 接到 IM / webhook" },
 ];
 
@@ -95,6 +99,12 @@ function agentsMdTemplate(name: string, role: string, rootPath: string): string 
   return `# ${name}\n\n> ${role || "（一句话说清这个 bot 被设计用来做什么）"}\n\n## 这个 bot 负责什么\n- 边界：\n- 产出物：\n\n## 工作目录\n- 根目录：\`${rootPath}\`\n- 动手前先读目录里已有的文件，长期记忆与产出都落在这里\n\n## 工作方式\n- 接到任务先列 3 步以内的计划，再执行\n- 不确定的地方先提问，不要猜\n\n## 交付与验收\n- 每次交付一个可检查的产物（文件 / 清单 / 报告）\n- 完成后汇报：做了什么、产出在哪、下一步建议\n`;
 }
 
+/** 路径末段（兼容 / 与 \）。名字默认跟随文件夹名的那条线靠它。 */
+function folderBasename(p: string): string {
+  const parts = p.replace(/\\/g, "/").replace(/\/+$/u, "").split("/");
+  return parts[parts.length - 1] ?? "";
+}
+
 export function AddBotDialog({
   open,
   initial,
@@ -118,9 +128,8 @@ export function AddBotDialog({
   const [section, setSection] = useState<Section>("identity");
   const [name, setName] = useState("");
   const [role, setRole] = useState("");
-  const [rootPath, setRootPath] = useState("C:/Users/chenziyu/project/Agent/bots/");
+  const [rootPath, setRootPath] = useState("");
   const [agentsMd, setAgentsMd] = useState("");
-  const [mdTouched, setMdTouched] = useState(false);
   const [persona, setPersona] = useState("");
   const [personaTouched, setPersonaTouched] = useState(false);
   const [memory, setMemory] = useState<BotMemoryPolicy>({ semantic: true, episodic: true, procedural: true });
@@ -129,6 +138,14 @@ export function AddBotDialog({
   const [modelHint, setModelHint] = useState<string | null>(null);
   const [avatar, setAvatar] = useState<string | null>(null);
   const [resident, setResident] = useState(false);
+  /** 单元形态（弱标签）：编辑模式可切 bot ↔ 项目（ADR 0011 第 2 条） */
+  const [kind, setKind] = useState<UnitKind>("bot");
+  /** 目录浏览器的起始根候选（打开时向 daemon 要；daemon 未连接则浏览禁用、手输兜底） */
+  const [browseRoots, setBrowseRoots] = useState<readonly string[]>([]);
+  /** 名字是否被用户亲手改过——没改过就跟随文件夹名（单轨零门槛：名字不必输入） */
+  const nameTouchedRef = useRef(false);
+  /** 用户动过文件夹输入（手输/浏览选择）——RPC 往返期间不覆盖用户已填的路径 */
+  const rootPathTouchedRef = useRef(false);
   /** 打开这一刻盘上的真值，保存时当乐观锁基线传回 daemon */
   const [baseGuards, setBaseGuards] = useState<BotWriteGuards>({});
   /** 盘上已被改过、未写入。等用户选：覆盖 / 重新加载 / 取消 */
@@ -153,10 +170,10 @@ export function AddBotDialog({
     // 初始默认不为空：没绑过执行器/模型时，预填当前执行器与它的默认模型，保存即可用
     const rid = binding?.runtimeId ?? (runtimes.length > 0 ? useWorkbench.getState().activeRuntimeId : "");
     setName(b.name);
+    nameTouchedRef.current = true; // 编辑模式的名字是既有事实，不跟随文件夹名
     setRole(b.identity?.role ?? "");
     setRootPath(b.rootPath);
     setAgentsMd(b.agentsMd ?? "");
-    setMdTouched(true);
     setPersona(b.identity?.persona ?? "");
     setPersonaTouched(true);
     setMemory(b.memory ?? { semantic: true, episodic: true, procedural: true });
@@ -164,6 +181,7 @@ export function AddBotDialog({
     setModelHint(binding?.modelHint ?? runtimes.find((r) => r.id === rid)?.defaultModel ?? null);
     setAvatar(b.avatar ?? null);
     setResident(Boolean(b.resident));
+    setKind(b.kind ?? "bot");
     setChannels(b.channels ?? []);
     setAgentsMdMeta(b.agentsMdMeta);
     setBaseGuards({
@@ -172,23 +190,40 @@ export function AddBotDialog({
     });
   };
 
-  // 打开时重置 / 预填。编辑模式**不**把 mdTouched / personaTouched 置回 false：
-  // 那两个 flag 的含义是「用户没亲手改过，可以跟着名称自动重生成」。
-  // 编辑一个已经写好 AGENTS.md 的 bot 时，名字一改就把岗位说明书冲掉是不可接受的。
+  // 打开时重置 / 预填。
+  // 新建（单轨零门槛，ADR 0011 第 1 条）：对话框自己向 daemon 要「自动安置默认
+  // 位置」预填文件夹（Sidebar 的接线不动）；用户不动就是自动安置，改了就是自定义
+  // 指位。daemon 未连接时输入框留空、手输兜底。
   useEffect(() => {
     if (!open) return;
     setError(null);
     setConflict(null);
     setDiskNote(null);
     setSection("identity");
+    let cancelled = false;
+    const fetchPlacement = async (prefill: boolean): Promise<void> => {
+      try {
+        const r = await fetchBotDefaultRoot();
+        if (cancelled) return;
+        setBrowseRoots(r.browseRoots);
+        if (prefill && !rootPathTouchedRef.current) {
+          setRootPath(r.suggestedPath);
+          if (!nameTouchedRef.current) setName(folderBasename(r.suggestedPath));
+        }
+      } catch {
+        // daemon 未连接：浏览禁用、默认位置留空——手输路径始终可用
+      }
+    };
     if (initial) {
       fillFrom(initial);
+      void fetchPlacement(false);
     } else {
       setName("");
+      nameTouchedRef.current = false;
+      rootPathTouchedRef.current = false;
       setRole("");
-      setRootPath("C:/Users/chenziyu/project/Agent/bots/");
+      setRootPath("");
       setAgentsMd("");
-      setMdTouched(false);
       setPersona("");
       setPersonaTouched(false);
       setMemory({ semantic: true, episodic: true, procedural: true });
@@ -202,29 +237,17 @@ export function AddBotDialog({
       );
       setAvatar(null);
       setResident(false);
+      setKind("bot");
       setChannels([]);
       setAgentsMdMeta(undefined);
       setBaseGuards({});
+      void fetchPlacement(true);
     }
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fillFrom 依赖表单重置语义，随 open/initial 整体重跑
   }, [open, initial]);
-
-  // 名称 / 角色 → 模板自动同步，直到用户亲手编辑（AGENTS.md 与 persona 各自独立）。
-  //
-  // ⚠ 必须显式排除编辑模式。两个 effect 在**同一次 commit** 里跑：prefill 先
-  // setAgentsMd(真实内容) + setMdTouched(true)，但本 effect 读到的是本次渲染
-  // 闭包里的旧值（mdTouched 还是 false、name 还是 ""），于是 setAgentsMd(空模板)
-  // 把 prefill 覆盖掉；下一轮 mdTouched 已是 true，本 effect 直接 return ——
-  // 岗位说明书被冲成空模板，而且用户点「保存」会把这个空模板写回 bot.json。
-  // 新建模式侥幸没事（初值本就是空模板），但同一个竞态，不该靠运气。
-  useEffect(() => {
-    if (!open || isEdit || mdTouched) return;
-    setAgentsMd(agentsMdTemplate(name, role, rootPath));
-  }, [open, isEdit, mdTouched, name, role, rootPath]);
-
-  useEffect(() => {
-    if (!open || isEdit || personaTouched) return;
-    setPersona(PERSONA_TEMPLATE(name, role));
-  }, [open, isEdit, personaTouched, name, role]);
 
   useEffect(() => {
     if (!open) return;
@@ -253,29 +276,37 @@ export function AddBotDialog({
     img.src = url;
   };
 
-  const draft = (): AddBotDraft => ({
-    name: name.trim(),
-    role: role.trim(),
-    avatar: avatar ?? undefined,
-    rootPath: rootPath.trim().replace(/\/+$/, ""),
-    runtimeId,
-    modelHint,
-    persona: persona.trim(),
-    memory,
-    agentsMd,
-    channels,
-    resident,
-  });
+  const draft = (): AddBotDraft => {
+    const folder = rootPath.trim().replace(/[\\/]+$/u, "");
+    return {
+      // 零门槛：名字留空时跟随文件夹名——用户唯一必须面对的交互是文件夹本身
+      name: name.trim() || folderBasename(folder),
+      role: role.trim(),
+      avatar: avatar ?? undefined,
+      rootPath: folder,
+      runtimeId,
+      modelHint,
+      persona: persona.trim(),
+      memory,
+      // AGENTS.md 可选：留空不写正文，daemon 落盘时静默补最小占位
+      agentsMd: agentsMd.trim() === "" ? undefined : agentsMd,
+      channels,
+      resident,
+      kind,
+    };
+  };
 
   const submit = async (overwrite = false) => {
     if (saving) return;
-    if (name.trim().length === 0) return setError("给 bot 起个名字");
-    if (rootPath.trim().length === 0) return setError("工作目录不能为空");
-    if (agentsMd.trim().length === 0) return setError("AGENTS.md 不能为空 —— 它就是这个 bot 的岗位说明书");
+    const d = draft();
+    if (d.rootPath.length === 0) return setError("选一个文件夹（或接受默认位置）");
+    if (d.name.length === 0) return setError("给 bot 起个名字（留空则跟随文件夹名）");
     setSaving(true);
     setError(null);
     try {
-      await onSubmit(draft(), overwrite ? { overwrite: true } : undefined);
+      // kind 随主保存一笔写穿（draft.kind → Sidebar 编辑接线 → updateUnit 乐观锁链路），
+      // 不做保存后补写——两笔写之间他端改动会被静默覆盖
+      await onSubmit(d, overwrite ? { overwrite: true } : undefined);
     } catch (err: unknown) {
       const code = (err as { code?: unknown } | null)?.code;
       if (code === BOT_CONFLICT) {
@@ -310,11 +341,6 @@ export function AddBotDialog({
   };
 
   if (!open) return null;
-
-  const insertSection = (snippet: string) => {
-    setMdTouched(true);
-    setAgentsMd((md) => `${md.trimEnd()}\n\n${snippet}`);
-  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-6" onClick={onClose}>
@@ -362,15 +388,18 @@ export function AddBotDialog({
           <div className="min-w-0 flex-1 overflow-y-auto p-4">
             {section === "identity" && (
               <div className="space-y-4">
-                <Field label="名称" hint="名字决定头像的颜色与形状">
+                <Field label="名称" hint="名字决定头像的颜色与形状；留空则跟随文件夹名">
                   <input
                     value={name}
-                    onChange={(e) => setName(e.target.value)}
+                    onChange={(e) => {
+                      nameTouchedRef.current = true;
+                      setName(e.target.value);
+                    }}
                     placeholder="例如：竞品分析师"
                     className="w-full rounded-input border border-transparent bg-rail px-2.5 py-1.5 text-body-sm text-ink outline-none placeholder:text-ash focus:border-teal"
                   />
                 </Field>
-                <Field label="一句话角色" hint="做什么，一句话讲清">
+                <Field label="一句话角色" hint="做什么，一句话讲清（可留空后补）">
                   <input
                     value={role}
                     onChange={(e) => setRole(e.target.value)}
@@ -378,34 +407,46 @@ export function AddBotDialog({
                     className="w-full rounded-input border border-transparent bg-rail px-2.5 py-1.5 text-body-sm text-ink outline-none placeholder:text-ash focus:border-teal"
                   />
                 </Field>
-                <Field label="工作目录" hint="这个 bot 的根文件夹（AGENTS.md 与产出都放这里）">
-                  <div className="flex items-center gap-1.5">
-                    <input
-                      value={rootPath}
-                      onChange={(e) => setRootPath(e.target.value)}
-                      spellCheck={false}
-                      className="min-w-0 flex-1 rounded-input border border-transparent bg-rail px-2.5 py-1.5 font-mono text-caption text-ink outline-none placeholder:text-ash focus:border-teal"
-                    />
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        if (!rootPath.trim()) return;
-                        try {
-                          await openFolder({ path: rootPath.trim() });
-                          setFolderOpened(true);
-                          setTimeout(() => setFolderOpened(false), 2000);
-                        } catch (err) {
-                          console.error("[AddBotDialog] 打开文件夹失败:", err);
-                        }
-                      }}
-                      disabled={!rootPath.trim()}
-                      title="在文件资源管理器中打开"
-                      className="flex shrink-0 items-center gap-1 rounded-btn border border-line bg-canvas px-2.5 py-1.5 text-caption font-medium text-graphite hover:bg-line-soft hover:text-ink active:scale-95 transition disabled:opacity-40"
-                    >
-                      {folderOpened ? <Check size={12} className="text-gain" /> : <FolderOpen size={12} />}
-                      <span>{folderOpened ? "已打开" : "打开"}</span>
-                    </button>
-                  </div>
+                <Field
+                  label="工作目录"
+                  hint={
+                    isEdit
+                      ? "这个 bot 的根文件夹（AGENTS.md 与产出都放这里）。编辑时目录必须已存在——改成不存在的路径会报错"
+                      : "这个 bot 的根文件夹（AGENTS.md 与产出都放这里）。不动就是自动安置；改了就是自定义指位，目录不存在时会自动创建"
+                  }
+                >
+                  <FolderPickerField
+                    value={rootPath}
+                    onChange={(v) => {
+                      rootPathTouchedRef.current = true;
+                      setRootPath(v);
+                      // 名字默认跟随文件夹名（新建且用户没亲手改过名字时）
+                      if (!isEdit && !nameTouchedRef.current) setName(folderBasename(v));
+                    }}
+                    browseRoots={browseRoots}
+                    ariaLabel="工作目录"
+                    trailing={
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          if (!rootPath.trim()) return;
+                          try {
+                            await openFolder({ path: rootPath.trim() });
+                            setFolderOpened(true);
+                            setTimeout(() => setFolderOpened(false), 2000);
+                          } catch (err) {
+                            console.error("[AddBotDialog] 打开文件夹失败:", err);
+                          }
+                        }}
+                        disabled={!rootPath.trim()}
+                        title="在文件资源管理器中打开"
+                        className="flex shrink-0 items-center gap-1 rounded-btn border border-line bg-canvas px-2.5 py-1.5 text-caption font-medium text-graphite hover:bg-line-soft hover:text-ink active:scale-95 transition disabled:opacity-40"
+                      >
+                        {folderOpened ? <Check size={12} className="text-gain" /> : <FolderOpen size={12} />}
+                        <span>{folderOpened ? "已打开" : "打开"}</span>
+                      </button>
+                    }
+                  />
                 </Field>
                 <Field label="头像" hint="可选，上传后居中裁成方形；外框形态跟随外观设置的「bot 头像框形态」">
                   <div className="flex items-center gap-3">
@@ -518,6 +559,51 @@ export function AddBotDialog({
                     </button>
                   </div>
                 </Field>
+                {/* kind 切换（ADR 0011 第 2 条）：弱标签，编辑模式手动标。判据问句
+                    风格——产出物是否为软件工件；git 只是文件版本管理，不构成判据。 */}
+                {isEdit && (
+                  <Field
+                    label="单元形态 · 这个文件夹主要用来产出软件吗？"
+                    hint="判据是产出物是否为软件工件（代码、diff、PR、构建产物）；只是用 git 管文件不算。这是个弱标签，只影响侧栏视图分组，不改变任何行为"
+                  >
+                    <div className="flex gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setKind("bot")}
+                        aria-pressed={kind === "bot"}
+                        className={cn(
+                          "flex flex-1 items-center gap-2 rounded-input border px-3 py-2 text-left transition",
+                          kind === "bot" ? "border-teal-edge bg-teal-tint/60" : "border-line hover:bg-line-soft",
+                        )}
+                      >
+                        <Bot size={14} className={kind === "bot" ? "text-teal" : "text-ash"} />
+                        <span>
+                          <span className={cn("block text-body-sm", kind === "bot" ? "font-medium text-ink" : "text-graphite")}>
+                            不是 · bot（数字员工）
+                          </span>
+                          <span className="block text-caption text-ash">默认形态：一类事务的专人专事</span>
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setKind("project")}
+                        aria-pressed={kind === "project"}
+                        className={cn(
+                          "flex flex-1 items-center gap-2 rounded-input border px-3 py-2 text-left transition",
+                          kind === "project" ? "border-teal-edge bg-teal-tint/60" : "border-line hover:bg-line-soft",
+                        )}
+                      >
+                        <Package size={14} className={kind === "project" ? "text-teal" : "text-ash"} />
+                        <span>
+                          <span className={cn("block text-body-sm", kind === "project" ? "font-medium text-ink" : "text-graphite")}>
+                            是 · 项目
+                          </span>
+                          <span className="block text-caption text-ash">按开发项目消费：源代码管理、提交图</span>
+                        </span>
+                      </button>
+                    </div>
+                  </Field>
+                )}
               </div>
             )}
 
@@ -590,6 +676,7 @@ export function AddBotDialog({
                   <span className="flex min-w-0 items-center gap-1 text-caption text-ash">
                     <FileText size={11} className="shrink-0" />
                     <span className="shrink-0">AGENTS.md · 岗位说明书</span>
+                    <span className="shrink-0 text-ash/70">（可选，可后补）</span>
                     {isEdit && agentsMdMeta && (
                       <span
                         className="truncate font-mono text-[10px] text-ash/80"
@@ -599,7 +686,7 @@ export function AddBotDialog({
                       </span>
                     )}
                     {isEdit && !agentsMdMeta && (
-                      <span className="text-[10px] text-loss">· 文件不存在，保存时会创建</span>
+                      <span className="text-[10px] text-ash">· 文件不存在，保存时会生成最小占位</span>
                     )}
                   </span>
                   {isEdit && (
@@ -617,7 +704,6 @@ export function AddBotDialog({
                       <button
                         key={s.label}
                         onClick={() => {
-                          setMdTouched(true);
                           setAgentsMd((md) => `${md.trimEnd()}\n\n${s.snippet(name || "这个 bot")}`);
                         }}
                         title={`插入「${s.label}」段落`}
@@ -629,26 +715,25 @@ export function AddBotDialog({
                     ))}
                     <button
                       onClick={() => {
-                        setMdTouched(false);
                         setAgentsMd(agentsMdTemplate(name, role, rootPath));
                       }}
-                      title="按名称与角色重新生成模板"
+                      title="按名称与角色生成完整模板"
                       className="flex items-center gap-0.5 rounded-btn px-1.5 py-0.5 text-caption text-ash hover:bg-line-soft hover:text-ink"
                     >
                       <Wand2 size={9} />
-                      重新生成
+                      生成模板
                     </button>
                   </div>
                 </div>
                 <textarea
                   value={agentsMd}
                   onChange={(e) => {
-                    setMdTouched(true);
                     setAgentsMd(e.target.value);
                   }}
                   spellCheck={false}
                   aria-label="AGENTS.md 内容"
-                  className="min-h-0 flex-1 resize-none rounded-card border border-line bg-canvas p-3 font-mono text-caption leading-relaxed text-ink outline-none focus:border-teal"
+                  placeholder={"可选。这是 bot 的规矩文件，想清楚要它遵守什么时再回来补；\n留空保存时会在 bot 文件夹里生成一份最小占位 AGENTS.md。"}
+                  className="min-h-0 flex-1 resize-none rounded-card border border-line bg-canvas p-3 font-mono text-caption leading-relaxed text-ink outline-none placeholder:text-ash focus:border-teal"
                 />
               </div>
             )}
@@ -705,11 +790,11 @@ export function AddBotDialog({
                   未连接 daemon，这个 bot 会先以「无执行器」保存 —— 之后可在设置里补
                 </p>
               ) : (
-                <p className="text-caption text-ash">
-                  {isEdit
-                    ? "保存写穿到 bot.json 与工作目录下的 AGENTS.md"
-                    : "创建后可随时在编辑器里改 AGENTS.md 与人设"}
-                </p>
+              <p className="text-caption text-ash">
+                {isEdit
+                  ? "保存写穿到 bot.json 与工作目录下的 AGENTS.md"
+                  : "唯一必填的是文件夹；创建后的一切都在这个文件夹里，名字、人设、AGENTS.md、渠道都可以后补"}
+              </p>
               )}
               <div className="ml-auto flex items-center gap-2">
                 <button onClick={onClose} className="rounded-btn px-3 py-1.5 text-body-sm text-graphite hover:bg-line-soft hover:text-ink">

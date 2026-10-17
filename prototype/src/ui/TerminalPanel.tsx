@@ -515,7 +515,7 @@ export function TerminalPanel({
       {unit === undefined ? (
         <div className="flex min-h-0 flex-1 items-center justify-center px-4 text-center">
           <p className="text-body-sm text-ash">
-            终端需要一个工作目录才能启动。请在左侧侧边栏选择一个 Bot 或工作空间。
+            终端需要一个工作目录才能启动。请在左侧侧边栏选择一个 bot 或项目。
           </p>
         </div>
       ) : groups.length === 0 ? (

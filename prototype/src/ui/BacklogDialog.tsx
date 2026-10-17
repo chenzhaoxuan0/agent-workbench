@@ -134,7 +134,7 @@ export function BacklogDialog({ initial, onClose }: { initial: BacklogItem | nul
           <Field label="归属单元" hint="确认后在它的工作目录执行（继承身份与配置）">
             {units.length === 0 ? (
               <p className="rounded-input bg-rail px-2.5 py-2 text-caption text-loss">
-                还没有任何 Agent —— 先在侧栏新建一个，再回来建待办
+                还没有任何 bot —— 先在侧栏新建一个，再回来建待办
               </p>
             ) : (
               <select

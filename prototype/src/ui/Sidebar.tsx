@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState, type ReactElement } from "react";
 import {
   AlarmClock,
-  Bot,
   ChevronLeft,
   FolderGit2,
   FolderOpen,
@@ -28,13 +27,16 @@ import {
   asUnitId,
   type UnitId,
   type WorkUnit,
+  isProjectUnit,
   isResidentUnit,
   isSyntheticUnit,
+  orderUnitsLikeSidebar,
 } from "../core/units.ts";
 
 export { isResidentUnit, isSyntheticUnit };
 import { AddBotDialog, type AddBotDraft } from "./AddBotDialog.tsx";
 import { ImportBotDialog } from "./ImportBotDialog.tsx";
+import { UNIT_VIEWS, UnitViewSegment } from "./UnitViewSegment.tsx";
 import { ChannelMark, channelIdentityLabel } from "./ChannelMark.tsx";
 import { HistoryDialog, resumeArgsFor } from "./HistoryDialog.tsx";
 import { executorIconSrc } from "./executorIcon.ts";
@@ -73,20 +75,40 @@ import { cn } from "./cn.ts";
  *    但没人一天点八次自动化 —— 重要性决定它**不能消失**，不决定它要**占多大版面**。
  */
 
-/** ZCode 是 4 种：grouped / workspace / timeline / archived */
+/**
+ * `[bot|项目]` 双视图分段器（docs/04「切换器收在分区行」；ADR 0011 复活为过滤器式）。
+ * 组件与视图表移至 UnitViewSegment.tsx（单元切换器弹层共用）。同一批 WorkUnit、
+ * 两种消费视图：项目 tab 只显示手动标注 `kind === "project"` 的单元，bot tab 显示
+ * 其余（kind 缺省按 bot 算）；常驻节归 bot tab。只过滤列表，不碰 activeUnitId。
+ */
 
-const VIEWS: readonly { id: ViewMode; label: string; icon: typeof Bot }[] = [
-  { id: "bot", label: "bot", icon: Bot },
-  { id: "project", label: "项目", icon: FolderGit2 },
-];
+/** 分段器选择持久化键 —— 命名风格同 `agent-workbench:active-unit` */
+const UNIT_VIEW_KEY = "agent-workbench:unit-view";
+
+/** localStorage 不可用（隐私模式等）时降级为会话内记忆，默认 bot 视图（数字 bot 是默认态） */
+function readPersistedUnitView(): ViewMode {
+  try {
+    return localStorage.getItem(UNIT_VIEW_KEY) === "project" ? "project" : "bot";
+  } catch {
+    return "bot";
+  }
+}
 
 
 export function Sidebar() {
   const units = useWorkbench((s) => s.units);
-  const view = useWorkbench((s) => s.view);
   const activeUnitId = useWorkbench((s) => s.activeUnitId);
-  const setView = useWorkbench((s) => s.setView);
   const selectUnit = useWorkbench((s) => s.selectUnit);
+  /** [bot|项目] 视图过滤（过滤器式，见 UNIT_VIEWS 注释）：本地 state 即可，无需 store 层改动 */
+  const [unitView, setUnitView] = useState<ViewMode>(readPersistedUnitView);
+  const switchUnitView = (v: ViewMode): void => {
+    setUnitView(v);
+    try {
+      localStorage.setItem(UNIT_VIEW_KEY, v);
+    } catch {
+      // 读不到的存储环境写也会抛 —— 过滤本身不依赖持久化成功
+    }
+  };
   /** 历史子列表展开集合：每个 bot 独立展开，再次点击才收起（不再互斥自动关上） */
   const [openHistoryUnits, setOpenHistoryUnits] = useState<Set<string>>(() => new Set());
   const toggleHistoryUnit = (id: string) => {
@@ -100,7 +122,9 @@ export function Sidebar() {
   const addUnit = useWorkbench((s) => s.addUnit);
   const mainView = useShell((s) => s.mainView);
 
-  const [unitOrder, setUnitOrder] = useState<string[] | null>(null);
+  /** 普通节拖拽排序：store 持有（单元切换器弹层共享同一份顺序，两侧同序） */
+  const unitOrder = useWorkbench((s) => s.unitOrder);
+  const setUnitOrder = useWorkbench((s) => s.setUnitOrder);
   const [dragUnit, setDragUnit] = useState<string | null>(null);
   /** 拖拽悬停的分区（常驻/普通）——drop zone 高亮用 */
   const [zoneHover, setZoneHover] = useState<"resident" | "normal" | null>(null);
@@ -118,6 +142,17 @@ export function Sidebar() {
 
   const allUnits = units;
 
+  // 视图过滤（ADR 0011）：项目 tab 只看 kind === "project"，bot tab 看其余（含 kind 缺省）
+  const visibleUnits = useMemo(
+    () =>
+      unitView === "project"
+        ? allUnits.filter((u) => isProjectUnit(u))
+        : allUnits.filter((u) => !isProjectUnit(u)),
+    [allUnits, unitView],
+  );
+  const activeView = UNIT_VIEWS.find((v) => v.id === unitView) ?? UNIT_VIEWS[0]!;
+  const ActiveViewIcon = activeView.icon;
+
   // 侧栏分支标记的自愈轮询：冷启动时 UnitRow 挂载可能早于 daemon WS 就绪，
   // 首次拉取静默失败 —— 每 60s 补一轮（TTL 内的单元不会重复起 git 进程）
   useEffect(() => {
@@ -127,25 +162,12 @@ export function Sidebar() {
     return () => clearInterval(timer);
   }, []);
 
-  // 常驻 / 普通两节：常驻节顺序跟定义走（总管最前）；普通节保持既有
-  // steward 置顶习惯（历史 unitOrder 可能引用它）+ 用户拖拽排序
-  const { residentUnits, normalUnits } = useMemo(() => {
-    const residents: WorkUnit[] = [];
-    const normals: WorkUnit[] = [];
-    for (const u of allUnits) (isResidentUnit(u) ? residents : normals).push(u);
-    const stewardFirst = (list: WorkUnit[]): WorkUnit[] =>
-      [...list].sort((a, b) => {
-        const as = a.id === "steward" || (a.tags ?? []).includes("steward");
-        const bs = b.id === "steward" || (b.tags ?? []).includes("steward");
-        return as === bs ? 0 : as ? -1 : 1;
-      });
-    const orderedNormals = unitOrder
-      ? stewardFirst(normals).sort(
-          (a, b) => (unitOrder.indexOf(a.id) + 1 || 99) - (unitOrder.indexOf(b.id) + 1 || 99),
-        )
-      : stewardFirst(normals);
-    return { residentUnits: stewardFirst(residents), normalUnits: orderedNormals };
-  }, [allUnits, unitOrder]);
+  // 常驻 / 普通两节（排序逻辑在 core/units.ts 的 orderUnitsLikeSidebar，
+  // 单元切换器弹层用同一函数）：常驻节天然归 bot tab（常驻的是服务型 bot）
+  const { residentUnits, normalUnits } = useMemo(
+    () => orderUnitsLikeSidebar(visibleUnits, unitOrder),
+    [visibleUnits, unitOrder],
+  );
 
   /** 拖进常驻区：普通 bot 升为常驻（resident 写穿 bot.json，冲突由 updateUnit 回滚并抛） */
   const makeResident = (u: WorkUnit): void => {
@@ -246,18 +268,22 @@ export function Sidebar() {
         </div>
       )}
 
-      {/* Agent 智能体列表标题行 —— h-9 与右侧终端工具栏同高，横向对齐 */}
-      <div className="flex h-9 shrink-0 items-center justify-between px-2.5">
+      {/* 单元列表标题行 —— h-9 与右侧终端工具栏同高，横向对齐。
+          [bot|项目] 迷你分段收在这行（docs/04）：图标、标题与计数跟随视图 */}
+      <div className="flex h-9 shrink-0 items-center justify-between gap-1 px-2.5">
         <div className="flex items-center gap-1 min-w-0">
-          <Bot size={13} className="text-teal shrink-0" />
-          <span className="text-caption font-medium text-ink truncate">Agent</span>
-          <span className="tnum text-[11px] text-ash shrink-0">({allUnits.length})</span>
+          <ActiveViewIcon size={13} className="text-teal shrink-0" />
+          <span className="text-caption font-medium text-ink truncate">{activeView.label}</span>
+          <span className="tnum text-[11px] text-ash shrink-0">({visibleUnits.length})</span>
+          <div className="ml-1">
+            <UnitViewSegment value={unitView} onChange={switchUnitView} />
+          </div>
         </div>
         <div className="flex items-center gap-1 shrink-0">
           <button
             onClick={() => useShell.getState().openImportBot()}
             aria-label="认领已有目录"
-            title="认领已有目录为 Agent（文件夹留在原地，自动探测 AGENTS.md）"
+            title="认领已有目录为 bot（文件夹留在原地，自动探测 AGENTS.md）"
             className="flex items-center gap-0.5 rounded-btn px-1.5 py-0.5 text-caption text-graphite hover:bg-line-soft hover:text-ink"
           >
             <FolderOpen size={11} />
@@ -265,8 +291,8 @@ export function Sidebar() {
           </button>
           <button
             onClick={() => useShell.getState().openAddBot()}
-            aria-label="新建 Agent"
-            title="新建 Agent"
+            aria-label="新建 bot"
+            title="新建 bot"
             className="flex items-center gap-0.5 rounded-btn bg-ink px-1.5 py-0.5 text-caption font-medium text-canvas hover:opacity-90 active:scale-95 transition"
           >
             <Plus size={11} />
@@ -283,15 +309,26 @@ export function Sidebar() {
             className="flex w-full flex-col items-center gap-1.5 rounded-input border border-dashed border-line px-3 py-6 text-center hover:bg-line-soft"
           >
             <FolderPlus size={18} className="text-ash" />
-            <span className="text-body-sm font-medium text-graphite">还没有 Agent</span>
-            <span className="text-caption text-ash">新建第一个 Agent，从 AGENTS.md 岗位说明书开始</span>
+            <span className="text-body-sm font-medium text-graphite">还没有 bot</span>
+            <span className="text-caption text-ash">新建第一个 bot，从 AGENTS.md 岗位说明书开始</span>
           </button>
         )}
 
-        {/* 常驻节：总管/心跳/用户拖入的后台服务型 bot。整节是「升为常驻」的 drop zone */}
+        {/* 项目 tab 空态：kind 是手动标注的弱标签（ADR 0011），标注入口在单元设置的「单元形态」 */}
+        {unitView === "project" && visibleUnits.length === 0 && (
+          <div className="rounded-input border border-dashed border-line px-3 py-6 text-center">
+            <FolderGit2 size={18} className="mx-auto mb-1.5 text-ash" />
+            <p className="text-body-sm font-medium text-graphite">还没有项目</p>
+            <p className="mt-1 text-caption leading-relaxed text-ash">
+              打开单元设置，把「单元形态」标为项目，它就会出现在这里
+            </p>
+          </div>
+        )}
+
+        {/* 常驻节：总管/心跳/用户拖入的后台服务型 bot。整节是「升为常驻」的 drop zone（归 bot tab） */}
         {residentUnits.length > 0 && (
           <section
-            aria-label="常驻 Agent"
+            aria-label="常驻 bot"
             onDragOver={(e) => {
               e.preventDefault();
               if (dragUnit !== null) setZoneHover("resident");
@@ -364,7 +401,7 @@ export function Sidebar() {
 
         {/* 普通节：既是常驻 bot 的「取消常驻」drop zone，区内行间拖拽排序照旧 */}
         <section
-          aria-label="Agent 列表"
+          aria-label={`${activeView.label} 列表`}
           onDragOver={(e) => {
             e.preventDefault();
             const dragged = allUnits.find((x) => x.id === dragUnit);
@@ -460,7 +497,8 @@ export function Sidebar() {
           onSubmit={async (draft, opts) => {
             const sh = useShell.getState();
             if (editingUnit) {
-              // 编辑：保留 id / kind / assets / tags，只换用户能改的那些字段。
+              // 编辑：保留 id / assets / tags，只换用户能改的那些字段（kind 来自
+              // 对话框的「单元形态」切换，ADR 0011 弱标签）。
               // updateUnit 会 await 并在盘上被改过时抛 conflict —— **不吞掉**，
               // 让对话框弹「覆盖 / 重新加载 / 取消」，静默覆盖就是数据丢失。
               await updateUnit(
@@ -468,6 +506,7 @@ export function Sidebar() {
                   ...editingUnit,
                   name: draft.name,
                   rootPath: draft.rootPath,
+                  kind: draft.kind,
                   resident: draft.resident,
                   identity: {
                     ...editingUnit.identity,
@@ -525,7 +564,7 @@ export function Sidebar() {
                 avatar: draft.avatar,
                 tags: ["新建"],
                 lastActiveAt: Date.now(),
-              });
+              }, { createRoot: true });
               sh.closeAddBot();
             }
           }}
@@ -698,7 +737,8 @@ function UnitRow({
     }));
   // 「哪个 bot 接的是哪个飞书机器人」——头像 + 应用名。这是这枚标记存在的全部理由
   const identities = useWorkbench((s) => s.channelIdentity);
-  const isBot = unit.kind === "bot";
+  // 与分段器同一判据：kind 缺省按 bot 算（bot.json 手可编辑，缺字段不该把 bot 画成项目）
+  const isBot = !isProjectUnit(unit);
 
   // 副标题：身份角色，缺省回落到路径
   const subtitle = unit.identity?.role ?? "";
@@ -1043,7 +1083,6 @@ function HistoryListRow({
 
 
 /* ------------------------------------------------------------- 小组件 */
-
 
 /**
  * 侧栏动作图标钮 —— 搜索 / 自动化 / 出图 共用。

@@ -442,7 +442,7 @@ function EmptyPanel({ filter, onCreate, config }: { filter: Filter; onCreate: ()
       <ListTodo size={16} className="mb-2 text-ash" />
       <p className="text-body-sm font-medium text-ink">{filter === "active" ? "还没有待办" : `没有「${FILTERS.find((f) => f.id === filter)?.label}」的待办`}</p>
       <p className="mt-1 max-w-[460px] text-body-sm leading-relaxed text-graphite">
-        写下目标，空闲心跳会在合适的时机提议启动 —— 也可以在每个工作空间的 GTD.md 里追加一行，
+        写下目标，空闲心跳会在合适的时机提议启动 —— 也可以在每个单元的 GTD.md 里追加一行，
         每日统合自动收进清单{config?.consolidate.enabled ? "" : "（统合当前关闭）"}。
       </p>
       <button
@@ -644,7 +644,7 @@ function BacklogSettings({ onClose }: { onClose: () => void }): ReactElement {
                   onChange={(e) => void save({ consolidate: { ...config.consolidate, enabled: e.target.checked } })}
                   className="accent-teal"
                 />
-                每日统合各工作空间 GTD.md
+                每日统合各单元 GTD.md
               </label>
               <div className="flex items-center gap-2 text-caption text-graphite">
                 <input

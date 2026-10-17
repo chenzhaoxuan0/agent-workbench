@@ -164,7 +164,7 @@ export function SourceControlPage() {
   };
 
   if (unit === undefined) {
-    return <EmptyState text="没有激活的工作单元 —— 先在侧栏选择一个 Agent 或项目" />;
+    return <EmptyState text="没有激活的工作单元 —— 先在侧栏选择一个 bot 或项目" />;
   }
 
   // openRepo 生效前 rootPath 可能还是 null；页面级后续统一用收窄后的 root

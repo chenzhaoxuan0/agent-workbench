@@ -122,7 +122,7 @@ export function MemoryScopePicker({ compact }: { compact?: boolean } = {}) {
                   )}
                 </div>
                 <p className="text-[11px] text-graphite leading-normal mt-0.5">
-                  沉淀在项目根目录，由 Agent 遵照上限直接维护，保证项目级关键事实不遗忘。
+                  沉淀在项目根目录，由 bot 遵照上限直接维护，保证项目级关键事实不遗忘。
                 </p>
               </div>
             </div>

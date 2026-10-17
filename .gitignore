@@ -38,6 +38,8 @@ backend/scripts/e2e-automation-ui-last.png
 backend/scripts/.tmp/
 
 # 本机运行态 —— bot.json 可能含渠道明文密钥（backend/src/bots/registry.ts 的
-# ensureGitignore 同一口径），.zcode/ 是 CLI 会话状态，都只在本机有意义
+# ensureGitignore 同一口径），.zcode/ 是 CLI 会话状态，都只在本机有意义。
+# GTD.md 是收件箱运行时产物（本仓库自身也被认领为 bot 时落下的）
 .agent-workbench/
 .zcode/
+GTD.md

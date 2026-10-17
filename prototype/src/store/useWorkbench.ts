@@ -85,7 +85,11 @@ export interface TimelineItem {
 interface WorkbenchState {
   units: readonly WorkUnit[];
   activeUnitId: UnitId;
-  view: ViewMode;
+  /**
+   * 侧栏普通节的拖拽排序（会话内记忆，不持久化）。放 store 是为了让单元
+   * 切换器弹层读到同一份顺序——两侧同序才好选（orderUnitsLikeSidebar 消费）。
+   */
+  unitOrder: readonly string[] | null;
   runtimes: readonly RuntimeEntry[];
   activeRuntimeId: string;
   /**
@@ -159,9 +163,9 @@ interface WorkbenchState {
    */
   refreshChannelIdentity: (profiles?: readonly string[]) => Promise<void>;
 
-  setView: (v: ViewMode) => void;
+  setUnitOrder: (order: readonly string[]) => void;
   selectUnit: (id: UnitId) => void;
-  addUnit: (u: WorkUnit) => Promise<void>;
+  addUnit: (u: WorkUnit, opts?: { createRoot?: boolean }) => Promise<void>;
   /**
    * 改已有单元（bot 设置页保存）。按 id 替换，不切 activeUnitId，同样写穿 bot.json
    * 与 AGENTS.md。guards 传进入设置页时看到的 revision / AGENTS.md hash 作乐观锁基线。
@@ -349,7 +353,7 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
   // 空态是设计的一部分（ZCode 原则：功能不因空而消失），不再用样例数据撑门面
   units: [],
   activeUnitId: getInitialActiveUnit(),
-  view: "bot",
+  unitOrder: null,
   runtimes: [],
   activeRuntimeId: "zcode",
   // 注册表订阅到位后由下方 subscribe 补齐各执行器的默认模型
@@ -533,10 +537,8 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
     }
   },
 
-  setView: (view) => {
-    // 切视图时自动落到该身份的第一个单元
-    const first = get().units.find((u) => u.kind === view);
-    set({ view, activeUnitId: first?.id ?? get().activeUnitId });
+  setUnitOrder: (unitOrder) => {
+    set({ unitOrder });
   },
 
   selectUnit: (activeUnitId) => {
@@ -571,7 +573,7 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
     }
   },
 
-  addUnit: async (u) => {
+  addUnit: async (u, opts) => {
     set((s) => ({
       units: [...s.units, u],
       activeUnitId: u.id,
@@ -580,8 +582,11 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
     // WP-5 写穿：落盘 <rootPath>/.agent-workbench/bot.json 与 <rootPath>/AGENTS.md。
     // 这里**不吞异常**——目录不存在（root_not_found）时侧栏会多一个刷新即逝的幽灵 bot，
     // 调用方（新建对话框）需要把这句话摆到用户面前。daemon 没起时也照抛。
+    // createRoot（自动安置，ADR 0011）：新建流的唯一必填交互是文件夹，预填的默认位置
+    // 本来就不存在，由 daemon 落笔时幂等建出。只有新建显式开启——认领（ImportBotDialog）
+    // 复用本方法时不开：认领的对象必须是已存在的文件夹，路径失效应当报错而非静默重建。
     const { putBotDefinition, defaultDaemonEndpoint } = await import("../adapters/daemon/client.ts");
-    const r = await putBotDefinition(u, defaultDaemonEndpoint());
+    const r = await putBotDefinition(u, defaultDaemonEndpoint(), {}, { createRoot: opts?.createRoot === true });
     applyPutResult(set, get, u.id, r);
     // 新建时就配了渠道的话，当场把「这是哪个飞书机器人」认出来——
     // 用户在对话框里点完「接上飞书」就该看到它长什么样，而不是关了窗口再去找

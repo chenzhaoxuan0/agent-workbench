@@ -696,7 +696,7 @@ export function RemoteControlDialog({ onClose }: { onClose: () => void }) {
                   <span>首响仲裁与多端协同机制</span>
                 </div>
                 <p className="mt-1 text-[11px] text-ash">
-                  当 Agent 遇到危险操作触发确认门时，局域网手机 Web、桌面端与所有已配置的 IM 渠道将同步收到审批请求。任何一端点击批准或拒绝后，系统立即实行首响仲裁，其余所有设备与 Bot 消息中的按钮将毫秒级自动置灰，绝无重复执行风险。
+                  当 bot 遇到危险操作触发确认门时，局域网手机 Web、桌面端与所有已配置的 IM 渠道将同步收到审批请求。任何一端点击批准或拒绝后，系统立即实行首响仲裁，其余所有设备与 Bot 消息中的按钮将毫秒级自动置灰，绝无重复执行风险。
                 </p>
               </div>
             </div>

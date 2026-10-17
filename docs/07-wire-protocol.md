@@ -108,6 +108,7 @@
 | `session.events.since` | **已实现** | params `{sessionId, afterSeq}`；result 为 `{seq, event}[]`——断线补拉（WP-2）；环内热路径直出，游标滑出环外自动回落落盘账本 |
 | `session.gc` / `session.forget` | **已实现** | 孤儿治理面（WP-10）：`gc` params `{maxAgeDays?=14}` 列非 live 落盘会话；`forget` params `{sessionId}` 删行+消息（轨迹保留） |
 | `bot.put` / `bot.list` | **已实现** | bot 定义落盘面（WP-5）：`<rootPath>/.agent-workbench/bot.json`；put 校验 id/rootPath/name 并自动把父目录登记为扫描根 |
+| `bot.defaultRoot` | **已实现** | params `null`；result `{defaultRoot, suggestedPath, browseRoots[]}`——新建流的自动安置默认位（ADR 0011）。副作用：幂等创建 `<homeDir>/bots` 并登记为扫描根；`browseRoots` 为目录浏览器起始根候选（homeDir + 各盘符根）。另 `bot.put` 扩可选 `createRoot`：true 时 rootPath 缺失幂等建出（自动安置），缺省仍报 `root_not_found`（编辑/认领路径不变） |
 | `bot.roots.add` | **已实现** | 登记扫描根目录 |
 | `bot.ask` | **已实现** | params `{botId, text, waitMs?}`；给 bot 发文本等轮落定，result `{sessionId, reply}`（WP-9：webhook/MCP 共用内核） |
 | `git.status` | **已实现** | params `{rootPath}`；result `{isRepo, branch?, detached, headShort, upstream?, ahead, behind, dirty, dirtyFileCount}`（porcelain v2 解析）。非 git 仓库返回 `{isRepo:false}` 而非报错。`dirtyFileCount` = 改动条目数（ADR 0010 加，旧 daemon 缺省由前端 client 补齐）。副作用：isRepo 的仓库会被 daemon 挂上文件监听（自动刷新，见 `git.changed` 帧说明与 docs/16） |

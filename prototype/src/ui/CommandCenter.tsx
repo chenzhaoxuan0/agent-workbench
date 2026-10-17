@@ -16,7 +16,7 @@ import { useGit } from "../store/useGit.ts";
 import { fetchUnitHistory, type UnitHistoryEntry } from "../adapters/daemon/client.ts";
 import { useHistoryPrefs } from "../store/useHistoryPrefs.ts";
 import { formatRelative } from "../core/automation.ts";
-import { asUnitId } from "../core/units.ts";
+import { asUnitId, isProjectUnit } from "../core/units.ts";
 import { fuzzyMatchItem } from "./fuzzySearch.ts";
 import { cn } from "./cn.ts";
 
@@ -37,7 +37,7 @@ type Scope = "all" | "commands" | "units" | "automations" | "sessions";
 const SCOPES: readonly { id: Scope; label: string; icon: typeof Rocket }[] = [
   { id: "all", label: "全部", icon: Layers },
   { id: "commands", label: "命令", icon: Rocket },
-  { id: "units", label: "Agent", icon: Bot },
+  { id: "units", label: "单元", icon: Bot },
   { id: "automations", label: "自动化", icon: AlarmClock },
   { id: "sessions", label: "会话", icon: History },
 ];
@@ -95,12 +95,14 @@ export function CommandCenter() {
       run: c.run,
     }));
 
+    // 单元分组按 kind 分 bot / 项目两组（ADR 0011 双视图对齐：与侧栏分段器同一判据）
     for (const u of units) {
+      const isProject = isProjectUnit(u);
       out.push({
         id: `unit-${u.id}`,
         scope: "units",
-        group: "Agent 智能体",
-        icon: Bot,
+        group: isProject ? "项目" : "bot",
+        icon: isProject ? FolderGit2 : Bot,
         label: u.name,
         hint: u.identity?.role ? `${u.identity.role} · ${u.rootPath}` : u.rootPath,
         run: () => useWorkbench.getState().selectUnit(u.id),
@@ -119,7 +121,7 @@ export function CommandCenter() {
     }
     for (const h of historyEntries) {
       if (hideFailedInDialog && h.status === "failed") continue;
-      const uName = h.unitName || units.find((u) => u.id === h.unitId)?.name || "Agent";
+      const uName = h.unitName || units.find((u) => u.id === h.unitId)?.name || "未知单元";
       const uId = h.unitId || "";
       const statusLabel =
         h.status === "done"
@@ -253,7 +255,7 @@ export function CommandCenter() {
               ref={inputRef}
               value={q}
               onChange={(e) => setQ(e.target.value)}
-              placeholder="搜索命令、会话、工作单元、自动化…"
+              placeholder="搜索命令、单元、会话、自动化…"
               aria-label="搜索"
               className="min-w-0 flex-1 bg-transparent text-body text-ink outline-none placeholder:text-graphite"
             />
@@ -368,7 +370,7 @@ function useCommands(): readonly Command[] {
       {
         id: "view-chat",
         label: "切到主对话",
-        hint: "Personal Agent 对话流",
+        hint: "回到 bot / 项目的对话流",
         group: "视图",
         run: () => shell().setMainView("chat"),
       },
@@ -443,16 +445,16 @@ function useCommands(): readonly Command[] {
       },
       {
         id: "new-agent",
-        label: "新建 Agent",
+        label: "新建 bot",
         hint: "从 AGENTS.md 岗位说明书开始",
-        group: "Agent",
+        group: "bot",
         run: () => shell().openAddBot(),
       },
       {
         id: "import-agent",
-        label: "认领已有目录为 Agent",
-        hint: "本地文件夹挂载，侦测 AGENTS.md",
-        group: "Agent",
+        label: "认领已有目录为 bot",
+        hint: "文件夹留在原地，只登记不搬家",
+        group: "bot",
         run: () => shell().openImportBot(),
       },
     );
