@@ -10,7 +10,7 @@ import { cn } from "../cn.ts";
  * （与 AddBotDialog / ImportBotDialog 的最新约定一致）。
  */
 
-export function DialogShell(props: { title: string; children: ReactNode; onClose: () => void }) {
+export function DialogShell(props: { title: string; children: ReactNode; onClose: () => void; widthClass?: string }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (e.key === "Escape") props.onClose();
@@ -28,7 +28,10 @@ export function DialogShell(props: { title: string; children: ReactNode; onClose
         aria-modal="true"
         aria-label={props.title}
         onClick={(e) => e.stopPropagation()}
-        className="flex max-h-[92vh] w-[520px] max-w-[92vw] flex-col overflow-hidden rounded-card border border-line bg-card shadow-2xl"
+        className={cn(
+          "flex max-h-[92vh] max-w-[92vw] flex-col overflow-hidden rounded-card border border-line bg-card shadow-2xl",
+          props.widthClass ?? "w-[520px]",
+        )}
       >
         <div className="flex h-10 shrink-0 items-center justify-between gap-2 border-b border-line px-4">
           <span className="min-w-0 flex-1 truncate text-body-sm font-medium text-ink" title={props.title}>

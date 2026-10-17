@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, ChevronDown, GitBranch, Loader2, Plus } from "lucide-react";
+import { Check, ChevronDown, GitBranch, GitGraph, Loader2, Plus } from "lucide-react";
 import { validateBranchName, type GitBranchInfo } from "../core/git.ts";
 import { checkoutGitBranch, createGitBranch, fetchGitBranches } from "../adapters/daemon/client.ts";
 import { useGit } from "../store/useGit.ts";
 import { cn } from "./cn.ts";
+import { GitGraphDialog } from "./gitGraph/GitGraphDialog.tsx";
 
 /**
  * 对话输入框顶栏的分支选择器（ZCode GitBranchSwitcher 同款交互，分支面循
@@ -34,6 +35,7 @@ export function BranchPicker(props: { rootPath: string | undefined; showFooterAc
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
+  const [graphOpen, setGraphOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
 
   const locals = branches === null ? [] : branches.filter((b) => b.kind === "local");
@@ -198,19 +200,37 @@ export function BranchPicker(props: { rootPath: string | undefined; showFooterAc
                 </div>
               </div>
               ) : (
-                <button
-                  type="button"
-                  onClick={() => setCreating(true)}
-                  className="flex w-full items-center gap-2 rounded-btn px-2 py-1.5 text-body-sm text-ink hover:bg-line-soft"
-                >
-                  <Plus size={12} className="text-graphite" />
-                  <span>新建分支</span>
-                </button>
+                <div className="flex flex-col">
+                  <button
+                    type="button"
+                    onClick={() => setCreating(true)}
+                    className="flex w-full items-center gap-2 rounded-btn px-2 py-1.5 text-body-sm text-ink hover:bg-line-soft"
+                  >
+                    <Plus size={12} className="text-graphite" />
+                    <span>新建分支</span>
+                  </button>
+                  {/* 提交图（docs/16）：ZCode 同款，分支弹层底栏是图的唯一入口 */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setGraphOpen(true);
+                      setOpen(false);
+                    }}
+                    className="flex w-full items-center gap-2 rounded-btn px-2 py-1.5 text-body-sm text-ink hover:bg-line-soft"
+                  >
+                    <GitGraph size={12} className="text-graphite" />
+                    <span>查看提交图</span>
+                  </button>
+                </div>
               )}
             </div>
           )}
           {error !== null && <div className="break-all border-t border-line-soft px-2.5 py-2 text-caption text-loss">{error}</div>}
         </div>
+      )}
+
+      {graphOpen && rootPath !== undefined && (
+        <GitGraphDialog rootPath={rootPath} branchName={branchName} onClose={() => setGraphOpen(false)} />
       )}
     </div>
   );

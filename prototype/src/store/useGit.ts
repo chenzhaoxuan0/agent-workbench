@@ -56,8 +56,9 @@ interface GitState {
   /** 换仓库（切单元）或首次进入面板时重置并拉全量 */
   openRepo: (rootPath: string) => void;
   refresh: () => Promise<void>;
-  /** 侧栏标记：轻量只拉 status；面板 refresh 时顺带覆盖同一缓存 */
-  refreshBranchBadge: (rootPath: string) => Promise<void>;
+  /** 侧栏标记：轻量只拉 status；面板 refresh 时顺带覆盖同一缓存。
+   *  force 绕过 TTL —— daemon 的 git.changed 事件本身就是「有变化」的凭证 */
+  refreshBranchBadge: (rootPath: string, opts?: { force?: boolean }) => Promise<void>;
   /** 分支操作（切换/新建）成功后的即时收敛：绕过徽章 TTL 直接写结果，
    *  芯片与侧栏不用等下一轮节流拉取；后续 refreshBranchBadge 自会复核 */
   markBranch: (rootPath: string, branch: string | null) => void;
@@ -155,9 +156,9 @@ export const useGit = create<GitState>((set, get) => ({
     }
   },
 
-  refreshBranchBadge: async (rootPath) => {
+  refreshBranchBadge: async (rootPath, opts) => {
     const last = badgeFetchedAt.get(rootPath) ?? 0;
-    if (Date.now() - last < BADGE_TTL_MS) return;
+    if (opts?.force !== true && Date.now() - last < BADGE_TTL_MS) return;
     try {
       const status = await fetchGitStatus(rootPath);
       // 只在成功后占坑：冷启动时 UnitRow 早于 daemon WS 就绪挂载，第一次调用
