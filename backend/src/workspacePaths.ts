@@ -15,6 +15,7 @@
  */
 
 import { readdir, stat } from "node:fs/promises";
+import type { Dirent } from "node:fs";
 import path from "node:path";
 import type { WorkspacePathKind, WorkspacePathSuggestion, WorkspacePathsResult } from "./contract.ts";
 
@@ -45,47 +46,59 @@ export async function listWorkspacePaths(
   const directory = path.resolve(root, parsed.directoryToken);
   if (!isPathInside(root, directory)) return EMPTY_RESULT;
 
-  let names: string[];
+  let entries: Dirent[];
   try {
-    names = (await readdir(directory, { withFileTypes: true })).map((e) => e.name);
+    entries = await readdir(directory, { withFileTypes: true });
   } catch {
     return EMPTY_RESULT;
   }
+  entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 
   const effectiveLimit = normalizeLimit(limit);
   const candidates: WorkspacePathSuggestion[] = [];
 
-  for (const name of names.sort()) {
-    const absolute = path.join(directory, name);
-    let kind: WorkspacePathKind;
-    let size: number | undefined;
-    try {
-      const st = await stat(absolute);
-      kind = st.isDirectory() ? "directory" : "file";
-      if (kind === "file") size = st.size;
-    } catch {
-      continue; // 竞态：列出后被删/无权限，跳过该条目
+  // 先全量收集再排序：目录优先 / 前缀命中的名次先定，再取前 N —— 先截断会把
+  // 字典序靠后的目录（如 zzdir/）整个挤掉。kind 用 dirent 判（大目录逐条 stat
+  // 会把建议拖到秒级），只有符号链接才跟一次 stat 看指向；size 只给**入选**的文件补
+  for (const entry of entries) {
+    const name = entry.name;
+    let kind: WorkspacePathKind = entry.isDirectory() ? "directory" : "file";
+    if (entry.isSymbolicLink()) {
+      try {
+        kind = (await stat(path.join(directory, name))).isDirectory() ? "directory" : "file";
+      } catch {
+        continue; // 断链/无权限的符号链接
+      }
     }
     if (kind === "directory" && EXCLUDED_DIRECTORY_NAMES.has(name)) continue;
     if (!parsed.query.startsWith(".") && name.startsWith(".")) continue;
     if (!matchesPathQuery(name, parsed.query)) continue;
 
-    const relativePath = toWorkspaceRelativePath(root, absolute);
+    const relativePath = toWorkspaceRelativePath(root, path.join(directory, name));
     if (!relativePath) continue;
     candidates.push({
       kind,
       path: kind === "directory" ? `${relativePath}/` : relativePath,
       name,
-      ...(size !== undefined ? { size } : {}),
     });
-    if (candidates.length >= effectiveLimit) break;
   }
 
   sortSuggestions(candidates, parsed.query);
-  return {
-    items: candidates,
-    truncated: candidates.length >= effectiveLimit,
-  };
+  const truncated = candidates.length > effectiveLimit;
+  const items: WorkspacePathSuggestion[] = [];
+  for (const item of candidates.slice(0, effectiveLimit)) {
+    if (item.kind !== "file") {
+      items.push(item);
+      continue;
+    }
+    try {
+      const st = await stat(path.join(directory, item.name));
+      items.push({ ...item, size: st.size });
+    } catch {
+      items.push(item); // 竞态：列出后被删/无权限 —— 没有大小就不给
+    }
+  }
+  return { items, truncated };
 }
 
 const EMPTY_RESULT: WorkspacePathsResult = { items: [], truncated: false };
@@ -141,13 +154,18 @@ function sortSuggestions(items: WorkspacePathSuggestion[], query: string): void 
 
 function toWorkspaceRelativePath(root: string, absolute: string): string | undefined {
   const relativePath = path.relative(root, absolute);
-  if (!relativePath || relativePath.startsWith("..") || path.isAbsolute(relativePath)) return undefined;
+  if (!relativePath || escapesRoot(relativePath) || path.isAbsolute(relativePath)) return undefined;
   return relativePath.split(path.sep).join("/");
 }
 
 function isPathInside(root: string, target: string): boolean {
   const relativePath = path.relative(root, target);
-  return relativePath === "" || (!relativePath.startsWith("..") && !path.isAbsolute(relativePath));
+  return relativePath === "" || (!escapesRoot(relativePath) && !path.isAbsolute(relativePath));
+}
+
+/** `..` 段才算越界 —— 前缀判断会把字面名 `..foo` 的文件一并误杀 */
+function escapesRoot(relativePath: string): boolean {
+  return relativePath === ".." || relativePath.startsWith(`..${path.sep}`);
 }
 
 function normalizeLimit(limit: number | undefined): number {

@@ -533,6 +533,8 @@ export async function createWorktree(
 }
 
 export async function removeWorktree(root: string, target: string, force = false): Promise<void> {
+  // target 直接进 argv：前导 "-" 会变成 worktree remove 的选项，挡掉
+  assertNotOptionArg(target, "工作树路径");
   await run(root, ["worktree", "remove", ...(force ? ["--force"] : []), target]);
   await run(root, ["worktree", "prune"]);
 }
@@ -652,8 +654,8 @@ function numOrZero(s: string): number {
  * 解析 `git diff --numstat -z`。
  *
  * 普通记录是**一个** token：`<added>\t<removed>\t<path>`；重命名/复制是**三个**
- * token：`<added>\t<removed>` \0 `<原路径>` \0 `<新路径>`（实测确认 header 没有
- * 尾随 tab，所以「token 内只有一个 tab」就是重命名的判据）。
+ * token：`<added>\t<removed>\t` \0 `<原路径>` \0 `<新路径>`（header 以尾随 tab
+ * 结尾，所以「第二个 tab 之后为空」就是重命名的判据）。
  * 行数记在**新路径**名下 —— 改动审阅展示的是文件当前的样子。
  */
 function parseNumstatZ(out: string): Map<string, LineCounts> {
@@ -665,14 +667,16 @@ function parseNumstatZ(out: string): Map<string, LineCounts> {
     const t1 = tok.indexOf("\t");
     if (t1 < 0) continue;
     const t2 = tok.indexOf("\t", t1 + 1);
-    const counts: LineCounts = { added: numOrZero(tok.slice(0, t1)), removed: numOrZero(tok.slice(t1 + 1, t2 < 0 ? undefined : t2)) };
-    if (t2 < 0) {
+    if (t2 < 0) continue; // 只有一个 tab 的残缺 token：没有路径可言
+    const counts: LineCounts = { added: numOrZero(tok.slice(0, t1)), removed: numOrZero(tok.slice(t1 + 1, t2)) };
+    const tail = tok.slice(t2 + 1);
+    if (tail === "") {
       const target = tokens[i + 2]; // 原路径在 i+1，新路径在 i+2
       if (target !== undefined && target.length > 0) map.set(target, counts);
       i += 2;
       continue;
     }
-    map.set(tok.slice(t2 + 1), counts);
+    map.set(tail, counts);
   }
   return map;
 }
@@ -709,8 +713,9 @@ interface StatusEntry {
 /**
  * 解析 `git status --porcelain=v2 -z` 的改动条目。
  *
- * 字段数按类型固定：`1` 前 8 个字段、`2`/`u` 前 9 个、忽略项前 1 个 —— 路径从第 n 个
- * 空格之后取，所以含空格的路径不会像 lastIndexOf 那样被截断。
+ * 字段数按类型固定：`1` 前 8 个字段、`2` 前 9 个、`u`（unmerged）前 10 个、
+ * 忽略项前 1 个 —— 路径从第 n 个空格之后取，所以含空格的路径不会像
+ * lastIndexOf 那样被截断。
  * 重命名记录在 -z 下是**新路径在前、原路径在后**（实测），原路径只是跳过不取。
  */
 function parseStatusV2Z(out: string): readonly StatusEntry[] {
@@ -732,7 +737,7 @@ function parseStatusV2Z(out: string): readonly StatusEntry[] {
       i += 1; // 跳过紧随其后的原路径 token
       continue;
     }
-    entries.push({ xy, path: fieldAfterSpaces(tok, kind === "u" ? 9 : 8), untracked: false });
+    entries.push({ xy, path: fieldAfterSpaces(tok, kind === "u" ? 10 : 8), untracked: false });
   }
   return entries;
 }
@@ -946,6 +951,8 @@ export async function push(root: string, remoteHint?: string): Promise<GitPushRe
         : `仓库有多个远端（${remotes.join("、")}），无法确定推送到哪个`,
     );
   }
+  // remote 名直接进 argv：前导 "-" 会变成 push 的选项（如 --repo=），挡掉
+  assertNotOptionArg(remoteName, "remote 名");
 
   const hasUpstream = st.upstream !== null;
   await run(root, ["push", ...(hasUpstream ? [] : ["-u"]), remoteName, branchName], 120000);
@@ -1036,8 +1043,10 @@ function parseGraphRefs(decorations: string): GitGraphRef[] {
     if (d.length === 0) continue;
     if (d.startsWith("HEAD -> ")) {
       push({ name: "HEAD", kind: "head" });
-      const pointed = graphDecorationRef(d.slice("HEAD -> ".length));
-      if (pointed !== null) push(pointed);
+      // `HEAD -> X` 只出现在 X 是本地分支时（detached 时 %D 只有裸 HEAD）——
+      // 直接按本地分支论，别走裸名兜底（feat/xxx 会被误判成远端）
+      const pointed = d.slice("HEAD -> ".length).trim().replace(/^refs\/heads\//, "");
+      if (pointed.length > 0) push({ name: pointed, kind: "branch" });
       continue;
     }
     const parsed = graphDecorationRef(d);
@@ -1095,7 +1104,9 @@ export async function graph(
     const trimmed = record.trim();
     if (trimmed.length === 0) continue;
     const [hash, parents, authorName, authorAt, subject, decorations] = trimmed.split(GRAPH_FIELD_SEP);
-    if (hash === undefined || hash.length === 0) continue;
+    // 首字段必须是完整 40 位 hex：提交信息可以合法包含 \x1e，会把一条记录劈成两半，
+    // 后半段的首字段不是 hash —— 不校验就会拼出一条幽灵提交行
+    if (hash === undefined || !/^[0-9a-f]{40}$/i.test(hash)) continue;
     const sec = Number.parseInt(authorAt ?? "", 10);
     commits.push({
       hash,

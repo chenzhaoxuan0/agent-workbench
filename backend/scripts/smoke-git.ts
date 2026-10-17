@@ -494,6 +494,56 @@ async function main(): Promise<void> {
       rej,
     );
 
+    // 8b. 冲突与重命名解析（评审回归护栏）：unmerged（u 记录）的路径在第 10 个
+    //     字段之后，早一版取第 9 个会把 stage blob hash 粘在路径前（冲突现场
+    //     面板全是坏路径）；rename+modify 的行数要记在**新路径**名下且非 0
+    const confRepo = path.join(commitHome, "conflict");
+    mkdirSync(confRepo, { recursive: true });
+    gc("git init -q -b main", confRepo);
+    gc("git config user.email smoke@awb", confRepo);
+    gc("git config user.name awb-smoke", confRepo);
+    writeFileSync(path.join(confRepo, "f.txt"), "base\n");
+    gc("git add . && git commit -q -m base", confRepo);
+    gc("git checkout -q -b side", confRepo);
+    writeFileSync(path.join(confRepo, "f.txt"), "side\n");
+    gc("git add . && git commit -q -m side", confRepo);
+    gc("git checkout -q main", confRepo);
+    writeFileSync(path.join(confRepo, "f.txt"), "main\n");
+    gc("git add . && git commit -q -m main", confRepo);
+    try {
+      gc("git merge side", confRepo); // 期望冲突：非 0 退出
+    } catch { /* 冲突即预期 */ }
+    const chConf = await ok<{ staged: { path: string; xy: string }[]; unstaged: { path: string; xy: string }[] }>(
+      "git.changes",
+      { rootPath: confRepo },
+    );
+    check(
+      "changes: conflicted entry carries exact path (no stage-hash prefix)",
+      chConf.staged.some((f) => f.path === "f.txt" && f.xy === "UU"),
+      chConf.staged,
+    );
+
+    // rename + 修改：staged numstat 记新路径，行数真实（早一版 rename 分支是死码，恒 0/0）
+    const renRepo = path.join(commitHome, "rename");
+    mkdirSync(renRepo, { recursive: true });
+    gc("git init -q -b main", renRepo);
+    gc("git config user.email smoke@awb", renRepo);
+    gc("git config user.name awb-smoke", renRepo);
+    writeFileSync(path.join(renRepo, "old.md"), "one\ntwo\nthree\n");
+    gc("git add . && git commit -q -m base", renRepo);
+    writeFileSync(path.join(renRepo, "old.md"), "one\ntwo\nthree\nfour\nfive\n");
+    gc("git add . && git mv old.md new.md", renRepo);
+    const chRen = await ok<{ staged: { path: string; added: number; removed: number }[] }>(
+      "git.changes",
+      { rootPath: renRepo },
+    );
+    const ren = chRen.staged.find((f) => f.path === "new.md");
+    check(
+      "changes: rename+edit counts land on new path, non-zero",
+      ren !== undefined && ren.added === 2 && ren.removed === 0,
+      chRen.staged,
+    );
+
     // 9. 提交图（docs/16）：可见历史分页 + parents/refs。cRepo 的线性历史此刻是
     //    diverged → 带上未跟踪 → 提交面冒烟 → init，且 HEAD 在 main 上
     gc("git tag smoke-tag", cRepo); // refs 解析的 tag 形态

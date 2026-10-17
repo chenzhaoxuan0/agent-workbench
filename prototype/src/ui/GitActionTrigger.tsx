@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
-import { GitCommitHorizontal, Upload } from "lucide-react";
+import { AlertTriangle, GitCommitHorizontal, Upload } from "lucide-react";
 import { resolveGitActionMenuPrimaryAction, type GitAction, type GitStatus } from "../core/git.ts";
 import { fetchGitStatus } from "../adapters/daemon/client.ts";
 import { useGit } from "../store/useGit.ts";
 import { CommitDialog } from "./sourceControl/CommitDialog.tsx";
 import { PushDialog } from "./sourceControl/PushDialog.tsx";
+import { DialogShell } from "./sourceControl/DialogShell.tsx";
 import { cn } from "./cn.ts";
 
 /**
@@ -22,6 +23,7 @@ export function GitActionTrigger(props: { rootPath: string | undefined }) {
   const refreshBadge = useGit((s) => s.refreshBranchBadge);
   const [dialog, setDialog] = useState<{ kind: "commit"; action: GitAction } | { kind: "push" } | null>(null);
   const [status, setStatus] = useState<GitStatus | null>(null);
+  const [statusFetch, setStatusFetch] = useState<"idle" | "loading" | "failed">("idle");
 
   // 与 BranchPicker 同一道 TTL 闸：共用同一份徽章快照，不另起 git 进程
   useEffect(() => {
@@ -29,12 +31,22 @@ export function GitActionTrigger(props: { rootPath: string | undefined }) {
   }, [rootPath, refreshBadge]);
 
   // 推送对话框要展示完整的 status（upstream / behind），徽章里没带这些字段，
-  // 所以只在真的打开推送对话框时补拉一次
+  // 所以只在真的打开推送对话框时补拉一次。每次打开都重拉并复位 —— 拉失败
+  // 也要给反馈：静默不开框看起来就像按钮坏了
   useEffect(() => {
     if (dialog?.kind !== "push" || rootPath === undefined) return;
+    setStatus(null);
+    setStatusFetch("loading");
     void fetchGitStatus(rootPath)
-      .then((r) => setStatus(r.isRepo ? r : null))
-      .catch(() => setStatus(null));
+      .then((r) => {
+        if (r.isRepo) {
+          setStatus(r);
+          setStatusFetch("idle");
+        } else {
+          setStatusFetch("failed");
+        }
+      })
+      .catch(() => setStatusFetch("failed"));
   }, [dialog, rootPath]);
 
   if (rootPath === undefined || badge == null) return null;
@@ -90,6 +102,14 @@ export function GitActionTrigger(props: { rootPath: string | undefined }) {
       )}
       {dialog?.kind === "push" && status !== null && (
         <PushDialog rootPath={rootPath} status={status} onClose={() => setDialog(null)} />
+      )}
+      {dialog?.kind === "push" && status === null && statusFetch === "failed" && (
+        <DialogShell title="推送" onClose={() => setDialog(null)}>
+          <div className="flex items-start gap-2 p-4 text-caption text-loss">
+            <AlertTriangle size={12} className="mt-0.5 shrink-0" />
+            <span>读取仓库状态失败，稍后再试一次。</span>
+          </div>
+        </DialogShell>
       )}
     </>
   );

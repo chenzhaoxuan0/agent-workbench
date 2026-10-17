@@ -82,10 +82,25 @@ function ChangeFileRow(props: {
   const { entry, sourceId } = props;
   const [open, setOpen] = useState(false);
   const [diff, setDiff] = useState<GitDiffResult | null>(null);
+  const [diffError, setDiffError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
   // 未跟踪目录条目（dist/）没有可比对的内容，展开没意义
   const expandable = !entry.path.endsWith("/");
+
+  async function fetchDiff(): Promise<void> {
+    setLoading(true);
+    setDiffError(null);
+    try {
+      setDiff(await fetchGitDiff({ rootPath: props.rootPath, path: entry.path, sourceId }));
+    } catch (err: unknown) {
+      // 拉取失败不缓存：缓成空 patch 会渲染成「没有差异」，且永远不再重试。
+      // diff 留 null（重展自动重拉）+ 错误行给手动重试出口。
+      setDiffError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  }
 
   async function toggle(): Promise<void> {
     if (open) {
@@ -94,14 +109,7 @@ function ChangeFileRow(props: {
     }
     setOpen(true);
     if (diff !== null) return; // 展开过一次就缓存，省得来回点反复拉
-    setLoading(true);
-    try {
-      setDiff(await fetchGitDiff({ rootPath: props.rootPath, path: entry.path, sourceId }));
-    } catch {
-      setDiff({ patch: "", truncated: false, binary: false, untracked: false });
-    } finally {
-      setLoading(false);
-    }
+    await fetchDiff();
   }
 
   const Arrow = open ? ChevronDown : ChevronRight;
@@ -158,6 +166,17 @@ function ChangeFileRow(props: {
           {loading ? (
             <div className="flex items-center gap-1.5 px-3 py-2 text-caption text-ash">
               <Loader2 size={11} className="animate-spin" /> 读取中…
+            </div>
+          ) : diffError !== null ? (
+            <div className="flex items-center gap-2 px-3 py-2 text-caption text-loss">
+              <span className="min-w-0 flex-1 break-all">读取 diff 失败：{diffError}</span>
+              <button
+                type="button"
+                onClick={() => void fetchDiff()}
+                className="shrink-0 rounded-btn border border-line px-2 py-0.5 text-caption text-graphite hover:bg-line-soft hover:text-ink"
+              >
+                重试
+              </button>
             </div>
           ) : (
             <ChangeDiffView

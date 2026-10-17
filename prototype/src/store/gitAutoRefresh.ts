@@ -19,6 +19,13 @@ import type { RuntimeEvent } from "../core/events.ts";
 
 let installed = false;
 
+/** 路径比对归一：daemon 广播的是 path.resolve 后的形态（Windows 反斜杠），而
+ *  各 store / 组件手里的 rootPath 是单元原串（可能正斜杠 / 带尾随斜杠 / 大小写
+ *  漂移）—— 严格 === 会让自动刷新对这类单元静默失效，先归一再比 */
+function normRoot(p: string): string {
+  return p.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+}
+
 export function installGitAutoRefresh(): () => void {
   if (installed) return () => undefined;
   installed = true;
@@ -26,14 +33,17 @@ export function installGitAutoRefresh(): () => void {
   const client = DaemonClient.get(defaultDaemonEndpoint());
   const onGitChanged = (e: RuntimeEvent): void => {
     if (e.type !== "git.changed") return;
-    const rootPath = e.rootPath;
+    const evtNorm = normRoot(e.rootPath);
     const git = useGit.getState();
+    // 徽章写入用**读侧现成的键**（归一匹配到的那条），而不是事件里的形态 ——
+    // badgeByRoot 的读者都拿单元原串当键，写事件形态等于白写
+    const badgeRoot = Object.keys(git.badgeByRoot).find((k) => normRoot(k) === evtNorm) ?? e.rootPath;
     // 仓库没了（目录被删）时 force 刷新会静默失败——refreshBranchBadge 的
     // 失败分支本来就把 TTL 空位留给重试，这里不用特判
-    void git.refreshBranchBadge(rootPath, { force: true });
-    if (git.rootPath === rootPath) void git.refresh();
+    void git.refreshBranchBadge(badgeRoot, { force: true });
+    if (git.rootPath !== null && normRoot(git.rootPath) === evtNorm) void git.refresh();
     const changes = useGitChanges.getState();
-    if (changes.rootPath === rootPath) void changes.reload();
+    if (changes.rootPath !== null && normRoot(changes.rootPath) === evtNorm) void changes.reload();
   };
   const unsub = client.onEvent(onGitChanged);
   return () => {

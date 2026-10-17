@@ -203,6 +203,9 @@ export function createBrowserControlService(
     chrome.exitReason = null;
     chrome.lastError = null;
     result.child?.once("exit", (code) => {
+      // 只在退出的是**当前**这份句柄时才写状态：旧进程的 exit 事件迟到（stop 后
+      // 新实例已接管）会把新 Chrome 误标成 dead，UI 一直到下次 start/stop 才恢复
+      if (chrome.handle !== result) return;
       chrome.alive = false;
       chrome.exitReason = `进程退出（code=${code ?? "?"}）`;
       logControlAction("browser", "sharedChrome.exit", chrome.exitReason);

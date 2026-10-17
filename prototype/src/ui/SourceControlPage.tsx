@@ -71,9 +71,10 @@ function openTerminalAt(cwd: string, title: string): void {
   useShell.getState().setConversationView("terminal");
 }
 
-/** 路径比对统一分隔符：git 输出正斜杠、Windows 本地字符串反斜杠 */
+/** 路径比对统一分隔符并大小写不敏感：git 输出正斜杠、Windows 本地字符串反斜杠，
+ *  且 Windows 文件系统大小写不敏感（盘符大小写漂移 / 大小写改名后不能漏判） */
 function samePath(a: string, b: string): boolean {
-  return a.replace(/\\/g, "/") === b.replace(/\\/g, "/");
+  return a.replace(/\\/g, "/").toLowerCase() === b.replace(/\\/g, "/").toLowerCase();
 }
 
 type Dialog =

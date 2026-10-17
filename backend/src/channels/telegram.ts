@@ -238,6 +238,9 @@ export class TelegramGateway {
     // 发送打字状态
     void this.sendChatAction(token, chatId, "typing");
 
+    // 回收本轮挂的 permission 监听：runBotTurn 每轮都续同一个会话，退订函数
+    // 丢掉不调的话监听会一轮叠一个 —— N 轮后一次审批请求发出 N 份按钮
+    const unsubs: Array<() => void> = [];
     try {
       const { reply } = await runBotTurn(this.opts.host, bot, text, {
         source: "telegram",
@@ -247,27 +250,29 @@ export class TelegramGateway {
         interactive: acc.interactiveApproval,
         onTurnStart: (sessionId) => {
           if (acc.interactiveApproval) {
-            this.opts.host.onSessionEvent(sessionId, "permission.requested", (ev) => {
-              const event = ev as Extract<RuntimeEvent, { type: "permission.requested" }>;
-              const inlineKeyboard = {
-                inline_keyboard: [
-                  [
-                    { text: "✅ 允许 (Allow)", callback_data: `perm:${sessionId}:${event.requestId}:allow` },
-                    { text: "❌ 拒绝 (Deny)", callback_data: `perm:${sessionId}:${event.requestId}:deny` },
+            unsubs.push(
+              this.opts.host.onSessionEvent(sessionId, "permission.requested", (ev) => {
+                const event = ev as Extract<RuntimeEvent, { type: "permission.requested" }>;
+                const inlineKeyboard = {
+                  inline_keyboard: [
+                    [
+                      { text: "✅ 允许 (Allow)", callback_data: `perm:${sessionId}:${event.requestId}:allow` },
+                      { text: "❌ 拒绝 (Deny)", callback_data: `perm:${sessionId}:${event.requestId}:deny` },
+                    ],
+                    [
+                      { text: "🛡️ 永久允许 (Always)", callback_data: `perm:${sessionId}:${event.requestId}:always` },
+                    ],
                   ],
-                  [
-                    { text: "🛡️ 永久允许 (Always)", callback_data: `perm:${sessionId}:${event.requestId}:always` },
-                  ],
-                ],
-              };
-              void this.sendTelegramWithKeyboard(
-                this.opts.apiBase,
-                token,
-                chatId,
-                `⚠️ 【操作审批】\n任务需要执行以下敏感操作：\n类别: ${event.kind}\n详情: ${event.detail}`,
-                inlineKeyboard,
-              );
-            });
+                };
+                void this.sendTelegramWithKeyboard(
+                  this.opts.apiBase,
+                  token,
+                  chatId,
+                  `⚠️ 【操作审批】\n任务需要执行以下敏感操作：\n类别: ${event.kind}\n详情: ${event.detail}`,
+                  inlineKeyboard,
+                );
+              }),
+            );
           }
         },
       });
@@ -277,6 +282,8 @@ export class TelegramGateway {
       const message = err instanceof Error ? err.message : String(err);
       log.warn("telegram turn failed", { bot: bot.id, error: message });
       await this.sendTelegram(this.opts.apiBase, token, chatId, `出错了：${message}`).catch(() => {});
+    } finally {
+      for (const unsub of unsubs) unsub();
     }
   }
 

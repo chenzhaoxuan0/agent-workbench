@@ -119,6 +119,10 @@ export class AutomationScheduler {
       if (retry !== undefined) {
         if (now < retry.at) continue;
         log.info("automation dispatch retry", { id: a.id, attempts: retry.attempts });
+        // 在飞占位：dispatch 慢（续跑要真拉起 CLI，>20s 常见）时条目仍在本表，
+        // 下一帧 tick 会再派发一次 —— 同一窗口双发会话/双发「继续」。把 at 推到
+        // 最大值占位，dispatch() 结束后在成功路径删除、失败路径写回真实退避
+        this.retries.set(a.id, { attempts: retry.attempts, at: Number.MAX_SAFE_INTEGER });
         void this.dispatch(a, "schedule");
         continue;
       }

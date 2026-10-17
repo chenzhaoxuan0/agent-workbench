@@ -62,9 +62,10 @@ interface GitState {
   /** 分支操作（切换/新建）成功后的即时收敛：绕过徽章 TTL 直接写结果，
    *  芯片与侧栏不用等下一轮节流拉取；后续 refreshBranchBadge 自会复核 */
   markBranch: (rootPath: string, branch: string | null) => void;
-  /** 提交/推送成功后的即时收敛：dirtyFileCount 与 ahead 立刻归零，
-   *  触发器不用等满 TTL（否则图标会在对话框关掉后还亮着） */
-  markSettled: (rootPath: string) => void;
+  /** 提交/推送成功后的即时收敛：dirtyFileCount 立刻归零，触发器不用等满 TTL
+   *  （否则图标会在对话框关掉后还亮着）。pushed:false（只提交 / 推送失败）时
+   *  ahead 不能清零 —— 本地提交还在领先，清零会把推送信号一起掐掉 */
+  markSettled: (rootPath: string, opts?: { pushed?: boolean }) => void;
   setPendingDialog: (d: GitPendingDialog | null) => void;
   setError: (err: GitPanelError | null) => void;
 }
@@ -188,12 +189,18 @@ export const useGit = create<GitState>((set, get) => ({
         [rootPath]: { ...(get().badgeByRoot[rootPath] ?? { dirtyFileCount: 0, ahead: 0 }), branch },
       },
     }),
-  markSettled: (rootPath) =>
+  markSettled: (rootPath, opts) => {
+    const prev = get().badgeByRoot[rootPath] ?? { branch: null as string | null, dirtyFileCount: 0, ahead: 0 };
     set({
       badgeByRoot: {
         ...get().badgeByRoot,
-        [rootPath]: { ...(get().badgeByRoot[rootPath] ?? { branch: null }), dirtyFileCount: 0, ahead: 0 },
+        [rootPath]: {
+          ...prev,
+          dirtyFileCount: 0,
+          ahead: opts?.pushed === true ? 0 : prev.ahead + 1,
+        },
       },
-    }),
+    });
+  },
   setError: (error) => set({ error }),
 }));

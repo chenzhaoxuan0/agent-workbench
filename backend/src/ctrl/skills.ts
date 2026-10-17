@@ -46,7 +46,7 @@ description: 用 workbench-computer 的 MCP 工具（computer_*）操作真实�
 
 标准工作流：
 
-1. **先看再动**：\`computer_screenshot\` 拿到当前屏幕（JPEG + 尺寸）。
+1. **先看再动**：\`computer_screenshot\` 拿到当前屏幕（PNG + 尺寸）。
 2. **坐标一律相对最近一次截图**，不要跨步骤复用旧坐标（界面可能已变化）。
 3. 点击 / 拖拽 / 滚轮：\`computer_click {x,y}\`、\`computer_drag {x1,y1,x2,y2}\`、
    \`computer_scroll {x,y,amount}\`（amount 正数向下）。

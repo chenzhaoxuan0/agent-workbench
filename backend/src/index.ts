@@ -41,6 +41,7 @@ import { CursorAdapter } from "./runtime/adapters/cursor.ts";
 import { OpenclawAdapter } from "./runtime/adapters/openclaw.ts";
 import { buildSkillsInventory, copySkill, setSkillDisabled } from "./skills/inventory.ts";
 import * as gitRepo from "./git/repo.ts";
+import { GIT_ERROR_CODES } from "./contract.ts";
 import { GitWatcher } from "./git/watch.ts";
 import { listWorkspacePaths } from "./workspacePaths.ts";
 import {
@@ -2371,7 +2372,30 @@ registerMethod("git.worktree.remove", (params) => {
   if (force !== undefined && typeof force !== "boolean") {
     throw Object.assign(new Error("force must be a boolean"), { code: "bad_params" });
   }
-  return gitRepo.removeWorktree(gitRoot(params), reqStr(params, "path"), force === true);
+  const root = gitRoot(params);
+  const target = reqStr(params, "path");
+  // 活跃会话防拆在 RPC 侧兜底：UI 用自己的会话表拦的只是第一道闸，自动化 /
+  // IM 渠道开的会话不在 UI 台账里。Session.rootPath 是会话实际 cwd（契约字段），
+  // 路径比对归一分隔符与大小写（Windows 路径大小写不敏感）。
+  const norm = (p: string): string => p.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  const targetNorm = norm(target);
+  const live = host
+    .listSessions()
+    .find(
+      (s) =>
+        s.status !== "done" &&
+        s.status !== "failed" &&
+        s.rootPath !== undefined &&
+        s.rootPath.length > 0 &&
+        norm(s.rootPath) === targetNorm,
+    );
+  if (live) {
+    throw Object.assign(
+      new Error(`会话「${live.title}」正在此工作树中运行，先停止或等它结束再删除（强删会直接拔掉执行器的工作目录）`),
+      { code: GIT_ERROR_CODES.worktreeInUse, data: { sessionId: live.id, rootPath: live.rootPath } },
+    );
+  }
+  return gitRepo.removeWorktree(root, target, force === true);
 });
 // 在系统文件管理器里显示目录（资源管理器 / Finder / xdg-open）
 registerMethod("git.worktree.reveal", (params) => gitRepo.revealPath(reqStr(params, "path")));

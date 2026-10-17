@@ -102,15 +102,20 @@ export function CommitDialog(props: {
           pushError = { text: `提交成功，但推送失败：${e.message ?? "未知错误"}`, code: e.code };
         }
       }
-      // 图标立刻收敛：不让触发器在对话框关掉后还亮着（等满 TTL 才灭）
-      useGit.getState().markSettled(rootPath);
-      useGit.getState().refresh();
-      props.onDone();
       if (pushError !== null) {
+        // 提交落地但推送失败：对话框留在原地展示原因 —— 先 onDone 会把本组件
+        // 卸载，之后的 setError 是空操作，用户会以为什么都没发生过
         setError(pushError);
         setBusy(false);
+        useGit.getState().markSettled(rootPath, { pushed: false });
+        useGit.getState().refresh();
         return;
       }
+      // 图标立刻收敛：不让触发器在对话框关掉后还亮着（等满 TTL 才灭）。
+      // 只提交时 ahead 不清零（本地仍领先），推送信号要留住
+      useGit.getState().markSettled(rootPath, { pushed: action !== "commit" });
+      useGit.getState().refresh();
+      props.onDone();
     } catch (err: unknown) {
       const e = err as { message?: string; code?: string };
       setError({ text: e.message ?? "未知错误", code: e.code });

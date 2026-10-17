@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Plus, SquareTerminal, X } from "lucide-react";
 import {
   CHAT_DOCK_UNIT_ID,
@@ -41,6 +41,13 @@ export function ChatTerminalDock() {
   const attachedIdRef = useRef<string | null>(null);
   /** F5 认领到的输出回放（getOrCreate 时消费一次） */
   const scrollbackRef = useRef<Map<string, string>>(new Map());
+  /**
+   * F5 校正（terminal.list 往返）进行中标记：期间 attach effect 绝不能抢先建会话 ——
+   * 旧 id 的 PTY 可能还活着，抢先 terminal.create 同 id 会在 daemon 起第二个进程。
+   * 校正完成后 bump reclaimSeq 让 attach effect 重跑补挂载。
+   */
+  const reclaimPendingRef = useRef(false);
+  const [reclaimSeq, setReclaimSeq] = useState(0);
 
   /** 当前工作区目录名（新标签标题主体） */
   const cwdLeaf = useCallback((): string => {
@@ -81,39 +88,51 @@ export function ChatTerminalDock() {
     // 同步过程不取消防抖：中途收起面板时，会话留在 registry 保活（与收面板语义一致），
     // attach effect 的 open=false 分支不会把它挂到任何容器
     void (async () => {
-      // 1. F5 校正：registry 里没有的标签查 terminal.list —— 活着的认领回放，
-      //    已死的就地换新 id（kill 异步往返期间 list 里可能还有将死的 PTY，
-      //    所以这里以 list 实测为准，而不是盲目当重挂）
-      const state0 = useChatTerminal.getState();
-      const missing = state0.tabs.filter((t) => !terminalSessionRegistry.get(t.id));
-      if (missing.length > 0) {
-        const aliveScrollback = new Map<string, string>();
-        try {
-          const { DaemonClient, defaultDaemonEndpoint } = await import("../adapters/daemon/client.ts");
-          const list = await DaemonClient.get(defaultDaemonEndpoint()).rpc<
-            Array<{ terminalId: string; unitId?: string; scrollback?: string }>
-          >("terminal.list", null, 8000);
-          for (const row of list) {
-            if (row.unitId !== CHAT_DOCK_UNIT_ID) continue;
-            aliveScrollback.set(row.terminalId, row.scrollback ?? "");
+      reclaimPendingRef.current = true;
+      try {
+        // 1. F5 校正：registry 里没有的标签查 terminal.list —— 活着的认领回放，
+        //    已死的就地换新 id（kill 异步往返期间 list 里可能还有将死的 PTY，
+        //    所以这里以 list 实测为准，而不是盲目当重挂）
+        const state0 = useChatTerminal.getState();
+        const missing = state0.tabs.filter((t) => !terminalSessionRegistry.get(t.id));
+        if (missing.length > 0) {
+          const aliveScrollback = new Map<string, string>();
+          let listed = false;
+          try {
+            const { DaemonClient, defaultDaemonEndpoint } = await import("../adapters/daemon/client.ts");
+            const list = await DaemonClient.get(defaultDaemonEndpoint()).rpc<
+              Array<{ terminalId: string; unitId?: string; scrollback?: string }>
+            >("terminal.list", null, 8000);
+            listed = true;
+            for (const row of list) {
+              if (row.unitId !== CHAT_DOCK_UNIT_ID) continue;
+              aliveScrollback.set(row.terminalId, row.scrollback ?? "");
+            }
+          } catch {
+            // list 失败 ≠ 全部死了：daemon 慢/WS 抖动时旧 PTY 很可能都活着，
+            // 换新 id 会把一整排 PTY 孤儿化。保留原 id 走建会话路径 ——
+            // daemon 侧 create 对活 id 幂等返回，真死的条目自然新建。
           }
-        } catch {
-          // daemon 不可达：全部按死处理，就地新建（面板不该打不开）
+          if (listed) {
+            const deadIds = missing.filter((m) => !aliveScrollback.has(m.id)).map((m) => m.id);
+            if (deadIds.length > 0) useChatTerminal.getState().replaceDeadTabs(deadIds);
+            for (const [id, sb] of aliveScrollback) scrollbackRef.current.set(id, sb);
+          }
         }
-        const deadIds = missing.filter((m) => !aliveScrollback.has(m.id)).map((m) => m.id);
-        if (deadIds.length > 0) useChatTerminal.getState().replaceDeadTabs(deadIds);
-        for (const [id, sb] of aliveScrollback) scrollbackRef.current.set(id, sb);
-      }
 
-      // 2. 换 Shell 后标签被清空 → 懒建第 1 个
-      if (useChatTerminal.getState().tabs.length === 0) {
-        useChatTerminal.getState().addTab(cwdLeaf());
-      }
+        // 2. 换 Shell 后标签被清空 → 懒建第 1 个
+        if (useChatTerminal.getState().tabs.length === 0) {
+          useChatTerminal.getState().addTab(cwdLeaf());
+        }
 
-      // 3. 为所有标签建会话（ZCode forceMount 同款：非激活标签也常驻 PTY）
-      for (const t of useChatTerminal.getState().tabs) {
-        ensureSession(t, { attachScrollback: scrollbackRef.current.get(t.id) });
-        scrollbackRef.current.delete(t.id);
+        // 3. 为所有标签建会话（ZCode forceMount 同款：非激活标签也常驻 PTY）
+        for (const t of useChatTerminal.getState().tabs) {
+          ensureSession(t, { attachScrollback: scrollbackRef.current.get(t.id) });
+          scrollbackRef.current.delete(t.id);
+        }
+      } finally {
+        reclaimPendingRef.current = false;
+        setReclaimSeq((n) => n + 1);
       }
     })();
   }, [open, restartSeq, cwdLeaf, ensureSession]);
@@ -130,11 +149,14 @@ export function ChatTerminalDock() {
     }
     attachedIdRef.current = activeId;
     if (!activeId) return;
+    // F5 校正往返期间不得抢先建会话：会以旧 id create 撞上 daemon 里还活着的 PTY。
+    // 校正完成（reclaimSeq 变化）后本 effect 重跑补挂载。
+    if (reclaimPendingRef.current) return;
     const tab = tabs.find((t) => t.id === activeId);
     const session = tab ? ensureSession(tab) : null;
     session?.attachTo(container);
     session?.focus();
-  }, [open, tabsKey, activeTabId, tabs, ensureSession]);
+  }, [open, tabsKey, activeTabId, tabs, ensureSession, reclaimSeq]);
 
   // 主题切换跟随（registry.updateAllThemes 只刷挂载中的画布，这里补 detach 态口径）
   useEffect(() => {
@@ -178,6 +200,7 @@ export function ChatTerminalDock() {
           onPointerDown={onDragStart}
           onPointerMove={onDragMove}
           onPointerUp={onDragEnd}
+          onPointerCancel={onDragEnd}
           className="h-1.5 shrink-0 cursor-row-resize bg-line-soft/60 hover:bg-teal/40 transition-colors touch-none"
           title="拖拽调整高度"
         />

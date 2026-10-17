@@ -160,6 +160,8 @@ export const GIT_ERROR_CODES = {
   pushRejected: "push_rejected",
   /** 仓库一个 remote 都没有（或没指定且无法唯一确定） */
   noRemote: "no_remote",
+  /** 删工作树时有活跃会话的 cwd 在树里（含 UI 台账外的自动化/渠道会话） */
+  worktreeInUse: "worktree_in_use",
 } as const;
 
 export type GitErrorCode = (typeof GIT_ERROR_CODES)[keyof typeof GIT_ERROR_CODES];

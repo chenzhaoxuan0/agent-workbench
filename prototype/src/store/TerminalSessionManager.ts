@@ -213,6 +213,8 @@ export class TerminalSession {
   /** 首帧输出到达前是否还可写入回放（避免与实时帧交叠） */
   private disposed = false;
   private readonly attachScrollback?: string;
+  /** 重挂只对第一次 boot 生效：restart()/重启必须走 terminal.create 复活进程 */
+  private pendingReattach = false;
   private resizeObserver: ResizeObserver | null = null;
   private resizeTimer: ReturnType<typeof setTimeout> | null = null;
   private lastCols = 80;
@@ -228,6 +230,7 @@ export class TerminalSession {
     this.unitId = opts.unitId;
     this.onExitCallback = opts.onExit;
     this.attachScrollback = opts.attachScrollback;
+    this.pendingReattach = opts.attachScrollback !== undefined;
 
     // 创建持久化包装容器
     this.element = document.createElement("div");
@@ -397,7 +400,9 @@ export class TerminalSession {
     const isDark = getIsDarkMode();
     // 重挂模式：PTY 已在 daemon 活着，绝不能再 create（同 id 会起第二个进程）。
     // 只把 PTY 尺寸对齐到当前窗格 —— F5 前后窗格大小很可能不同。
-    if (this.attachScrollback !== undefined) {
+    // 一次性：restart()/重启会再次 boot，届时必须走 create 复活进程。
+    if (this.pendingReattach) {
+      this.pendingReattach = false;
       await client
         .rpc("terminal.resize", { terminalId: this.terminalId, cols, rows }, 8000)
         .catch(() => {});

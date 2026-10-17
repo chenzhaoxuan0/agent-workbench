@@ -539,7 +539,13 @@ export class RuntimeHost {
     //
     // fromDisk 为 true 时即便内容没变也要写：这一轮**确实验证过**，
     // at 该记成现在，而不是留着一小时前的时间戳。
-    if (unchanged && prev?.fromDisk === false) return;
+    if (unchanged && prev?.fromDisk === false) {
+      // 内容没变也要把 at 续到「刚刚实测」：留着旧时间戳，界面会在刚刚探测成功
+      // 之后仍挂「来自上次探测 · N 小时前」。盘上那份不必重写 —— 内容没变时
+      // 旧 at 只让下次冷启动的展示保守一点，无害
+      this.modelCache.set(id, { models: prev.models, at: Date.now(), fromDisk: false });
+      return;
+    }
     this.modelCache.set(id, { models, at: Date.now(), fromDisk: false });
     try {
       const out: Record<string, { models: readonly ExecutorModelInfo[]; at: number }> = {};

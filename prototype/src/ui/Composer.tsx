@@ -216,14 +216,24 @@ export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
   const mentionKey = activeMention
     ? `${activeMention.triggerIndex}:${activeMention.endOffset}:${activeMention.token}`
     : "";
-  /** Esc 关过一次的同一个提及（key 相同）不再自动弹出，挪光标/改 token 即恢复 */
-  const mentionOpen = activeMention !== undefined && mentionDismissedKey !== mentionKey;
+  /** Esc 关的是「这一处 @ 触发」（按 @ 位置识别）：继续打字补全 token、挪光标
+   *  回来都不重弹；删掉 @ 重新输入、或触发别的 @ 才恢复。键里不能掺
+   *  token/endOffset —— 那样 Esc 之后多打一个字就换键，菜单立刻复活并劫持 Enter */
+  const mentionDismissKey = activeMention ? String(activeMention.triggerIndex) : "";
+  const mentionOpen = activeMention !== undefined && mentionDismissedKey !== mentionDismissKey;
+  // 触发本身消失（删掉 @ / 光标离开这个 token）就复位 dismissal ——
+  // 否则原地重打一个 @ 会因为位置相同而永远弹不出来
+  useEffect(() => {
+    if (activeMention === undefined && mentionDismissedKey !== null) setMentionDismissedKey(null);
+  }, [activeMention, mentionDismissedKey]);
 
   // token 变化即拉取（上一笔 abort 掉；本地 readdir 快路径，不做防抖 —— ZCode 同款）
   useEffect(() => {
     if (!mentionOpen || !activeMention || !unit?.rootPath) return;
     const controller = new AbortController();
-    setMention((cur) => ({ ...cur, status: "loading", error: undefined }));
+    // 清掉旧 token 的残余建议：加载窗口里旧列表还能被 Enter/Tab 选中（或误导
+    // 点击），跟手输入必须只留当前 token 的结果
+    setMention({ items: [], status: "loading", truncated: false, error: undefined });
     setMentionIndex(0);
     void fetchWorkspacePaths(unit.rootPath, activeMention.token, { signal: controller.signal })
       .then((result) => {
@@ -429,7 +439,7 @@ export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
               activeIndex={Math.min(mentionIndex, Math.max(0, mention.items.length - 1))}
               onSelect={completeMention}
               onHover={setMentionIndex}
-              onClose={() => setMentionDismissedKey(mentionKey)}
+              onClose={() => setMentionDismissedKey(mentionDismissKey)}
             />
           )}
 
@@ -465,14 +475,14 @@ export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
                   setMentionIndex((i) => (i - 1 + mention.items.length) % mention.items.length);
                   return;
                 }
-                if ((e.key === "Enter" || e.key === "Tab") && picked) {
+                if ((e.key === "Enter" || e.key === "Tab") && !e.shiftKey && picked) {
                   e.preventDefault();
                   completeMention(picked);
                   return;
                 }
               }
               if (e.key === "Escape" && mentionOpen) {
-                setMentionDismissedKey(mentionKey);
+                setMentionDismissedKey(mentionDismissKey);
                 return;
               }
               if (e.key === "Enter" && !e.shiftKey) {

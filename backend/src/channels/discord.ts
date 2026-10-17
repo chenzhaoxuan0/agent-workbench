@@ -39,6 +39,8 @@ interface DiscordClientSession {
 
 export class DiscordGateway {
   private timer: NodeJS.Timeout | null = null;
+  /** stop() 之后不允许任何路径复活网关（迟到的 close 事件会排 5s 重连） */
+  private stopped = false;
   private readonly sessions = new Map<string, DiscordClientSession>();
   private readonly chains = new Map<string, Promise<void>>();
 
@@ -53,6 +55,7 @@ export class DiscordGateway {
 
   start(): void {
     if (this.timer !== null) return;
+    this.stopped = false;
     const pollMs = this.opts.pollMs ?? 5000;
     this.timer = setInterval(() => void this.reconcile(), pollMs);
     this.timer.unref();
@@ -61,6 +64,7 @@ export class DiscordGateway {
   }
 
   stop(): void {
+    this.stopped = true;
     if (this.timer !== null) clearInterval(this.timer);
     this.timer = null;
     for (const [key, session] of this.sessions.entries()) {
@@ -130,6 +134,7 @@ export class DiscordGateway {
   }
 
   private async reconcile(): Promise<void> {
+    if (this.stopped) return;
     const specs = await this.resolveAccounts();
     const activeKeys = new Set(specs.map((s) => s.key));
 
@@ -223,6 +228,8 @@ export class DiscordGateway {
       log.warn("discord gateway socket closed", { key: spec.key, code });
       this.closeSession(spec.key, session);
       this.sessions.delete(spec.key);
+      // stop() 后迟到的 close 事件不再排重连 —— 那会在关停 5s 后悄悄复活网关
+      if (this.stopped) return;
       // 5秒后尝试重连
       session.reconnectTimer = setTimeout(() => void this.reconcile(), 5000);
     });
@@ -271,6 +278,9 @@ export class DiscordGateway {
     // 发送 typing 状态
     void this.sendTyping(spec.botToken, channelId);
 
+    // 回收本轮挂的 permission 监听：runBotTurn 每轮都续同一个会话，退订函数
+    // 丢掉不调的话监听一轮叠一个 —— N 轮后一次审批请求发出 N 份按钮
+    const unsubs: Array<() => void> = [];
     try {
       const { reply } = await runBotTurn(this.opts.host, bot, text, {
         source: "discord",
@@ -280,17 +290,19 @@ export class DiscordGateway {
         interactive: spec.interactiveApproval,
         onTurnStart: (sessionId) => {
           if (spec.interactiveApproval) {
-            this.opts.host.onSessionEvent(sessionId, "permission.requested", (ev) => {
-              const event = ev as Extract<RuntimeEvent, { type: "permission.requested" }>;
-              void this.sendApprovalButtons(
-                spec.botToken,
-                channelId,
-                sessionId,
-                event.requestId,
-                event.kind,
-                event.detail,
-              );
-            });
+            unsubs.push(
+              this.opts.host.onSessionEvent(sessionId, "permission.requested", (ev) => {
+                const event = ev as Extract<RuntimeEvent, { type: "permission.requested" }>;
+                void this.sendApprovalButtons(
+                  spec.botToken,
+                  channelId,
+                  sessionId,
+                  event.requestId,
+                  event.kind,
+                  event.detail,
+                );
+              }),
+            );
           }
         },
       });
@@ -300,6 +312,8 @@ export class DiscordGateway {
       }
     } catch (err: unknown) {
       await this.sendDiscordText(spec.botToken, channelId, `出错了：${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      for (const unsub of unsubs) unsub();
     }
   }
 

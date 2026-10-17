@@ -27,7 +27,7 @@ export function PushDialog(props: { rootPath: string; status: GitStatus; onClose
     setError(null);
     try {
       await pushGitBranch({ rootPath });
-      useGit.getState().markSettled(rootPath);
+      useGit.getState().markSettled(rootPath, { pushed: true });
       useGit.getState().refresh();
       props.onClose();
     } catch (err: unknown) {

@@ -17,7 +17,7 @@
  * - `.disabled/` 只进 skills 目录，绝不进 agents/commands 目录（那里的递归扫描
  *   曾不滤点目录，discovery.ts 已加固 hasDotSegment）。
  */
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { parseFrontmatter } from "../runtime/adapters/discovery.ts";
@@ -392,6 +392,13 @@ export function copySkill(
   try {
     cpSync(srcDir, dstDir, { recursive: true });
   } catch (err: unknown) {
+    // 半成品必须清掉：留着的话，上面的 existsSync 冲突预检会让此后每一次
+    // 复制到该目标都永久 conflict，直到用户手删残留目录
+    try {
+      rmSync(dstDir, { recursive: true, force: true });
+    } catch {
+      /* 清理失败只能如实报错，别用清理异常盖掉原始错误 */
+    }
     const code = (err as NodeJS.ErrnoException | undefined)?.code;
     if (code === "EPERM" || code === "EACCES" || code === "EBUSY") {
       throw Object.assign(new Error("复制时目录被占用（编辑器/杀毒扫描中？），请稍后重试"), { code: "locked" });

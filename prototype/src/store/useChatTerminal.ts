@@ -207,6 +207,9 @@ export const useChatTerminal = create<ChatTerminalState>((set, get) => ({
   removeExitedTab: (id) => {
     const { tabs, activeTabId } = get();
     if (!tabs.some((t) => t.id === id)) return;
+    // PTY 已死：连同 registry 条目（xterm/ResizeObserver/帧订阅/DOM）一并释放，
+    // 否则每条自退标签都永久占一份内存（kill 已死的 id 会失败，dispose 内部已吞）
+    terminalSessionRegistry.dispose(id);
     const idx = tabs.findIndex((t) => t.id === id);
     const next = tabs.filter((t) => t.id !== id);
     if (next.length === 0) {
@@ -230,18 +233,19 @@ export const useChatTerminal = create<ChatTerminalState>((set, get) => ({
   replaceDeadTabs: (deadIds) => {
     const dead = new Set(deadIds);
     const { tabs, activeTabId } = get();
-    const survivors = tabs.filter((t) => !dead.has(t.id));
-    // 对每个死条目：保持标题与编号语义，就地换一条新 PTY（新 id）
-    const rebuilt = survivors.map((t) => ({ ...t }));
-    const additions: ChatTerminalTab[] = [];
-    for (const id of deadIds) {
-      const old = tabs.find((t) => t.id === id);
-      if (!old) continue;
-      additions.push({ id: nextTerminalId(), index: old.index, cwdLeaf: old.cwdLeaf });
-    }
-    const next = [...rebuilt, ...additions];
+    // 对每个死条目：保持位置、标题与编号语义，就地换一条新 PTY（新 id）——
+    // 重建的标签不能被挪到末尾，否则 F5 后标签顺序漂移
+    const next = tabs.map((t) =>
+      dead.has(t.id) ? { id: nextTerminalId(), index: t.index, cwdLeaf: t.cwdLeaf } : t,
+    );
+    const replacementFor = new Map<string, string>();
+    tabs.forEach((t, i) => {
+      if (dead.has(t.id)) replacementFor.set(t.id, next[i]!.id);
+    });
     const nextActive =
-      activeTabId && dead.has(activeTabId) ? (additions[0]?.id ?? next[0]?.id ?? null) : activeTabId;
+      activeTabId && dead.has(activeTabId)
+        ? (replacementFor.get(activeTabId) ?? next[0]?.id ?? null)
+        : activeTabId;
     set({ tabs: next, activeTabId: nextActive ?? next[0]?.id ?? null });
     persistTabs(next, get().activeTabId);
     return next;

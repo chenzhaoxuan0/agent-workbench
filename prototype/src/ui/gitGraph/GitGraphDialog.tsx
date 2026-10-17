@@ -68,6 +68,9 @@ export function GitGraphDialog(props: { rootPath: string; branchName: string | n
   const [expandedHash, setExpandedHash] = useState<string | null>(null);
   const [hoveredHash, setHoveredHash] = useState<string | null>(null);
   const loadingMoreRef = useRef(false);
+  /** 换代计数：refresh 重拉第一页会让在飞的 loadMore 作废 —— 不带代际校验，
+   *  迟到的旧历史尾页会 append 到刷新后的新列表上（重复 hash → 重复 key） */
+  const loadGenRef = useRef(0);
 
   const layout = useMemo(() => layoutGitGraph(commits), [commits]);
   const expanded = commits.find((c) => c.hash === expandedHash) ?? null;
@@ -75,6 +78,7 @@ export function GitGraphDialog(props: { rootPath: string; branchName: string | n
 
   const loadFirstPage = useCallback(
     async (mode: "initial" | "refresh"): Promise<void> => {
+      const gen = ++loadGenRef.current;
       if (mode === "initial") {
         setLoading(true);
         setCommits([]);
@@ -86,12 +90,15 @@ export function GitGraphDialog(props: { rootPath: string; branchName: string | n
       setErrorMessage(null);
       try {
         const result = await fetchGitGraph({ rootPath, skip: 0, maxCount: PAGE_SIZE });
+        if (loadGenRef.current !== gen) return;
         setCommits(result.commits);
         setHasMore(result.hasMore);
         setSelectedHash(result.commits[0]?.hash ?? null);
       } catch (err: unknown) {
+        if (loadGenRef.current !== gen) return;
+        // 刷新失败也要说话：静默吞掉会让旧数据看起来像最新的
         const message = err instanceof Error ? err.message : String(err);
-        setErrorMessage(mode === "initial" ? `读取提交历史失败：${message}` : null);
+        setErrorMessage(`读取提交历史失败：${message}`);
       } finally {
         if (mode === "initial") setLoading(false);
         else setRefreshing(false);
@@ -106,13 +113,17 @@ export function GitGraphDialog(props: { rootPath: string; branchName: string | n
 
   const loadMore = useCallback(async (): Promise<void> => {
     if (loading || loadingMore || refreshing || loadingMoreRef.current || !hasMore) return;
+    // 不推进换代：只记录出发时的代际，期间被 refresh 抢先（bump）就放弃结果
+    const gen = loadGenRef.current;
     loadingMoreRef.current = true;
     setLoadingMore(true);
     try {
       const result = await fetchGitGraph({ rootPath, skip: commits.length, maxCount: PAGE_SIZE });
+      if (loadGenRef.current !== gen) return;
       setCommits((current) => [...current, ...result.commits]);
       setHasMore(result.hasMore);
     } catch (err: unknown) {
+      if (loadGenRef.current !== gen) return;
       setErrorMessage(`加载更多失败：${err instanceof Error ? err.message : String(err)}`);
     } finally {
       loadingMoreRef.current = false;
@@ -147,7 +158,7 @@ export function GitGraphDialog(props: { rootPath: string; branchName: string | n
           </div>
           <button
             type="button"
-            disabled={refreshing || loading}
+            disabled={refreshing || loading || loadingMore}
             onClick={() => void loadFirstPage("refresh")}
             title="刷新"
             className="rounded-btn p-1 text-ash hover:bg-line-soft hover:text-ink disabled:opacity-40"

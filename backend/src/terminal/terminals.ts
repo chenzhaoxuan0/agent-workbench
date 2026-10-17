@@ -208,6 +208,14 @@ export class TerminalManager {
 
   create(opts: CreateOptions = {}): { terminalId: string; shell: string; executor?: string } {
     const terminalId = opts.terminalId ?? `term_${randomUUID()}`;
+    // 同 id 重复 create 幂等兜底：前端 F5 重挂与建会话的竞态可能拿旧 id 再 create。
+    // 直接覆盖台账会在同 id 下起第二个进程 —— 旧 PTY 的输出串进新会话且此后永远
+    // kill 不掉（map 条目已被顶掉）。活着的原样返回，让客户端走上重挂路径。
+    const alive = this.sessions.get(terminalId);
+    if (alive) {
+      log.warn("terminal create with live id, reusing existing session", { terminalId });
+      return { terminalId, shell: alive.shell, executor: alive.executor };
+    }
     const shell = resolveShell(opts.shell);
     const cols = opts.cols ?? DEFAULT_COLS;
     const rows = opts.rows ?? DEFAULT_ROWS;

@@ -318,6 +318,9 @@ export class WeixinGateway {
     // 发送思考占位
     await this.sendMessage(acc, userId, "🤔 正在思考...", contextToken);
 
+    // 回收本轮挂的 permission 监听：runBotTurn 每轮都续同一个会话，退订函数
+    // 丢掉不调的话监听一轮叠一个 —— N 轮后一次审批请求盖写 N 次pendingApprovals
+    const unsubs: Array<() => void> = [];
     try {
       const result = await runBotTurn(this.opts.host, bot, text, {
         source: "weixin",
@@ -326,28 +329,30 @@ export class WeixinGateway {
         // 下面的数字审批就只是装饰品（复审 P0）
         interactive: acc.interactiveApproval,
         onTurnStart: (sessionId) => {
-          this.opts.host.onSessionEvent(sessionId, "permission.requested", (ev) => {
-            const event = ev as Extract<RuntimeEvent, { type: "permission.requested" }>;
-            this.pendingApprovals.set(userId, {
-              sessionId,
-              requestId: event.requestId,
-              detail: event.detail,
-              kind: event.kind,
-            });
-            const prompt =
-              `⚠️ 【操作审批】\n` +
-              `任务需要执行以下操作：\n` +
-              `【类别】${event.kind}\n` +
-              `【详情】${event.detail}\n\n` +
-              `👉 请直接回复以下数字完成裁决：\n` +
-              `1️⃣ 回复 1：允许本次执行\n` +
-              `2️⃣ 回复 2：拒绝本次执行\n` +
-              `3️⃣ 回复 3：永久允许同类操作`;
-            void this.sendMessage(acc, userId, prompt, contextToken);
-          });
-          this.opts.host.onSessionEvent(sessionId, "permission.resolved", () => {
-            this.pendingApprovals.delete(userId);
-          });
+          unsubs.push(
+            this.opts.host.onSessionEvent(sessionId, "permission.requested", (ev) => {
+              const event = ev as Extract<RuntimeEvent, { type: "permission.requested" }>;
+              this.pendingApprovals.set(userId, {
+                sessionId,
+                requestId: event.requestId,
+                detail: event.detail,
+                kind: event.kind,
+              });
+              const prompt =
+                `⚠️ 【操作审批】\n` +
+                `任务需要执行以下操作：\n` +
+                `【类别】${event.kind}\n` +
+                `【详情】${event.detail}\n\n` +
+                `👉 请直接回复以下数字完成裁决：\n` +
+                `1️⃣ 回复 1：允许本次执行\n` +
+                `2️⃣ 回复 2：拒绝本次执行\n` +
+                `3️⃣ 回复 3：永久允许同类操作`;
+              void this.sendMessage(acc, userId, prompt, contextToken);
+            }),
+            this.opts.host.onSessionEvent(sessionId, "permission.resolved", () => {
+              this.pendingApprovals.delete(userId);
+            }),
+          );
         },
       });
 
@@ -356,6 +361,11 @@ export class WeixinGateway {
       }
     } catch (err: unknown) {
       await this.sendMessage(acc, userId, `❌ 执行出错: ${err instanceof Error ? err.message : String(err)}`, contextToken);
+    } finally {
+      for (const unsub of unsubs) unsub();
+      // 轮次已终局（成功或失败），再无待裁决事项；留着残条会让下一轮的「1/2/3」
+      // 去解析一个已死的 requestId
+      this.pendingApprovals.delete(userId);
     }
   }
 
