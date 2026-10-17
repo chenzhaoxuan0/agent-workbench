@@ -95,37 +95,56 @@ export class GitWatcher {
     if (this.#stopped) return;
     const dirs = await gitDirs(root);
     if (dirs === null) return; // 不是仓库 / git 不可用：status 心跳不会再来了
-    // 工作树根 + 两个 git 目录去重。commonDir 在普通仓库等于 gitDir，
-    // 在链接工作树等于主仓 .git（会顺带收到主仓活动的误报——代价是多一次
-    // status 刷新，可接受；换来的是主仓提交也能让工作树侧收敛）。
-    const targets = new Set<string>([root, dirs.gitDir, dirs.commonDir]);
-    const w: WatchedRoot = { root, handles: new Set(), paths: [...targets], lastFire: 0, timer: null, lastAccess: Date.now() };
+    const w: WatchedRoot = { root, handles: new Set(), paths: this.#targets(root, dirs), lastFire: 0, timer: null, lastAccess: Date.now() };
     this.#roots.set(root, w);
-    for (const p of targets) this.#attach(w, p);
+    for (const p of w.paths) this.#attach(w, p);
     log.info("git watch started", { root, paths: w.paths, throttleMs: THROTTLE_MS });
   }
 
+  /** 监听目标集合：工作树根 + 两个 git 目录。Set 去重 —— commonDir 在普通仓库
+   *  等于 gitDir；链接工作树等于主工作树的 .git（会顺带收到主仓活动的误报，
+   *  代价是多一次 status 刷新，可接受；换来主仓提交也能让工作树侧收敛） */
+  #targets(root: string, dirs: { gitDir: string; commonDir: string } | null): string[] {
+    return [...new Set([root, ...(dirs === null ? [] : [dirs.gitDir, dirs.commonDir])])];
+  }
+
   #attach(w: WatchedRoot, target: string): void {
-    // 工作树根只试递归（linux 降级后非递归只看顶层，没意义）；git 目录
-    // 递归失败退非递归——.git 顶层的 HEAD / index / packed-refs 已兜住
-    // 提交与分支切换的大多数事件。
     const isRootItself = path.resolve(target) === w.root;
-    let handle: FSWatcher;
-    try {
-      handle = watch(target, { persistent: false, recursive: true }, () => this.#fire(w));
-      w.handles.add(handle);
+    if (this.#tryWatch(w, target, true)) return;
+    // 工作树根不退非递归（顶层只有根目录自己，监听无意义 —— linux 的降级形态）；
+    // git 目录退非递归：.git 顶层的 HEAD / index / packed-refs 已兜住提交与
+    // 分支切换的大多数事件
+    if (isRootItself) {
+      log.warn("git watch 工作树根递归监听不可用（跳过，改为只看 git 元数据）", { target });
       return;
-    } catch (err) {
-      if (isRootItself || !this.#isRecursiveUnsupported(err)) {
-        log.warn("git watch 目标挂不上（跳过，手动刷新兜底）", { target, error: err instanceof Error ? err.message : String(err) });
-        return;
-      }
     }
+    this.#tryWatch(w, target, false);
+  }
+
+  /** 挂一个目标；成功返回 true */
+  #tryWatch(w: WatchedRoot, target: string, recursive: boolean): boolean {
     try {
-      handle = watch(target, { persistent: false }, () => this.#fire(w));
+      const handle = watch(target, { persistent: false, ...(recursive ? { recursive: true } : {}) }, () => this.#fire(w));
+      // 异步 error（目录被改名/删除等）必须就地收掉：EventEmitter 没挂监听的
+      // error 会冒成 uncaughtException。顺手摘除死句柄 —— ensure() 靠
+      // handles 空集触发重建，僵尸句柄会让重建路径永远走不到
+      handle.on("error", (err: Error) => {
+        log.warn("git watch 目标异常，摘除句柄（下次 status 心跳重建）", { target, error: err.message });
+        w.handles.delete(handle);
+        try {
+          handle.close();
+        } catch {
+          // 已经关了
+        }
+      });
       w.handles.add(handle);
-    } catch (err) {
-      log.warn("git watch 目标挂不上（跳过，手动刷新兜底）", { target, error: err instanceof Error ? err.message : String(err) });
+      return true;
+    } catch (err: unknown) {
+      // 递归不支持是已知降级路径（linux），等 #attach 试非递归，不当失败记
+      if (!(recursive && this.#isRecursiveUnsupported(err))) {
+        log.warn("git watch 目标挂不上（跳过，手动刷新兜底）", { target, error: err instanceof Error ? err.message : String(err) });
+      }
+      return false;
     }
   }
 
@@ -156,7 +175,7 @@ export class GitWatcher {
   async #rebuild(w: WatchedRoot): Promise<void> {
     if (!existsSync(w.root)) return;
     const dirs = await gitDirs(w.root);
-    const targets = new Set<string>([w.root, ...(dirs === null ? [] : [dirs.gitDir, dirs.commonDir])]);
+    const targets = this.#targets(w.root, dirs);
     for (const p of targets) if (!w.paths.includes(p)) w.paths.push(p);
     for (const p of w.paths) this.#attach(w, p);
   }

@@ -496,6 +496,7 @@ async function main(): Promise<void> {
 
     // 9. 提交图（docs/16）：可见历史分页 + parents/refs。cRepo 的线性历史此刻是
     //    diverged → 带上未跟踪 → 提交面冒烟 → init，且 HEAD 在 main 上
+    gc("git tag smoke-tag", cRepo); // refs 解析的 tag 形态
     type SmokeGraphCommit = { hash: string; parents: string[]; subject: string; refs: { name: string; kind: string }[] };
     const g1 = await ok<{ commits: SmokeGraphCommit[]; hasMore: boolean }>("git.graph", { rootPath: cRepo });
     check(
@@ -504,6 +505,11 @@ async function main(): Promise<void> {
         (g1.commits[0]?.refs.some((r) => r.kind === "head" && r.name === "HEAD") ?? false) &&
         (g1.commits[0]?.refs.some((r) => r.kind === "branch" && r.name === "main") ?? false),
       g1.commits[0],
+    );
+    check(
+      "graph: tag decoration parsed",
+      g1.commits[0]?.refs.some((r) => r.kind === "tag" && r.name === "smoke-tag") ?? false,
+      g1.commits[0]?.refs,
     );
     check(
       "graph: linear parents chain links to next row",
@@ -524,8 +530,11 @@ async function main(): Promise<void> {
       check("graph: non-repo → not_a_repo", e.code === "not_a_repo", e));
 
     // 10. 自动刷新（docs/16）：status 心跳挂监听 → 改文件 → 节流广播 git.changed。
-    //     节流窗由 env 压到 250ms（见 startDaemon），前沿即触发，不用等窗
-    const graphEvt = nextMessage(
+    //     节流窗由 env 压到 250ms（见 startDaemon），前沿即触发，不用等窗。
+    //     先静置再装监听：上一轮（non-ff 期间写入）的尾沿事件必须先过完窗，
+    //     否则断言可能吃到旧事件而不是探针写入的那条
+    await sleep(400);
+    const gitChangedEvt = nextMessage(
       ws,
       (f) =>
         f["type"] === "event" &&
@@ -533,9 +542,8 @@ async function main(): Promise<void> {
         (f["event"] as { rootPath?: string } | undefined)?.rootPath === path.resolve(cRepo),
       5000,
     );
-    await sleep(400); // 让上一轮（non-ff 期间的写入）事件先过窗，别认领到旧事件
     writeFileSync(path.join(cRepo, "watch-probe.txt"), "watch\n");
-    const evt = await graphEvt;
+    const evt = await gitChangedEvt;
     check(
       "git.changed broadcast after fs change",
       evt["type"] === "event" && (evt["event"] as { rootPath?: string }).rootPath === path.resolve(cRepo),
