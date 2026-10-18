@@ -486,8 +486,10 @@ function UserMessageBubble({
   const actionsDisabled = blocked || !anchorReady;
   const disabledTitle = blocked ? "先让这一轮落定" : "锚点还没落进账本，稍等一下再试";
 
+  // 常驻可见（60% → 悬停全亮）：纯 hover 显示在触屏/移动端无法触发，
+  // 也太容易被错过（实测反馈：找不到入口）。位型 = 气泡左侧垂直居中。
   const forkAction = (
-    <div className="mr-1.5 flex shrink-0 items-center gap-0.5 opacity-0 transition group-hover/user:opacity-100 focus-within:opacity-100">
+    <div className="flex shrink-0 flex-col items-end gap-1 self-center opacity-60 transition group-hover/user:opacity-100">
       <button
         onClick={() => startFork({ ofSessionId: sessionId as never, anchorMessageId: messageId, kind: "branch" })}
         disabled={actionsDisabled}
@@ -513,42 +515,46 @@ function UserMessageBubble({
 
   if (parsed.isCommand) {
     return (
-      <div className="group/user flex flex-col items-end gap-1.5">
+      <div className="group/user flex items-end justify-end gap-1.5">
         {forkAction}
-        {attachments && attachments.length > 0 && (
-          <AttachmentsBar attachments={[...attachments]} readOnly />
-        )}
-        <div className="max-w-[85%] rounded-[16px] rounded-tr-[4px] border border-line bg-card px-3.5 py-2.5 shadow-xs flex items-center gap-2.5">
-          <div className="flex h-5 w-5 shrink-0 items-center justify-center rounded bg-ink text-canvas font-mono text-[11px] font-bold leading-none">
-            /
-          </div>
-          <span className="font-mono text-body font-bold text-ink">
-            /{parsed.name}
-          </span>
-          {parsed.args ? (
-            <span className="font-mono text-body-sm text-graphite rounded-md bg-line-soft/80 px-2 py-0.5 border border-line-soft max-w-[420px] truncate">
-              {parsed.args}
+        <div className="flex min-w-0 flex-col items-end gap-1.5">
+          {attachments && attachments.length > 0 && (
+            <AttachmentsBar attachments={[...attachments]} readOnly />
+          )}
+          <div className="max-w-[85%] rounded-[16px] rounded-tr-[4px] border border-line bg-card px-3.5 py-2.5 shadow-xs flex items-center gap-2.5">
+            <div className="flex h-5 w-5 shrink-0 items-center justify-center rounded bg-ink text-canvas font-mono text-[11px] font-bold leading-none">
+              /
+            </div>
+            <span className="font-mono text-body font-bold text-ink">
+              /{parsed.name}
             </span>
-          ) : null}
-          <span className="ml-1 font-mono text-[10px] text-graphite/70 border border-line-soft rounded px-1.5 py-px shrink-0">
-            斜杠指令
-          </span>
+            {parsed.args ? (
+              <span className="font-mono text-body-sm text-graphite rounded-md bg-line-soft/80 px-2 py-0.5 border border-line-soft max-w-[420px] truncate">
+                {parsed.args}
+              </span>
+            ) : null}
+            <span className="ml-1 font-mono text-[10px] text-graphite/70 border border-line-soft rounded px-1.5 py-px shrink-0">
+              斜杠指令
+            </span>
+          </div>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="group/user flex flex-col items-end gap-1.5">
+    <div className="group/user flex items-end justify-end gap-1.5">
       {forkAction}
-      {attachments && attachments.length > 0 && (
-        <AttachmentsBar attachments={[...attachments]} readOnly />
-      )}
-      {text.trim() && (
-        <div className="max-w-[85%] rounded-[16px] rounded-tr-[4px] border border-line bg-card px-4 py-3 shadow-xs">
-          <p className="whitespace-pre-wrap text-body leading-relaxed text-ink">{text}</p>
-        </div>
-      )}
+      <div className="flex min-w-0 flex-col items-end gap-1.5">
+        {attachments && attachments.length > 0 && (
+          <AttachmentsBar attachments={[...attachments]} readOnly />
+        )}
+        {text.trim() && (
+          <div className="max-w-[85%] rounded-[16px] rounded-tr-[4px] border border-line bg-card px-4 py-3 shadow-xs">
+            <p className="whitespace-pre-wrap text-body leading-relaxed text-ink">{text}</p>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

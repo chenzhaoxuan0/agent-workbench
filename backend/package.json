@@ -52,6 +52,7 @@
     "smoke:terminal": "tsx scripts/smoke-terminal-reattach.ts",
     "smoke:tui-executors": "tsx scripts/smoke-tui-executors.ts",
     "smoke:ui": "tsx scripts/verify-ui.ts",
+    "smoke:ui:forkbutton": "tsx scripts/verify-fork-button.ts",
     "smoke:ui:live": "tsx scripts/live-gui-test.ts",
     "smoke:ui:resident": "tsx scripts/verify-resident-ui.ts",
     "start": "tsx src/index.ts",

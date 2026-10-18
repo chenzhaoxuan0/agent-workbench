@@ -121,9 +121,14 @@ vs "将编辑此轮并开启新版本"），发送前可见可撤。
 ### B5. 分叉入口 UI（`prototype/src/ui/Timeline.tsx` + store + Composer）
 
 - groupTimelineEvents 给 `user.message` 项补记 `messageId`（anchor 用）；
-- `UserMessageBubble`（296-343）加 hover 动作（`group/msg` 已有 hover 语境）：
+- `UserMessageBubble`（296-343）加 hover 动作（`group/msg` 已有 hover 语境）——
+  **实测修正（2026-10-18）**：初版纯 hover 显示（opacity-0 → 悬停显现）实测可发现性
+  过差且触屏无法触发，改为**常驻可见（60% 透明度，悬停全亮）**，位型从气泡上方
+  独立行改为气泡左侧垂直居中（经典聊天 UI 位型）。CDP 真实页面验证脚本：
+  `backend/scripts/verify-fork-button.ts`（smoke:ui:forkbutton）：
   - **任意轮**："从此处分叉"（GitBranch 图标）——门禁：`runtimeSwitchBlocked`
-    为 true 时禁用 + tooltip"先让这一轮落定"；
+    为 true 时禁用 + tooltip"先让这一轮落定"；本地合成气泡的假 messageId
+    （echo 未回填）锚点未就绪时禁用；
   - **仅时间线最后一条用户消息**："编辑重发"（PencilLine 图标，P2，
     latestQueryEditOnly 守卫）；
 - 点击 → store 设 `pendingFork: { ofSessionId, anchorMessageId, kind }` +
