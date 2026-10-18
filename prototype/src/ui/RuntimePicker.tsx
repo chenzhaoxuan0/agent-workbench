@@ -424,9 +424,12 @@ function SwitchHintCopy() {
     return (
       <div>
         <p className="text-caption text-ash">切换执行器 = 下一条消息开启新对话段；上一段保留、可回看</p>
+        <p className="text-caption text-ash">
+          想回到某一轮换个方向：悬停那条消息点「从此处分叉」（分叉段带只读前缀，旧分支同样保留）
+        </p>
         <label
           className="mt-0.5 flex cursor-pointer items-center gap-1 text-caption text-graphite"
-          title="把上一段的最近对话以只读转录拼进新执行器的首条消息（有损交接；该内容会成为新执行器原生历史的一部分）。触发面是所有开新段的场景（含切换执行器、旧段终结后重开），不只切换"
+          title="把上一段的最近对话以只读转录拼进新执行器的首条消息（有损交接；该内容会成为新执行器原生历史的一部分）。作用于切换执行器/旧段终结后重开等场景；「从此处分叉」不受这个开关影响 —— 分叉恒定携带分叉点之前的只读前缀"
         >
           <input
             type="checkbox"

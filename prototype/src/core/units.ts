@@ -344,6 +344,14 @@ export interface Session {
    */
   readonly live?: boolean;
   readonly resumable?: boolean;
+  /**
+   * 对话分叉血缘（ADR 0013）：fork 出的段指向父段 id 与父段账本 seq 上界。
+   * forkKind: branch = 含锚点轮整轮（「从此处分叉」）；revision = 锚点轮之前
+   * （「编辑重发」）。缺省 = 非分叉段。行创建后不可变。
+   */
+  readonly forkOf?: string;
+  readonly forkAtSeq?: number;
+  readonly forkKind?: "branch" | "revision";
   readonly worktree?: { readonly path: string; readonly branch: string };
   /**
    * 会话的实际工作目录（cwd）：普通会话 = 单元 rootPath，会话工作树 = ensure 后的

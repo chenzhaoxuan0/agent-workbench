@@ -114,10 +114,19 @@ t3code 已经在用，类型安全的文件路由，很适合"两个视图 + 多
 **不选 Tauri**：四个参考仓库没有一个用，Windows 下要额外装 Rust 工具链，
 与"省事"直接冲突。
 
-### 3.8 重型渲染库：现在不装，等需要时再进
+### 3.8 重型渲染库：按需引入（已启用第一批）
 
-全部已核实许可证（见 `02-reference-audit.md`），但原型期不装——
-它们会让首次 `pnpm install` 从几秒变成几分钟，拖慢 UI 迭代。
+全部已核实许可证（见 `02-reference-audit.md`）。原型期刻意不装是为了迭代速度；
+2026-10 随聊天富渲染改造（docs/17）引入第一批，其余仍按需。
+
+**已引入：**
+
+| 库 | 许可证 | 用途 | 证据 |
+|---|---|---|---|
+| `streamdown` | **Apache-2.0** | 聊天 markdown 渲染（react-markdown 的流式替代品，流式/静态双模式 + 未闭合围栏容错） | **ZCode**（取代预审清单里的 react-markdown：同生态且自带流式能力） |
+| `shiki` | MIT | 代码高亮（懒加载 + 双主题 + token 缓存） | ZCode |
+
+**仍按需（未装）：**
 
 | 库 | 许可证 | 用途 | 证据 |
 |---|---|---|---|
@@ -126,8 +135,6 @@ t3code 已经在用，类型安全的文件路由，很适合"两个视图 + 多
 | `@xterm/xterm` | MIT | 终端 | ZCode |
 | `react-resizable-panels` | MIT | 可拖拽分栏 | ZCode |
 | `@tanstack/react-virtual` | MIT | 虚拟滚动 | ZCode |
-| `shiki` | MIT | 代码高亮 | ZCode |
-| `react-markdown` | MIT | Markdown 渲染 | t3code |
 | `motion` | MIT | 动效 | ZCode |
 | `@xyflow/react` | MIT | 编排流程图 | ZCode |
 | `@dnd-kit/core` | MIT | 拖拽 | ZCode + t3code |

@@ -1549,6 +1549,13 @@ interface UnitHistoryEntry {
   resumeRef: string | null;
   /** 终端运行 id（用于检索终端纯文本日志/transcript） */
   terminalId?: string | null;
+  /**
+   * 对话分叉血缘（ADR 0013）：侧栏/历史弹窗的分支徽标与版本家族折叠
+   * （P2 按 forkOf+forkAtSeq 分组）靠这三列。
+   */
+  forkOf?: string | null;
+  forkAtSeq?: number | null;
+  forkKind?: "branch" | "revision" | null;
 }
 
 /**
@@ -1781,6 +1788,9 @@ registerMethod("unit.history", async (params) => {
       sessionId: s.id,
       resumeRef: s.cliRef,
       terminalId: null,
+      forkOf: s.forkOfSession,
+      forkAtSeq: s.forkAtSeq,
+      forkKind: s.forkKind,
     });
   }
 
@@ -2781,6 +2791,7 @@ registerMethod("session.start", (params) => {
     reasoningLevel?: string;
     conversationId?: string;
     handoff?: { fromSessionId?: string };
+    fork?: { ofSessionId?: string; anchorMessageId?: string; kind?: string };
     worktree?: { path?: string; branch?: string };
     memoryOptions?: {
       scopes?: readonly ("semantic" | "daily" | "procedural")[];
@@ -2819,6 +2830,17 @@ registerMethod("session.start", (params) => {
   ) {
     throw Object.assign(new Error("handoff requires fromSessionId (non-empty string)"), { code: "bad_params" });
   }
+  // ADR 0013 分叉参数：给了但不合法 = bad_params（同口径）。
+  // 锚点是否真在父段账本里由 host 解析时校验（unknown_anchor）——这里只查形状。
+  if (
+    p.fork !== undefined &&
+    (p.fork === null || typeof p.fork !== "object" || Array.isArray(p.fork) ||
+      typeof p.fork.ofSessionId !== "string" || p.fork.ofSessionId === "" ||
+      typeof p.fork.anchorMessageId !== "string" || p.fork.anchorMessageId === "" ||
+      (p.fork.kind !== "branch" && p.fork.kind !== "revision"))
+  ) {
+    throw Object.assign(new Error("fork requires ofSessionId, anchorMessageId and kind=branch|revision"), { code: "bad_params" });
+  }
   return host.startSession({
     runtimeId: p.runtimeId,
     unitId: asUnitId(p.unitId),
@@ -2832,6 +2854,16 @@ registerMethod("session.start", (params) => {
     handoff:
       p.handoff !== null && typeof p.handoff === "object" && typeof p.handoff.fromSessionId === "string" && p.handoff.fromSessionId !== ""
         ? { fromSessionId: asSessionId(p.handoff.fromSessionId) }
+        : undefined,
+    fork:
+      p.fork !== null && typeof p.fork === "object" && typeof p.fork.ofSessionId === "string" && p.fork.ofSessionId !== "" &&
+      typeof p.fork.anchorMessageId === "string" && p.fork.anchorMessageId !== "" &&
+      (p.fork.kind === "branch" || p.fork.kind === "revision")
+        ? {
+            ofSessionId: asSessionId(p.fork.ofSessionId),
+            anchorMessageId: p.fork.anchorMessageId,
+            kind: p.fork.kind,
+          }
         : undefined,
     worktree,
     memoryOptions: p.memoryOptions,

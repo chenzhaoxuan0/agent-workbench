@@ -21,7 +21,7 @@ import {
   type UnitId,
   type WorkUnit,
 } from "../core/units.ts";
-import type { AutomationWriteInput } from "../adapters/daemon/client.ts";
+import type { AutomationWriteInput, DaemonSessionRow } from "../adapters/daemon/client.ts";
 import {
   normalizePrefs,
   parsePrefsMap,
@@ -188,6 +188,27 @@ interface WorkbenchState {
    */
   handoffOnSwitch: boolean;
   setHandoffOnSwitch: (on: boolean) => void;
+  /**
+   * 对话分叉意图（ADR 0013 + docs/18 §〇 细化决议）：非空 = 下一次发送将在
+   * 锚点轮边界开分叉段。「意图 + 发送才建段」—— 点「从此时分叉」/「编辑重发」
+   * 只设意图（revision 顺带把锚点原文预填草稿），取消零持久化（台账无新行）。
+   */
+  pendingFork: {
+    readonly ofSessionId: SessionId;
+    readonly anchorMessageId: string;
+    readonly kind: "branch" | "revision";
+    /** 锚点轮的用户原文（编辑重发的草稿回填与提示条摘要用） */
+    readonly anchorText?: string;
+  } | null;
+  /** 进入分叉意图态（源段粒度的 idle 门禁由调用方把关） */
+  startFork: (intent: {
+    ofSessionId: SessionId;
+    anchorMessageId: string;
+    kind: "branch" | "revision";
+    anchorText?: string;
+  }) => void;
+  /** 放弃分叉意图 —— 零持久化 */
+  cancelFork: () => void;
   /**
    * 在聊天页打开一个历史会话（ADR 0012 resume-in-chat）：
    * 从 daemon 账本重建时间线；会话可恢复（live / cli_ref）时接回执行器续聊，
@@ -556,8 +577,9 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
 
   selectUnit: (activeUnitId) => {
     // 切单元 = 切对话视图：时间线跟着换（ADR 0012 后时间线不再随开新段清空，
-    // 单元边界成了唯一的显式清空点之一）
-    set({ activeUnitId, activeSessionId: null, timeline: [] });
+    // 单元边界成了唯一的显式清空点之一）。分叉意图指向旧单元的段，一并作废
+    // （零持久化，用户在新单元里重新发起即可）
+    set({ activeUnitId, activeSessionId: null, timeline: [], pendingFork: null });
     try {
       localStorage.setItem("agent-workbench:active-unit", activeUnitId);
     } catch {}
@@ -669,6 +691,15 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
   handoffOnSwitch: false,
   setHandoffOnSwitch: (on) => set({ handoffOnSwitch: on }),
 
+  pendingFork: null,
+  // revision（编辑重发）顺带把锚点原文回填草稿 —— Composer 对非空 draft 会自动聚焦
+  startFork: (intent) =>
+    set((s) => ({
+      pendingFork: intent,
+      ...(intent.kind === "revision" && intent.anchorText !== undefined ? { draft: intent.anchorText } : {}),
+    })),
+  cancelFork: () => set({ pendingFork: null }),
+
   selectRuntime: (activeRuntimeId) => {
     const s = get();
     // ADR 0012 切换门禁（idle-only）：turn 进行中 / 等权限 / 等输入时切换，
@@ -702,12 +733,16 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
     );
     // 切换反馈：活跃会话存在时，下一条消息将是同一对话的新段 —— 把边界说清楚
     //（替换掉旧文案「切换只影响下一条消息」的误导：它低估了后果）。
+    // 分叉叙事并列（ADR 0013）：回到某一轮换方向走「从此处分叉」，不是切换。
     if (activeRuntimeId !== prevId) {
       const active = s.activeSessionId !== null ? s.sessions.find((x) => x.id === s.activeSessionId) : undefined;
       if (active !== undefined) {
+        const forkPending = get().pendingFork !== null;
         get().pushNotice(
           `已切换到 ${entry.presentation.displayName}`,
-          "下一条消息将开启新对话段（新执行器不带上一段的记忆）；上一段保留在时间线上，可随时回看。",
+          forkPending
+            ? "分叉意图保持有效：下一条消息将在所选轮边界开启分叉段（新执行器，带只读前缀）。"
+            : "下一条消息将开启新对话段（新执行器不带上一段的记忆）；上一段保留在时间线上，可随时回看。想回到某一轮换个方向：悬停那条消息点「从此处分叉」。",
         );
       }
     }
@@ -757,32 +792,71 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
       return;
     }
 
-    // ③ 谱系聚合回放（review P1）：只回放点击的段，跨执行器对话的旧段与 divider
-    // 会在刷新后消失。拉全谱系、按 startedAt 归并逐段回放（eventsSince 是
-    // 会话级 RPC，任一 daemon 适配器实例都能回放任意段）。台账拉不到就退化为
-    // 只回放本段。回放条目统一用本地序号重编 id —— 各段 seq 独立从 1 计数，
-    // 直接拼会撞 React key。
+    // ③ 谱系聚合回放（review P1 + ADR 0013 树化）：目标段沿 fork_of_session 上溯
+    // 得到 fork 祖先链（链上每段按其子段记录的 fork_at_seq 截断），兄弟分支排除；
+    // 主线普通段（执行器切换，无 fork 血缘）全保留 —— 对话的线性脊柱不变，
+    // 分叉是挂在脊柱上的树枝。已知近似（P1 记录在 docs/18）：普通段没有
+    // parent 链接，若兄弟分支后续又做了执行器切换，那段会两边都出现；
+    // 精确树要等段级 parent 落库（P3+）。回放条目统一本地序号重编 id ——
+    // 各段 seq 独立计数，直接拼会撞 React key。
     const lineageRoot = session.conversationId ?? String(session.id);
-    let segmentIds: string[] = [String(session.id)];
-    let lineageRows: Array<{ id: string; runtimeId: string; startedAt: number; status: string; live?: boolean; resumable?: boolean; title?: string; conversationId?: string | null }> = [];
+    let lineageRows: readonly DaemonSessionRow[] = [];
+    const forkBounds = new Map<string, number>();
     try {
       const { fetchSessions, defaultDaemonEndpoint } = await import("../adapters/daemon/client.ts");
       const all = await fetchSessions(defaultDaemonEndpoint());
-      lineageRows = all
-        .filter((s) => (s.conversationId ?? s.id) === lineageRoot)
+      const findSeg = (id: string): DaemonSessionRow | undefined => all.find((s) => s.id === id);
+      const inLineage = all.filter((s) => (s.conversationId ?? s.id) === lineageRoot);
+      // fork 祖先链：target → fork 父 → …（环与断链都安全止步）
+      const chain: DaemonSessionRow[] = [];
+      const seen = new Set<string>();
+      let cursor = findSeg(String(session.id));
+      while (cursor !== undefined && !seen.has(cursor.id)) {
+        seen.add(cursor.id);
+        chain.unshift(cursor);
+        cursor = cursor.forkOf != null ? findSeg(cursor.forkOf) : undefined;
+      }
+      for (let i = 0; i < chain.length; i++) {
+        const bound = chain[i + 1]?.forkAtSeq;
+        if (typeof bound === "number") forkBounds.set(chain[i]!.id, bound);
+      }
+      lineageRows = inLineage
+        // fork 段只保留本链上的（兄弟分支排除）；普通段全保留
+        .filter((s) => s.forkOf == null || seen.has(s.id))
         .sort((a, b) => a.startedAt - b.startedAt);
-      segmentIds = lineageRows.map((s) => s.id);
-      if (!segmentIds.includes(String(session.id))) segmentIds.push(String(session.id));
     } catch {
+      // 台账拉不到（daemon 忙/不可达）：下面按本段兜底（与升级前行为一致）
       lineageRows = [];
     }
+    // 兜底：目标段必须可见（台账缺行 / 拉取失败时至少回放它自己）
+    if (!lineageRows.some((s) => s.id === String(session.id))) {
+      lineageRows = [
+        ...lineageRows,
+        {
+          id: String(session.id),
+          unitId: String(session.unitId),
+          runtimeId: String(session.runtimeId).replace(/^daemon:/, ""),
+          conversationId: session.conversationId ?? null,
+          forkOf: session.forkOf ?? null,
+          forkAtSeq: session.forkAtSeq ?? null,
+          forkKind: session.forkKind ?? null,
+          status: session.status,
+          startedAt: session.startedAt,
+        },
+      ];
+    }
     const rebuilt: { id: number; event: RuntimeEvent; at: number }[] = [];
-    for (const segId of segmentIds) {
+    for (const seg of lineageRows) {
+      const bound = forkBounds.get(seg.id);
       try {
-        const replay = adapter.eventsSince !== undefined ? await adapter.eventsSince(asSessionId(segId)) : [];
-        for (const r of replay) rebuilt.push({ id: ++seq, event: r.event, at: r.at });
+        const replay = adapter.eventsSince !== undefined ? await adapter.eventsSince(asSessionId(seg.id)) : [];
+        for (const r of replay) {
+          // fork 祖先段截断：只保留 seq ≤ 子段 fork_at_seq 的前缀
+          if (bound !== undefined && r.seq > bound) continue;
+          rebuilt.push({ id: ++seq, event: r.event, at: r.at });
+        }
       } catch (err: unknown) {
-        console.warn("[workbench] 该段账本回放失败（跳过）", segId, err instanceof Error ? err.message : err);
+        console.warn("[workbench] 该段账本回放失败（跳过）", seg.id, err instanceof Error ? err.message : err);
       }
     }
 
@@ -805,6 +879,11 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
         live: row.live,
         resumable: row.resumable,
         conversationId: row.conversationId ?? undefined,
+        // fork 血缘（ADR 0013）：Timeline 的 fork 标记行据此区分「分叉拼接」
+        // 与「执行器切换」两种段边界
+        forkOf: row.forkOf ?? undefined,
+        forkAtSeq: row.forkAtSeq ?? undefined,
+        forkKind: row.forkKind ?? undefined,
         stats: { messages: 0, toolCalls: 0, inputTokens: 0, outputTokens: 0, costUsd: 0, durationMs: 0 },
       }));
       let sessions = s.sessions.slice();
@@ -819,6 +898,8 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
         busy: session!.status === "running" && session!.live === true,
         sessions,
         activeSessionId: session!.id,
+        // 打开的是另一条对话的视图：指向旧视图的分叉意图作废（零持久化）
+        pendingFork: null,
       };
     });
     if (historyOnly) {
@@ -987,11 +1068,12 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
     }
 
     const pushUserBubble = (sessionId: SessionId): number => {
+      const itemId = ++seq;
       // 回显登记（ADR 0012 review 修复）：daemon 会把用户轮 delta 广播回来，
       // 本地已渲染的这条登记进窗口，回显到达时消费掉 —— 只滤自己的回声，
-      // 渠道/其他端发起的用户轮不会被误杀（见 consumeEvents 的过滤）
-      registerEcho(sessionId, prompt);
-      const itemId = ++seq;
+      // 渠道/其他端发起的用户轮不会被误杀（见 consumeEvents 的过滤）；
+      // 消费时会把 daemon 真实 messageId 回填进来（fork 锚点用，ADR 0013）
+      registerEcho(sessionId, prompt, itemId);
       set((s) => ({
         timeline: [
           ...s.timeline,
@@ -1011,6 +1093,42 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
       }));
       return itemId;
     };
+
+    // 对话分叉（ADR 0013 + docs/18 §〇）：分叉意图存在 → 下一次发送一定开新段。
+    // 绕过续聊判定与 retention（分叉语义就是「回到锚点边界重来」，不该被接回旧段）。
+    // HANDOFF 不单独传 —— daemon 对 fork 自动取分叉父段为交接源并带 seq 上界。
+    // 失败保留意图（用户可重试或取消）；成功清意图。
+    const forkIntent = get().pendingFork;
+    if (forkIntent !== null && opts?.worktree === undefined) {
+      set({ busy: true });
+      const source = get().sessions.find((s) => s.id === forkIntent.ofSessionId);
+      try {
+        const session = await adapter.startSession({
+          unit,
+          prompt: fullPrompt,
+          model,
+          // 谱系照常继承自源段（分叉不换谱系 —— 一棵树一个 conversation_id，ADR 决议）
+          conversationId: source !== undefined ? (source.conversationId ?? String(source.id)) : undefined,
+          fork: {
+            ofSessionId: forkIntent.ofSessionId,
+            anchorMessageId: forkIntent.anchorMessageId,
+            kind: forkIntent.kind,
+          },
+          loop,
+          memoryOptions: opts?.memoryOptions ?? { scopes: get().memoryScopes },
+          attachments,
+        });
+        set((s) => ({
+          sessions: [...s.sessions, session],
+          activeSessionId: session.id,
+          pendingFork: null,
+        }));
+        pushUserBubble(session.id);
+      } catch (err: unknown) {
+        fail(err);
+      }
+      return;
+    }
 
     // 续聊：活跃会话开着（未 done/failed）且属于当前执行器。
     // 工作树会话例外：它永远是新开的（daemon 按 path+branch ensure 工作树）。
@@ -1241,10 +1359,10 @@ const consumerAttached = new WeakSet<RuntimeAdapter>();
  * 用户轮（askBot 续聊、断线期间的 IM 消息回放）照常渲染，不会被全局过滤吞掉。
  * 匹配用「同会话 + 文本相等或前缀（附件拼进 fullPrompt 的场景）」。
  */
-const pendingEcho: Array<{ sessionId: string; text: string; at: number }> = [];
+const pendingEcho: Array<{ sessionId: string; text: string; at: number; itemId: number }> = [];
 
-function registerEcho(sessionId: SessionId, text: string): void {
-  pendingEcho.push({ sessionId: String(sessionId), text, at: Date.now() });
+function registerEcho(sessionId: SessionId, text: string, itemId: number): void {
+  pendingEcho.push({ sessionId: String(sessionId), text, at: Date.now(), itemId });
   while (pendingEcho.length > 8) pendingEcho.shift();
   const cutoff = Date.now() - 30_000;
   while (pendingEcho.length > 0 && (pendingEcho[0]?.at ?? Infinity) < cutoff) pendingEcho.shift();
@@ -1258,7 +1376,17 @@ function consumeEcho(event: RuntimeEvent): boolean {
       (event.text === p.text || (p.text !== "" && event.text.startsWith(`${p.text}\n`))),
   );
   if (idx < 0) return false;
+  const entry = pendingEcho[idx]!;
   pendingEcho.splice(idx, 1);
+  // 回声不是白丢：把 daemon 侧的真实 messageId 回填给本地气泡 —— 分叉锚点
+  // （ADR 0013）要拿它去账本定位轮边界，本地合成的 `u${seq}` 假 id 查不到。
+  useWorkbench.setState((s) => ({
+    timeline: s.timeline.map((t) =>
+      t.id === entry.itemId && t.event.type === "message.delta"
+        ? { ...t, event: { ...t.event, messageId: event.messageId } }
+        : t,
+    ),
+  }));
   return true;
 }
 

@@ -1288,6 +1288,10 @@ export interface UnitHistoryEntry {
   readonly resumeRef: string | null;
   /** 终端运行 id（用于检索终端纯文本日志/transcript） */
   readonly terminalId?: string | null;
+  /** 对话分叉血缘（ADR 0013）：分支徽标与版本家族折叠（P2 按 forkOf+forkAtSeq 分组）用 */
+  readonly forkOf?: string | null;
+  readonly forkAtSeq?: number | null;
+  readonly forkKind?: "branch" | "revision" | null;
 }
 
 export async function fetchUnitHistory(
@@ -1324,6 +1328,10 @@ export interface DaemonSessionRow {
   readonly unitId: string;
   readonly runtimeId: string;
   readonly conversationId?: string | null;
+  /** 对话分叉血缘（ADR 0013）：树路径回溯与版本家族折叠用 */
+  readonly forkOf?: string | null;
+  readonly forkAtSeq?: number | null;
+  readonly forkKind?: "branch" | "revision" | null;
   readonly status: string;
   readonly startedAt: number;
   readonly title?: string;

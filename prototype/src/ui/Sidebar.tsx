@@ -40,6 +40,7 @@ import { ImportBotDialog } from "./ImportBotDialog.tsx";
 import { UNIT_VIEWS, UnitViewSegment } from "./UnitViewSegment.tsx";
 import { ChannelMark, channelIdentityLabel } from "./ChannelMark.tsx";
 import { HistoryDialog, resumeArgsFor } from "./HistoryDialog.tsx";
+import { collapseForkVersions } from "./forkHistory.ts";
 import { executorIconSrc } from "./executorIcon.ts";
 import { useHistoryPrefs } from "../store/useHistoryPrefs.ts";
 import { MessageSquare, RotateCcw } from "lucide-react";
@@ -864,13 +865,15 @@ function UnitRow({
               已隐藏 {hiddenFailedCount} 条失败会话（点击打开详情）
             </button>
           )}
-          {filteredEntries?.slice(0, visibleCount).map((e) => {
+          {collapseForkVersions(filteredEntries ?? []).slice(0, visibleCount).map((slot) => {
+            const e = slot.entry;
             const args = resumeArgsFor(e.runtimeId, e.resumeRef);
             const self = units.find((u) => u.id === unit.id);
             return (
               <HistoryListRow
                 key={e.key}
                 entry={e}
+                versionCount={slot.family?.length}
                 onOpenDetail={() => {
                   setHistoryFocus(e.key);
                   setHistoryDialogOpen(true);
@@ -1025,11 +1028,14 @@ function formatHistoryTime(ts: number): string {
  *  headless 条目另带 💬 图标：接回聊天页续聊（ADR 0012 resume-in-chat）。 */
 function HistoryListRow({
   entry,
+  versionCount,
   onOpenDetail,
   onResume,
   onOpenInChat,
 }: {
   entry: UnitHistoryEntry;
+  /** revision 家族成员数（ADR 0013 版本折叠摘要；undefined = 非家族行） */
+  versionCount?: number;
   onOpenDetail: () => void;
   onResume?: () => void;
   onOpenInChat?: () => void;
@@ -1067,6 +1073,19 @@ function HistoryListRow({
       </span>
       <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", dot)} />
       <span className="min-w-0 flex-1 truncate text-[11px] text-graphite">{entry.title}</span>
+      {(versionCount !== undefined && versionCount > 1) || entry.forkKind === "branch" || entry.forkKind === "revision" ? (
+        <span
+          className="flex shrink-0 items-center gap-0.5 rounded-full bg-teal-tint px-1 py-px text-[9px] text-teal"
+          title={
+            versionCount !== undefined && versionCount > 1
+              ? `同一轮的 ${versionCount} 个重发版本（历史弹窗里可展开导航）`
+              : "这段是从更早的对话分叉出来的"
+          }
+        >
+          <GitBranch size={8} />
+          {versionCount !== undefined && versionCount > 1 ? `×${versionCount}` : "分叉"}
+        </span>
+      ) : null}
       <span className="shrink-0 text-[9px] text-ash/70">{formatHistoryTime(entry.startedAt)}</span>
       {onOpenInChat !== undefined && (
         <span

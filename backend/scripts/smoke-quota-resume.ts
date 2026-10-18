@@ -92,6 +92,9 @@ try {
     conversationId: null,
     lastSeq: 0,
     turnCount: 0,
+    forkOfSession: null,
+    forkAtSeq: null,
+    forkKind: null,
     stats: { messages: 4, toolCalls: 2, inputTokens: 100, outputTokens: 50, costUsd: 0.1, durationMs: 5000 },
   });
 
@@ -302,6 +305,7 @@ function absoluteTimeChecks(): void {
       id, unitId: "u1", runtimeId, title: `对话 ${id}`, status: "failed",
       startedAt, endedAt: startedAt + 1000, cliRef, rootPath: "/tmp",
       conversationId: null, lastSeq: 0, turnCount: 0,
+      forkOfSession: null, forkAtSeq: null, forkKind: null,
       stats: { messages: 1, toolCalls: 0, inputTokens: 1, outputTokens: 1, costUsd: 0, durationMs: 1 },
     });
   };

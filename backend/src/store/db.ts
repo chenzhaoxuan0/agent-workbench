@@ -36,6 +36,14 @@ export interface SessionRow {
   readonly lastSeq: number;
   /** 轮号持久化（ADR 0012）：turn.started/completed 凭 turn 配对，换代不得重号 */
   readonly turnCount: number;
+  /**
+   * 对话分叉血缘（ADR 0013）：fork 出的段指向父段 id + 父段账本 seq 上界。
+   * 三列不可变（同 conversation_id）；forkKind: 'branch' = 含锚点轮整轮（through），
+   * 'revision' = 锚点轮之前（before，编辑重发）。NULL = 非分叉段。
+   */
+  readonly forkOfSession: string | null;
+  readonly forkAtSeq: number | null;
+  readonly forkKind: "branch" | "revision" | null;
   readonly stats: {
     messages: number;
     toolCalls: number;
@@ -266,6 +274,19 @@ export class Store {
         // 列已存在
       }
     }
+    // ADR 0013 对话分叉：血缘三列（fork_of_session/fork_at_seq/fork_kind），
+    // 行创建后不可变、不进 upsert 的 ON CONFLICT UPDATE（与 conversation_id 同款约束）
+    for (const stmt of [
+      `ALTER TABLE sessions ADD COLUMN fork_of_session TEXT`,
+      `ALTER TABLE sessions ADD COLUMN fork_at_seq INTEGER`,
+      `ALTER TABLE sessions ADD COLUMN fork_kind TEXT`,
+    ]) {
+      try {
+        this.db.exec(stmt);
+      } catch {
+        // 列已存在
+      }
+    }
     // 自动化 v2（对齐 ZCode 的调度状态机）：
     // 「下次何时跑」是持久化事实（next_run_at），scheduler 只认 DB 不靠内存推算，
     // daemon 重启 / 崩溃不丢拍；recurring/max_runs/run_count 收口一次性与有限次任务；
@@ -319,8 +340,8 @@ export class Store {
   upsertSession(row: SessionRow): void {
     this.db
       .prepare(
-        `INSERT INTO sessions (id, unit_id, runtime_id, title, status, started_at, ended_at, cli_ref, root_path, conversation_id, last_seq, turn_count, stats_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO sessions (id, unit_id, runtime_id, title, status, started_at, ended_at, cli_ref, root_path, conversation_id, last_seq, turn_count, fork_of_session, fork_at_seq, fork_kind, stats_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET title=excluded.title, status=excluded.status,
            ended_at=excluded.ended_at, cli_ref=excluded.cli_ref, root_path=excluded.root_path,
            last_seq=MAX(last_seq, excluded.last_seq), turn_count=MAX(turn_count, excluded.turn_count), stats_json=excluded.stats_json`,
@@ -338,6 +359,10 @@ export class Store {
         row.conversationId,
         row.lastSeq,
         row.turnCount,
+        // ADR 0013：血缘三列只在 INSERT 时写入，冲突更新不触碰（行创建后不可变）
+        row.forkOfSession,
+        row.forkAtSeq,
+        row.forkKind,
         JSON.stringify(row.stats),
       );
   }
@@ -1248,6 +1273,10 @@ export class Store {
       conversationId: r["conversation_id"] === null || r["conversation_id"] === undefined ? null : String(r["conversation_id"]),
       lastSeq: Number(r["last_seq"] ?? 0),
       turnCount: Number(r["turn_count"] ?? 0),
+      forkOfSession: r["fork_of_session"] === null || r["fork_of_session"] === undefined ? null : String(r["fork_of_session"]),
+      forkAtSeq: r["fork_at_seq"] === null || r["fork_at_seq"] === undefined ? null : Number(r["fork_at_seq"]),
+      forkKind:
+        r["fork_kind"] === "branch" || r["fork_kind"] === "revision" ? r["fork_kind"] : null,
       stats,
     };
   }

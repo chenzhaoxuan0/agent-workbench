@@ -182,6 +182,17 @@ export interface StartSessionRequest {
    * 原生历史）。缺省 = 不携带。
    */
   readonly handoff?: { readonly fromSessionId: SessionId };
+  /**
+   * 对话分叉（ADR 0013）：在 ofSessionId 的 anchorMessageId 那轮边界开新段。
+   * branch = 含锚点轮整轮（「从此处分叉」）；revision = 锚点轮之前
+   * （「编辑重发」）。fork_at_seq 由 daemon 从账本解析（前端不持有可靠 seq）；
+   * fork 启动时 HANDOFF 自动带 seq 上界（只携带分叉点之前的前缀）。
+   */
+  readonly fork?: {
+    readonly ofSessionId: SessionId;
+    readonly anchorMessageId: string;
+    readonly kind: "branch" | "revision";
+  };
   /** 项目模式：指定 worktree 以实现并行隔离 */
   readonly worktree?: { readonly path: string; readonly branch: string };
   /** agent loop 参数（省略 = 各执行器默认；mode 缺省视为 build） */

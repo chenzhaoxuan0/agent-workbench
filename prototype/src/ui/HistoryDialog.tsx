@@ -7,6 +7,7 @@ import {
   CircleCheck,
   CircleDot,
   Copy,
+  GitBranch,
   History,
   ListTodo,
   MessageSquare,
@@ -31,6 +32,8 @@ import { useWorkbench } from "../store/useWorkbench.ts";
 import { useHistoryPrefs } from "../store/useHistoryPrefs.ts";
 import { asSessionId, asUnitId } from "../core/units.ts";
 import { useShell } from "../store/useShell.ts";
+import { collapseForkVersions } from "./forkHistory.ts";
+import { MarkdownContent } from "./MarkdownContent.tsx";
 import { cn } from "./cn.ts";
 
 /**
@@ -373,16 +376,18 @@ export function HistoryDialog({
               </button>
             </div>
           )}
-          {displayedEntries !== null && displayedEntries.map((e) => (
+          {displayedEntries !== null && collapseForkVersions(displayedEntries).map((slot) => (
             <HistoryRow
-              key={e.key}
-              entry={e}
-              expanded={expanded === e.key}
-              onToggle={() => setExpanded(expanded === e.key ? null : e.key)}
-              resumable={resumable(e)}
-              resumeBusy={resumeBusy === e.key}
-              onResume={() => handleResume(e)}
-              onOpenInChat={e.sessionId !== null && e.unitId !== undefined ? () => handleOpenInChat(e) : undefined}
+              key={slot.entry.key}
+              entry={slot.entry}
+              family={slot.family}
+              expanded={expanded === slot.entry.key}
+              onToggle={() => setExpanded(expanded === slot.entry.key ? null : slot.entry.key)}
+              resumable={resumable(slot.entry)}
+              resumeBusy={resumeBusy === slot.entry.key}
+              onResume={() => handleResume(slot.entry)}
+              onOpenInChat={slot.entry.sessionId !== null && slot.entry.unitId !== undefined ? () => handleOpenInChat(slot.entry) : undefined}
+              onOpenFamilyMember={(m) => handleOpenInChat(m)}
             />
           ))}
         </div>
@@ -520,14 +525,21 @@ function NativeTranscript({ executorId, sessionId }: { executorId: string; sessi
             >
               {label}
             </span>
-            <p
-              className={cn(
-                "min-w-0 flex-1 whitespace-pre-wrap break-words text-caption leading-relaxed",
-                e.kind === "user" ? "text-ink" : e.kind === "assistant" ? "text-graphite" : "text-ash/70",
-              )}
-            >
-              {e.text === "" ? "（空）" : e.text}
-            </p>
+            {/* 助手行走 markdown 富渲染（docs/17）；用户/系统行保持纯文本 */}
+            {e.kind === "assistant" && e.text !== "" ? (
+              <div className="min-w-0 flex-1 text-graphite">
+                <MarkdownContent content={e.text} className="text-caption leading-relaxed" />
+              </div>
+            ) : (
+              <p
+                className={cn(
+                  "min-w-0 flex-1 whitespace-pre-wrap break-words text-caption leading-relaxed",
+                  e.kind === "user" ? "text-ink" : e.kind === "assistant" ? "text-graphite" : "text-ash/70",
+                )}
+              >
+                {e.text === "" ? "（空）" : e.text}
+              </p>
+            )}
           </div>
         );
       })}
@@ -537,14 +549,18 @@ function NativeTranscript({ executorId, sessionId }: { executorId: string; sessi
 
 function HistoryRow({
   entry,
+  family,
   expanded,
   onToggle,
   resumable,
   resumeBusy,
   onResume,
   onOpenInChat,
+  onOpenFamilyMember,
 }: {
   entry: UnitHistoryEntry;
+  /** 同锚点的 revision 家族（旧 → 新，含 entry；ADR 0013 P2 版本折叠） */
+  family?: readonly UnitHistoryEntry[];
   expanded: boolean;
   onToggle: () => void;
   resumable: boolean;
@@ -552,6 +568,8 @@ function HistoryRow({
   onResume: () => void;
   /** ADR 0012 resume-in-chat：headless 会话才有（TUI 条目没有我们的账本） */
   onOpenInChat?: () => void;
+  /** 家族成员「在聊天页继续」（版本导航的落点） */
+  onOpenFamilyMember?: (m: UnitHistoryEntry) => void;
 }): ReactElement {
   const kind = KIND_META[entry.kind];
   const st = useMemo(() => statusMeta(entry.status), [entry.status]);
@@ -559,6 +577,15 @@ function HistoryRow({
   const KIcon = kind.icon;
   const SIcon = st.icon;
   const expandable = entry.sessionId !== null || Boolean(entry.terminalId) || entry.launchMode === "terminal";
+  const [familyOpen, setFamilyOpen] = useState(false);
+  const badge =
+    family !== undefined && family.length > 1
+      ? `${family.length} 个版本`
+      : entry.forkKind === "branch"
+        ? "分叉"
+        : entry.forkKind === "revision"
+          ? "重发"
+          : null;
 
   return (
     <div className="border-b border-line-soft last:border-b-0">
@@ -574,6 +601,33 @@ function HistoryRow({
           <KIcon size={10} className="mr-0.5 inline-block align-[-1px]" />
           {kind.label}
         </span>
+        {badge !== null && (
+          <span
+            role={family !== undefined && family.length > 1 ? "button" : undefined}
+            tabIndex={family !== undefined && family.length > 1 ? 0 : undefined}
+            onClick={() => {
+              if (family !== undefined && family.length > 1) setFamilyOpen(!familyOpen);
+            }}
+            onKeyDown={(ev) => {
+              if ((ev.key === "Enter" || ev.key === " ") && family !== undefined && family.length > 1) {
+                ev.stopPropagation();
+                setFamilyOpen(!familyOpen);
+              }
+            }}
+            className={cn(
+              "mt-0.5 flex shrink-0 items-center gap-0.5 rounded-chip bg-teal-tint px-1.5 py-px text-[10px] text-teal",
+              family !== undefined && family.length > 1 && "cursor-pointer transition hover:bg-teal hover:text-canvas",
+            )}
+            title={
+              family !== undefined && family.length > 1
+                ? "同一轮的多个重发版本：展开回看旧版本（旧分支永不删）"
+                : "这段是从更早的对话分叉出来的"
+            }
+          >
+            <GitBranch size={9} />
+            {badge}
+          </span>
+        )}
         <span className="min-w-0 flex-1">
           <span className="flex items-center gap-2">
             <span className="min-w-0 flex-1 truncate text-body-sm text-ink">{entry.title}</span>
@@ -650,6 +704,46 @@ function HistoryRow({
           )}
         </span>
       </button>
+      {familyOpen && family !== undefined && (
+        <div className="mx-2 mb-2 rounded-btn border border-line-soft bg-rail/60 p-1.5">
+          {family.map((m, i) => (
+            <div
+              key={m.key}
+              className={cn(
+                "flex items-center gap-2 rounded-btn px-2 py-1 text-caption",
+                m.key === entry.key && "bg-teal-tint/60",
+              )}
+            >
+              <span className="shrink-0 rounded-chip bg-line-soft px-1.5 py-px text-[10px] font-mono text-graphite">
+                v{i + 1}
+              </span>
+              <span className="min-w-0 flex-1 truncate text-graphite">{m.title}</span>
+              <span className="shrink-0 text-ash/70">{formatWhen(m.startedAt)}</span>
+              {m.key === entry.key ? (
+                <span className="shrink-0 text-[10px] text-teal">当前</span>
+              ) : (
+                onOpenFamilyMember !== undefined &&
+                m.sessionId !== null &&
+                m.unitId !== undefined && (
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => onOpenFamilyMember(m)}
+                    onKeyDown={(ev) => {
+                      if (ev.key === "Enter" || ev.key === " ") onOpenFamilyMember(m);
+                    }}
+                    title="把这个旧版本接回聊天页（旧分支只读可回看，不会丢）"
+                    className="flex shrink-0 cursor-pointer items-center gap-0.5 rounded-chip bg-line-soft px-1.5 py-px text-[10px] text-graphite transition hover:bg-teal hover:text-canvas"
+                  >
+                    <MessageSquare size={9} />
+                    在聊天页查看
+                  </span>
+                )
+              )}
+            </div>
+          ))}
+        </div>
+      )}
       {expanded && (
         <>
           {entry.sessionId !== null && <SessionMessages sessionId={entry.sessionId} />}

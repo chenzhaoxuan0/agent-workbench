@@ -22,6 +22,7 @@ import type {
   Session,
   SessionId,
   SessionStatus,
+  TraceRecord,
   UnitId,
 } from "../contract.ts";
 import { log } from "../log.ts";
@@ -132,6 +133,10 @@ interface HostSession {
   readonly runtimeId: RuntimeId;
   /** 会话谱系（ADR 0012）：NULL = 自身为根；切换执行器开的新段指向旧段谱系 */
   readonly conversationId: string | null;
+  /** 对话分叉血缘（ADR 0013）：非分叉段三者为 null；行创建后不可变 */
+  readonly forkOfSession: string | null;
+  readonly forkAtSeq: number | null;
+  readonly forkKind: "branch" | "revision" | null;
   /** 会话实际 cwd（worktree 会话 = 工作树路径）；源代码管理删树前的活跃会话判定用 */
   readonly rootPath: string;
   title: string;
@@ -194,6 +199,17 @@ export interface StartSessionInput {
    * 上下文不迁移（做不到也不该做），迁移的是 host 账本的对话事实。
    */
   readonly handoff?: { readonly fromSessionId: SessionId };
+  /**
+   * 对话分叉（ADR 0013）：在 ofSessionId 的 anchorMessageId 那轮边界开新段。
+   * branch = 含锚点轮整轮（through）；revision = 锚点轮之前（before，编辑重发）。
+   * fork_at_seq 由 host 从账本解析（前端不持有可靠的 daemon 侧 seq），血缘三列
+   * 随台账行落库；fork 启动时 HANDOFF 自动带上界（源段 = 分叉父段）。
+   */
+  readonly fork?: {
+    readonly ofSessionId: SessionId;
+    readonly anchorMessageId: string;
+    readonly kind: "branch" | "revision";
+  };
   readonly mode?: StartRequest["mode"];
   readonly reasoningLevel?: string;
   /**
@@ -379,6 +395,9 @@ export class RuntimeHost {
         unitId: row.unitId as UnitId,
         runtimeId: row.runtimeId as RuntimeId,
         conversationId: row.conversationId,
+        forkOfSession: row.forkOfSession,
+        forkAtSeq: row.forkAtSeq,
+        forkKind: row.forkKind,
         // 老行可能没写 rootPath（列后加的）：空串 = 未知，删树防拆判定自然不命中
         rootPath: row.rootPath ?? "",
         title: row.title,
@@ -870,6 +889,9 @@ export class RuntimeHost {
       unitId: h.unitId,
       runtimeId: h.runtimeId,
       conversationId: h.conversationId ?? undefined,
+      forkOf: h.forkOfSession ?? undefined,
+      forkAtSeq: h.forkAtSeq ?? undefined,
+      forkKind: h.forkKind ?? undefined,
       rootPath: h.rootPath,
       title: h.title,
       status: h.status,
@@ -930,11 +952,23 @@ export class RuntimeHost {
         injected = null;
       }
     }
+    // ADR 0013 对话分叉：锚点 → 父段 seq 上界，一源两用 ——
+    // 血缘列（fork_at_seq）与 HANDOFF 投影上界都取它。锚点不在账本 = unknown_anchor。
+    let forkAtSeq: number | null = null;
+    if (input.fork !== undefined) {
+      forkAtSeq = await this.resolveForkAtSeq(
+        input.fork.ofSessionId,
+        input.fork.anchorMessageId,
+        input.fork.kind,
+      );
+    }
     // ADR 0012 只读转录交接（opt-in）：与记忆注入同一挂载点、同一跳过规则
     //（斜杠命令是控制输入，前面拼块会废掉命令分发）。
+    // ADR 0013：fork 启动的交接源默认取分叉父段，且带 seq 上界（截至分叉点的前缀）。
+    const handoffSource = input.handoff?.fromSessionId ?? input.fork?.ofSessionId ?? null;
     const handoffBlock =
-      input.handoff !== undefined && !isNativeCommand
-        ? this.buildHandoffBlock(input.handoff.fromSessionId)
+      handoffSource !== null && !isNativeCommand
+        ? await this.buildHandoffBlock(handoffSource, forkAtSeq)
         : null;
     // ⚠ injected.prompt 已含用户原话（block + 分隔 + 原话）——只整体前置 HANDOFF，
     // 绝不能再 join input.prompt（review P0：曾把用户指令拼两遍发给执行器）。
@@ -973,6 +1007,9 @@ export class RuntimeHost {
       unitId: input.unitId,
       runtimeId: adapter.id as RuntimeId,
       conversationId: input.conversationId ?? null,
+      forkOfSession: input.fork?.ofSessionId ?? null,
+      forkAtSeq,
+      forkKind: input.fork?.kind ?? null,
       rootPath,
       title: input.prompt.length > 60 ? input.prompt.slice(0, 60) + "…" : input.prompt,
       status: "running",
@@ -1011,6 +1048,9 @@ export class RuntimeHost {
       conversationId: h.conversationId,
       lastSeq: 0,
       turnCount: h.turnCount,
+      forkOfSession: h.forkOfSession,
+      forkAtSeq: h.forkAtSeq,
+      forkKind: h.forkKind,
       stats: { ...h.stats },
     });
     this.store.insertMessage(h.id, Date.now(), "user", input.prompt);
@@ -1162,16 +1202,22 @@ export class RuntimeHost {
    * 构造只读转录交接块（ADR 0012）：旧段消息投影（user/assistant 文本）→ 定界前缀。
    * 数据来自 host 账本的 messages 投影 —— 旧段执行器的私有上下文不迁移，
    * 迁移的是对话事实本身。拿不到任何消息时返回 null（等价于未开启交接）。
+   *
+   * ADR 0013：upToSeq 非空时改为「截至该 seq 的转录投影」—— 分叉携带的
+   * 上文就是分叉点之前的前缀，messages 表没有 seq 维度，走 trace 账本投影。
    */
-  private buildHandoffBlock(fromSessionId: SessionId): string | null {
+  private async buildHandoffBlock(fromSessionId: SessionId, upToSeq: number | null = null): Promise<string | null> {
     let turns: Array<{ role: string; text: string }>;
     let fromRuntimeId = "另一执行器";
     try {
       const row = this.store.getSession(fromSessionId);
       if (row !== undefined) fromRuntimeId = row.runtimeId;
-      turns = this.store
-        .listMessages(fromSessionId, RuntimeHost.HANDOFF_MAX_MESSAGES)
-        .filter((m) => m.role === "user" || m.role === "assistant");
+      turns =
+        upToSeq === null
+          ? this.store
+              .listMessages(fromSessionId, RuntimeHost.HANDOFF_MAX_MESSAGES)
+              .filter((m) => m.role === "user" || m.role === "assistant")
+          : await this.projectTranscriptUpTo(fromSessionId, upToSeq);
     } catch {
       return null;
     }
@@ -1188,6 +1234,73 @@ export class RuntimeHost {
       ...lines,
       "===== 上文交接结束 =====",
     ].join("\n");
+  }
+
+  /** ADR 0013：trace 账本的 seq 有界转录投影（口径与无界路径一致：最近 N 条、单条截断在上游做） */
+  private async projectTranscriptUpTo(
+    sessionId: SessionId,
+    upToSeq: number,
+  ): Promise<Array<{ role: string; text: string }>> {
+    const nd = await this.trace.readSessionNdjson(sessionId, 0);
+    const out: Array<{ role: string; text: string }> = [];
+    for (const line of nd.split("\n")) {
+      if (line === "") continue;
+      try {
+        const rec = JSON.parse(line) as TraceRecord;
+        if (rec.seq > upToSeq) continue;
+        const e = rec.event;
+        if (e.type === "message.delta" && e.role === "user") out.push({ role: "user", text: e.text });
+        else if (e.type === "message.completed") out.push({ role: "assistant", text: e.text });
+      } catch {
+        // 坏行跳过：账本容错读
+      }
+    }
+    return out.slice(-RuntimeHost.HANDOFF_MAX_MESSAGES);
+  }
+
+  /**
+   * ADR 0013：分叉锚点 → 父段账本 seq 上界。锚点 = 父段里那轮的用户消息
+   * messageId（host 统一发 user-N）。branch = through（含锚点轮整轮，截至
+   * 该轮 turn.completed 的 seq）；revision = before（锚点行之前最后一个事件的
+   * seq，不含该轮 —— 首轮之前为 0 = 空前缀，编辑首条消息等于重新开始）。
+   * 锚点不在账本 = unknown_anchor（daemon 侧校验，前端不持有可靠 seq）。
+   */
+  private async resolveForkAtSeq(
+    ofSessionId: SessionId,
+    anchorMessageId: string,
+    kind: "branch" | "revision",
+  ): Promise<number> {
+    const nd = await this.trace.readSessionNdjson(ofSessionId, 0);
+    const records: Array<{ seq: number; type: string; messageId?: string; role?: string }> = [];
+    for (const line of nd.split("\n")) {
+      if (line === "") continue;
+      try {
+        const rec = JSON.parse(line) as TraceRecord;
+        const e = rec.event as { type: string; messageId?: string; role?: string };
+        records.push({
+          seq: rec.seq,
+          type: e.type,
+          messageId: e.messageId,
+          role: e.role,
+        });
+      } catch {
+        // 坏行跳过：账本容错读
+      }
+    }
+    const anchorIdx = records.findIndex(
+      (r) => r.type === "message.delta" && r.role === "user" && r.messageId === anchorMessageId,
+    );
+    if (anchorIdx < 0) {
+      throw adapterError("unknown_anchor", `fork anchor not found in ledger: ${anchorMessageId}`);
+    }
+    if (kind === "revision") {
+      return anchorIdx === 0 ? 0 : records[anchorIdx - 1]!.seq;
+    }
+    // branch：锚点及其之后的第一条 turn.completed 收的就是锚点轮的口
+    //（turn.started 先于该轮用户消息入账）。找不到（源段异常未收口）回落账本尾。
+    const closing = records.slice(anchorIdx).find((r) => r.type === "turn.completed");
+    if (closing !== undefined) return closing.seq;
+    return records.length > 0 ? records[records.length - 1]!.seq : 0;
   }
 
   /** 执行器引用落盘（agent loop 语义下 turn 不再结束会话，ref 在首个 turn 就同步） */

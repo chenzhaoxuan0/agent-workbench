@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   Bot,
@@ -8,7 +8,9 @@ import {
   ChevronRight,
   FileCode,
   FileDiff,
+  GitBranch,
   Package,
+  PencilLine,
   Search,
   ShieldCheck,
   Sparkles,
@@ -37,12 +39,43 @@ import { cn } from "./cn.ts";
  * - 助手回复采用 Markdown 富文本排版与代码块复制
  * - 用户消息独立卡片排版
  */
+/**
+ * 吸底滚动：用户距底 <40px 视为「贴底」，此后内容变化（流式增量、新事件）
+ * 自动滚到底；用户上滚即暂停，手动滚回底部恢复。渲染后同步执行（useLayoutEffect
+ * 先于绘制），流式逐字不闪跳。openSession 历史重建时首帧即贴底。
+ */
+function useStickToBottom() {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const stuck = useRef(true);
+
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (el === null) return;
+    const onScroll = () => {
+      stuck.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
+
+  // 无依赖数组：每次渲染后检查——流式每帧内容都变
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (el !== null && stuck.current) {
+      el.scrollTop = el.scrollHeight;
+    }
+  });
+
+  return ref;
+}
+
 export function Timeline() {
   const timeline = useWorkbench((s) => s.timeline);
   const busy = useWorkbench((s) => s.busy);
   const unit = useWorkbench(selectActiveUnit);
   const sessions = useWorkbench((s) => s.sessions);
   const runtimes = useWorkbench((s) => s.runtimes);
+  const scrollRef = useStickToBottom();
 
   // sessionId → 执行器显示名（divider 合成用；Map 每次渲染重建，sessions 规模下可忽略）
   const nameOf = useMemo(() => {
@@ -54,11 +87,25 @@ export function Timeline() {
     return (sid: string): string | undefined => map.get(sid);
   }, [sessions, runtimes]);
 
+  // fork 血缘查询（fork.point 标记用）：sessions 行上带 forkOf/forkKind
+  const sessionOf = useMemo(
+    () => (sid: string): { forkOf?: string; forkKind?: "branch" | "revision" } | undefined =>
+      sessions.find((s) => String(s.id) === sid),
+    [sessions],
+  );
+
   // 事件流归并处理：合并流式连续思考片段，配对工具调用
-  const items = useMemo(() => groupTimelineEvents(timeline, nameOf), [timeline, nameOf]);
+  const items = useMemo(() => groupTimelineEvents(timeline, nameOf, sessionOf), [timeline, nameOf, sessionOf]);
+
+  // 最后一条用户消息的 item id：编辑重发（revision）只对它开放（latestQueryEditOnly）
+  const lastUserTurnId = useMemo(() => {
+    let last: string | number | undefined;
+    for (const it of items) if (it.kind === "user.message") last = it.id;
+    return last;
+  }, [items]);
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto">
+    <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
       <div
         className={cn(
           "mx-auto max-w-[900px] px-6 py-6 sm:px-8 sm:py-8",
@@ -70,7 +117,7 @@ export function Timeline() {
         ) : (
           <div className="space-y-4">
             {items.map((item) => (
-              <TimelineItemRow key={item.id} item={item} unitName={unit?.name ?? "bot"} busy={busy} />
+              <TimelineItemRow key={item.id} item={item} unitName={unit?.name ?? "bot"} busy={busy} lastUserTurnId={lastUserTurnId} />
             ))}
             {busy && (
               <div className="flex items-center gap-2 text-body-sm text-teal">
@@ -104,7 +151,8 @@ interface GroupedItem {
     | "deliverable"
     | "usage"
     | "error"
-    | "system.notice";
+    | "system.notice"
+    | "fork.point";
   at: number;
   data: any;
 }
@@ -118,6 +166,7 @@ interface GroupedItem {
 function groupTimelineEvents(
   events: readonly { id: number | string; event: RuntimeEvent; at: number }[],
   sessionNameOf?: (sessionId: string) => string | undefined,
+  sessionOf?: (sessionId: string) => { forkOf?: string; forkKind?: "branch" | "revision" } | undefined,
 ): GroupedItem[] {
   const result: GroupedItem[] = [];
   let prevSessionId: string | null = null;
@@ -125,16 +174,32 @@ function groupTimelineEvents(
   for (const entry of events) {
     const { id, event, at } = entry;
 
-    // 段边界：已知段 → 另一已知段（渲染层合成，不入账本）
+    // 段边界：已知段 → 另一已知段（渲染层合成，不入账本）。
+    // 分叉拼接点优先于执行器 divider（ADR 0013）：新段是旧段的 fork 子段时，
+    // 边界语义是「从此处分叉」，同执行器分叉也不会误显示成「已切换执行器」。
     if ("sessionId" in event && sessionNameOf !== undefined) {
       const sid = String(event.sessionId);
       if (prevSessionId !== null && sid !== prevSessionId && sessionNameOf(sid) !== undefined && sessionNameOf(prevSessionId) !== undefined) {
-        result.push({
-          id: `divider-${id}`,
-          kind: "segment.divider",
-          at,
-          data: { from: sessionNameOf(prevSessionId), to: sessionNameOf(sid), fromId: prevSessionId, toId: sid },
-        });
+        const child = sessionOf?.(sid);
+        if (child !== undefined && child.forkOf === prevSessionId) {
+          result.push({
+            id: `fork-${id}`,
+            kind: "fork.point",
+            at,
+            data: {
+              from: sessionNameOf(prevSessionId) ?? prevSessionId,
+              to: sessionNameOf(sid) ?? sid,
+              forkKind: child.forkKind ?? "branch",
+            },
+          });
+        } else {
+          result.push({
+            id: `divider-${id}`,
+            kind: "segment.divider",
+            at,
+            data: { from: sessionNameOf(prevSessionId)!, to: sessionNameOf(sid)!, fromId: prevSessionId, toId: sid },
+          });
+        }
       }
       prevSessionId = sid;
     }
@@ -148,16 +213,43 @@ function groupTimelineEvents(
         result.push({ id, kind: "session.end", at, data: event });
         break;
 
-      case "message.delta":
+      case "message.delta": {
         if (event.role === "user") {
           result.push({
             id,
             kind: "user.message",
             at,
-            data: { text: event.text, attachments: event.attachments },
+            data: {
+              text: event.text,
+              attachments: event.attachments,
+              // fork 锚点要素（ADR 0013）：messageId 用于账本定位轮边界，
+              // sessionId 标明锚点属于哪个段（时间线跨段时消息不都在活跃段里）
+              messageId: event.messageId,
+              sessionId: String(event.sessionId),
+            },
           });
+          break;
+        }
+        if (event.role === "assistant") {
+          // 助手流式增量：同（会话, messageId）的 delta 归并进同一个 streaming 块
+          // （与 reasoning.delta 同款拼接模式；间隔 tool/thinking 不挪块，位置以首个 delta 为准）。
+          // messageId 必须与 sessionId 一起匹配：适配器的 messageId 多为会话内计数
+          // （msg_1/user-1），跨段回放（谱系拼接）时不同段会撞名。
+          const existing = findAssistantBlock(result, event.messageId, String(event.sessionId));
+          if (existing !== undefined && existing.data.streaming === true) {
+            existing.data.text += event.text;
+          } else {
+            result.push({
+              id,
+              kind: "assistant.message",
+              at,
+              data: { text: event.text, messageId: event.messageId, sessionId: String(event.sessionId), streaming: true },
+            });
+          }
+          break;
         }
         break;
+      }
 
       case "reasoning.delta": {
         const last = result[result.length - 1];
@@ -169,9 +261,24 @@ function groupTimelineEvents(
         break;
       }
 
-      case "message.completed":
-        result.push({ id, kind: "assistant.message", at, data: { text: event.text } });
+      case "message.completed": {
+        // completed 带全文终态：找到同（会话, messageId）的流式块原位收口
+        // （key 不变不重挂载），找不到（适配器只发 completed）则按原样入列；
+        // 命中一个**已收口**的同名块说明是跨段撞名（见上），照常入列不丢弃
+        const existing = findAssistantBlock(result, event.messageId, String(event.sessionId));
+        if (existing !== undefined && existing.data.streaming === true) {
+          existing.data.text = event.text;
+          existing.data.streaming = false;
+        } else {
+          result.push({
+            id,
+            kind: "assistant.message",
+            at,
+            data: { text: event.text, messageId: event.messageId, sessionId: String(event.sessionId), streaming: false },
+          });
+        }
         break;
+      }
 
       case "tool.started":
         result.push({
@@ -255,6 +362,58 @@ function groupTimelineEvents(
   return result;
 }
 
+/** 倒序找同（会话, messageId）的助手消息块（流式收口 / 增量归并用） */
+function findAssistantBlock(
+  result: GroupedItem[],
+  messageId: string,
+  sessionId: string,
+): GroupedItem | undefined {
+  for (let i = result.length - 1; i >= 0; i--) {
+    const r = result[i]!;
+    if (
+      r.kind === "assistant.message" &&
+      r.data.messageId === messageId &&
+      r.data.sessionId === sessionId
+    ) {
+      return r;
+    }
+  }
+  return undefined;
+}
+
+/** 分叉拼接点行（ADR 0013）：父段只读前缀 → fork 出的新段，与执行器切换 divider 区分 */
+function ForkPointRow({
+  data,
+}: {
+  data: { from: string; to: string; forkKind: "branch" | "revision" };
+}) {
+  const isRevision = data.forkKind === "revision";
+  return (
+    <div className="my-6 flex items-center gap-3" role="separator" aria-label={isRevision ? "已编辑重发" : "已从此处分叉"}>
+      <span className="h-px flex-1 bg-line" />
+      <span className="flex shrink-0 items-center gap-2 rounded-full border border-line bg-card px-3 py-1 text-caption text-graphite shadow-xs">
+        <GitBranch size={11} className="text-teal" />
+        {isRevision ? (
+          <>
+            已编辑重发 ·
+            <span className="font-medium text-ink">{data.from}</span>
+            <span className="text-ash">· 之前对话以只读前缀带入</span>
+          </>
+        ) : (
+          <>
+            已从此处分叉 ·
+            <span className="font-medium text-ink">
+              {data.from === data.to ? data.from : `${data.from} → ${data.to}`}
+            </span>
+            <span className="text-ash">· 上文以只读前缀带入</span>
+          </>
+        )}
+      </span>
+      <span className="h-px flex-1 bg-line" />
+    </div>
+  );
+}
+
 /* ------------------------------------------------------------- 行渲染 */
 
 /** 段边界 divider 行：执行器切换点 + 上一段 readiness（从 sessions 台账读） */
@@ -296,15 +455,66 @@ function parseSlashCommand(text: string): { isCommand: boolean; name: string; ar
 function UserMessageBubble({
   text,
   attachments,
+  messageId,
+  sessionId,
+  isLatestUserTurn,
+  busy,
 }: {
   text: string;
   attachments?: readonly ChatAttachment[];
+  /** daemon 侧真实 messageId（echo 回填后的 user-N；本地假 id 时分叉入口禁用） */
+  messageId: string;
+  /** 这条消息所属的段 —— fork 的 ofSessionId（时间线跨段时未必是活跃段） */
+  sessionId: string;
+  /** 时间线最后一条用户消息：编辑重发（revision）只对它开放 */
+  isLatestUserTurn: boolean;
+  busy: boolean;
 }) {
   const parsed = parseSlashCommand(text);
+  const startFork = useWorkbench((s) => s.startFork);
+  const sourceStatus = useWorkbench((s) => s.sessions.find((x) => String(x.id) === sessionId)?.status);
+
+  // idle 门禁（ADR 0013 不变量 6，复用 runtimeSwitchBlocked 的口径）：
+  // 源段 running/awaiting_* 或本轮 busy 时禁止分叉
+  const blocked =
+    busy ||
+    sourceStatus === "running" ||
+    sourceStatus === "awaiting_permission" ||
+    sourceStatus === "awaiting_input";
+  // 本地合成气泡的假 messageId（u${seq}，echo 尚未回填）不能做账本锚点
+  const anchorReady = /^user-\d+$/.test(messageId);
+  const actionsDisabled = blocked || !anchorReady;
+  const disabledTitle = blocked ? "先让这一轮落定" : "锚点还没落进账本，稍等一下再试";
+
+  const forkAction = (
+    <div className="mr-1.5 flex shrink-0 items-center gap-0.5 opacity-0 transition group-hover/user:opacity-100 focus-within:opacity-100">
+      <button
+        onClick={() => startFork({ ofSessionId: sessionId as never, anchorMessageId: messageId, kind: "branch" })}
+        disabled={actionsDisabled}
+        title={actionsDisabled ? disabledTitle : "从这一轮之后开启分叉：新段携带此前对话的只读前缀，旧分支保留可回看"}
+        className="flex items-center gap-1 rounded-btn border border-line bg-card px-2 py-1 text-caption text-graphite shadow-xs transition hover:bg-line-soft hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
+      >
+        <GitBranch size={12} />
+        <span>从此处分叉</span>
+      </button>
+      {isLatestUserTurn && (
+        <button
+          onClick={() => startFork({ ofSessionId: sessionId as never, anchorMessageId: messageId, kind: "revision", anchorText: text })}
+          disabled={actionsDisabled}
+          title={actionsDisabled ? disabledTitle : "编辑这条消息并重新发送：在新的分支里替换这一轮（附件不会带过去；工作区文件不回滚）"}
+          className="flex items-center gap-1 rounded-btn border border-line bg-card px-2 py-1 text-caption text-graphite shadow-xs transition hover:bg-line-soft hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          <PencilLine size={12} />
+          <span>编辑重发</span>
+        </button>
+      )}
+    </div>
+  );
 
   if (parsed.isCommand) {
     return (
-      <div className="flex flex-col items-end gap-1.5">
+      <div className="group/user flex flex-col items-end gap-1.5">
+        {forkAction}
         {attachments && attachments.length > 0 && (
           <AttachmentsBar attachments={[...attachments]} readOnly />
         )}
@@ -329,7 +539,8 @@ function UserMessageBubble({
   }
 
   return (
-    <div className="flex flex-col items-end gap-1.5">
+    <div className="group/user flex flex-col items-end gap-1.5">
+      {forkAction}
       {attachments && attachments.length > 0 && (
         <AttachmentsBar attachments={[...attachments]} readOnly />
       )}
@@ -342,7 +553,17 @@ function UserMessageBubble({
   );
 }
 
-function TimelineItemRow({ item, unitName, busy }: { item: GroupedItem; unitName: string; busy: boolean }) {
+function TimelineItemRow({
+  item,
+  unitName,
+  busy,
+  lastUserTurnId,
+}: {
+  item: GroupedItem;
+  unitName: string;
+  busy: boolean;
+  lastUserTurnId: string | number | undefined;
+}) {
   switch (item.kind) {
     case "session.start":
       return <SessionStartRow event={item.data} at={item.at} />;
@@ -359,8 +580,20 @@ function TimelineItemRow({ item, unitName, busy }: { item: GroupedItem; unitName
     case "segment.divider":
       return <SegmentDividerRow data={item.data} />;
 
+    case "fork.point":
+      return <ForkPointRow data={item.data} />;
+
     case "user.message":
-      return <UserMessageBubble text={item.data.text} attachments={item.data.attachments} />;
+      return (
+        <UserMessageBubble
+          text={item.data.text}
+          attachments={item.data.attachments}
+          messageId={typeof item.data.messageId === "string" ? item.data.messageId : ""}
+          sessionId={typeof item.data.sessionId === "string" ? item.data.sessionId : ""}
+          isLatestUserTurn={item.id === lastUserTurnId}
+          busy={busy}
+        />
+      );
 
     case "thinking":
       return <ThinkingBlock text={item.data.text} busy={busy} />;
@@ -369,7 +602,14 @@ function TimelineItemRow({ item, unitName, busy }: { item: GroupedItem; unitName
       return <ToolCallBlock data={item.data} />;
 
     case "assistant.message":
-      return <AssistantMessageBlock text={item.data.text} unitName={unitName} at={item.at} />;
+      return (
+        <AssistantMessageBlock
+          text={item.data.text}
+          unitName={unitName}
+          at={item.at}
+          streaming={item.data.streaming === true}
+        />
+      );
 
     case "permission":
       return (
@@ -642,7 +882,17 @@ function formatInputBrief(input: unknown): string {
 
 /* ------------------------------------------------------------- 助手回复消息块 */
 
-function AssistantMessageBlock({ text, unitName, at }: { text: string; unitName: string; at: number }) {
+function AssistantMessageBlock({
+  text,
+  unitName,
+  at,
+  streaming = false,
+}: {
+  text: string;
+  unitName: string;
+  at: number;
+  streaming?: boolean;
+}) {
   const avatar = botAvatarStyle(unitName);
 
   return (
@@ -656,12 +906,15 @@ function AssistantMessageBlock({ text, unitName, at }: { text: string; unitName:
           {unitName.slice(0, 1)}
         </span>
         <span className="text-body-sm font-medium text-ink">{unitName}</span>
+        {streaming && (
+          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-teal" aria-label="生成中" />
+        )}
         <span className="text-caption text-ash">{clock(at)}</span>
       </div>
 
-      {/* 正文 Markdown 渲染 */}
+      {/* 正文 Markdown 渲染（流式态容错未闭合围栏、跳过高亮） */}
       <div className="pl-7">
-        <MarkdownContent content={text} />
+        <MarkdownContent content={text} streaming={streaming} />
       </div>
     </div>
   );

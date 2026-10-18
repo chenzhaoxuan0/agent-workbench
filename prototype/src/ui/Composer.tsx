@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowUp,
+  GitBranch,
   Paperclip,
   Plus,
   Square,
+  X,
 } from "lucide-react";
 import { useWorkbench, selectActiveUnit } from "../store/useWorkbench.ts";
 import { nativeCommandsFor, useNativeCommands } from "../store/useNativeCommands.ts";
@@ -48,6 +50,8 @@ export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
   const setDraft = useWorkbench((s) => s.setDraft);
   const run = useWorkbench((s) => s.run);
   const busy = useWorkbench((s) => s.busy);
+  const pendingFork = useWorkbench((s) => s.pendingFork);
+  const cancelFork = useWorkbench((s) => s.cancelFork);
   const unit = useWorkbench(selectActiveUnit);
   const activeRuntime = useWorkbench((s) => s.activeRuntimeId);
   const taRef = useRef<HTMLTextAreaElement>(null);
@@ -373,6 +377,26 @@ export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
             onRemove={(id) => setAttachments((prev) => prev.filter((a) => a.id !== id))}
             className="mb-2"
           />
+
+          {/* 分叉意图条（ADR 0013「意图 + 发送才建段」）：可见、可撤，取消零持久化 */}
+          {pendingFork !== null && (
+            <div className="mb-2 flex items-center gap-2 rounded-btn border border-teal/30 bg-teal-tint/40 px-3 py-1.5 text-caption text-graphite">
+              <GitBranch size={12} className="shrink-0 text-teal" />
+              <span className="min-w-0 flex-1">
+                {pendingFork.kind === "branch"
+                  ? "发送后将从所选轮之后分叉开启新段：新段带此前对话的只读前缀，当前分支保留可回看"
+                  : "发送后将编辑重发：在新段里替换那一轮（那轮之前保留为只读前缀；附件与工作区文件改动不回滚）"}
+              </span>
+              <button
+                onClick={cancelFork}
+                className="flex shrink-0 items-center gap-1 rounded-btn px-2 py-0.5 text-caption text-graphite transition hover:bg-line-soft hover:text-ink"
+                title="放弃分叉意图（不产生任何持久化）"
+              >
+                <X size={12} />
+                <span>取消</span>
+              </button>
+            </div>
+          )}
 
           {/* 斜杠指令参数提示条（命令已选定、输入参数阶段） */}
           {activeCommandHint && !slashMenuDismissed && (

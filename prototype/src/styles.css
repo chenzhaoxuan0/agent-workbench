@@ -1,5 +1,10 @@
 @import "tailwindcss";
 
+/* streamdown 的默认组件/内部控制（链接安全弹窗、代码块骨架等）使用运行时
+   Tailwind 类名，Tailwind v4 默认不扫 node_modules —— 显式声明扫描源
+   （ZCode packages/ui styles.css 的同款做法）。 */
+@source "../node_modules/streamdown/dist";
+
 /* ==========================================================================
    Design tokens — 中性灰阶 + 单一青色强调
    对标 Grok @Bot 的视觉取向：黑白灰、扁平、单色克制

@@ -270,6 +270,8 @@ class DaemonRuntimeAdapter implements RuntimeAdapter {
           ...(req.conversationId !== undefined ? { conversationId: req.conversationId } : {}),
           // ADR 0012：只读转录交接（opt-in）
           ...(req.handoff !== undefined ? { handoff: { fromSessionId: req.handoff.fromSessionId } } : {}),
+          // ADR 0013：对话分叉 —— 锚点轮边界开新段（HANDOFF 上界由 daemon 解析）
+          ...(req.fork !== undefined ? { fork: req.fork } : {}),
           memoryOptions: req.memoryOptions,
         },
         60000,
