@@ -133,6 +133,13 @@ interface TerminalStoreState {
   defaultProfileId: string;
   /** 首载重挂是否已尝试过（无论找没找到）—— 空态自动建标签必须等它，否则抢占重挂 */
   reattachDone: boolean;
+  /**
+   * 派发在途登记（unitId → 过期时刻）。侧栏历史行 / 历史弹窗直点「TUI 恢复」后，
+   * 「终端跟随 bot」effect 会因标签还没落地（created 帧在途）而再派发一个**全新的**
+   * TUI —— 双进程竞态。登记 5s 内的派发意图，跟随 effect 看到即跳过。
+   */
+  pendingUnitDispatch: Record<string, number>;
+  notePendingUnitDispatch: (unitId: string) => void;
   /** created 帧推送认领是否已装（幂等闸，防止重复订阅） */
   claimInstalled: boolean;
   /** 终端启动 Antigravity 时是否默认携带 --dangerously-skip-permissions 免审批 */
@@ -299,7 +306,12 @@ export const useTerminalStore = create<TerminalStoreState>((set, get) => ({
   defaultProfileId: "pwsh",
   reattachDone: false,
   claimInstalled: false,
+  pendingUnitDispatch: {},
   agyDefaultYolo: initialTerminalPrefs.agyDefaultYolo,
+
+  notePendingUnitDispatch: (unitId) => {
+    set((s) => ({ pendingUnitDispatch: { ...s.pendingUnitDispatch, [unitId]: Date.now() + 5000 } }));
+  },
 
   setAgyDefaultYolo: (val: boolean) => {
     set({ agyDefaultYolo: val });

@@ -6,13 +6,16 @@ import {
   FolderOpen,
   FolderPlus,
   GitBranch,
+  History,
   ImagePlus,
   ListTodo,
+  MessageSquare,
   PanelLeftClose,
   Pin,
   Plus,
   Search,
   Settings,
+  SquareTerminal,
 } from "lucide-react";
 import { useWorkbench, type ViewMode, type BotWriteGuards } from "../store/useWorkbench.ts";
 import { useShell } from "../store/useShell.ts";
@@ -43,7 +46,8 @@ import { HistoryDialog, resumeArgsFor } from "./HistoryDialog.tsx";
 import { collapseForkVersions } from "./forkHistory.ts";
 import { executorIconSrc } from "./executorIcon.ts";
 import { useHistoryPrefs } from "../store/useHistoryPrefs.ts";
-import { MessageSquare, RotateCcw } from "lucide-react";
+import { useTerminalStore } from "../store/useTerminalStore.ts";
+import { QuickContextMenu, quickMenuFromEvent, type QuickMenuState } from "./QuickContextMenu.tsx";
 import { cn } from "./cn.ts";
 
 /**
@@ -100,7 +104,6 @@ function readPersistedUnitView(): ViewMode {
 export function Sidebar() {
   const units = useWorkbench((s) => s.units);
   const activeUnitId = useWorkbench((s) => s.activeUnitId);
-  const selectUnit = useWorkbench((s) => s.selectUnit);
   /** [bot|项目] 视图过滤（过滤器式，见 UNIT_VIEWS 注释）：本地 state 即可，无需 store 层改动 */
   const [unitView, setUnitView] = useState<ViewMode>(readPersistedUnitView);
   const switchUnitView = (v: ViewMode): void => {
@@ -377,7 +380,6 @@ export function Sidebar() {
                   <UnitRow
                     unit={u}
                     active={active}
-                    onSelect={() => selectUnit(u.id as UnitId)}
                     onOpenSettings={() => useShell.getState().openUnitSettings(u.id as UnitId)}
                     onToggleResident={() => makeNormal(u)}
                     isResident={true}
@@ -468,7 +470,6 @@ export function Sidebar() {
                 <UnitRow
                   unit={u}
                   active={active}
-                  onSelect={() => selectUnit(u.id as UnitId)}
                   onOpenSettings={() => useShell.getState().openUnitSettings(u.id as UnitId)}
                   onToggleResident={() => makeResident(u)}
                   isResident={false}
@@ -595,6 +596,109 @@ function guardsOf(u: WorkUnit): BotWriteGuards {
   return { ifRevision: u.revision, ifAgentsMdHash: u.agentsMdMeta?.hash };
 }
 
+/* --------------------------------------------------- 历史会话的打开与状态灯 */
+
+/**
+ * 在聊天页打开一条历史会话（ADR 0012 resume-in-chat）。
+ * 侧栏子列表直点与右键菜单共用 —— 点击历史行 = 左侧栏的「垂直标签页」切换。
+ */
+function openEntryInChat(e: UnitHistoryEntry): void {
+  if (e.sessionId === null || e.unitId === undefined) return;
+  const sid = e.sessionId;
+  void useWorkbench
+    .getState()
+    .openSession({ sessionId: asSessionId(sid), unitId: asUnitId(e.unitId), runtimeId: e.runtimeId })
+    .then(() => {
+      // 门禁拦下 / 会话打不开时 openSession 只推 notice 并落空 —— activeSessionId
+      // 不会变。此时不切视图、**不标已读**（绿灯留着，用户还没看到内容）。
+      if (String(useWorkbench.getState().activeSessionId) !== sid) return;
+      const sh = useShell.getState();
+      sh.setMainView("chat");
+      sh.setConversationView("chat");
+      // 打开即已读：绿灯熄灭（entry key 与 session key 都标，自动化行与 session 行共享已读态）
+      useHistoryPrefs.getState().markViewed([e.key, `session-${sid}`]);
+    });
+}
+
+/**
+ * 在 TUI 中重现一条历史会话（各家 --resume 口径见 HistoryDialog 的 RESUME_ARGS）。
+ * 派发前登记 pending（useTerminalStore），防止紧接着的「终端跟随 bot」effect
+ * 因标签还没落地又派发一个全新 TUI（双进程竞态）。
+ */
+function openEntryInTui(e: UnitHistoryEntry, unit: WorkUnit): void {
+  const args = resumeArgsFor(e.runtimeId, e.resumeRef);
+  if (args === null) return;
+  const wb = useWorkbench.getState();
+  // 仅在切 bot 时才 selectUnit —— 对当前 bot 点 TUI 行不该顺手清掉正在看的
+  // 聊天时间线（selectUnit 会清空 timeline / activeSessionId）。
+  if (String(wb.activeUnitId) !== String(unit.id)) wb.selectUnit(asUnitId(unit.id));
+  useTerminalStore.getState().notePendingUnitDispatch(unit.id);
+  void dispatchTerminal({
+    unitId: unit.id,
+    unitName: unit.name,
+    rootPath: unit.rootPath,
+    runtimeId: e.runtimeId,
+    args,
+  })
+    .then(() => {
+      const sh = useShell.getState();
+      sh.setMainView("chat");
+      sh.setConversationView("terminal");
+      useHistoryPrefs
+        .getState()
+        .markViewed([e.key, ...(e.sessionId !== null ? [`session-${e.sessionId}`] : [])]);
+    })
+    .catch((err: unknown) => console.error("[Sidebar] TUI 恢复失败:", err));
+}
+
+/** 在该 bot 的工作空间开一个全新对话页（bot 行悬浮 ＋ 按钮与右键菜单共用） */
+function openNewChatForUnit(unit: WorkUnit): void {
+  useWorkbench.getState().selectUnit(asUnitId(unit.id));
+  const sh = useShell.getState();
+  sh.setMainView("chat");
+  sh.setConversationView("chat");
+}
+
+/** 状态灯的五种形态（对齐 ZCode deriveTaskLeadingIndicator 的「空闲不显示」原则） */
+type HistoryLight = "failed" | "executing" | "unread" | "alive" | "none";
+
+/**
+ * 状态灯判定：
+ * - 失败 → 红灯；
+ * - agent 正在执行任务（思考/输出，ZCode 里对应 loading 动画）→ 蓝色呼吸灯；
+ * - 完成但未查看 → 绿灯；
+ * - 仅是进程/会话开着（TUI 挂在后台、会话空闲）→ 蓝色静态灯，**不呼吸**；
+ * - 其余（已读的完成/退出）→ 不显示 —— 日常状态不占这有限的宽度。
+ */
+function deriveHistoryLight(
+  entry: UnitHistoryEntry,
+  sessionStatusById: ReadonlyMap<string, string>,
+  unread: boolean,
+): HistoryLight {
+  if (entry.status === "failed") return "failed";
+  if (unread && entry.endedAt !== null) return "unread";
+  if (entry.status === "running") {
+    // 前端 store 里该会话的实时状态优先（turn 进行中才是「执行任务」）；
+    // store 没有它（自动化在后台跑 / 刚刷新）按台账 launchMode 判断
+    const storeStatus = entry.sessionId !== null ? sessionStatusById.get(entry.sessionId) : undefined;
+    const executing =
+      storeStatus === "running" ||
+      storeStatus === "awaiting_permission" ||
+      storeStatus === "awaiting_input" ||
+      (storeStatus === undefined && entry.launchMode === "headless");
+    return executing ? "executing" : "alive";
+  }
+  return "none";
+}
+
+const HISTORY_DOT_CLS: Record<HistoryLight, string | null> = {
+  failed: "bg-loss",
+  executing: "bg-blue-500 animate-pulse",
+  unread: "bg-gain",
+  alive: "bg-blue-500/70",
+  none: null,
+};
+
 /* ------------------------------------------------------------- 单元行 */
 
 /**
@@ -615,7 +719,6 @@ export function botAvatarStyle(name: string, frame: AvatarFrame = "rounded"): { 
 function UnitRow({
   unit,
   active,
-  onSelect,
   onOpenSettings,
   onToggleResident,
   isResident,
@@ -625,7 +728,6 @@ function UnitRow({
 }: {
   unit: WorkUnit;
   active: boolean;
-  onSelect: () => void;
   onOpenSettings: () => void;
   onToggleResident?: () => void;
   isResident?: boolean;
@@ -635,8 +737,22 @@ function UnitRow({
   onToggleHistory: () => void;
 }) {
   const isSynthetic = isSyntheticUnit(unit);
-  const units = useWorkbench((s) => s.units);
   const hideFailedInSidebar = useHistoryPrefs((s) => s.prefs.hideFailedInSidebar);
+  /** 已读/绿灯起算/打开方式覆盖（灯与默认打开方式都从这里读，订阅 prefs 即随写随刷） */
+  const historyPrefs = useHistoryPrefs((s) => s.prefs);
+  const isEntryUnread = useHistoryPrefs((s) => s.isUnread);
+  const setEntryOpenMode = useHistoryPrefs((s) => s.setEntryOpenMode);
+  /** 会话实时状态（turn 进行中 = 呼吸灯的事实来源） */
+  const sessions = useWorkbench((s) => s.sessions);
+  const activeSessionId = useWorkbench((s) => s.activeSessionId);
+  const mainView = useShell((s) => s.mainView);
+  const sessionStatusById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const x of sessions) m.set(String(x.id), x.status);
+    return m;
+  }, [sessions]);
+  /** 右键菜单（bot 行与历史行共用一个状态，同屏只会开一个） */
+  const [quickMenu, setQuickMenu] = useState<QuickMenuState | null>(null);
   /** 分支标记（源代码管理的缓存；TTL 节流，非 git 仓库为 null 不显示） */
   const branchName = useGit((s) => s.badgeByRoot[unit.rootPath]?.branch);
   useEffect(() => {
@@ -749,13 +865,27 @@ function UnitRow({
     // 绝对定位的兄弟节点，和时间戳抢同一个位置、hover 时交叉淡入淡出。
     <div className="group/row relative">
       <button
-        onClick={() => {
-          onSelect();
-          onToggleHistory();
-        }}
+        onClick={onToggleHistory}
+        onContextMenu={(e) =>
+          setQuickMenu(
+            quickMenuFromEvent(e, [
+              ...(onToggleResident
+                ? [
+                    {
+                      label: isResident ? "取消常驻" : "设为常驻",
+                      icon: Pin,
+                      onSelect: onToggleResident,
+                    },
+                  ]
+                : []),
+              { label: "设置", icon: Settings, onSelect: onOpenSettings },
+              { label: "新建会话", icon: Plus, onSelect: () => openNewChatForUnit(unit) },
+            ]),
+          )
+        }
         aria-current={active}
         aria-expanded={historyOpen}
-        title={`${unit.name} —— 点击选中并${historyOpen ? "收起" : "展开"}历史会话`}
+        title={`${unit.name} —— 点击${historyOpen ? "收起" : "展开"}历史会话（右键：常驻 / 设置 / 新建会话）`}
         className={cn(
           "flex w-full items-start gap-2 rounded-input px-2 py-1.5 text-left",
           active ? "bg-teal-tint" : "hover:bg-line-soft",
@@ -842,7 +972,8 @@ function UnitRow({
         </span>
       </button>
 
-      {/* 历史子列表：bot 行下的可折叠执行时间轴（最近若干条，点条目进对话详情） */}
+      {/* 历史子列表：bot 行下的可折叠执行时间轴。点条目 = 直达对应视图
+          （对话页建的 → 聊天页，TUI 建的 → TUI 重现）—— 左侧栏即垂直标签页 */}
       {historyOpen && (
         <div data-no-drag draggable={false} onMouseDown={(e) => e.stopPropagation()} className="space-y-px py-0.5 px-0.5">
           {histErr !== null && <p className="px-1.5 py-1 text-[10px] text-loss">读取失败：{histErr}</p>}
@@ -867,42 +998,93 @@ function UnitRow({
           )}
           {collapseForkVersions(filteredEntries ?? []).slice(0, visibleCount).map((slot) => {
             const e = slot.entry;
-            const args = resumeArgsFor(e.runtimeId, e.resumeRef);
-            const self = units.find((u) => u.id === unit.id);
+            const canChat = e.sessionId !== null && e.unitId !== undefined;
+            const canTui = resumeArgsFor(e.runtimeId, e.resumeRef) !== null;
+            // 默认打开方式：用户覆盖优先，缺省按来源（对话页建 → 聊天页，TUI 建 → TUI）
+            const originMode: "chat" | "tui" = e.launchMode === "terminal" ? "tui" : "chat";
+            const override = historyPrefs.entryOpenMode[e.key];
+            const effective: "chat" | "tui" =
+              override === "chat" && canChat
+                ? "chat"
+                : override === "tui" && canTui
+                  ? "tui"
+                  : canChat
+                    ? originMode
+                    : canTui
+                      ? (originMode === "chat" ? "tui" : "chat")
+                      : originMode;
+            const light = deriveHistoryLight(
+              e,
+              sessionStatusById,
+              // entry key 与 session key 任一打开过即算已读（自动化行与 session 行共享）
+              isEntryUnread(
+                e.sessionId !== null ? [e.key, `session-${e.sessionId}`] : [e.key],
+                e.endedAt,
+              ),
+            );
+            const rowActive =
+              mainView === "chat" && e.sessionId !== null && String(activeSessionId) === e.sessionId;
+            const openDefault = (): void => {
+              if (effective === "chat" && canChat) openEntryInChat(e);
+              else if (effective === "tui" && canTui) openEntryInTui(e, unit);
+              else if (canChat) openEntryInChat(e);
+              else if (canTui) openEntryInTui(e, unit);
+              else {
+                setHistoryFocus(e.key);
+                setHistoryDialogOpen(true);
+              }
+            };
             return (
               <HistoryListRow
                 key={e.key}
                 entry={e}
                 versionCount={slot.family?.length}
+                light={light}
+                active={rowActive}
+                mode={{ effective, canChat, canTui }}
+                onOpenDefault={openDefault}
+                onToggleMode={() => {
+                  const other: "chat" | "tui" = effective === "chat" ? "tui" : "chat";
+                  const feasible = other === "chat" ? canChat : canTui;
+                  if (feasible) setEntryOpenMode(e.key, other);
+                }}
                 onOpenDetail={() => {
                   setHistoryFocus(e.key);
                   setHistoryDialogOpen(true);
                 }}
-                {...(e.sessionId !== null && e.unitId !== undefined
-                  ? {
-                      onOpenInChat: () => {
-                        // ADR 0012 resume-in-chat：从账本重建时间线并接回（可恢复时）
-                        void useWorkbench
-                          .getState()
-                          .openSession({ sessionId: asSessionId(e.sessionId!), unitId: asUnitId(e.unitId!), runtimeId: e.runtimeId });
-                        useShell.getState().setMainView("chat");
+                onContextMenu={(ev) =>
+                  setQuickMenu(
+                    quickMenuFromEvent(ev, [
+                      {
+                        label: "在聊天页打开（设为默认）",
+                        icon: MessageSquare,
+                        disabled: !canChat,
+                        onSelect: () => {
+                          if (canChat) setEntryOpenMode(e.key, "chat");
+                          openEntryInChat(e);
+                        },
                       },
-                    }
-                  : {})}
-                {...(args !== null && self !== undefined
-                  ? {
-                      onResume: () => {
-                        useWorkbench.getState().selectUnit(asUnitId(unit.id));
-                        void dispatchTerminal({
-                          unitId: unit.id,
-                          unitName: self.name,
-                          rootPath: self.rootPath,
-                          runtimeId: e.runtimeId,
-                          args,
-                        }).catch((err: unknown) => console.error("[Sidebar] TUI 恢复失败:", err));
+                      {
+                        label: "在 TUI 中重现（设为默认）",
+                        icon: SquareTerminal,
+                        disabled: !canTui,
+                        onSelect: () => {
+                          if (canTui) setEntryOpenMode(e.key, "tui");
+                          openEntryInTui(e, unit);
+                        },
                       },
-                    }
-                  : {})}
+                      { separator: true },
+                      {
+                        label: "对话详情",
+                        icon: History,
+                        onSelect: () => {
+                          setHistoryFocus(e.key);
+                          setHistoryDialogOpen(true);
+                        },
+                      },
+                    ]),
+                  )
+                }
               />
             );
           })}
@@ -944,7 +1126,7 @@ function UnitRow({
         </div>
       )}
 
-      {/* 悬浮快捷操作：常驻 / 设置（历史切换整行可点，不占这里；打开目录统一走头部的工作区路径弹层） */}
+      {/* 悬浮快捷操作：常驻 / 设置 / 新建会话（历史切换整行可点，不占这里；打开目录统一走头部的工作区路径弹层） */}
       <div
         data-no-drag
         draggable={false}
@@ -996,7 +1178,24 @@ function UnitRow({
         >
           <Settings size={12} />
         </button>
+        <button
+          type="button"
+          draggable={false}
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            openNewChatForUnit(unit);
+          }}
+          aria-label={`在 ${unit.name} 中新建会话`}
+          title="新建会话 —— 在这个 bot 的工作空间开一个全新对话页"
+          className="cursor-pointer rounded-btn p-1 text-ash hover:bg-line-soft hover:text-ink active:scale-90 transition"
+        >
+          <Plus size={12} />
+        </button>
       </div>
+
+      {/* 右键菜单（bot 行：常驻 / 设置 / 新建会话；历史行：打开方式 / 详情） */}
+      <QuickContextMenu menu={quickMenu} onClose={() => setQuickMenu(null)} />
 
       {historyDialogOpen && (
         <HistoryDialog unitId={unit.id} unitName={unit.name} focusKey={historyFocus} onClose={() => setHistoryDialogOpen(false)} />
@@ -1005,8 +1204,6 @@ function UnitRow({
   );
 }
 
-/** 历史子列表的单行：状态点 + 类型 + 标题 + 相对时间；点开进对话详情弹窗。
- *  可恢复的条目（zcode/claude/codex 后台会话）行尾带 ⟲ 图标，点击即在 TUI 重现。 */
 /** 精简相对时间展示（侧栏紧凑宽度优化，如 刚刚/5m/2h/1d/10/12） */
 function formatHistoryTime(ts: number): string {
   const diffMs = Date.now() - ts;
@@ -1023,43 +1220,67 @@ function formatHistoryTime(ts: number): string {
   return `${d.getMonth() + 1}/${d.getDate()}`;
 }
 
-/** 历史子列表的单行：执行器图标 + 状态点 + 标题 + 紧凑时间；点开进对话详情弹窗。
- *  可恢复的条目（zcode/claude/codex/mcode 后台/TUI 会话）行尾带 ⟲ 图标，点击即在 TUI 重现。
- *  headless 条目另带 💬 图标：接回聊天页续聊（ADR 0012 resume-in-chat）。 */
+/**
+ * 历史子列表的单行 —— 左侧栏的「垂直标签页」条目：
+ * 点击 = 按默认方式直达（对话页建的 → 聊天页；TUI 建的 → TUI 重现），
+ * 打开方式徽标可一键切换（也是来源标签），右键菜单可换打开方式 / 看详情。
+ * 行内：执行器图标 + 状态灯（仅异常/执行/未读时出现）+ 标题 + 分叉徽标 +
+ * 打开方式徽标 + 时间（固定最右，对齐）。
+ */
 function HistoryListRow({
   entry,
   versionCount,
+  light,
+  active,
+  mode,
+  onOpenDefault,
+  onToggleMode,
   onOpenDetail,
-  onResume,
-  onOpenInChat,
+  onContextMenu,
 }: {
   entry: UnitHistoryEntry;
   /** revision 家族成员数（ADR 0013 版本折叠摘要；undefined = 非家族行） */
   versionCount?: number;
+  /** 状态灯形态（failed/executing/unread/alive 之外不渲染灯） */
+  light: "failed" | "executing" | "unread" | "alive" | "none";
+  /** 这条会话正显示在聊天页里（垂直标签页的「当前标签」高亮） */
+  active: boolean;
+  /** 默认打开方式与可行性（chat 需要 sessionId，tui 需要 resumeRef） */
+  mode: { effective: "chat" | "tui"; canChat: boolean; canTui: boolean };
+  onOpenDefault: () => void;
+  onToggleMode: () => void;
   onOpenDetail: () => void;
-  onResume?: () => void;
-  onOpenInChat?: () => void;
+  onContextMenu: (e: React.MouseEvent) => void;
 }): ReactElement {
   const kindLabel = entry.kind === "automation" ? "定时" : entry.kind === "backlog" ? "待办" : entry.kind === "manual" ? "手动" : "会话";
-  const dot =
-    entry.status === "failed"
-      ? "bg-loss"
-      : entry.status === "running"
-        ? "bg-blue-500 animate-pulse"
-        : entry.status === "skipped"
-          ? "bg-ash"
-          : "bg-gain";
   const iconSrc = executorIconSrc(entry.runtimeId);
   const bareExec = entry.runtimeId.replace(/^daemon:/, "").replace(/:yolo$/, "");
+  const dotCls = HISTORY_DOT_CLS[light];
+  const canToggle = mode.effective === "chat" ? mode.canTui : mode.canChat;
+  const modeLabel = mode.effective === "chat" ? "聊天" : "TUI";
+  const otherLabel = mode.effective === "chat" ? "TUI" : "聊天页";
+  const modeTip = !mode.canChat && !mode.canTui
+    ? "这条会话既接不回聊天页，也无法在 TUI 重现"
+    : mode.effective === "chat" && !mode.canTui
+      ? "只能在聊天页打开（没有执行器原生会话引用）"
+      : mode.effective === "tui" && !mode.canChat
+        ? "只能在 TUI 重现（没有聊天页会话记录）"
+        : `当前默认：在${modeLabel === "聊天" ? "聊天页" : "TUI"}打开。点击切换为在${otherLabel}打开（右键菜单同款）`;
+  const launchTip = entry.launchMode === "terminal" ? " · TUI 创建" : " · 对话页创建";
 
   return (
     <button
       type="button"
       data-no-drag
       draggable={false}
-      onClick={onOpenDetail}
-      title={`${kindLabel} · ${entry.runtimeId}${entry.launchMode === "terminal" ? " · TUI" : " · 后台"}${entry.detail !== null && entry.detail !== "" ? `\n${entry.detail}` : ""}\n${entry.title}\n${formatRelative(entry.startedAt)}\n点击查看对话详情`}
-      className="group/hrow flex w-full cursor-pointer items-center gap-1.5 rounded-btn px-2 py-1 text-left transition hover:bg-line-soft"
+      onClick={onOpenDefault}
+      onContextMenu={onContextMenu}
+      aria-current={active}
+      title={`${kindLabel} · ${entry.runtimeId}${launchTip}${entry.detail !== null && entry.detail !== "" ? `\n${entry.detail}` : ""}\n${entry.title}\n${formatRelative(entry.startedAt)}\n点击＝在${modeLabel === "聊天" ? "聊天页" : "TUI"}打开${active ? "（当前显示中）" : ""}`}
+      className={cn(
+        "group/hrow flex min-h-[30px] w-full cursor-pointer items-center gap-1.5 rounded-btn px-2 py-1.5 text-left transition",
+        active ? "bg-teal-tint" : "hover:bg-line-soft",
+      )}
     >
       {/* 执行器图标：有官方 logo 显示品牌图片，无则显示 2 字母徽标 */}
       <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center" title={`执行器：${entry.runtimeId}`}>
@@ -1071,7 +1292,9 @@ function HistoryListRow({
           </span>
         )}
       </span>
-      <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", dot)} />
+      {/* 状态灯：只讲异常与值得注意的事 —— 执行中呼吸、未读完成绿灯、出错红灯、
+          仅开着蓝静态；日常已读状态不亮灯（对齐 ZCode deriveTaskLeadingIndicator） */}
+      {dotCls !== null && <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", dotCls)} />}
       <span className="min-w-0 flex-1 truncate text-[11px] text-graphite">{entry.title}</span>
       {(versionCount !== undefined && versionCount > 1) || entry.forkKind === "branch" || entry.forkKind === "revision" ? (
         <span
@@ -1086,49 +1309,34 @@ function HistoryListRow({
           {versionCount !== undefined && versionCount > 1 ? `×${versionCount}` : "分叉"}
         </span>
       ) : null}
+      {/* 打开方式徽标 = 来源标签 + 快速切换按钮（点击在 聊天页/TUI 之间换默认打开方式） */}
+      <span
+        role={canToggle ? "button" : undefined}
+        tabIndex={canToggle ? 0 : undefined}
+        data-no-drag
+        onClick={(ev) => {
+          if (!canToggle) return;
+          ev.stopPropagation();
+          onToggleMode();
+        }}
+        onKeyDown={(ev) => {
+          if (!canToggle) return;
+          if (ev.key === "Enter" || ev.key === " ") {
+            ev.stopPropagation();
+            onToggleMode();
+          }
+        }}
+        title={modeTip}
+        className={cn(
+          "flex shrink-0 items-center gap-0.5 rounded-full px-1 py-px text-[9px] font-medium",
+          mode.effective === "chat" ? "bg-teal-tint text-teal" : "bg-violet-500/15 text-violet-500",
+          canToggle ? "cursor-pointer transition hover:opacity-75" : "cursor-default opacity-80",
+        )}
+      >
+        {mode.effective === "chat" ? <MessageSquare size={8} /> : <SquareTerminal size={8} />}
+        {modeLabel}
+      </span>
       <span className="shrink-0 text-[9px] text-ash/70">{formatHistoryTime(entry.startedAt)}</span>
-      {onOpenInChat !== undefined && (
-        <span
-          role="button"
-          tabIndex={0}
-          data-no-drag
-          onClick={(ev) => {
-            ev.stopPropagation();
-            onOpenInChat();
-          }}
-          onKeyDown={(ev) => {
-            if (ev.key === "Enter" || ev.key === " ") {
-              ev.stopPropagation();
-              onOpenInChat();
-            }
-          }}
-          title="接回聊天页：可恢复时续聊原会话，否则打开只读历史"
-          className="shrink-0 cursor-pointer rounded p-0.5 text-ash opacity-0 transition hover:bg-teal-tint hover:text-teal group-hover/hrow:opacity-100"
-        >
-          <MessageSquare size={10} />
-        </span>
-      )}
-      {onResume !== undefined && (
-        <span
-          role="button"
-          tabIndex={0}
-          data-no-drag
-          onClick={(ev) => {
-            ev.stopPropagation();
-            onResume();
-          }}
-          onKeyDown={(ev) => {
-            if (ev.key === "Enter" || ev.key === " ") {
-              ev.stopPropagation();
-              onResume();
-            }
-          }}
-          title={`在 TUI 中重现这段会话（${entry.runtimeId} resume）`}
-          className="shrink-0 cursor-pointer rounded p-0.5 text-ash opacity-0 transition hover:bg-teal-tint hover:text-teal group-hover/hrow:opacity-100"
-        >
-          <RotateCcw size={10} />
-        </span>
-      )}
     </button>
   );
 }

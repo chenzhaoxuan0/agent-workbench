@@ -14,6 +14,7 @@ import {
   Minimize2,
 } from "lucide-react";
 import { useWorkbench } from "../store/useWorkbench.ts";
+import { useShell } from "../store/useShell.ts";
 import {
   useTerminalStore,
   SUPPORTED_TERMINAL_PROFILES,
@@ -84,9 +85,14 @@ export function TerminalPanel({
   // 失败退回手动开（旧行为）。
   // ⚠ StrictMode 会把 effect 双调用 —— 全程用 getState() 读实时状态 + ref 防重，
   // 不幂等的写法会建出两个标签（实测）。
+  // ⚠ 画布虽常驻挂载（hidden 裁剪），跟随逻辑只在**终端视图真正可见**时生效：
+  //    开屏就给当前 bot 悄悄起一个用户没要的 TUI 是注意力扰乱（尤其人还在看
+  //    历史会话列表时）；首次切到终端视图的那一刻才跟随。
+  const conversationView = useShell((s) => s.conversationView);
   const lastFollowedUnitRef = useRef<string | null | undefined>(undefined);
   const pendingDispatchRef = useRef<Set<string>>(new Set());
   useEffect(() => {
+    if (isCanvas && conversationView !== "terminal") return;
     const uid = unit?.id ?? null;
     if (lastFollowedUnitRef.current === uid) return;
     lastFollowedUnitRef.current = uid;
@@ -115,6 +121,8 @@ export function TerminalPanel({
     }
     // 已派发过但标签还没落地（created 帧在途）——别再发一次
     if (pendingDispatchRef.current.has(uid)) return;
+    // 侧栏历史行 / 历史弹窗刚派发过 TUI 恢复（resume 在途）：同理不再发全新的
+    if ((st.pendingUnitDispatch[uid] ?? 0) > Date.now()) return;
     const bareId = boundExecutor.replace(/^daemon:/, "");
     if (isCanvas && bareId !== "") {
       pendingDispatchRef.current.add(uid);
@@ -145,16 +153,17 @@ export function TerminalPanel({
       title: `${unit.name} · ${execName} (TUI)`,
     });
     // 只在切换 bot（或首开）时走一次
-  }, [unit?.id, unit, boundExecutor, isCanvas, runtimes]);
+  }, [unit?.id, unit, boundExecutor, isCanvas, runtimes, conversationView]);
 
   // 上面那个 effect 被 ref 挡住只跑一次；「无 bot 首启 + daemon 里也没活终端」时，
   // 默认标签要等 reattachDone 翻位后在这里补建，否则首屏永远没有终端。
+  // 同样只在终端视图可见时补 —— 开屏不建空终端标签。
   const reattachDone = useTerminalStore((s) => s.reattachDone);
   useEffect(() => {
-    if (!reattachDone || unit) return;
+    if (!reattachDone || unit || (isCanvas && conversationView !== "terminal")) return;
     const st = useTerminalStore.getState();
     if (st.groups.length === 0) st.createTab({ profileId: st.defaultProfileId });
-  }, [reattachDone, unit]);
+  }, [reattachDone, unit, isCanvas, conversationView]);
 
   // 点击外部关闭下拉菜单
   useEffect(() => {

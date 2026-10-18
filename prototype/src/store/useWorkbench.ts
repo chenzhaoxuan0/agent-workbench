@@ -32,6 +32,7 @@ import {
   type ProviderModelPrefs,
 } from "../core/modelPrefs.ts";
 import { runtimeRegistry, type RuntimeEntry } from "../core/registry.ts";
+import { useHistoryPrefs } from "./useHistoryPrefs.ts";
 import type {
   ChannelIdentityMap,
   LarkBotIdentity,
@@ -376,6 +377,11 @@ function applyPutResult(
 
 /** 时间线序号 —— 全局递增，pushUserBubble / pushNotice / 事件泵共用 */
 let seq = 0;
+
+/** 会话被用户打开/发送即视为「已读」—— 侧栏「完成未读」绿灯据此熄灭 */
+function markSessionViewed(id: SessionId | string): void {
+  useHistoryPrefs.getState().markViewed(`session-${String(id)}`);
+}
 
 function getInitialActiveUnit(): UnitId {
   if (typeof window !== "undefined") {
@@ -924,6 +930,7 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
         pendingFork: null,
       };
     });
+    markSessionViewed(session!.id);
     if (historyOnly) {
       get().pushNotice(
         "已打开历史对话（只读段）",
@@ -1187,6 +1194,7 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
           pendingFork: null,
         };
       });
+      markSessionViewed(session.id);
       return;
     }
 
@@ -1205,6 +1213,7 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
     ) {
       set({ busy: true });
       pushUserBubble(active.id);
+      markSessionViewed(active.id);
       try {
         await adapter.sendMessage({
           sessionId: active.id,
@@ -1275,6 +1284,7 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
             activeSessionId: normalized.id,
           }));
           bubbleId = pushUserBubble(normalized.id);
+          markSessionViewed(normalized.id);
           await adapter.sendMessage({
             sessionId: normalized.id,
             text: fullPrompt,
@@ -1327,6 +1337,7 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
 
     // 用户消息是时间线的第一行（ZCode：右对齐的用户气泡）。
     pushUserBubble(session.id);
+    markSessionViewed(session.id);
   },
 
   /**

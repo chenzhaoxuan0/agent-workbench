@@ -30,6 +30,7 @@ import {
 } from "../adapters/daemon/client.ts";
 import { useWorkbench } from "../store/useWorkbench.ts";
 import { useHistoryPrefs } from "../store/useHistoryPrefs.ts";
+import { useTerminalStore } from "../store/useTerminalStore.ts";
 import { asSessionId, asUnitId } from "../core/units.ts";
 import { useShell } from "../store/useShell.ts";
 import { collapseForkVersions } from "./forkHistory.ts";
@@ -155,6 +156,8 @@ export function HistoryDialog({
     const args = resumeArgsFor(e.runtimeId, e.resumeRef);
     if (u === undefined || args === null) return;
     setResumeBusy(e.key);
+    // 派发意图先登记：紧跟的「终端跟随 bot」effect 看到在途就不再发一个全新 TUI
+    useTerminalStore.getState().notePendingUnitDispatch(unitId);
     void dispatchTerminal({
       unitId,
       unitName: u.name,
@@ -163,7 +166,17 @@ export function HistoryDialog({
       args,
     })
       .then(() => {
-        useWorkbench.getState().selectUnit(asUnitId(unitId));
+        const wb = useWorkbench.getState();
+        // 当前 bot 不重复 selectUnit —— 那会清掉正在看的聊天时间线
+        if (String(wb.activeUnitId) !== String(unitId)) wb.selectUnit(asUnitId(unitId));
+        // TUI 恢复的落点就是终端画布：切过去，别让用户对着聊天页猜终端在哪
+        const sh = useShell.getState();
+        sh.setMainView("chat");
+        sh.setConversationView("terminal");
+        // 打开即已读：熄掉侧栏的「完成未读」绿灯
+        useHistoryPrefs
+          .getState()
+          .markViewed([e.key, ...(e.sessionId !== null ? [`session-${e.sessionId}`] : [])]);
         onClose();
       })
       .catch((err2: unknown) => console.error("[HistoryDialog] TUI 恢复失败:", err2))
@@ -180,7 +193,11 @@ export function HistoryDialog({
     void useWorkbench
       .getState()
       .openSession({ sessionId: asSessionId(e.sessionId), unitId: asUnitId(e.unitId), runtimeId: e.runtimeId });
-    useShell.getState().setMainView("chat");
+    const sh = useShell.getState();
+    sh.setMainView("chat");
+    sh.setConversationView("chat");
+    // 打开即已读：熄掉侧栏的「完成未读」绿灯
+    useHistoryPrefs.getState().markViewed([e.key, `session-${e.sessionId}`]);
     onClose();
   };
 
@@ -236,6 +253,7 @@ export function HistoryDialog({
     const args = resumeArgsFor(s.executorId, s.sessionId);
     if (u === undefined || args === null) return;
     setResumeBusy(`native-${s.executorId}-${s.sessionId}`);
+    useTerminalStore.getState().notePendingUnitDispatch(unitId);
     void dispatchTerminal({
       unitId,
       unitName: u.name,
@@ -244,7 +262,11 @@ export function HistoryDialog({
       args,
     })
       .then(() => {
-        useWorkbench.getState().selectUnit(asUnitId(unitId));
+        const wb = useWorkbench.getState();
+        if (String(wb.activeUnitId) !== String(unitId)) wb.selectUnit(asUnitId(unitId));
+        const sh = useShell.getState();
+        sh.setMainView("chat");
+        sh.setConversationView("terminal");
         onClose();
       })
       .catch((err2: unknown) => console.error("[HistoryDialog] 原生会话 TUI 恢复失败:", err2))

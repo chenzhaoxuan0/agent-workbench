@@ -1070,7 +1070,6 @@ function AssistantMessageBlock({
             className="flex shrink-0 cursor-pointer items-center gap-1 rounded-btn p-1 text-ash transition hover:bg-line-soft hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
           >
             <GitBranch size={12} />
-            <span>分叉</span>
           </button>
           {usage !== undefined && (
             <span
