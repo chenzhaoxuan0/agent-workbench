@@ -632,8 +632,9 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
   selectUnit: (activeUnitId) => {
     // 切单元 = 切对话视图：时间线跟着换（ADR 0012 后时间线不再随开新段清空，
     // 单元边界成了唯一的显式清空点之一）。分叉意图指向旧单元的段，一并作废
-    // （零持久化，用户在新单元里重新发起即可）
-    set({ activeUnitId, activeSessionId: null, timeline: [], pendingFork: null });
+    // （零持久化，用户在新单元里重新发起即可）。输入历史同口径清空 ——
+    // 历史属于这场对话（终端换 shell），不该带进另一个 bot 的输入框
+    set({ activeUnitId, activeSessionId: null, timeline: [], pendingFork: null, inputHistory: [] });
     try {
       localStorage.setItem("agent-workbench:active-unit", activeUnitId);
     } catch {}
@@ -1655,7 +1656,9 @@ function consumeEvents(adapter: RuntimeAdapter): void {
         const status = mapTurnStatus(event.status);
         useWorkbench.setState((s) => ({
           sessions: s.sessions.map((x) => (x.id === event.sessionId ? { ...x, status } : x)),
-          ...(s.activeSessionId === event.sessionId && status !== "running" ? { busy: false } : {}),
+          // busy 镜像活跃会话的 running，双向都要写：此前只写 false，队列自动
+          // 出队 / 其他端起的新轮在跑时界面显示空闲、发送键还能再按
+          ...(s.activeSessionId === event.sessionId ? { busy: status === "running" } : {}),
         }));
       }
       if (event.type === "session.ended") {
@@ -1663,7 +1666,8 @@ function consumeEvents(adapter: RuntimeAdapter): void {
           sessions: s.sessions.map((x) =>
             x.id === event.sessionId ? { ...x, status: event.reason === "error" ? ("failed" as const) : ("done" as const), endedAt: Date.now() } : x,
           ),
-          busy: false,
+          // 同上：后台会话终结不该把活跃对话的 busy 误清
+          ...(s.activeSessionId === event.sessionId ? { busy: false } : {}),
         }));
       }
       if (event.type === "permission.resolved") {
@@ -1674,7 +1678,11 @@ function consumeEvents(adapter: RuntimeAdapter): void {
           },
         }));
       }
-      if (event.type === "message.completed") useWorkbench.setState({ busy: false });
+      // message.completed 只复位**活跃会话**的 busy —— 无条件复位会被后台
+      // （自动化/其他渠道）会话的消息完成事件把正在跑的对话误清成空闲
+      if (event.type === "message.completed") {
+        useWorkbench.setState((s) => (s.activeSessionId === event.sessionId ? { busy: false } : {}));
+      }
       // steer 队列权威快照：队列 UI 的唯一数据源（免增量对账）
       if (event.type === "steer.queue") {
         useWorkbench.setState((s) => ({

@@ -1400,10 +1400,10 @@ export class RuntimeHost {
     }
     // 暂停中的队列还挂着（用户停止 / 轮失败后）：新消息排到队尾并恢复出队 ——
     // FIFO 不被插队，用户也不需要先手动「恢复」才能继续说话。
+    // 先解除暂停再入队：enqueueSend 内的快照一次到位，不用补发第二份。
     if (h.pendingSends.length > 0) {
-      this.enqueueSend(h, text, loop);
       h.queuePaused = false;
-      this.emitQueueSnapshot(h);
+      this.enqueueSend(h, text, loop);
       this.flushPendingSends(h);
       return;
     }
@@ -1415,7 +1415,8 @@ export class RuntimeHost {
   private enqueueSend(h: HostSession, text: string, loop?: { readonly reasoningLevel?: string }): void {
     const id = `q${++h.queueSeq}`;
     h.pendingSends.push({ id, text, loop });
-    log.info("message queued (turn in flight)", { sessionId: h.id, queueDepth: h.pendingSends.length });
+    // 轮进行中入队是常态，但暂停队列续排也走这里 —— 日志不预设「turn in flight」
+    log.info("message queued (steer)", { sessionId: h.id, queueDepth: h.pendingSends.length });
     // WP-10：插话入队对客户端可见（steer.queued）
     this.emitStamped(h, { type: "steer.queued", sessionId: h.id, id, queueDepth: h.pendingSends.length });
     this.emitQueueSnapshot(h);
