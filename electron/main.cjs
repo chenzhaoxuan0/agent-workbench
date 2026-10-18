@@ -1,4 +1,4 @@
-const { app, BrowserWindow, shell, ipcMain, Menu } = require("electron");
+const { app, BrowserWindow, shell, ipcMain, Menu, screen } = require("electron");
 const path = require("path");
 
 let mainWindow = null;
@@ -72,6 +72,28 @@ function bindZoomShortcuts(wc) {
 
 ipcMain.on("zoom-wheel", (_event, deltaY) => {
   applyZoom(deltaY < 0 ? 0.5 : -0.5);
+});
+
+/**
+ * 窗口宽度插块（右侧标签面板的布局模型）：面板展开 = 整窗加宽一块、收起 = 减回
+ * 那块 —— 对话列宽度恒定，视觉上是「右侧插进来/拿走一块窗口」而不是对话区被压窄。
+ * 边界钳制：加宽不越过窗口所在显示器的工作区（含窗口左缘到工作区右缘的余量），
+ * 收窄不越过窗口 minWidth。返回**实际**变化的宽度 —— 被屏幕边截断时小于请求值，
+ * 渲染层据此记账，收起时才能精确减回、不留净漂移。
+ */
+ipcMain.handle("window-adjust-width", (_event, delta) => {
+  if (!mainWindow || mainWindow.isDestroyed()) return 0;
+  if (!Number.isFinite(delta) || delta === 0) return 0;
+  // 最大化/全屏是用户的显式布局选择，不替他改窗口尺寸
+  if (mainWindow.isMaximized() || mainWindow.isFullScreen()) return 0;
+  const bounds = mainWindow.getBounds();
+  const work = screen.getDisplayMatching(bounds).workArea;
+  const next = Math.max(
+    360,
+    Math.min(bounds.width + Math.round(delta), work.width, work.x + work.width - bounds.x),
+  );
+  mainWindow.setBounds({ x: bounds.x, y: bounds.y, width: next, height: bounds.height });
+  return next - bounds.width;
 });
 
 function createWindow() {

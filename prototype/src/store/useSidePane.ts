@@ -57,8 +57,17 @@ interface SidePaneStore extends sidePane.SidePaneState {
   setPaneWidth: (w: number) => void;
 
   /**
+   * 头部开合钮（面板收起后的唯一重开入口，ZCode「收起即归零 + 头部状态感知
+   * 开关」同款约定）：正占位 → 收起让位；其余一律展开 —— 有可见 tab 就回到
+   * tab 内容，一个 tab 都没有就落功能主页（SidePaneHome 里点选要开的功能，
+   * 不再硬开历史 tab）。「占位」口径统一走 sidePane.sidePaneOccupies。
+   */
+  toggleFromHeader: () => void;
+
+  /**
    * 切 bot 联动：WorkspaceShell 订阅 useWorkbench.activeUnitId 后调用。
-   * 切走前把当前聚焦归档到上个 bot 的记忆里，再解析新 scope 的聚焦与收起态。
+   * 切走前把当前聚焦归档到上个 bot 的记忆里，再解析新 scope 的聚焦态 ——
+   * 开合偏好不动：展开着就保持展开（无 tab 落功能主页），收起着就保持收起。
    */
   handleUnitChange: (unitId: UnitId) => void;
   /** bot 注销回收（daemon 侧 bot 定义消失）：清掉无主 tab 并自愈聚焦 */
@@ -89,6 +98,25 @@ export const useSidePane = create<SidePaneStore>((set, get) => ({
 
   toggleCollapsed: () => set((s) => ({ collapsed: !s.collapsed })),
 
+  toggleFromHeader: () => {
+    const s = get();
+    // 正占位 → 收起让位；其余一律走「展开」。判据用 sidePaneOccupies 与头部按钮
+    // 态、列渲染同源 —— 否则停在全局页时按钮亮着「已展开」，点一下只翻 collapsed，
+    // 画面不动，得再点一次才展开。
+    const occupying = sidePane.sidePaneOccupies(
+      s.scopeUnitId,
+      s.collapsed,
+      useShell.getState().mainView === "chat",
+    );
+    if (occupying) {
+      set({ collapsed: true });
+      return;
+    }
+    // 展开：有可见 tab 回 tab 内容；没有则落功能主页（面板里点选要开的功能）
+    useShell.getState().setMainView("chat");
+    set({ collapsed: false });
+  },
+
   setPaneWidth: (paneWidth) => {
     const clamped = Math.max(SIDE_PANE_MIN, Math.round(paneWidth));
     set({ paneWidth: clamped });
@@ -114,9 +142,9 @@ export const useSidePane = create<SidePaneStore>((set, get) => ({
       scopeUnitId: unitId,
       lastActiveTabByUnit,
       activeTabId: res.activeTabId,
-      // 只有「无可见 tab」才强制收起；有 tab 时保持现值 —— 用户手动收起的
-      // 偏好不该被切换动作翻掉，展开永远由 openTab 显式驱动。
-      collapsed: res.shouldCollapse ? true : s.collapsed,
+      // 开合偏好不动：展开着无 tab 的 bot → 面板落功能主页（列渲染见 SidePaneColumn）。
+      // 对称原则 —— 手动收起的偏好不该被切换动作翻掉，手动展开的同样不该。
+      collapsed: s.collapsed,
     });
   },
 
@@ -128,14 +156,13 @@ export const useSidePane = create<SidePaneStore>((set, get) => ({
         return s;
       }
       let activeTabId = next.activeTabId;
-      let collapsed = s.collapsed;
-      // 聚焦被回收（或自愈出空串）时按当前 scope 重解析，不把面板晾在空聚焦上
+      // 聚焦被回收（或自愈出空串）时按当前 scope 重解析；开合不动 ——
+      // 空聚焦的面板落功能主页，不为它收起
       if (activeTabId === "" && s.scopeUnitId !== null) {
         const res = sidePane.resolveScopeOnUnitChange(next, s.scopeUnitId, s.lastActiveTabByUnit);
         activeTabId = res.activeTabId;
-        collapsed = res.shouldCollapse ? true : collapsed;
       }
-      return { tabs: next.tabs, activeTabId, collapsed };
+      return { tabs: next.tabs, activeTabId, collapsed: s.collapsed };
     }),
 }));
 

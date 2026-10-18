@@ -127,12 +127,30 @@ export function visibleTabsForUnit(
   return tabs.filter((tab) => String(tab.ownerUnitId) === String(activeUnitId));
 }
 
+/**
+ * 面板当前是否**真在占位**：未收起 + 在 chat 主视图（+ 已激活过 bot）。
+ *
+ * 这是「占位」的唯一口径，三处共用，别各自抄一遍：
+ * - `SidePaneColumn` 的 open —— 决定列渲染与窗口宽度插块；
+ * - `WorkspaceHeader` 的开合钮态 —— 决定这颗钮显示展开还是收起；
+ * - `toggleFromHeader` 的动作 —— 收起还是展开。
+ *
+ * **无可见 tab 也占位**：展开 = 功能主页（SidePaneHome）兜底，面板里直接点选
+ * 要开的功能，而不是空壳或整列消失 —— 否则「展开」在零 tab 时是死点击。
+ * scopeUnitId 为 null（还没激活过任何 bot）时无内容可列，不占位。
+ */
+export function sidePaneOccupies(
+  scopeUnitId: UnitId | null,
+  collapsed: boolean,
+  mainViewIsChat: boolean,
+): boolean {
+  return !collapsed && mainViewIsChat && scopeUnitId !== null;
+}
+
 export interface SidePaneScopeResolution {
   visibleTabs: readonly SidePaneTab[];
-  /** 解析后的聚焦 tab；空串 = 无可聚焦（面板应收起） */
+  /** 解析后的聚焦 tab；空串 = 无可聚焦（面板落功能主页） */
   activeTabId: string;
-  /** 是否应强制收起（当前 bot 无任何可见 tab） */
-  shouldCollapse: boolean;
 }
 
 /**
@@ -141,8 +159,8 @@ export interface SidePaneScopeResolution {
  * 聚焦优先级：该 bot 上次聚焦的 tab（lastActiveTabByUnit 记忆）→ 沿用当前
  * activeTabId（若在新 scope 里可见）→ 最后一个可见 tab。
  *
- * 收起语义刻意保守：只有「无可见 tab」才强制收起；有 tab 时不自动展开 ——
- * 用户手动收起的偏好不该被切换动作翻掉，展开永远由 openTab 显式驱动。
+ * 收起/展开不在解析职责内：无可见 tab 时聚焦归空串、面板落功能主页 ——
+ * 用户的开合偏好（两个方向）都不该被切换动作翻掉。
  */
 export function resolveScopeOnUnitChange(
   state: SidePaneState,
@@ -151,14 +169,14 @@ export function resolveScopeOnUnitChange(
 ): SidePaneScopeResolution {
   const visibleTabs = visibleTabsForUnit(state.tabs, activeUnitId);
   if (visibleTabs.length === 0) {
-    return { visibleTabs, activeTabId: "", shouldCollapse: true };
+    return { visibleTabs, activeTabId: "" };
   }
   const preferred = lastActiveTabByUnit[String(activeUnitId)];
   const next =
     (preferred !== undefined && visibleTabs.some((tab) => tab.id === preferred) ? preferred : undefined) ??
     (visibleTabs.some((tab) => tab.id === state.activeTabId) ? state.activeTabId : undefined) ??
     visibleTabs[visibleTabs.length - 1]!.id;
-  return { visibleTabs, activeTabId: next, shouldCollapse: false };
+  return { visibleTabs, activeTabId: next };
 }
 
 /**

@@ -1,9 +1,10 @@
 import { useState } from "react";
-import { Check, FolderOpen, History, MessageSquare, Radio, Smartphone, SquareTerminal } from "lucide-react";
+import { Check, FolderOpen, History, MessageSquare, PanelRightClose, PanelRightOpen, Radio, Smartphone, SquareTerminal } from "lucide-react";
 import { useShell } from "../store/useShell.ts";
 import { useWorkbench, selectActiveUnit } from "../store/useWorkbench.ts";
 import { useBacklog } from "../store/useBacklog.ts";
 import { useSidePane } from "../store/useSidePane.ts";
+import { sidePaneOccupies } from "../core/sidePaneTabs.ts";
 import { openFolder } from "../adapters/daemon/client.ts";
 import { useIsMobile } from "./mobile/useIsMobile.ts";
 import { RemoteControlDialog } from "./RemoteControlDialog.tsx";
@@ -28,6 +29,13 @@ export function WorkspaceHeader() {
     s.tabs.some((t) => t.type === "history" && String(t.ownerUnitId) === String(unit.id)) &&
     String(s.scopeUnitId) === String(unit.id) &&
     !s.collapsed,
+  );
+  // 右侧面板开合钮的态 = 面板真在占位。口径与 SidePaneColumn.open 同源
+  // （core/sidePaneTabs.sidePaneOccupies，含「非 chat 主视图只收起不占位」那一条）——
+  // 收起后的唯一重开入口就在旁边这颗，ZCode「收起即归零 + 头部状态感知开关」同款约定
+  const mainView = useShell((s) => s.mainView);
+  const paneOpen = useSidePane(
+    (s) => unit !== undefined && sidePaneOccupies(s.scopeUnitId, s.collapsed, mainView === "chat"),
   );
 
   return (
@@ -142,6 +150,24 @@ export function WorkspaceHeader() {
           <span className="hidden sm:inline">移动端远控</span>
         </button>
         <BackgroundGuardianBadge />
+
+        {/* 右侧面板开合 —— 永远压在头部最右：面板收起后的重新展开入口（Electron 下
+            开合联动整窗宽度插块：展开右侧加宽一块、收起减回那块） */}
+        {unit !== undefined && (
+          <button
+            type="button"
+            onClick={() => useSidePane.getState().toggleFromHeader()}
+            aria-label={paneOpen ? "收起右侧面板" : "展开右侧面板"}
+            title={
+              paneOpen
+                ? "收起右侧面板（窗口右侧收回那块宽度；头部这颗钮随时重开）"
+                : "展开右侧面板（窗口右侧加宽一块；没有标签时显示功能主页，面板里点选要开的功能）"
+            }
+            className={cn(iconBtn, paneOpen && "bg-line-soft text-ink")}
+          >
+            {paneOpen ? <PanelRightClose size={14} /> : <PanelRightOpen size={14} />}
+          </button>
+        )}
       </div>
 
       {remoteOpen && (

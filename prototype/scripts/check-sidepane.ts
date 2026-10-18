@@ -5,6 +5,7 @@
  * 1. 结构化 id 幂等：同身份重复打开聚焦复用，不并排开两个；
  * 2. 关激活 tab 落右邻；
  * 3. bot 作用域：切 bot 隐藏不销毁、记忆恢复聚焦、注销回收。
+ * 4. 占位口径（sidePaneOccupies）：列渲染、头部按钮态、开合动作三处同源。
  * 跑法：node --experimental-strip-types scripts/check-sidepane.ts
  */
 import {
@@ -15,6 +16,7 @@ import {
   openHistoryTab,
   releaseUnits,
   resolveScopeOnUnitChange,
+  sidePaneOccupies,
   visibleTabsForUnit,
   type HistorySidePaneTab,
 } from "../src/core/sidePaneTabs.ts";
@@ -118,12 +120,12 @@ function hist(unit: string, name = unit): HistorySidePaneTab {
   // 在 B 下激活 B 的 tab 后切走
   const scoped = resolveScopeOnUnitChange(s, B, {});
   assert(scoped.visibleTabs.length === 1 && scoped.visibleTabs[0]!.id === historyTabId(B), "作用域过滤只留当前 bot 的 tab");
-  assert(!scoped.shouldCollapse, "有可见 tab 不强制收起");
+  assert(scoped.activeTabId === historyTabId(B), "有可见 tab 时解析出聚焦");
 
-  // 切到无 tab 的 bot：强制收起 + 空聚焦，但 tabs 不销毁
+  // 切到无 tab 的 bot：聚焦归空（面板落功能主页），开合不被切换动作翻掉，tabs 不销毁
   const D = asUnitId("bot-d");
   const away = resolveScopeOnUnitChange(s, D, {});
-  assert(away.shouldCollapse && away.activeTabId === "", "切到无 tab 的 bot 强制收起");
+  assert(away.activeTabId === "", "切到无 tab 的 bot 聚焦归空（落功能主页，不强制收起）");
   assert(s.tabs.length === 2, "切走不销毁其它 bot 的 tab");
 
   // 记忆恢复：上次聚焦记忆命中可见集合时优先取它
@@ -148,6 +150,26 @@ function hist(unit: string, name = unit): HistorySidePaneTab {
   assert(rel.activeTabId === "", "激活 tab 被回收时 activeTabId 归空");
   const relKeep = releaseUnits({ tabs: [hist(String(A))], activeTabId: historyTabId(A) }, [A, B]);
   assert(relKeep.activeTabId === historyTabId(A) && relKeep.tabs.length === 1, "无回收发生时原样返回");
+}
+
+// ---- 占位口径：列渲染 / 头部按钮态 / 开合动作共用（无 tab 也占位 = 功能主页兜底） ----
+{
+  assert(sidePaneOccupies(A, false, true), "占位：有可见 tab + 未收起 + chat 主视图");
+  assert(!sidePaneOccupies(A, true, true), "收起即不占位");
+  assert(!sidePaneOccupies(A, false, false), "非 chat 主视图不占位（全局页旁边不挂 bot 面板）");
+  assert(!sidePaneOccupies(null, false, true), "还没激活过任何 bot 不占位");
+  assert(sidePaneOccupies(B, false, true), "无可见 tab 也占位（功能主页兜底，展开不是死点击）");
+
+  // 回归守卫一：旧的头部按钮态漏了 mainView 条件，停在全局页（tab 开着、未收起）
+  // 时按钮亮「已展开」，点一下只把 collapsed 翻成 true —— 画面不动，得点第二下。
+  // 现在全局页恒判「不占位」，钮显示展开、点击走展开分支，第一次点就有可见变化。
+  const onGlobal = !sidePaneOccupies(A, false, false);
+  const afterFirstClick = sidePaneOccupies(A, false, true);
+  assert(onGlobal && afterFirstClick, "全局页上点钮必然产生可见变化（无死点击）");
+
+  // 回归守卫二：零 tab 时点展开，旧口径整列不渲染 —— 又一次死点击。现在落功能主页。
+  const expandNoTabs = sidePaneOccupies(A, false, true);
+  assert(expandNoTabs, "零 tab 点展开面板必有内容（功能主页）");
 }
 
 console.log(`\nsidepane 契约：${pass} 通过，${fail} 失败`);
