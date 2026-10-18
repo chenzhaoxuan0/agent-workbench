@@ -4,7 +4,7 @@
  * （Maka session-revisions 的「version X of Y」模式）。branch 段不折叠：
  * 它们是平行的探索方向，不是同一句话的改写，平铺即可。
  *
- * 两个消费方：HistoryDialog（完整折叠 + 展开导航）、Sidebar 历史子列表
+ * 两个消费方：HistoryPane（完整折叠 + 展开导航）、Sidebar 历史子列表
  * （只用 versionBadge 摘要，不展开）。
  */
 

@@ -6,7 +6,7 @@ import { cn } from "./cn.ts";
  * - 可恢复（resumable）：有执行器原生引用（cli_ref），resumeSession 可接回
  * - 仅历史：账本投影可看，发消息将开新段
  *
- * Timeline 的段 divider 与 HistoryDialog 的条目共用同一份语义。
+ * Timeline 的段 divider 与 HistoryPane 的条目共用同一份语义。
  */
 export function SessionReadinessBadge({
   live,

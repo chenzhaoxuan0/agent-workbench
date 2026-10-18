@@ -18,7 +18,6 @@ import { Sidebar } from "./ui/Sidebar.tsx";
 import { TerminalPanel } from "./ui/TerminalPanel.tsx";
 import { WorkspaceHeader } from "./ui/WorkspaceHeader.tsx";
 import { bindShellShortcuts, useShell } from "./store/useShell.ts";
-import { HistoryDialog } from "./ui/HistoryDialog.tsx";
 import { SidePaneColumn } from "./ui/SidePanePanel.tsx";
 import { useSidePane } from "./store/useSidePane.ts";
 import { MobileLayout } from "./ui/mobile/MobileLayout.tsx";
@@ -45,8 +44,6 @@ import { cn } from "./ui/cn.ts";
  */
 export function WorkspaceShell() {
   const settingsOpen = useShell((s) => s.settingsOpen);
-  const historyModal = useShell((s) => s.historyModal);
-  const closeHistoryModal = useShell((s) => s.closeHistoryModal);
   const activeUnitId = useWorkbench((s) => s.activeUnitId);
   const { isMobile, preference, setPreference } = useIsMobile();
   useEffect(() => bindShellShortcuts(), []);
@@ -97,15 +94,6 @@ export function WorkspaceShell() {
       <ProposalBanner />
 
       <CommandCenter />
-
-      {historyModal && (
-        <HistoryDialog
-          unitId={historyModal.unitId}
-          unitName={historyModal.unitName}
-          focusKey={historyModal.focusKey}
-          onClose={closeHistoryModal}
-        />
-      )}
     </div>
   );
 }

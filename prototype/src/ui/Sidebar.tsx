@@ -42,11 +42,12 @@ import { AddBotDialog, type AddBotDraft } from "./AddBotDialog.tsx";
 import { ImportBotDialog } from "./ImportBotDialog.tsx";
 import { UNIT_VIEWS, UnitViewSegment } from "./UnitViewSegment.tsx";
 import { ChannelMark, channelIdentityLabel } from "./ChannelMark.tsx";
-import { HistoryDialog, resumeArgsFor } from "./HistoryDialog.tsx";
+import { resumeArgsFor } from "./HistoryPane.tsx";
 import { collapseForkVersions } from "./forkHistory.ts";
 import { executorIconSrc } from "./executorIcon.ts";
 import { useHistoryPrefs } from "../store/useHistoryPrefs.ts";
 import { useTerminalStore } from "../store/useTerminalStore.ts";
+import { useSidePane } from "../store/useSidePane.ts";
 import { QuickContextMenu, quickMenuFromEvent, type QuickMenuState } from "./QuickContextMenu.tsx";
 import { cn } from "./cn.ts";
 
@@ -621,7 +622,7 @@ function openEntryInChat(e: UnitHistoryEntry): void {
 }
 
 /**
- * 在 TUI 中重现一条历史会话（各家 --resume 口径见 HistoryDialog 的 RESUME_ARGS）。
+ * 在 TUI 中重现一条历史会话（各家 --resume 口径见 HistoryPane 的 RESUME_ARGS）。
  * 派发前登记 pending（useTerminalStore），防止紧接着的「终端跟随 bot」effect
  * 因标签还没落地又派发一个全新 TUI（双进程竞态）。
  */
@@ -758,9 +759,7 @@ function UnitRow({
   useEffect(() => {
     void useGit.getState().refreshBranchBadge(unit.rootPath);
   }, [unit.rootPath]);
-  /** 历史详情弹窗（子列表条目点开看对话用；focusKey 预展开点进来的那条） */
-  const [historyDialogOpen, setHistoryDialogOpen] = useState(false);
-  const [historyFocus, setHistoryFocus] = useState<string | undefined>(undefined);
+  /** 历史详情走右侧标签页（点子列表条目预展开那一条）—— 状态在 useSidePane */
   const [histEntries, setHistEntries] = useState<readonly UnitHistoryEntry[] | null>(null);
   const [histErr, setHistErr] = useState<string | null>(null);
   /** 历史列表分页：每轮显示 6 条，超过 6 条折叠成「更多」 */
@@ -988,8 +987,7 @@ function UnitRow({
               draggable={false}
               onClick={(e) => {
                 e.stopPropagation();
-                setHistoryFocus(undefined);
-                setHistoryDialogOpen(true);
+                useSidePane.getState().openTab({ unitId: unit.id, unitName: unit.name });
               }}
               className="w-full cursor-pointer rounded-btn px-1.5 py-1 text-left text-[10px] text-ash hover:bg-line-soft hover:text-graphite"
             >
@@ -1030,8 +1028,7 @@ function UnitRow({
               else if (canChat) openEntryInChat(e);
               else if (canTui) openEntryInTui(e, unit);
               else {
-                setHistoryFocus(e.key);
-                setHistoryDialogOpen(true);
+                useSidePane.getState().openTab({ unitId: unit.id, unitName: unit.name, focusKey: e.key });
               }
             };
             return (
@@ -1049,8 +1046,7 @@ function UnitRow({
                   if (feasible) setEntryOpenMode(e.key, other);
                 }}
                 onOpenDetail={() => {
-                  setHistoryFocus(e.key);
-                  setHistoryDialogOpen(true);
+                  useSidePane.getState().openTab({ unitId: unit.id, unitName: unit.name, focusKey: e.key });
                 }}
                 onContextMenu={(ev) =>
                   setQuickMenu(
@@ -1078,8 +1074,7 @@ function UnitRow({
                         label: "对话详情",
                         icon: History,
                         onSelect: () => {
-                          setHistoryFocus(e.key);
-                          setHistoryDialogOpen(true);
+                          useSidePane.getState().openTab({ unitId: unit.id, unitName: unit.name, focusKey: e.key });
                         },
                       },
                     ]),
@@ -1115,8 +1110,7 @@ function UnitRow({
               draggable={false}
               onClick={(e) => {
                 e.stopPropagation();
-                setHistoryFocus(undefined);
-                setHistoryDialogOpen(true);
+                useSidePane.getState().openTab({ unitId: unit.id, unitName: unit.name });
               }}
               className="w-full cursor-pointer rounded-btn px-1.5 py-1 text-left text-[10px] text-ash hover:bg-line-soft hover:text-graphite"
             >
@@ -1196,10 +1190,6 @@ function UnitRow({
 
       {/* 右键菜单（bot 行：常驻 / 设置 / 新建会话；历史行：打开方式 / 详情） */}
       <QuickContextMenu menu={quickMenu} onClose={() => setQuickMenu(null)} />
-
-      {historyDialogOpen && (
-        <HistoryDialog unitId={unit.id} unitName={unit.name} focusKey={historyFocus} onClose={() => setHistoryDialogOpen(false)} />
-      )}
     </div>
   );
 }

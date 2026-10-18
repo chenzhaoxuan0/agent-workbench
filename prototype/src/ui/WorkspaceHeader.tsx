@@ -3,9 +3,9 @@ import { Check, FolderOpen, History, MessageSquare, Radio, Smartphone, SquareTer
 import { useShell } from "../store/useShell.ts";
 import { useWorkbench, selectActiveUnit } from "../store/useWorkbench.ts";
 import { useBacklog } from "../store/useBacklog.ts";
+import { useSidePane } from "../store/useSidePane.ts";
 import { openFolder } from "../adapters/daemon/client.ts";
 import { useIsMobile } from "./mobile/useIsMobile.ts";
-import { HistoryDialog } from "./HistoryDialog.tsx";
 import { RemoteControlDialog } from "./RemoteControlDialog.tsx";
 import { cn } from "./cn.ts";
 
@@ -17,12 +17,18 @@ export function WorkspaceHeader() {
   const sidebarCollapsed = useShell((s) => s.sidebarCollapsed);
   const conversationView = useShell((s) => s.conversationView);
   const setConversationView = useShell((s) => s.setConversationView);
-  const [historyOpen, setHistoryOpen] = useState(false);
   const [remoteOpen, setRemoteOpen] = useState(false);
 
   const { preference, setPreference, windowIsMobile } = useIsMobile();
   const unit = useWorkbench(selectActiveUnit);
   const isSteward = unit?.id === "steward";
+  // 历史按钮的激活态：当前 bot 的历史 tab 开着且面板展开（右侧栏是它的载体）
+  const historyPaneActive = useSidePane((s) =>
+    unit !== undefined &&
+    s.tabs.some((t) => t.type === "history" && String(t.ownerUnitId) === String(unit.id)) &&
+    String(s.scopeUnitId) === String(unit.id) &&
+    !s.collapsed,
+  );
 
   return (
     <header
@@ -111,10 +117,12 @@ export function WorkspaceHeader() {
 
         {unit !== undefined && (
           <button
-            onClick={() => setHistoryOpen(true)}
+            onClick={() =>
+              useSidePane.getState().openTab({ unitId: unit.id, unitName: unit.name })
+            }
             aria-label={`查看 ${unit.name} 的历史会话`}
-            title={`查看 ${unit.name} 的历史会话：自动化任务、待办任务、心跳与手动会话的时间轴`}
-            className={cn(iconBtn, historyOpen && "bg-line-soft text-ink")}
+            title={`查看 ${unit.name} 的历史会话：自动化任务、待办任务、心跳与手动会话的时间轴（右侧标签页承载，切 bot 时跟随切换）`}
+            className={cn(iconBtn, historyPaneActive && "bg-line-soft text-ink")}
           >
             <History size={14} />
           </button>
@@ -135,10 +143,6 @@ export function WorkspaceHeader() {
         </button>
         <BackgroundGuardianBadge />
       </div>
-
-      {historyOpen && unit !== undefined && (
-        <HistoryDialog unitId={unit.id} unitName={unit.name} onClose={() => setHistoryOpen(false)} />
-      )}
 
       {remoteOpen && (
         <RemoteControlDialog onClose={() => setRemoteOpen(false)} />

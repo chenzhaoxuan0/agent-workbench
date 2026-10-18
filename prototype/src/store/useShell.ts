@@ -94,10 +94,11 @@ export const SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
 ];
 
 // ---------------------------------------------------------------------------
-// 右栏标签面板**已整体移除**（2026-10，用户的决定：这个产品不要右栏）。
-// 相关的 core/sidepane.ts、store/useSidePane.ts 与自检脚本一并删除，
-// 命令面板里的「展开 Agent 档案」入口也去掉了——它当时只切换一个没人渲染的状态。
-// 真要重新引入，从 git log 取（提交 588d458 之前那版有完整契约与断言）。
+// 右侧标签面板：状态在独立的 store/useSidePane.ts（契约在 core/sidePaneTabs.ts）。
+// 本 store 只管外壳布局（侧栏宽度 / 主视图 / 弹窗开关），不放面板内容 ——
+// 面板有自己的作用域语义（切 bot 跟随），混进来会让两套生命周期互相污染。
+// 历史版本：IDE 式 19-tab 右栏曾在 588d458 整体移除；本版是弹窗迁移式的
+// 重做（历史会话打头），入口与渲染都是真的。
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -176,10 +177,6 @@ interface ShellState {
   closeImportBot: () => void;
   openUnitSettings: (id: UnitId) => void;
   closeUnitSettings: () => void;
-  /** 全局历史对话弹窗：从搜索中心或别处点击某条历史会话时唤起 */
-  historyModal: { unitId: string; unitName: string; focusKey?: string } | null;
-  openHistoryModal: (target: { unitId: string; unitName: string; focusKey?: string }) => void;
-  closeHistoryModal: () => void;
 }
 
 export const useShell = create<ShellState>((set, get) => ({
@@ -193,7 +190,6 @@ export const useShell = create<ShellState>((set, get) => ({
   addBotOpen: false,
   editUnitId: null,
   importBotOpen: false,
-  historyModal: null,
   conversationView: "chat",
 
   setMainView: (mainView) => set({ mainView }),
@@ -224,8 +220,6 @@ export const useShell = create<ShellState>((set, get) => ({
   closeImportBot: () => set({ importBotOpen: false }),
   openUnitSettings: (editUnitId) => set({ editUnitId, addBotOpen: false, importBotOpen: false }),
   closeUnitSettings: () => set({ editUnitId: null }),
-  openHistoryModal: (historyModal) => set({ historyModal }),
-  closeHistoryModal: () => set({ historyModal: null }),
 }));
 
 // ---------------------------------------------------------------------------

@@ -789,7 +789,7 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
       return;
     }
     // 执行器可能已不在注册表（daemon 下线了它 / 注册部分失败）：兜住再提示，
-    // 否则 HistoryDialog/Sidebar 的 void 调用变成静默 unhandled rejection（review P2）
+    // 否则 HistoryPane/Sidebar 的 void 调用变成静默 unhandled rejection（review P2）
     let adapter: RuntimeAdapter;
     try {
       adapter = await runtimeRegistry.getOrCreate(asRuntimeId(`daemon:${input.runtimeId}`) as never);
