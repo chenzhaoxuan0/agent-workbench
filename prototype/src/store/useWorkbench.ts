@@ -8,7 +8,7 @@ import type {
   PermissionDecision,
   RuntimeAdapter,
 } from "../core/adapter.ts";
-import type { RuntimeEvent } from "../core/events.ts";
+import type { RuntimeEvent, SteerQueueItem } from "../core/events.ts";
 import {
   asModelId,
   asRuntimeId,
@@ -83,6 +83,16 @@ export interface TimelineItem {
   readonly at: number;
 }
 
+/** 上下文容量徽标的数据面：最近一次 usage 事件的裸值 */
+export interface UsageSnapshot {
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly cacheReadTokens?: number;
+  readonly cacheWriteTokens?: number;
+  readonly model: string;
+  readonly at: number;
+}
+
 interface WorkbenchState {
   units: readonly WorkUnit[];
   activeUnitId: UnitId;
@@ -117,6 +127,17 @@ interface WorkbenchState {
   timeline: readonly TimelineItem[];
   deliverables: readonly Deliverable[];
   busy: boolean;
+  /**
+   * 每会话 steer 待发送队列快照（daemon 权威）：steer.queue 事件驱动更新，
+   * openSession 时从回放重建。队列 UI 只读这份，不做增量对账。
+   */
+  steerQueues: Readonly<Record<string, { items: readonly SteerQueueItem[]; paused: boolean }>>;
+  /**
+   * 每会话最近一次 usage 事件（上下文容量徽标的数据面）。
+   * 「当前上下文占用」的近似值 = 最近一轮 input + 缓存读 + output ——
+   * 每轮 input 都含全部历史，累计求和会严重高估，绝不能加总。
+   */
+  usageBySession: Readonly<Record<string, UsageSnapshot>>;
   /** 输入框草稿。空态建议卡片点一下就能预填 */
   draft: string;
   /** 已裁决的权限请求：requestId → 决策。用于把权限卡切成「已处理」态 */
@@ -249,6 +270,14 @@ interface WorkbenchState {
   ) => Promise<void>;
   /** 停止当前运行 */
   cancelRun: () => void;
+  /** 立刻发送一条排队消息：取消当前轮，轮落定后这条优先进去 */
+  sendQueuedNow: (id: string) => Promise<void>;
+  /** 删除一条排队消息（不回填输入框） */
+  removeQueuedSend: (id: string) => Promise<void>;
+  /** 编辑排队消息：先删（daemon 权威面）再把文本放回输入框；输入框有草稿时拒绝 */
+  editQueuedSend: (id: string) => Promise<void>;
+  /** 恢复暂停的待发送队列（用户停止/轮失败后不再自动出队） */
+  resumeQueuedSends: () => Promise<void>;
   resolvePermission: (requestId: string, decision: PermissionDecision) => void;
   /**
    * 定时任务 —— 权威数据在 daemon（SQLite），这里只是运行态视图。
@@ -418,6 +447,8 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
   timeline: [],
   deliverables: [],
   busy: false,
+  steerQueues: {},
+  usageBySession: {},
   draft: "",
   permissionDecisions: {},
   permissionMode: "bypass",
@@ -894,6 +925,27 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
     // activeSessionId（门禁的会话半边恒 false）、busy 尚未置位 → 切换必成。
     get().selectUnit(input.unitId);
     get().selectRuntime(String(adapter.id));
+    // 队列 / usage 从回放重建：主段先种上 resume 返回的权威快照（live 会话
+    // 当下的队列态），回放里更早的 steer.queue / usage 事件按序覆盖
+    const queues: Record<string, { items: readonly SteerQueueItem[]; paused: boolean }> = {
+      [String(session.id)]: { items: session.steerQueue ?? [], paused: session.steerPaused ?? false },
+    };
+    const usages: Record<string, UsageSnapshot> = {};
+    for (const r of rebuilt) {
+      const e = r.event;
+      if (!("sessionId" in e)) continue;
+      if (e.type === "steer.queue") queues[String(e.sessionId)] = { items: e.items, paused: e.paused };
+      else if (e.type === "usage") {
+        usages[String(e.sessionId)] = {
+          inputTokens: e.inputTokens,
+          outputTokens: e.outputTokens,
+          ...(e.cacheReadTokens !== undefined ? { cacheReadTokens: e.cacheReadTokens } : {}),
+          ...(e.cacheWriteTokens !== undefined ? { cacheWriteTokens: e.cacheWriteTokens } : {}),
+          model: e.model,
+          at: r.at,
+        };
+      }
+    }
     set((s) => {
       // 谱系内全部段进 sessions[]：divider 的执行器名/readiness 都从这里查
       const segSessions: Session[] = lineageRows.map((row) => ({
@@ -928,6 +980,8 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
         activeSessionId: session!.id,
         // 打开的是另一条对话的视图：指向旧视图的分叉意图作废（零持久化）
         pendingFork: null,
+        steerQueues: queues,
+        usageBySession: usages,
       };
     });
     markSessionViewed(session!.id);
@@ -983,6 +1037,77 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
         .getOrCreate(activeRuntimeId as never)
         .then((a: RuntimeAdapter) => a.cancel(activeSessionId))
         .catch((err: unknown) => console.warn("[workbench] cancel failed", err instanceof Error ? err.message : err));
+    }
+  },
+
+  // ---- steer 待发送队列操作（活跃会话的排队消息管理）----
+  // 统一走「会话所属执行器」拿适配器 —— 队列是会话的，不是当前执行器的。
+  sendQueuedNow: async (id) => {
+    const { activeSessionId, sessions } = get();
+    if (activeSessionId === null) return;
+    const seg = sessions.find((x) => x.id === activeSessionId);
+    if (seg === undefined) return;
+    try {
+      const adapter = await runtimeRegistry.getOrCreate(seg.runtimeId as never);
+      if (adapter.sendQueuedNow === undefined) throw new Error("当前执行器不支持队列管理");
+      await adapter.sendQueuedNow(activeSessionId, id);
+    } catch (err: unknown) {
+      get().pushNotice("没能立刻发送", err instanceof Error ? err.message : String(err), { level: "warn" });
+    }
+  },
+
+  removeQueuedSend: async (id) => {
+    const { activeSessionId, sessions } = get();
+    if (activeSessionId === null) return;
+    const seg = sessions.find((x) => x.id === activeSessionId);
+    if (seg === undefined) return;
+    try {
+      const adapter = await runtimeRegistry.getOrCreate(seg.runtimeId as never);
+      if (adapter.removeQueuedSend === undefined) throw new Error("当前执行器不支持队列管理");
+      await adapter.removeQueuedSend(activeSessionId, id);
+    } catch (err: unknown) {
+      get().pushNotice("没能删除这条排队消息", err instanceof Error ? err.message : String(err), { level: "warn" });
+    }
+  },
+
+  editQueuedSend: async (id) => {
+    const { activeSessionId, sessions, steerQueues, draft } = get();
+    if (activeSessionId === null) return;
+    const item = (steerQueues[String(activeSessionId)]?.items ?? []).find((i) => i.id === id);
+    if (item === undefined) return;
+    // 输入框还有没发的东西：不覆盖（ZCode 同款冲突守卫）—— 排队消息留在队列里不丢
+    if (draft.trim() !== "") {
+      get().pushNotice(
+        "输入框里还有未发送的内容",
+        "先处理输入框的草稿，再编辑这条排队消息 —— 它会一直在队列里等。",
+        { level: "warn" },
+      );
+      return;
+    }
+    const seg = sessions.find((x) => x.id === activeSessionId);
+    if (seg === undefined) return;
+    try {
+      const adapter = await runtimeRegistry.getOrCreate(seg.runtimeId as never);
+      if (adapter.removeQueuedSend === undefined) throw new Error("当前执行器不支持队列管理");
+      // 先删权威面、成功后才回填草稿（对齐 ZCode「ACK 后还原 composer」次序）
+      await adapter.removeQueuedSend(activeSessionId, id);
+      set({ draft: item.text });
+    } catch (err: unknown) {
+      get().pushNotice("没能取回这条排队消息", err instanceof Error ? err.message : String(err), { level: "warn" });
+    }
+  },
+
+  resumeQueuedSends: async () => {
+    const { activeSessionId, sessions } = get();
+    if (activeSessionId === null) return;
+    const seg = sessions.find((x) => x.id === activeSessionId);
+    if (seg === undefined) return;
+    try {
+      const adapter = await runtimeRegistry.getOrCreate(seg.runtimeId as never);
+      if (adapter.resumeQueuedSends === undefined) throw new Error("当前执行器不支持队列管理");
+      await adapter.resumeQueuedSends(activeSessionId);
+    } catch (err: unknown) {
+      get().pushNotice("没能恢复队列", err instanceof Error ? err.message : String(err), { level: "warn" });
     }
   },
 
@@ -1212,8 +1337,12 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
       active.status !== "failed"
     ) {
       set({ busy: true });
-      pushUserBubble(active.id);
       markSessionViewed(active.id);
+      // 用户气泡不再本地乐观合成：轮空闲时 daemon 立刻回显 message.delta(user)，
+      // 排队时（本端 busy / 其他端正跑着轮）daemon 发 steer.queued + 快照 ——
+      // 队列卡片接管「待发送」展示，轮落定 boundary 后才转成正式气泡。
+      // 本地合成的旧路径在排队场景会把「排队中」伪装成「已发送」（正是本功能要修的）。
+      const restoreDraft = (): void => set({ draft: prompt.trim() !== "" ? prompt : fullPrompt });
       try {
         await adapter.sendMessage({
           sessionId: active.id,
@@ -1225,6 +1354,7 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
         });
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
+        restoreDraft();
         if (msg.includes("session_not_live") || msg.includes("not live")) {
           // live 字段陈旧（daemon 换代杀掉了 impl，前端快照不知道）：标记死段，
           // 下一条消息自然走同谱系开新段（与续聊判定注释宣称的行为对齐，review P2）
@@ -1234,6 +1364,7 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
           }));
           get().pushNotice("这段对话已不在运行中", "已标记为只读段 —— 再发一次将在同一对话线开新段。", { level: "warn" });
         } else {
+          // 发送失败（含队列满 send_queue_full）：消息还给输入框，不打字重打一遍
           fail(err);
         }
       }
@@ -1271,8 +1402,8 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
         target = undefined;
       }
       if (target !== undefined) {
-        // 若目标段正跑着轮（别的端续上了它）：session.send 会按 T3 steer 排队，无需特判
-        let bubbleId: number | null = null;
+        // 若目标段正跑着轮（别的端续上了它）：session.send 会按 T3 steer 排队，无需特判。
+        // 同续聊分支：不本地合成气泡，daemon 回显 / 队列卡片接管展示。
         try {
           const resumed = await adapter.resumeSession(asSessionId(target.id));
           const normalized: Session = { ...resumed, runtimeId: adapter.id as never };
@@ -1283,7 +1414,6 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
               : [...s.sessions, normalized],
             activeSessionId: normalized.id,
           }));
-          bubbleId = pushUserBubble(normalized.id);
           markSessionViewed(normalized.id);
           await adapter.sendMessage({
             sessionId: normalized.id,
@@ -1295,11 +1425,8 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
           });
           return;
         } catch (err: unknown) {
-          // 续接失败显式回落新段（不静默）；本地已推的用户气泡撤回，
-          // 否则回落后同一条消息在时间线上出现两次（review P3）
-          if (bubbleId !== null) {
-            set((s) => ({ timeline: s.timeline.filter((t) => t.id !== bubbleId) }));
-          }
+          // 续接失败显式回落新段（不静默）；消息文本还给输入框
+          set({ draft: prompt.trim() !== "" ? prompt : fullPrompt });
           get().pushNotice("旧段接不回去，改为开新段", err instanceof Error ? err.message : String(err), { level: "warn" });
         }
       }
@@ -1516,6 +1643,51 @@ function consumeEvents(adapter: RuntimeAdapter): void {
         }));
       }
       if (event.type === "message.completed") useWorkbench.setState({ busy: false });
+      // steer 队列权威快照：队列 UI 的唯一数据源（免增量对账）
+      if (event.type === "steer.queue") {
+        useWorkbench.setState((s) => ({
+          steerQueues: {
+            ...s.steerQueues,
+            [String(event.sessionId)]: { items: event.items, paused: event.paused },
+          },
+        }));
+      }
+      if (event.type === "steer.undelivered") {
+        useWorkbench.setState((s) => ({
+          steerQueues: {
+            ...s.steerQueues,
+            [String(event.sessionId)]: { items: [], paused: false },
+          },
+        }));
+        // 文本如实带出来：这是把消息还给用户的唯一渠道（队列清了，草稿没了）
+        const brief = event.inputs
+          .map((t) => {
+            const flat = t.replace(/\s+/g, " ").trim();
+            return flat.length > 60 ? `${flat.slice(0, 60)}…` : flat;
+          })
+          .join(" ／ ");
+        useWorkbench.getState().pushNotice(
+          "有排队消息没能投递",
+          `会话已结束，${event.inputs.length} 条待发送消息未发出：${brief}。可复制回输入框重发。`,
+          { level: "warn" },
+        );
+      }
+      // usage = 上下文容量徽标数据面（只记最近一次，不累计 —— 每轮 input 都含全部历史）
+      if (event.type === "usage") {
+        useWorkbench.setState((s) => ({
+          usageBySession: {
+            ...s.usageBySession,
+            [String(event.sessionId)]: {
+              inputTokens: event.inputTokens,
+              outputTokens: event.outputTokens,
+              ...(event.cacheReadTokens !== undefined ? { cacheReadTokens: event.cacheReadTokens } : {}),
+              ...(event.cacheWriteTokens !== undefined ? { cacheWriteTokens: event.cacheWriteTokens } : {}),
+              model: event.model,
+              at: Date.now(),
+            },
+          },
+        }));
+      }
       if (event.type === "deliverable") {
         useWorkbench.setState((s) => ({
           deliverables: [

@@ -330,6 +330,20 @@ class DaemonRuntimeAdapter implements RuntimeAdapter {
     await this.#client.rpc("session.cancel", { sessionId });
   }
 
+  // ---- steer 待发送队列管理（host.pendingSends 的操作面）----
+  async removeQueuedSend(sessionId: SessionId, id: string): Promise<void> {
+    await this.#client.rpc("session.queue.remove", { sessionId, id }, 15000);
+  }
+
+  async sendQueuedNow(sessionId: SessionId, id: string): Promise<void> {
+    // 取消当前轮要等 CLI 响应，给足余量
+    await this.#client.rpc("session.queue.sendNow", { sessionId, id }, 30000);
+  }
+
+  async resumeQueuedSends(sessionId: SessionId): Promise<void> {
+    await this.#client.rpc("session.queue.resume", { sessionId }, 15000);
+  }
+
   async resolvePermission(sessionId: SessionId, requestId: string, decision: PermissionDecision): Promise<void> {
     await this.#client.rpc("permission.resolve", { sessionId, requestId, decision });
   }

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowUp,
+  CalendarClock,
   GitBranch,
   Paperclip,
   Plus,
@@ -22,6 +23,9 @@ import { SlashCommandMenu, filterNativeCommands } from "./SlashCommandMenu.tsx";
 import { AttachmentsBar } from "./AttachmentsBar.tsx";
 import { PathMentionMenu } from "./PathMentionMenu.tsx";
 import { ChatTerminalToggleButton } from "./ChatTerminalDock.tsx";
+import { SteerQueueCard } from "./SteerQueueCard.tsx";
+import { ScheduleSendMenu } from "./ScheduleSendMenu.tsx";
+import { ContextUsageBadge } from "./ContextUsageBadge.tsx";
 import type { ChatAttachment } from "../core/attachments.ts";
 import { MAX_ATTACHMENTS, categorizeAttachment, inferAttachmentMimeType } from "../core/attachments.ts";
 import {
@@ -70,6 +74,8 @@ export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
   const [inputHeight, setInputHeight] = useState(baseH);
   const [slashMenuDismissed, setSlashMenuDismissed] = useState(false);
   const [plusMenuOpen, setPlusMenuOpen] = useState(false);
+  /** 定时发送弹层（[+] 菜单入口；挂在同一个锚点上，点外共用关闭逻辑） */
+  const [schedOpen, setSchedOpen] = useState(false);
 
   // ---- @ 路径提及（交互对齐 ZCode file-mention）----------------------------
   // 光标位置单独跟踪：@ 触发看「光标前最近的一个 @」，光标移动（点击/方向键）
@@ -121,17 +127,18 @@ export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
     };
   }, []);
 
-  // 点击外部关闭 [+] 菜单
+  // 点击外部关闭 [+] 菜单 / 定时发送弹层（同一锚点容器）
   useEffect(() => {
-    if (!plusMenuOpen) return;
+    if (!plusMenuOpen && !schedOpen) return;
     const onDown = (e: MouseEvent) => {
       if (plusMenuRef.current && !plusMenuRef.current.contains(e.target as Node)) {
         setPlusMenuOpen(false);
+        setSchedOpen(false);
       }
     };
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
-  }, [plusMenuOpen]);
+  }, [plusMenuOpen, schedOpen]);
 
   // 当文字被填入时自适应加高：
   // 默认高度容纳 3~4 行；输入多行内容时持续长高，上限直顶 header 的下底边，绝不在 5 行截断或回缩
@@ -312,16 +319,19 @@ export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
     setAttachments([]);
     setSlashMenuDismissed(false);
     setPlusMenuOpen(false);
+    setSchedOpen(false);
     setMentionDismissedKey(null);
     setCursorOffset(0);
     void run(v, { attachments: currentAttachments });
   };
 
-  const placeholder = !unit
-    ? "先选一个 bot 或项目，或新建一个 bot… (输入 / 查看命令/技能/子智能体)"
-    : !isProjectUnit(unit)
-      ? `给「${unit.name}」派活…（可添加图片/代码附件，输入 / 调出 ${executorName} 命令面板）`
-      : `对「${unit.name}」下任务…（可添加图片/代码附件，输入 / 调出 ${executorName} 命令面板）`;
+  const placeholder = busy
+    ? "上一轮仍在进行 —— 现在发送将排队，本轮完成后自动发出（可立刻发送 / 编辑 / 删除）"
+    : !unit
+      ? "先选一个 bot 或项目，或新建一个 bot… (输入 / 查看命令/技能/子智能体)"
+      : !isProjectUnit(unit)
+        ? `给「${unit.name}」派活…（可添加图片/代码附件，输入 / 调出 ${executorName} 命令面板）`
+        : `对「${unit.name}」下任务…（可添加图片/代码附件，输入 / 调出 ${executorName} 命令面板）`;
 
   return (
     <div className="shrink-0">
@@ -377,6 +387,9 @@ export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
             onRemove={(id) => setAttachments((prev) => prev.filter((a) => a.id !== id))}
             className="mb-2"
           />
+
+          {/* 待发送队列卡片（daemon steer 权威快照）：排队消息的可见 + 可操作面 */}
+          <SteerQueueCard />
 
           {/* 分叉意图条（ADR 0013「意图 + 发送才建段」）：可见、可撤，取消零持久化 */}
           {pendingFork !== null && (
@@ -603,8 +616,26 @@ export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
                         <span className="block text-[10px] text-ash">输入 @ 选择文件或目录作为上下文</span>
                       </div>
                     </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPlusMenuOpen(false);
+                        setSchedOpen((v) => !v);
+                      }}
+                      className="mt-0.5 flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs text-graphite hover:bg-line-soft hover:text-ink transition"
+                    >
+                      <CalendarClock size={16} className="shrink-0 text-teal" />
+                      <div className="min-w-0 flex-1">
+                        <span className="block font-medium text-ink">定时发送本条消息</span>
+                        <span className="block text-[10px] text-ash">N 分钟后或指定时刻，发到本对话（一次性任务）</span>
+                      </div>
+                    </button>
                   </div>
                 )}
+
+                {/* 定时发送弹层：同一锚点容器内向上弹出 */}
+                {schedOpen && <ScheduleSendMenu onClose={() => setSchedOpen(false)} />}
               </div>
 
               {/* 权限模式选择器（计划模式 / 变更确认 / 自主模式 / 完全访问） */}
@@ -614,8 +645,9 @@ export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
               <ChatTerminalToggleButton />
             </div>
 
-            {/* 右侧操作：执行器与模型（单图标） + 推理力度（单图标） + 发送/停止按钮 */}
+            {/* 右侧操作：上下文容量/额度徽标 + 执行器与模型（单图标） + 推理力度（单图标） + 发送/停止按钮 */}
             <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
+              <ContextUsageBadge />
               <RuntimePicker compact={isMobile} align="right" />
               <ReasoningEffortPicker compact={isMobile} align="right" />
 
