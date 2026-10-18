@@ -1259,10 +1259,12 @@ export class RuntimeHost {
   }
 
   /**
-   * ADR 0013：分叉锚点 → 父段账本 seq 上界。锚点 = 父段里那轮的用户消息
-   * messageId（host 统一发 user-N）。branch = through（含锚点轮整轮，截至
-   * 该轮 turn.completed 的 seq）；revision = before（锚点行之前最后一个事件的
-   * seq，不含该轮 —— 首轮之前为 0 = 空前缀，编辑首条消息等于重新开始）。
+   * ADR 0013：分叉锚点 → 父段账本 seq 上界。锚点兼容两种形态（docs/18）：
+   * - 助手消息 id（message.completed，UI 主入口「从回复处分叉」）；
+   * - 用户消息 id（message.delta role=user，user-N；编辑重发 revision 用）。
+   * branch = through（含锚点所在轮整轮，截至其后第一条 turn.completed 的 seq）；
+   * revision = before（锚点行之前最后一个事件的 seq，不含该轮 —— 首轮之前为 0
+   * = 空前缀，编辑首条消息等于重新开始）。
    * 锚点不在账本 = unknown_anchor（daemon 侧校验，前端不持有可靠 seq）。
    */
   private async resolveForkAtSeq(
@@ -1287,8 +1289,11 @@ export class RuntimeHost {
         // 坏行跳过：账本容错读
       }
     }
+    // 助手消息锚点匹配 message.completed；用户消息锚点匹配 user delta
     const anchorIdx = records.findIndex(
-      (r) => r.type === "message.delta" && r.role === "user" && r.messageId === anchorMessageId,
+      (r) =>
+        (r.type === "message.completed" && r.messageId === anchorMessageId) ||
+        (r.type === "message.delta" && r.role === "user" && r.messageId === anchorMessageId),
     );
     if (anchorIdx < 0) {
       throw adapterError("unknown_anchor", `fork anchor not found in ledger: ${anchorMessageId}`);
@@ -1296,8 +1301,10 @@ export class RuntimeHost {
     if (kind === "revision") {
       return anchorIdx === 0 ? 0 : records[anchorIdx - 1]!.seq;
     }
-    // branch：锚点及其之后的第一条 turn.completed 收的就是锚点轮的口
-    //（turn.started 先于该轮用户消息入账）。找不到（源段异常未收口）回落账本尾。
+    // branch：锚点及其之后的第一条 turn.completed 收的就是锚点轮的口。
+    // 助手消息锚点：message.completed 与本轮 turn.completed 相邻；
+    // 用户消息锚点：turn.started 先于该轮用户消息入账。
+    // 找不到（源段异常未收口）回落账本尾。
     const closing = records.slice(anchorIdx).find((r) => r.type === "turn.completed");
     if (closing !== undefined) return closing.seq;
     return records.length > 0 ? records[records.length - 1]!.seq : 0;

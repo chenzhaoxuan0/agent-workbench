@@ -198,7 +198,7 @@ try {
   const seg1Trace = await readTrace(c, seg1.id);
   check("源段账本含 user-1 与 turn.completed", seg1Trace.some((r) => r.event.type === "message.delta" && r.event.messageId === "user-1") && seg1Trace.some((r) => r.event.type === "turn.completed"));
 
-  // ---- 2. branch 分叉（through：含锚点轮整轮） ----
+  // ---- 2. branch 分叉（through：锚点=助手消息 id msg_1，UI 主入口「从回复处分叉」） ----
   const branch = await c.call<{ id: string }>("session.start", {
     runtimeId: "mockperm",
     unitId: "u-fork",
@@ -208,7 +208,7 @@ try {
     model: "mock-1",
     mode: "build",
     conversationId: seg1.id,
-    fork: { ofSessionId: seg1.id, anchorMessageId: "user-1", kind: "branch" },
+    fork: { ofSessionId: seg1.id, anchorMessageId: "msg_1", kind: "branch" },
   });
   const listed = await c.call<SessionRowRpc[]>("session.list", null);
   const branchRow = listed.find((s) => s.id === branch.id);
@@ -216,6 +216,22 @@ try {
   const branchBound = branchRow?.forkAtSeq ?? 0;
   const turnCompletedSeq = seg1Trace.find((r) => r.event.type === "turn.completed")?.seq ?? -1;
   check("branch 上界 = 锚点轮 turn.completed 的 seq（through 语义）", branchBound === turnCompletedSeq, { branchBound, turnCompletedSeq });
+
+  // ---- 2b. 用户消息锚点（user-N）同样支持（兼容路径，bound 应一致） ----
+  const branchUserAnchor = await c.call<{ id: string }>("session.start", {
+    runtimeId: "mockperm",
+    unitId: "u-fork",
+    unitName: "fork-smoke",
+    rootPath: backendRoot,
+    prompt: "用户锚点分叉",
+    model: "mock-1",
+    mode: "build",
+    conversationId: seg1.id,
+    fork: { ofSessionId: seg1.id, anchorMessageId: "user-1", kind: "branch" },
+  });
+  const listedUA = await c.call<SessionRowRpc[]>("session.list", null);
+  const uaRow = listedUA.find((s) => s.id === branchUserAnchor.id);
+  check("user 锚点 branch 与 assistant 锚点 bound 一致", uaRow?.forkAtSeq === branchBound, uaRow);
 
   // ---- 3. HANDOFF 快照只含 seq ≤ fork_at_seq 的前缀（含锚点轮回复） ----
   await settleTurn(c, branch.id);

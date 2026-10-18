@@ -384,7 +384,7 @@ export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
               <GitBranch size={12} className="shrink-0 text-teal" />
               <span className="min-w-0 flex-1">
                 {pendingFork.kind === "branch"
-                  ? "发送后将从所选轮之后分叉开启新段：新段带此前对话的只读前缀，当前分支保留可回看"
+                  ? "发送后将从所选回复之后分叉开启新段：新段携带此前对话的只读前缀，当前分支保留可回看"
                   : "发送后将编辑重发：在新段里替换那一轮（那轮之前保留为只读前缀；附件与工作区文件改动不回滚）"}
               </span>
               <button

@@ -84,7 +84,8 @@ vs "将编辑此轮并开启新版本"），发送前可见可撤。
   /** 对话分叉（ADR 0013）：在源段某轮边界开新段。发送才建段（意图态见 docs/18 §〇）。 */
   fork?: {
     ofSessionId: string;
-    /** 锚点 = 源段里那轮的用户消息 id（message.delta role=user 的 messageId） */
+    /** 锚点：助手消息 id（message.completed，UI 主入口「从回复处分叉」）或
+        用户消息 id（message.delta role=user，编辑重发 revision 用） */
     anchorMessageId: string;
     /** branch=含锚点轮整轮（through）；revision=锚点轮之前（before，编辑重发） */
     kind: "branch" | "revision";
@@ -122,15 +123,20 @@ vs "将编辑此轮并开启新版本"），发送前可见可撤。
 
 - groupTimelineEvents 给 `user.message` 项补记 `messageId`（anchor 用）；
 - `UserMessageBubble`（296-343）加 hover 动作（`group/msg` 已有 hover 语境）——
-  **实测修正（2026-10-18）**：初版纯 hover 显示（opacity-0 → 悬停显现）实测可发现性
-  过差且触屏无法触发，改为**常驻可见（60% 透明度，悬停全亮）**，位型从气泡上方
-  独立行改为气泡左侧垂直居中（经典聊天 UI 位型）。CDP 真实页面验证脚本：
-  `backend/scripts/verify-fork-button.ts`（smoke:ui:forkbutton）：
-  - **任意轮**："从此处分叉"（GitBranch 图标）——门禁：`runtimeSwitchBlocked`
-    为 true 时禁用 + tooltip"先让这一轮落定"；本地合成气泡的假 messageId
-    （echo 未回填）锚点未就绪时禁用；
-  - **仅时间线最后一条用户消息**："编辑重发"（PencilLine 图标，P2，
-    latestQueryEditOnly 守卫）；
+  **实测修正（2026-10-18 二次）**：分叉入口从用户消息移到**助手消息底部 meta 行**
+  （参考 ZCode ConversationAssistantTextActions 的轮尾动作行）：
+  - 助手消息底部 meta 行：**左 = 时间 + 「分叉」按钮**（图标+文字，流式中/
+    busy 禁用；锚点 = 该条回复的 messageId，branch=through 含本轮），
+    **右 = 模型 · token 上下行**（usage 事件由 groupTimelineEvents 并入助手块，
+    不再独立成行，**不显示计费**）；时间从消息头部挪到底部。
+  - 用户消息只留**铅笔编辑入口**（末轮 latestQueryEditOnly + idle 门禁 +
+    echo 回填 user-N 锚点就绪）→ **就地编辑**（参考 ZCode UserInputRowView）：
+    原位把气泡替换为编辑器（预填原文，Enter 重发 / Shift+Enter 换行 / Esc 取消），
+    重发 = `store.editAndResend`：revision 意图 + 立即 run（不经过 composer）。
+  - 初版「纯 hover + 气泡上方独立行」的教训：hover 显示触屏不可触发、位型
+    不合惯例，实测找不到入口；CDP 验证脚本 `verify-fork-button.ts`
+    （smoke:ui:forkbutton）覆盖：助手分叉按钮存在/可用、usage 并入、无计费、
+    就地编辑 → revision 分叉标记 → 新内容进新段的端到端链路。
 - 点击 → store 设 `pendingFork: { ofSessionId, anchorMessageId, kind }` +
   （revision 时）`setDraft(原文)`——draft 自动聚焦已有现成机制；
   branch 则聚焦空 composer；

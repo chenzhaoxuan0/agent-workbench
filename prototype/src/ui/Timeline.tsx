@@ -1,6 +1,7 @@
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
+  ArrowUp,
   Bot,
   Brain,
   Check,
@@ -342,9 +343,21 @@ function groupTimelineEvents(
         result.push({ id, kind: "deliverable", at, data: event });
         break;
 
-      case "usage":
-        result.push({ id, kind: "usage", at, data: event });
+      case "usage": {
+        // 用量并入同会话最近一条助手消息的底部 meta 行（右侧模型/token 信息，
+        // 不再独立成行也不显示计费）。找不到可挂靠的助手块时保留独立行兜底。
+        const target = findLastAssistantOf(result, String(event.sessionId));
+        if (target !== undefined) {
+          target.data.usage = {
+            model: event.model,
+            inputTokens: event.inputTokens,
+            outputTokens: event.outputTokens,
+          };
+        } else {
+          result.push({ id, kind: "usage", at, data: event });
+        }
         break;
+      }
 
       case "error":
         result.push({ id, kind: "error", at, data: event });
@@ -377,6 +390,15 @@ function findAssistantBlock(
     ) {
       return r;
     }
+  }
+  return undefined;
+}
+
+/** 倒序找同会话最近一条助手消息块（usage 并入挂靠用） */
+function findLastAssistantOf(result: GroupedItem[], sessionId: string): GroupedItem | undefined {
+  for (let i = result.length - 1; i >= 0; i--) {
+    const r = result[i]!;
+    if (r.kind === "assistant.message" && r.data.sessionId === sessionId) return r;
   }
   return undefined;
 }
@@ -452,6 +474,12 @@ function parseSlashCommand(text: string): { isCommand: boolean; name: string; ar
   };
 }
 
+/**
+ * 用户消息（编辑重发参考 ZCode UserInputRowView 的就地编辑）：
+ * 末轮用户消息 hover 出铅笔入口 → 原位把气泡替换为编辑器（Enter 重发 /
+ * Shift+Enter 换行 / Esc 取消）→ 重发 = revision 分叉（新段替换这一轮，
+ * 原分支保留可回看）。不再提供「从此处分叉」——分叉入口在助手消息底部。
+ */
 function UserMessageBubble({
   text,
   attachments,
@@ -462,20 +490,20 @@ function UserMessageBubble({
 }: {
   text: string;
   attachments?: readonly ChatAttachment[];
-  /** daemon 侧真实 messageId（echo 回填后的 user-N；本地假 id 时分叉入口禁用） */
+  /** daemon 侧真实 messageId（echo 回填后的 user-N；本地假 id 时编辑入口禁用） */
   messageId: string;
-  /** 这条消息所属的段 —— fork 的 ofSessionId（时间线跨段时未必是活跃段） */
+  /** 这条消息所属的段 —— revision 的 ofSessionId */
   sessionId: string;
-  /** 时间线最后一条用户消息：编辑重发（revision）只对它开放 */
+  /** 时间线最后一条用户消息：编辑重发只对它开放（latestQueryEditOnly） */
   isLatestUserTurn: boolean;
   busy: boolean;
 }) {
   const parsed = parseSlashCommand(text);
-  const startFork = useWorkbench((s) => s.startFork);
+  const [editing, setEditing] = useState(false);
+  const [editDraft, setEditDraft] = useState(text);
+  const editAndResend = useWorkbench((s) => s.editAndResend);
   const sourceStatus = useWorkbench((s) => s.sessions.find((x) => String(x.id) === sessionId)?.status);
 
-  // idle 门禁（ADR 0013 不变量 6，复用 runtimeSwitchBlocked 的口径）：
-  // 源段 running/awaiting_* 或本轮 busy 时禁止分叉
   const blocked =
     busy ||
     sourceStatus === "running" ||
@@ -483,40 +511,85 @@ function UserMessageBubble({
     sourceStatus === "awaiting_input";
   // 本地合成气泡的假 messageId（u${seq}，echo 尚未回填）不能做账本锚点
   const anchorReady = /^user-\d+$/.test(messageId);
-  const actionsDisabled = blocked || !anchorReady;
+  const canEdit = isLatestUserTurn && !blocked && anchorReady;
   const disabledTitle = blocked ? "先让这一轮落定" : "锚点还没落进账本，稍等一下再试";
 
-  // 常驻可见（60% → 悬停全亮）：纯 hover 显示在触屏/移动端无法触发，
-  // 也太容易被错过（实测反馈：找不到入口）。位型 = 气泡左侧垂直居中。
-  const forkAction = (
-    <div className="flex shrink-0 flex-col items-end gap-1 self-center opacity-60 transition group-hover/user:opacity-100">
-      <button
-        onClick={() => startFork({ ofSessionId: sessionId as never, anchorMessageId: messageId, kind: "branch" })}
-        disabled={actionsDisabled}
-        title={actionsDisabled ? disabledTitle : "从这一轮之后开启分叉：新段携带此前对话的只读前缀，旧分支保留可回看"}
-        className="flex items-center gap-1 rounded-btn border border-line bg-card px-2 py-1 text-caption text-graphite shadow-xs transition hover:bg-line-soft hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
-      >
-        <GitBranch size={12} />
-        <span>从此处分叉</span>
-      </button>
-      {isLatestUserTurn && (
-        <button
-          onClick={() => startFork({ ofSessionId: sessionId as never, anchorMessageId: messageId, kind: "revision", anchorText: text })}
-          disabled={actionsDisabled}
-          title={actionsDisabled ? disabledTitle : "编辑这条消息并重新发送：在新的分支里替换这一轮（附件不会带过去；工作区文件不回滚）"}
-          className="flex items-center gap-1 rounded-btn border border-line bg-card px-2 py-1 text-caption text-graphite shadow-xs transition hover:bg-line-soft hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          <PencilLine size={12} />
-          <span>编辑重发</span>
-        </button>
-      )}
-    </div>
-  );
+  const openEdit = () => {
+    setEditDraft(text);
+    setEditing(true);
+  };
+
+  const submitEdit = () => {
+    const v = editDraft.trim();
+    if (v === "") return;
+    setEditing(false);
+    void editAndResend({ ofSessionId: sessionId as never, anchorMessageId: messageId, text: v });
+  };
+
+  // ---- 编辑态：气泡原位替换为编辑器 ----
+  if (editing) {
+    return (
+      <div className="flex w-full flex-col items-end">
+        <div className="w-full max-w-[85%] rounded-[16px] rounded-tr-[4px] border border-teal/40 bg-card px-3.5 py-2.5 shadow-xs focus-within:border-teal/60">
+          <textarea
+            autoFocus
+            value={editDraft}
+            onChange={(e) => setEditDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.nativeEvent.isComposing) return;
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                submitEdit();
+              } else if (e.key === "Escape") {
+                e.preventDefault();
+                setEditing(false);
+              }
+            }}
+            rows={Math.min(10, Math.max(2, editDraft.split("\n").length))}
+            className="w-full resize-none bg-transparent text-body leading-relaxed text-ink outline-none"
+          />
+          <div className="mt-1.5 flex items-center gap-2">
+            <span className="min-w-0 flex-1 truncate text-caption text-ash">
+              重发将在新分支替换这一轮（原分支保留可回看，附件与文件改动不回滚）
+            </span>
+            <button
+              onClick={() => setEditing(false)}
+              title="取消编辑（Esc）"
+              className="flex shrink-0 cursor-pointer items-center rounded-btn border border-line p-1.5 text-graphite transition hover:bg-line-soft hover:text-ink"
+            >
+              <X size={12} />
+            </button>
+            <button
+              onClick={submitEdit}
+              disabled={editDraft.trim() === ""}
+              title="重发（Enter）"
+              className="flex shrink-0 cursor-pointer items-center rounded-btn bg-teal p-1.5 text-canvas transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <ArrowUp size={12} />
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const editEntry = isLatestUserTurn ? (
+    <button
+      onClick={openEdit}
+      disabled={!canEdit}
+      aria-label="编辑重发"
+      title={canEdit ? "编辑这条消息并重新发送：在新分支里替换这一轮（原位编辑，不进输入框）" : disabledTitle}
+      className="flex shrink-0 cursor-pointer items-center rounded-btn p-1 text-ash opacity-60 transition hover:bg-line-soft hover:text-ink group-hover/user:opacity-100 disabled:cursor-not-allowed disabled:opacity-40"
+    >
+      <PencilLine size={12} />
+      <span className="sr-only">编辑重发</span>
+    </button>
+  ) : null;
 
   if (parsed.isCommand) {
     return (
       <div className="group/user flex items-end justify-end gap-1.5">
-        {forkAction}
+        {editEntry}
         <div className="flex min-w-0 flex-col items-end gap-1.5">
           {attachments && attachments.length > 0 && (
             <AttachmentsBar attachments={[...attachments]} readOnly />
@@ -544,7 +617,7 @@ function UserMessageBubble({
 
   return (
     <div className="group/user flex items-end justify-end gap-1.5">
-      {forkAction}
+      {editEntry}
       <div className="flex min-w-0 flex-col items-end gap-1.5">
         {attachments && attachments.length > 0 && (
           <AttachmentsBar attachments={[...attachments]} readOnly />
@@ -613,7 +686,11 @@ function TimelineItemRow({
           text={item.data.text}
           unitName={unitName}
           at={item.at}
+          messageId={typeof item.data.messageId === "string" ? item.data.messageId : ""}
+          sessionId={typeof item.data.sessionId === "string" ? item.data.sessionId : ""}
           streaming={item.data.streaming === true}
+          usage={item.data.usage}
+          busy={busy}
         />
       );
 
@@ -668,6 +745,8 @@ function TimelineItemRow({
       );
 
     case "usage":
+      // 兜底行：usage 通常已并入助手消息底部 meta；找不到挂靠点时才独立渲染
+      //（不显示计费 —— 用户明确不要）
       return (
         <div className="flex items-center gap-2 pl-1 text-caption text-ash">
           <Wallet size={12} />
@@ -675,7 +754,6 @@ function TimelineItemRow({
           <span className="tnum font-mono">
             {item.data.inputTokens}↑ / {item.data.outputTokens}↓
           </span>
-          <span className="tnum ml-auto font-mono text-graphite">${item.data.costUsd.toFixed(3)}</span>
         </div>
       );
 
@@ -888,22 +966,48 @@ function formatInputBrief(input: unknown): string {
 
 /* ------------------------------------------------------------- 助手回复消息块 */
 
+/**
+ * 助手消息块（布局参考 ZCode ConversationAssistantTextActions）：
+ * 顶部只有头像+名字（流式态带脉冲点）；正文 markdown；**底部 meta 行**——
+ * 左 = 时间 + 「从此处分叉」（分叉锚点挂在这条回复上，branch=through 含本轮），
+ * 右 = 模型 · token 上下行（usage 并入，不显示计费）。
+ */
 function AssistantMessageBlock({
   text,
   unitName,
   at,
+  messageId,
+  sessionId,
   streaming = false,
+  usage,
+  busy,
 }: {
   text: string;
   unitName: string;
   at: number;
+  /** daemon 侧的助手消息 id —— 分叉锚点（resolveForkAtSeq 按它定位轮边界） */
+  messageId: string;
+  sessionId: string;
   streaming?: boolean;
+  /** 本轮用量（groupTimelineEvents 把 usage 事件并入这里；缺省不渲染右侧 meta） */
+  usage?: { model: string; inputTokens: number; outputTokens: number };
+  busy: boolean;
 }) {
   const avatar = botAvatarStyle(unitName);
+  const startFork = useWorkbench((s) => s.startFork);
+  const sourceStatus = useWorkbench((s) => s.sessions.find((x) => String(x.id) === sessionId)?.status);
+
+  // idle 门禁（ADR 0013 不变量 6）：本轮流式中 / 源段 running/awaiting_* 时禁止分叉
+  const blocked =
+    busy ||
+    sourceStatus === "running" ||
+    sourceStatus === "awaiting_permission" ||
+    sourceStatus === "awaiting_input";
+  const canFork = !streaming && !blocked && messageId !== "";
 
   return (
     <div className="group/msg py-1">
-      {/* 头部：Agent 头像与名字 */}
+      {/* 头部：Agent 头像与名字（时间在底部 meta 行，不再放头部） */}
       <div className="mb-1.5 flex items-center gap-2">
         <span
           className={cn("flex h-5 w-5 shrink-0 items-center justify-center text-[11px] font-medium text-canvas", avatar.shape)}
@@ -915,12 +1019,43 @@ function AssistantMessageBlock({
         {streaming && (
           <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-teal" aria-label="生成中" />
         )}
-        <span className="text-caption text-ash">{clock(at)}</span>
       </div>
 
       {/* 正文 Markdown 渲染（流式态容错未闭合围栏、跳过高亮） */}
       <div className="pl-7">
         <MarkdownContent content={text} streaming={streaming} />
+
+        {/* 底部 meta 行：左 = 时间 + 分叉；右 = 模型 · token 上下行 */}
+        <div className="mt-2 flex items-center gap-2.5 text-caption text-ash">
+          <span className="tnum shrink-0">{clock(at)}</span>
+          <button
+            onClick={() => startFork({ ofSessionId: sessionId as never, anchorMessageId: messageId, kind: "branch" })}
+            disabled={!canFork}
+            aria-label="从此处分叉"
+            title={
+              streaming
+                ? "这一轮还在生成，落定后可分叉"
+                : blocked
+                  ? "先让这一轮落定"
+                  : "从此回复之后开启分叉：新段携带此前对话的只读前缀，当前分支保留可回看"
+            }
+            className="flex shrink-0 cursor-pointer items-center gap-1 rounded-btn p-1 text-ash transition hover:bg-line-soft hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <GitBranch size={12} />
+            <span>分叉</span>
+          </button>
+          {usage !== undefined && (
+            <span
+              className="ml-auto flex min-w-0 shrink-0 items-center gap-1.5 font-mono"
+              title={`本轮模型与 token 用量：输入 ${usage.inputTokens} / 输出 ${usage.outputTokens}`}
+            >
+              <span className="truncate">{usage.model}</span>
+              <span className="tnum">
+                {usage.inputTokens}↑ / {usage.outputTokens}↓
+              </span>
+            </span>
+          )}
+        </div>
       </div>
     </div>
   );

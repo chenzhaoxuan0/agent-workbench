@@ -210,6 +210,16 @@ interface WorkbenchState {
   /** 放弃分叉意图 —— 零持久化 */
   cancelFork: () => void;
   /**
+   * 编辑重发（就地编辑形态，参考 ZCode editUserQuery 的交互心智）：在用户消息
+   * 原位编辑并点重发 —— revision 分叉意图 + 立即发送，不经过 composer 意图条。
+   * 发送失败时意图保留（composer 提示条兜底可见可取消）。
+   */
+  editAndResend: (input: {
+    ofSessionId: SessionId;
+    anchorMessageId: string;
+    text: string;
+  }) => Promise<void>;
+  /**
    * 在聊天页打开一个历史会话（ADR 0012 resume-in-chat）：
    * 从 daemon 账本重建时间线；会话可恢复（live / cli_ref）时接回执行器续聊，
    * 仅历史时打开只读视图 —— 新消息将在同一谱系开新段。
@@ -699,6 +709,18 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
       ...(intent.kind === "revision" && intent.anchorText !== undefined ? { draft: intent.anchorText } : {}),
     })),
   cancelFork: () => set({ pendingFork: null }),
+
+  editAndResend: async (input) => {
+    // revision 意图 + 立即发送：run 的 fork 分支会带着意图直接开 revision 段
+    set({
+      pendingFork: {
+        ofSessionId: input.ofSessionId,
+        anchorMessageId: input.anchorMessageId,
+        kind: "revision",
+      },
+    });
+    await get().run(input.text);
+  },
 
   selectRuntime: (activeRuntimeId) => {
     const s = get();

@@ -184,9 +184,11 @@ export interface StartSessionRequest {
   readonly handoff?: { readonly fromSessionId: SessionId };
   /**
    * 对话分叉（ADR 0013）：在 ofSessionId 的 anchorMessageId 那轮边界开新段。
-   * branch = 含锚点轮整轮（「从此处分叉」）；revision = 锚点轮之前
-   * （「编辑重发」）。fork_at_seq 由 daemon 从账本解析（前端不持有可靠 seq）；
-   * fork 启动时 HANDOFF 自动带 seq 上界（只携带分叉点之前的前缀）。
+   * 锚点兼容两种形态：助手消息 id（message.completed，UI 主入口「从回复处分叉」）
+   * 或用户消息 id（user-N，编辑重发 revision 用）。branch = 含锚点轮整轮
+   * （through）；revision = 锚点轮之前（before）。fork_at_seq 由 daemon 从账本
+   * 解析（前端不持有可靠 seq）；fork 启动时 HANDOFF 自动带 seq 上界
+   * （只携带分叉点之前的前缀）。
    */
   readonly fork?: {
     readonly ofSessionId: SessionId;

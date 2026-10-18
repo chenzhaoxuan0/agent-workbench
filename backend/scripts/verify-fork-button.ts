@@ -145,8 +145,14 @@ try {
     return false;
   `);
   check("打开执行器选择器", opened);
-  check("MockPerm 出现在 rail（测试夹具）", await waitFor("mockperm rail", `document.querySelector('[title^="MockPerm"]')`));
-  check("点击 MockPerm rail", await clickSelector('[title^="MockPerm"]'));
+  let railClicked = false;
+  for (let i = 0; i < 10 && !railClicked; i++) {
+    railClicked = await evalJs<boolean>(`
+      return (() => { const rail = document.querySelector('[title^="MockPerm"]'); if (rail) { rail.click(); return true; } return false; })()
+    `);
+    if (!railClicked) await sleep(400);
+  }
+  check("点击 MockPerm rail", railClicked);
   await sleep(600);
   // 对话框里回车选中第一个模型（对话框 keydown 处理 Enter → pick）
   await evalJs<void>(`
@@ -184,40 +190,63 @@ try {
   `);
   check("用户气泡渲染", await waitFor("user bubble", `document.querySelector('.group\\\\/user')`));
 
-  // ---- 4. 核心断言：按钮存在于 DOM（按按钮文字匹配 —— title 全文不含「从此处分叉」字样） ----
-  const btnInfo = await evalJs<{ exists: boolean; disabled: boolean; title: string | null; containerOpacity: string }>(`
-    const btn = [...document.querySelectorAll('button')].find((b) => (b.textContent ?? '').includes('从此处分叉'));
-    const container = btn ? btn.closest('div[class*="opacity-60"]') : null;
+  // ---- 3b. 等 mockperm 轮落定（bypass 权限自动放行 → 助手回复 + usage 入账） ----
+  check("助手回复渲染（mock ok）", await waitFor("assistant reply", `[...document.querySelectorAll('p,div')].some((el) => (el.textContent ?? '').includes('mock ok'))`, 40));
+
+  // ---- 4. 核心断言：分叉按钮在助手消息底部 meta 行（左=时间+分叉，右=模型/token） ----
+  const forkBtn = await evalJs<{ exists: boolean; disabled: boolean; usageMerged: boolean; costShown: boolean }>(`
+    const btn = [...document.querySelectorAll('button')].find((b) => b.getAttribute('aria-label') === '从此处分叉');
+    const metaRow = btn ? btn.closest('div.flex') : null;
     return {
       exists: !!btn,
       disabled: btn ? btn.disabled : false,
-      title: btn ? btn.getAttribute('title') : null,
-      containerOpacity: container ? getComputedStyle(container).opacity : 'n/a',
+      usageMerged: metaRow ? (metaRow.textContent ?? '').includes('↑ /') : false,
+      costShown: [...document.querySelectorAll('.group\\\\/msg')].some((el) => (el.textContent ?? '').includes('$')),
     };
   `);
-  check("「从此处分叉」按钮存在于 DOM", btnInfo.exists, btnInfo);
-  check("按钮未禁用（锚点已就绪）", btnInfo.exists && !btnInfo.disabled, btnInfo);
-  check("动作条常驻可见（opacity≈0.6）", btnInfo.containerOpacity !== "n/a" && Number(btnInfo.containerOpacity) >= 0.5, btnInfo);
+  check("「从此处分叉」按钮在助手消息上", forkBtn.exists, forkBtn);
+  check("分叉按钮未禁用（轮已落定）", forkBtn.exists && !forkBtn.disabled, forkBtn);
+  check("usage 已并入助手底部 meta（token 上下行在右侧）", forkBtn.usageMerged, forkBtn);
+  check("计费（$）不再显示", !forkBtn.costShown, forkBtn);
 
-  // ---- 5. 真实悬停（CDP 鼠标事件触发 CSS :hover）→ opacity 全亮 ----
-  const rect = await evalJs<{ x: number; y: number } | null>(`
-    const b = document.querySelector('.group\\\\/user');
-    if (!b) return null;
-    const r = b.getBoundingClientRect();
-    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
-  `);
-  if (rect !== null) {
-    await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: rect.x, y: rect.y });
-    await sleep(400);
-    const hovered = await evalJs<{ opacity: string }>(`
-      const btn = [...document.querySelectorAll('button')].find((b) => (b.textContent ?? '').includes('从此处分叉'));
-      const container = btn ? btn.closest('div[class*="opacity-60"]') : null;
-      return { opacity: container ? getComputedStyle(container).opacity : 'n/a' };
+  // ---- 4b. 用户消息：铅笔编辑入口（末轮，echo 回填后可用） ----
+  check("编辑入口就绪（echo 已回填 user-N 锚点）", await waitFor("edit entry enabled", `
+    (() => { const btn = document.querySelector('button[aria-label="编辑重发"]'); return btn !== null && !btn.disabled; })()
+  `, 20));
+
+  // ---- 5. 就地编辑端到端：点击铅笔 → 原位编辑器 → 改文本 → 重发 → revision 分叉标记 ----
+  let editClicked = false;
+  for (let i = 0; i < 10 && !editClicked; i++) {
+    editClicked = await evalJs<boolean>(`
+      return (() => { const btn = document.querySelector('button[aria-label="编辑重发"]'); if (btn && !btn.disabled) { btn.click(); return true; } return false; })()
     `);
-    check(`悬停后动作条全亮（opacity=${hovered.opacity}）`, hovered.opacity === "1", hovered);
-  } else {
-    check("拿到气泡坐标", false);
+    if (!editClicked) await sleep(400);
   }
+  check("进入就地编辑", editClicked);
+  check("编辑器出现（预填原文）", await waitFor("inline editor", `
+    [...document.querySelectorAll('textarea')].some((t) => (t.value ?? '').includes('分叉按钮可见性测试'))
+  `));
+  await evalJs<void>(`
+    const ta = [...document.querySelectorAll('textarea')].find((t) => (t.value ?? '').includes('分叉按钮可见性测试'));
+    if (ta) {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+      setter.call(ta, '【自检】就地编辑后的重发内容');
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    return;
+  `);
+  await sleep(300);
+  await evalJs<void>(`
+    const btn = [...document.querySelectorAll('button')].find((b) => (b.getAttribute('title') ?? '').includes('重发'));
+    if (btn) btn.click();
+    return;
+  `);
+  check("编辑重发产生 revision 分叉（时间线出现分叉标记）", await waitFor("revision fork marker", `
+    [...document.querySelectorAll('[role="separator"], div')].some((el) => (el.textContent ?? '').includes('已编辑重发'))
+  `, 40));
+  check("重发后的新内容进入新段", await waitFor("edited text in new segment", `
+    [...document.querySelectorAll('p')].some((el) => (el.textContent ?? '').includes('就地编辑后的重发内容'))
+  `, 40));
 
   // ---- 6. 截图留证 ----
   const shot = await send<{ data: string }>("Page.captureScreenshot", { format: "png" });
@@ -225,17 +254,8 @@ try {
   writeFileSync(shotPath, Buffer.from(shot.data, "base64"));
   console.log("  截图：", shotPath);
 
-  // ---- 7. 收尾：拒绝挂起权限（让轮落定，不留 busy 状态）+ 恢复执行器 ----
-  await sleep(800);
-  const denied = await evalJs<boolean>(`
-    const btns = [...document.querySelectorAll('button')];
-    const deny = btns.find((b) => b.textContent?.includes('拒绝'));
-    if (deny) { deny.click(); return true; }
-    return false;
-  `);
-  console.log(denied ? "  已拒绝挂起权限（轮落定）" : "  （没有出现权限弹窗，跳过收尾裁决）");
-
-  await sleep(1000);
+  // ---- 7. 收尾：bypass 权限下 mockperm 自动放行，无挂起弹窗；恢复执行器 ----
+  await sleep(600);
   await evalJs<boolean>(`
     const btns = [...document.querySelectorAll('button[aria-haspopup="dialog"]')];
     const rt = btns.find((b) => !(b.getAttribute('title') ?? '').startsWith('点击切换'));
