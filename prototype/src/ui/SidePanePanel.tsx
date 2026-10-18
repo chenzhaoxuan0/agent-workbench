@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { Panel, Separator, type PanelImperativeHandle } from "react-resizable-panels";
 import { History, PanelRightClose, X } from "lucide-react";
+import { useShell } from "../store/useShell.ts";
 import { useSidePane, SIDE_PANE_MIN } from "../store/useSidePane.ts";
 import { visibleTabsForUnit, type SidePaneTab } from "../core/sidePaneTabs.ts";
 import { HistoryPane } from "./HistoryPane.tsx";
@@ -12,6 +13,10 @@ import { cn } from "./cn.ts";
  * 关键行为（都不是样式问题）：
  * - **bot 作用域**：tab 条只画当前 bot 的 tab，但内容区挂载**全量** tab ——
  *   切 bot 隐藏不销毁，A 的展开态/滚动位置在切回时原样恢复（保活）。
+ * - **只在 chat 主视图展开**（ZCode：workspaceMainView === "chat" && isSidePaneOpen）：
+ *   自动化/出图/待办/源代码管理是全局页，不属于任何 bot，旁边挂当前 bot 的
+ *   历史面板是错位的。切走时面板**收起但保持挂载** —— 保活不因换视图丢失；
+ *   openTab 会顺带切回 chat（见 useSidePane.openTab）。
  * - **收起即归零**：用户收起 / 当前 bot 无 tab 时整列（含分隔条）不占空间；
  *   重开的入口是各业务入口的 openTab（openTab 永远展开面板）。
  * - tab 关闭语义见 core/sidePaneTabs.ts（关激活落右邻）。
@@ -19,20 +24,23 @@ import { cn } from "./cn.ts";
  * 后续扩展位（tab 类型 ≥ 2 时再做）：tab 拖拽排序、⌄ 总览搜索、最近关闭重开。
  */
 
-/** 工作台 Group 的第三列。无可见 tab 时整个（含分隔条）不渲染。 */
+/** 工作台 Group 的第三列。当前 bot 无可见 tab 时整个（含分隔条）不渲染。 */
 export function SidePaneColumn(): ReactElement | null {
   const tabs = useSidePane((s) => s.tabs);
   const activeTabId = useSidePane((s) => s.activeTabId);
   const collapsed = useSidePane((s) => s.collapsed);
   const scopeUnitId = useSidePane((s) => s.scopeUnitId);
+  const mainView = useShell((s) => s.mainView);
   const visibleTabs = useMemo(() => visibleTabsForUnit(tabs, scopeUnitId), [tabs, scopeUnitId]);
 
+  // 无 tab 才整列卸载（无保活内容可丢）；非 chat 视图只收起 —— Panel 保持挂载
   if (visibleTabs.length === 0) return null;
+  const open = !collapsed && mainView === "chat";
   return (
     <>
       {/* 收起时不保留分隔条（ZCode：收起即归零，不为隐藏面板留空隙） */}
-      {!collapsed ? <SidePaneResizeHandle /> : null}
-      <SidePanePanelSlot open={!collapsed} visibleTabs={visibleTabs} activeTabId={activeTabId} />
+      {open ? <SidePaneResizeHandle /> : null}
+      <SidePanePanelSlot open={open} visibleTabs={visibleTabs} activeTabId={activeTabId} />
     </>
   );
 }
@@ -102,21 +110,23 @@ function SidePanePanelSlot({
       }}
       className="min-w-0 overflow-hidden"
     >
-      <SidePanePanelBody visibleTabs={visibleTabs} activeTabId={activeTabId} />
+      <SidePanePanelBody open={open} visibleTabs={visibleTabs} activeTabId={activeTabId} />
     </Panel>
   );
 }
 
 function SidePanePanelBody({
+  open,
   visibleTabs,
   activeTabId,
 }: {
+  /** 面板当前实际可见（未收起且在 chat 主视图）—— 内容保活协议的开关 */
+  open: boolean;
   visibleTabs: readonly SidePaneTab[];
   activeTabId: string;
 }): ReactElement {
-  // 全量 tabs：内容区跨 bot 保活，隐藏的不卸载
+  // 全量 tabs：内容区跨 bot / 跨主视图保活，隐藏的不卸载
   const tabs = useSidePane((s) => s.tabs);
-  const collapsed = useSidePane((s) => s.collapsed);
   const activateTab = useSidePane((s) => s.activateTab);
   const closeTab = useSidePane((s) => s.closeTab);
   const toggleCollapsed = useSidePane((s) => s.toggleCollapsed);
@@ -184,25 +194,17 @@ function SidePanePanelBody({
         </button>
       </div>
 
-      {/* 内容区：全量 tab 挂载（保活），仅「可见且激活且未收起」的那个显示 */}
+      {/* 内容区：全量 tab 挂载（保活），仅「面板可见且激活」的那个显示 */}
       <div className="relative min-h-0 flex-1">
         {tabs.map((tab) => {
-          const shown = !collapsed && tab.id === visibleActiveTabId;
+          const shown = open && tab.id === visibleActiveTabId;
           return (
             <div
               key={tab.id}
               aria-hidden={!shown}
               className={cn("absolute inset-0 min-h-0", shown ? "block" : "hidden")}
             >
-              {tab.type === "history" ? (
-                <HistoryPane
-                  unitId={String(tab.ownerUnitId)}
-                  unitName={tab.unitName}
-                  focusKey={tab.focusKey}
-                  isActive={shown}
-                  onFinished={() => closeTab(tab.id)}
-                />
-              ) : null}
+              <SidePaneTabContent tab={tab} shown={shown} closeTab={closeTab} />
             </div>
           );
         })}
@@ -210,6 +212,35 @@ function SidePanePanelBody({
     </div>
   );
 }
+
+/**
+ * 单个 tab 的内容宿主。memo 挡住两类无关重渲染：
+ * 别的 bot 开/关 tab（tabs 数组变了但这个 tab 对象没动）、面板收起时的
+ * open 翻转（shown 不变时 HistoryPane 的整棵列表树不重算）。
+ * isActive 翻转（切 tab）本身仍会重渲染 —— 那是保活协议的必要代价。
+ */
+const SidePaneTabContent = memo(function SidePaneTabContent({
+  tab,
+  shown,
+  closeTab,
+}: {
+  tab: SidePaneTab;
+  shown: boolean;
+  closeTab: (tabId: string) => void;
+}) {
+  // 稳定引用：否则 memo 挡不住 —— 每次父渲染生成的新箭头函数都会击穿比较
+  const onFinished = useCallback(() => closeTab(tab.id), [closeTab, tab.id]);
+  if (tab.type !== "history") return null;
+  return (
+    <HistoryPane
+      unitId={String(tab.ownerUnitId)}
+      unitName={tab.unitName}
+      focusKey={tab.focusKey}
+      isActive={shown}
+      onFinished={onFinished}
+    />
+  );
+});
 
 function sidePaneTabTitle(tab: SidePaneTab): string {
   return tab.type === "history" ? `${tab.unitName} · 历史` : tab.id;

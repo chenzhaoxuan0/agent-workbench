@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import * as sidePane from "../core/sidePaneTabs.ts";
 import type { UnitId } from "../core/units.ts";
+import { useShell } from "./useShell.ts";
 
 /**
  * 右侧标签面板的 shell 状态 —— tabs/activeTabId 的领域规则全部在
@@ -73,7 +74,14 @@ export const useSidePane = create<SidePaneStore>((set, get) => ({
   paneWidth: readWidth(),
 
   openTab: (request) =>
-    set((s) => ({ ...sidePane.openHistoryTab(s, request), collapsed: false })),
+    set((s) => {
+      // 面板只在 chat 主视图展开（全局页不属于任何 bot，见 SidePanePanel 的门控）。
+      // 所有 openTab 调用点都是「我现在要看」的语境 —— 这里统一切回 chat，
+      // 保持弹窗时代「点了就能看到」的语义（ZCode handleSelectTaskInChat 先
+      // showChatMainView 再开面板，同一条规则）
+      useShell.getState().setMainView("chat");
+      return { ...sidePane.openHistoryTab(s, request), collapsed: false };
+    }),
 
   closeTab: (tabId) => set((s) => sidePane.closeTab(s, tabId)),
 
@@ -115,7 +123,10 @@ export const useSidePane = create<SidePaneStore>((set, get) => ({
   releaseUnits: (validUnitIds) =>
     set((s) => {
       const next = sidePane.releaseUnits({ tabs: s.tabs, activeTabId: s.activeTabId }, validUnitIds);
-      if (next.tabs === s.tabs && next.activeTabId === s.activeTabId) return {} as Partial<SidePaneStore>;
+      if (next.tabs === s.tabs && next.activeTabId === s.activeTabId) {
+        // 无回收发生：返回同一引用，zustand 对 Object.is 相等不通知订阅者
+        return s;
+      }
       let activeTabId = next.activeTabId;
       let collapsed = s.collapsed;
       // 聚焦被回收（或自愈出空串）时按当前 scope 重解析，不把面板晾在空聚焦上
