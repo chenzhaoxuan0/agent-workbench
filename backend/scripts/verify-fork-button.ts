@@ -17,7 +17,11 @@ import { WebSocket } from "ws";
 
 const CHROME_PATH = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
 const PORT = 19233;
-const PAGE = "http://localhost:5280/";
+/** 可选环境变量：PAGE_URL（前端页面，默认共享 dev 的 5280）、
+ *  DAEMON_ENDPOINT（把页面 localStorage 的 daemon 端点指到独立 daemon ——
+ *  用于不打扰共享 dev 环境的隔离验证，如 http://127.0.0.1:5381） */
+const PAGE_URL = process.env.PAGE_URL ?? "http://localhost:5280/";
+const DAEMON_ENDPOINT = process.env.DAEMON_ENDPOINT ?? "";
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -37,7 +41,7 @@ chrome = spawn(CHROME_PATH, [
   "--disable-gpu",
   "--no-sandbox",
   "--window-size=1280,900",
-  PAGE,
+  PAGE_URL,
 ], { stdio: "ignore" });
 
 let failures = 0;
@@ -125,6 +129,16 @@ try {
   await send("Runtime.enable");
   await send("Log.enable");
   await send("Page.enable");
+
+  // ---- 0.（可选）把页面的 daemon 端点指到独立 daemon 并重载 ----
+  if (DAEMON_ENDPOINT !== "") {
+    await evalJs<void>(`
+      localStorage.setItem('agent-workbench:daemon-endpoint', ${JSON.stringify(DAEMON_ENDPOINT)});
+      location.reload();
+      return;
+    `);
+    await sleep(1500);
+  }
 
   // ---- 1. 页面起来 + composer 就位 ----
   check("页面加载（composer 文本域出现）", await waitFor("composer textarea", `document.querySelector('textarea')`));
@@ -247,6 +261,60 @@ try {
   check("重发后的新内容进入新段", await waitFor("edited text in new segment", `
     [...document.querySelectorAll('p')].some((el) => (el.textContent ?? '').includes('就地编辑后的重发内容'))
   `, 40));
+
+  // ---- 5b. 新分支视图语义（ZCode onSessionCreated 模式）：fork 落定即切进
+  //      新分支自己的视图 —— 被替换的旧轮次（原消息 + 原回复）从视图中消失 ----
+  const replacedGone = await evalJs<boolean>(`
+    return ![...document.querySelectorAll('p')].some((el) => (el.textContent ?? '').includes('【自检】分叉按钮可见性测试'));
+  `);
+  check("被替换的旧轮次已从视图消失（fork 即切新分支视图）", replacedGone);
+
+  // ---- 5c. branch 主入口端到端：点助手「分叉」→ 意图条 → 发送 → 切新分支视图 ----
+  check("重发轮落定（可再分叉）", await waitFor("revision turn settled", `
+    (() => { const btn = document.querySelector('button[aria-label="从此处分叉"]'); return btn !== null && !btn.disabled; })()
+  `, 40));
+  // 失败诊断：按钮为什么 disabled（title 会说明是 流式/门禁/无锚点 哪一种）
+  const diag = await evalJs<{ disabled: boolean; title: string | null; busyHint: boolean; buttons: number }>(`
+    const btn = document.querySelector('button[aria-label="从此处分叉"]');
+    return {
+      disabled: btn ? btn.disabled : false,
+      title: btn ? btn.getAttribute('title') : null,
+      busyHint: [...document.querySelectorAll('div,span')].some((el) => (el.textContent ?? '').includes('正在思考与执行')),
+      buttons: document.querySelectorAll('button[aria-label="从此处分叉"]').length,
+    };
+  `);
+  console.log("  分叉按钮诊断：", JSON.stringify(diag));
+  check("点击助手消息「分叉」进入意图态", await evalJs<boolean>(`
+    return (() => { const btn = document.querySelector('button[aria-label="从此处分叉"]'); if (btn && !btn.disabled) { btn.click(); return true; } return false; })()
+  `));
+  check("composer 出现分叉意图条", await waitFor("fork intent bar", `
+    [...document.querySelectorAll('div')].some((el) => (el.textContent ?? '').includes('发送后将从所选回复之后分叉'))
+  `));
+  await evalJs<void>(`
+    const ta = document.querySelector('textarea');
+    if (ta) {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+      setter.call(ta, '【自检】branch 分叉的新方向');
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    return;
+  `);
+  await sleep(300);
+  await evalJs<void>(`
+    const ta = document.querySelector('textarea');
+    if (ta) ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    return;
+  `);
+  check("branch 分叉标记出现（已从此处分叉）", await waitFor("branch fork marker", `
+    [...document.querySelectorAll('[role="separator"], div')].some((el) => (el.textContent ?? '').includes('已从此处分叉'))
+  `, 40));
+  check("branch 新内容进入新分支视图", await waitFor("branch new text", `
+    [...document.querySelectorAll('p')].some((el) => (el.textContent ?? '').includes('branch 分叉的新方向'))
+  `, 40));
+  const throughKept = await evalJs<boolean>(`
+    return [...document.querySelectorAll('p')].some((el) => (el.textContent ?? '').includes('就地编辑后的重发内容'));
+  `);
+  check("branch 前缀保留锚点轮（through：旧内容仍在视图）", throughKept);
 
   // ---- 6. 截图留证 ----
   const shot = await send<{ data: string }>("Page.captureScreenshot", { format: "png" });

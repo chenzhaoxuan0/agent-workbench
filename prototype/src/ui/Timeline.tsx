@@ -191,6 +191,7 @@ function groupTimelineEvents(
               from: sessionNameOf(prevSessionId) ?? prevSessionId,
               to: sessionNameOf(sid) ?? sid,
               forkKind: child.forkKind ?? "branch",
+              fromId: prevSessionId,
             },
           });
         } else {
@@ -403,13 +404,30 @@ function findLastAssistantOf(result: GroupedItem[], sessionId: string): GroupedI
   return undefined;
 }
 
-/** 分叉拼接点行（ADR 0013）：父段只读前缀 → fork 出的新段，与执行器切换 divider 区分 */
+/**
+ * 分叉拼接点行（ADR 0013）：父段只读前缀 → fork 出的新段，与执行器切换 divider 区分。
+ * 带「回看原分支」入口（ZCode forkNotice 的 onNavigate 模式）—— 点击在聊天页
+ * 打开父段自己的视图；本轮进行中会被 openSession 的 idle 门禁拦下（诚实提示）。
+ */
 function ForkPointRow({
   data,
 }: {
-  data: { from: string; to: string; forkKind: "branch" | "revision" };
+  data: { from: string; to: string; forkKind: "branch" | "revision"; fromId?: string };
 }) {
   const isRevision = data.forkKind === "revision";
+  const openSession = useWorkbench((s) => s.openSession);
+  const parent = useWorkbench((s) => (data.fromId !== undefined ? s.sessions.find((x) => String(x.id) === data.fromId) : undefined));
+
+  const openParent = () => {
+    if (parent === undefined || data.fromId === undefined) return;
+    void openSession({
+      sessionId: parent.id,
+      unitId: parent.unitId,
+      runtimeId: String(parent.runtimeId).replace(/^daemon:/, ""),
+    });
+  };
+  const canOpenParent = parent !== undefined;
+
   return (
     <div className="my-6 flex items-center gap-3" role="separator" aria-label={isRevision ? "已编辑重发" : "已从此处分叉"}>
       <span className="h-px flex-1 bg-line" />
@@ -429,6 +447,15 @@ function ForkPointRow({
             </span>
             <span className="text-ash">· 上文以只读前缀带入</span>
           </>
+        )}
+        {canOpenParent && (
+          <button
+            onClick={openParent}
+            title={`回看原分支（${data.from} 的完整对话；本轮进行中需先落定）`}
+            className="flex cursor-pointer items-center gap-1 rounded-full px-2 py-0.5 text-caption text-graphite transition hover:bg-line-soft hover:text-ink"
+          >
+            回看原分支
+          </button>
         )}
       </span>
       <span className="h-px flex-1 bg-line" />

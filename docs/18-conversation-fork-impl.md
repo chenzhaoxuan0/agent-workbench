@@ -153,6 +153,14 @@ vs "将编辑此轮并开启新版本"），发送前可见可撤。
   retention（1061-1118）**，直接走 startSession 分支（1120-1146），
   请求带 `fork` 参数 + `conversationId: active.conversationId ?? active.id`
   照常继承；成功后清 pendingFork；
+- **fork 落定即切进新分支自己的会话视图**（ZCode `onSessionCreated` 模式，
+  2026-10-18 三次修正）：不再往旧时间线后面追加 —— 视图重建为
+  **父段只读前缀（seq ≤ fork_at_seq，从账本回放；父段已 idle 无竞态）
+  + 新段（startSession 期间泵已实时入账的本段事件，保 id 不重编）**。
+  旧分支在分叉点之后的内容从本视图排除（revision 被替换的那轮随之消失），
+  原分支经历史弹窗/侧栏或分叉标记行的「回看原分支」入口（ForkPointRow，
+  ZCode forkNotice onNavigate 模式）可回看。新段用户气泡走 daemon 广播的
+  真实 user-N 事件（不经本地合成，无需回显登记）；
 - 失败回落：startSession 抛错时按既有 fail() 路径处理，pendingFork 保留
   （用户可重试或取消）。
 

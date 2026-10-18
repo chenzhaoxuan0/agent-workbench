@@ -1124,8 +1124,9 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
     if (forkIntent !== null && opts?.worktree === undefined) {
       set({ busy: true });
       const source = get().sessions.find((s) => s.id === forkIntent.ofSessionId);
+      let session: Awaited<ReturnType<RuntimeAdapter["startSession"]>>;
       try {
-        const session = await adapter.startSession({
+        session = await adapter.startSession({
           unit,
           prompt: fullPrompt,
           model,
@@ -1140,15 +1141,52 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
           memoryOptions: opts?.memoryOptions ?? { scopes: get().memoryScopes },
           attachments,
         });
-        set((s) => ({
-          sessions: [...s.sessions, session],
-          activeSessionId: session.id,
-          pendingFork: null,
-        }));
-        pushUserBubble(session.id);
       } catch (err: unknown) {
         fail(err);
+        return;
       }
+
+      // ZCode 同款（onSessionCreated）：fork 落定即**切进新分支自己的会话视图**，
+      // 不再往旧时间线后面追加 —— 视图 = 父段只读前缀（seq ≤ fork_at_seq，从
+      // 账本回放；父段已 idle 无账本竞态）+ 新段（startSession 期间泵已实时
+      // 入账的本段事件，保住其 id 不重编）。旧分支在分叉点之后的内容从本视图
+      // 排除（revision 被替换的那轮随之消失），历史弹窗/侧栏可回看原分支。
+      // 新段的用户气泡走 daemon 广播的真实 user-N 事件（不经本地合成，也就
+      // 不需要回显登记）——泵稍滞后气泡会晚几十毫秒出现，可接受。
+      const prefix: { id: number; event: RuntimeEvent; at: number }[] = [];
+      if (
+        typeof session.forkOf === "string" &&
+        typeof session.forkAtSeq === "number" &&
+        adapter.eventsSince !== undefined
+      ) {
+        try {
+          const replay = await adapter.eventsSince(asSessionId(session.forkOf));
+          for (const r of replay) {
+            if (r.seq > (session.forkAtSeq ?? 0)) continue;
+            prefix.push({ id: ++seq, event: r.event, at: r.at });
+          }
+        } catch (err: unknown) {
+          console.warn("[workbench] 分叉父段前缀回放失败（只看新段）", err instanceof Error ? err.message : err);
+        }
+      }
+      set((s) => {
+        const fresh = s.timeline.filter(
+          (t) => "sessionId" in t.event && String(t.event.sessionId) === String(session.id),
+        );
+        // busy/状态由新段已到达的事件推导，不信 startSession 的返回快照：权限被
+        // 规则秒放行时整轮可能在前缀回放的 await 期间就落定（泵已把
+        // session.ended 的 busy:false 与 sessions[].status:"done" 回写完），这里
+        // 再写 busy:true / status:"running" 会把复位覆盖掉，按钮永远禁用（实测竞态）。
+        const turnSettled = fresh.some((t) => t.event.type === "session.ended");
+        const settledSession = turnSettled ? { ...session, status: "done" as const, endedAt: Date.now() } : session;
+        return {
+          timeline: [...prefix, ...fresh],
+          busy: !turnSettled,
+          sessions: [...s.sessions.filter((x) => x.id !== session.id), settledSession],
+          activeSessionId: session.id,
+          pendingFork: null,
+        };
+      });
       return;
     }
 
