@@ -1561,6 +1561,9 @@ interface UnitHistoryEntry {
 /**
  * 尝试从各 CLI 原生存储中回溯历史交互式会话的标题与恢复引用（mcode、zcode、claude 等）
  */
+/** unit.history 里已尝试过 resume 回溯的 terminal_run 行 id（每进程一次，防轮询反复开 sqlite / 读 history.jsonl） */
+const terminalResumeAttempted = new Set<number>();
+
 function resolveNativeTerminalSession(
   runtimeId: string,
   rootPath: string,
@@ -1731,12 +1734,19 @@ registerMethod("unit.history", async (params) => {
     let title = r.title;
     let resumeRef = r.resumeRef;
     const botRootPath = (botMap.get(r.unitId)?.rootPath ? String(botMap.get(r.unitId)?.rootPath) : "") || defaultBotRootPath;
-    if (!title || title === "" || title === "交互式会话") {
+    // resume_ref 缺失就从原生存储回溯 —— 原先只在标题为空时才回溯，而派发终端
+    // 常有 title 帧先落库，resume_ref 从此补不上：侧栏 TUI 行点了只能落详情弹窗。
+    // 每行每进程只试一次（running 的除外——原生会话 id 可能还没刷出来，允许重试），
+    // 避免展开子列表 + 30s 轮询反复开 sqlite / 读整份 history.jsonl。
+    if (!resumeRef && (r.status === "running" || !terminalResumeAttempted.has(r.id))) {
+      if (r.status !== "running") terminalResumeAttempted.add(r.id);
       const resolved = resolveNativeTerminalSession(r.runtimeId, botRootPath, r.startedAt, r.finishedAt);
       if (resolved) {
-        title = resolved.title;
-        resumeRef = resolved.resumeRef;
-        store.updateTerminalRunResume(r.id, title, resumeRef);
+        if (!title || title === "" || title === "交互式会话") title = resolved.title;
+        if (resolved.resumeRef) {
+          resumeRef = resolved.resumeRef;
+          store.updateTerminalRunResume(r.id, title ?? "交互式会话", resumeRef);
+        }
       }
     }
     entries.push({
