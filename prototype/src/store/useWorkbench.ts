@@ -33,6 +33,7 @@ import {
 } from "../core/modelPrefs.ts";
 import { runtimeRegistry, type RuntimeEntry } from "../core/registry.ts";
 import { useHistoryPrefs } from "./useHistoryPrefs.ts";
+import { useSidePane } from "./useSidePane.ts";
 import type {
   ChannelIdentityMap,
   LarkBotIdentity,
@@ -619,6 +620,9 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
           ? curActive
           : (valid.find((u) => u.id === "steward")?.id ?? valid[0]?.id ?? asUnitId(""));
         set({ units: valid, activeUnitId: defaultActive });
+        // 右侧面板 GC（对齐 ZCode subagent tab 的同步回收）：daemon 侧已消失的
+        // bot，它的历史 tab 没有新的归属，直接回收；激活被回收时面板自愈聚焦
+        useSidePane.getState().releaseUnits(valid.map((u) => u.id));
         void get().refreshChannelIdentity();
       }
     } catch (err: unknown) {
