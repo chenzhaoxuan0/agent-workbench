@@ -1037,7 +1037,9 @@ function AssistantMessageBlock({
                 ? "这一轮还在生成，落定后可分叉"
                 : blocked
                   ? "先让这一轮落定"
-                  : "从此回复之后开启分叉：新段携带此前对话的只读前缀，当前分支保留可回看"
+                  : messageId === ""
+                    ? "这条回复没有可定位的锚点（老账本记录），无法分叉"
+                    : "从此回复之后开启分叉：新段携带此前对话的只读前缀，当前分支保留可回看"
             }
             className="flex shrink-0 cursor-pointer items-center gap-1 rounded-btn p-1 text-ash transition hover:bg-line-soft hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
           >
