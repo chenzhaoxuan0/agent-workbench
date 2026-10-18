@@ -138,6 +138,12 @@ interface WorkbenchState {
    * 每轮 input 都含全部历史，累计求和会严重高估，绝不能加总。
    */
   usageBySession: Readonly<Record<string, UsageSnapshot>>;
+  /**
+   * 输入历史（终端 ↑↓ 语义，Composer 用）：时间升序、末尾 = 最新一条。
+   * 本端提交即追加（run 入口）；打开会话时按账本回放整段重建。
+   * 连续重复去重，上限 200 条。
+   */
+  inputHistory: readonly string[];
   /** 输入框草稿。空态建议卡片点一下就能预填 */
   draft: string;
   /** 已裁决的权限请求：requestId → 决策。用于把权限卡切成「已处理」态 */
@@ -449,6 +455,7 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
   busy: false,
   steerQueues: {},
   usageBySession: {},
+  inputHistory: [],
   draft: "",
   permissionDecisions: {},
   permissionMode: "bypass",
@@ -931,6 +938,9 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
       [String(session.id)]: { items: session.steerQueue ?? [], paused: session.steerPaused ?? false },
     };
     const usages: Record<string, UsageSnapshot> = {};
+    // 输入历史随视图切换整段重建（终端换 shell 同款）：本段账本里的用户消息
+    // 按时间升序进来，连续去重。fullPrompt（含附件块）也照收 —— 那是当时的原话。
+    const history: string[] = [];
     for (const r of rebuilt) {
       const e = r.event;
       if (!("sessionId" in e)) continue;
@@ -944,6 +954,9 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
           model: e.model,
           at: r.at,
         };
+      } else if (e.type === "message.delta" && e.role === "user") {
+        const t = e.text.trim();
+        if (t !== "" && history[history.length - 1] !== t) history.push(t);
       }
     }
     set((s) => {
@@ -982,6 +995,7 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
         pendingFork: null,
         steerQueues: queues,
         usageBySession: usages,
+        inputHistory: history,
       };
     });
     markSessionViewed(session!.id);
@@ -1152,6 +1166,9 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
     const { activeUnitId, activeRuntimeId, runtimeModels, activeSessionId } = get();
     const unit = get().units.find((u) => u.id === activeUnitId);
     if (!unit) return;
+    // 输入历史（终端 ↑↓ 语义）：提交即入史 —— 无论走哪个分支、成没成功
+    //（终端也是回车即入史，失败的命令也在里面）
+    pushInputHistory(prompt);
 
     // 起会话 / 发送失败时的统一收尾。**必须有**：这两处 await 都没有 catch 的话，
     // RPC 一 reject（daemon 没起、CLI 拉不起来）busy 就永远停在 true ——
@@ -1586,6 +1603,21 @@ function consumeEcho(event: RuntimeEvent): boolean {
     ),
   }));
   return true;
+}
+
+/** 输入历史上限（终端 shell 的 HISTSIZE 同位） */
+const INPUT_HISTORY_CAP = 200;
+
+/** 追加一条输入历史：空串不入史、连续重复去重、超限掐头 */
+function pushInputHistory(text: string): void {
+  const t = text.trim();
+  if (t === "") return;
+  useWorkbench.setState((s) => {
+    if (s.inputHistory[s.inputHistory.length - 1] === t) return {};
+    const next = [...s.inputHistory, t];
+    if (next.length > INPUT_HISTORY_CAP) next.splice(0, next.length - INPUT_HISTORY_CAP);
+    return { inputHistory: next };
+  });
 }
 
 /** 归一化 turn 完成态 → 契约 SessionStatus */

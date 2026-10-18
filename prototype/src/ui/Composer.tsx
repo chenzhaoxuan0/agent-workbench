@@ -77,6 +77,51 @@ export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
   /** 定时发送弹层（[+] 菜单入口；挂在同一个锚点上，点外共用关闭逻辑） */
   const [schedOpen, setSchedOpen] = useState(false);
 
+  // ---- ↑/↓ 输入历史（终端语义）---------------------------------------------
+  // histPos：null = 未浏览；数字 = 当前停在 inputHistory 的下标（末尾 = 最新）。
+  // savedDraft：进入浏览那一刻的草稿，↓ 走到头 / Esc 时还原（bash 同款）。
+  const inputHistory = useWorkbench((s) => s.inputHistory);
+  const [histPos, setHistPos] = useState<number | null>(null);
+  const histSavedDraft = useRef("");
+
+  const applyHistoryText = (text: string): void => {
+    setDraft(text);
+    setCursorOffset(text.length);
+    pendingCaretRef.current = text.length;
+  };
+
+  /** 回溯/前进一条。返回 false = 无事可做（让默认光标行为走） */
+  const navigateHistory = (dir: -1 | 1): boolean => {
+    const hist = useWorkbench.getState().inputHistory;
+    if (hist.length === 0) return false;
+    if (dir === -1) {
+      const next = histPos === null ? hist.length - 1 : histPos - 1;
+      if (next < 0) return false; // 已到最老一条
+      if (histPos === null) histSavedDraft.current = draft;
+      setHistPos(next);
+      applyHistoryText(hist[next]!);
+      return true;
+    }
+    // ↓（仅浏览中可达）：向后走，走到头恢复浏览前草稿并退出
+    const next = (histPos ?? 0) + 1;
+    if (next > hist.length - 1) {
+      setHistPos(null);
+      applyHistoryText(histSavedDraft.current);
+      return true;
+    }
+    setHistPos(next);
+    applyHistoryText(hist[next]!);
+    return true;
+  };
+
+  /** Esc 放弃浏览：还原浏览前草稿（terminal Ctrl+G 同款收场） */
+  const exitHistory = (): void => {
+    if (histPos === null) return;
+    setHistPos(null);
+    const back = histSavedDraft.current;
+    if (back !== draft) applyHistoryText(back);
+  };
+
   // ---- @ 路径提及（交互对齐 ZCode file-mention）----------------------------
   // 光标位置单独跟踪：@ 触发看「光标前最近的一个 @」，光标移动（点击/方向键）
   // 都要重算，不能只靠 draft 变化。
@@ -322,6 +367,8 @@ export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
     setSchedOpen(false);
     setMentionDismissedKey(null);
     setCursorOffset(0);
+    setHistPos(null);
+    histSavedDraft.current = "";
     void run(v, { attachments: currentAttachments });
   };
 
@@ -373,12 +420,22 @@ export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
               <GitActionTrigger rootPath={unit?.rootPath} />
             </div>
 
-            {/* 附件数量提示 */}
-            {attachments.length > 0 && (
-              <span className="text-[11px] font-medium text-teal font-mono">
-                {attachments.length}/{MAX_ATTACHMENTS} 附件
-              </span>
-            )}
+            {/* 附件数量提示 + 输入历史浏览指示 */}
+            <div className="flex items-center gap-2">
+              {attachments.length > 0 && (
+                <span className="text-[11px] font-medium text-teal font-mono">
+                  {attachments.length}/{MAX_ATTACHMENTS} 附件
+                </span>
+              )}
+              {histPos !== null && inputHistory.length > 0 && (
+                <span
+                  className="text-[11px] font-mono text-teal"
+                  title="↑ 更早 · ↓ 更晚，走到头恢复浏览前的草稿；Esc 放弃并还原"
+                >
+                  ↑ 历史 {inputHistory.length - histPos}/{inputHistory.length}
+                </span>
+              )}
+            </div>
           </div>
 
           {/* 附件条：已选择的图片和文件列表 */}
@@ -467,6 +524,8 @@ export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
             value={draft}
             onChange={(e) => {
               setDraft(e.target.value);
+              // 亲手改动 = 放弃历史浏览（保留改后的文本为当前草稿）
+              setHistPos(null);
               setSlashMenuDismissed(false);
               setCursorOffset(e.target.selectionStart ?? e.target.value.length);
             }}
@@ -502,6 +561,27 @@ export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
               }
               if (e.key === "Escape" && mentionOpen) {
                 setMentionDismissedKey(mentionDismissKey);
+                return;
+              }
+              // 输入历史浏览中 Esc：还原浏览前草稿并退出
+              if (e.key === "Escape" && histPos !== null && !mentionOpen) {
+                e.preventDefault();
+                exitHistory();
+                return;
+              }
+              // ↑/↓ 输入历史（终端语义）：↑ 在空输入 / 行首 / 浏览中向前回溯；
+              // ↓ 仅浏览中向后回，走到头恢复浏览前草稿。@ 提及菜单开着时让位。
+              if (
+                !mentionOpen &&
+                e.key === "ArrowUp" &&
+                (histPos !== null || draft.length === 0 || cursorOffset === 0) &&
+                navigateHistory(-1)
+              ) {
+                e.preventDefault();
+                return;
+              }
+              if (!mentionOpen && histPos !== null && e.key === "ArrowDown" && navigateHistory(1)) {
+                e.preventDefault();
                 return;
               }
               if (e.key === "Enter" && !e.shiftKey) {
