@@ -609,7 +609,6 @@ function UserMessageBubble({
       className="flex shrink-0 cursor-pointer items-center rounded-btn p-1 text-ash opacity-60 transition hover:bg-line-soft hover:text-ink group-hover/user:opacity-100 disabled:cursor-not-allowed disabled:opacity-40"
     >
       <PencilLine size={12} />
-      <span className="sr-only">编辑重发</span>
     </button>
   ) : null;
 
