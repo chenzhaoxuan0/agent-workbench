@@ -2881,6 +2881,27 @@ registerMethod("session.cancel", (params) => {
   if (typeof sessionId !== "string") throw Object.assign(new Error("sessionId is required"), { code: "bad_params" });
   return host.cancelSession(asSessionId(sessionId));
 });
+// ---- steer 待发送队列管理（ZCode queue 面板同款操作面）----
+registerMethod("session.queue.remove", (params) => {
+  const p = (params ?? {}) as { sessionId?: string; id?: string };
+  if (typeof p.sessionId !== "string" || typeof p.id !== "string") {
+    throw Object.assign(new Error("sessionId and id are required"), { code: "bad_params" });
+  }
+  return host.removeQueuedSend(asSessionId(p.sessionId), p.id);
+});
+registerMethod("session.queue.sendNow", (params) => {
+  const p = (params ?? {}) as { sessionId?: string; id?: string };
+  if (typeof p.sessionId !== "string" || typeof p.id !== "string") {
+    throw Object.assign(new Error("sessionId and id are required"), { code: "bad_params" });
+  }
+  return host.sendQueuedNow(asSessionId(p.sessionId), p.id);
+});
+registerMethod("session.queue.resume", (params) => {
+  const p = (params ?? {}) as { sessionId?: string };
+  if (typeof p.sessionId !== "string") throw Object.assign(new Error("sessionId is required"), { code: "bad_params" });
+  host.resumeQueue(asSessionId(p.sessionId));
+  return { resumed: p.sessionId };
+});
 registerMethod("session.list", () => host.listSessions());
 
 /**

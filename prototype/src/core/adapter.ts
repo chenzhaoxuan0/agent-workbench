@@ -239,6 +239,14 @@ export interface RuntimeAdapter {
   sendMessage(req: SendMessageRequest): Promise<void>;
   cancel(sessionId: SessionId): Promise<void>;
 
+  // ---- steer 待发送队列管理（T3 排队消息的操作面；daemon 适配器实现，mock 可缺省）----
+  /** 删除一条排队插话。「编辑回填」= 删除成功后前端把文本放回输入框 */
+  removeQueuedSend?(sessionId: SessionId, id: string): Promise<void>;
+  /** 立刻发送：取消当前轮，轮落定后这条排队消息优先进去 */
+  sendQueuedNow?(sessionId: SessionId, id: string): Promise<void>;
+  /** 恢复暂停的队列（用户停止/轮失败后 daemon 不再自动出队） */
+  resumeQueuedSends?(sessionId: SessionId): Promise<void>;
+
   // ---- 权限 ----
   resolvePermission(sessionId: SessionId, requestId: string, decision: PermissionDecision): Promise<void>;
 
