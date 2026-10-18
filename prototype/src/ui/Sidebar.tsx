@@ -46,7 +46,7 @@ import { resumeArgsFor } from "./HistoryPane.tsx";
 import { collapseForkVersions } from "./forkHistory.ts";
 import { executorIconSrc } from "./executorIcon.ts";
 import { useHistoryPrefs } from "../store/useHistoryPrefs.ts";
-import { useTerminalStore } from "../store/useTerminalStore.ts";
+import { useTerminalStore, collectLeafIds } from "../store/useTerminalStore.ts";
 import { useSidePane } from "../store/useSidePane.ts";
 import { QuickContextMenu, quickMenuFromEvent, type QuickMenuState } from "./QuickContextMenu.tsx";
 import { cn } from "./cn.ts";
@@ -625,8 +625,29 @@ function openEntryInChat(e: UnitHistoryEntry): void {
  * 在 TUI 中重现一条历史会话（各家 --resume 口径见 HistoryPane 的 RESUME_ARGS）。
  * 派发前登记 pending（useTerminalStore），防止紧接着的「终端跟随 bot」effect
  * 因标签还没落地又派发一个全新 TUI（双进程竞态）。
+ * TUI 本身还开着（前端有它的标签）时**不发 resume** —— 直接切到那个标签；
+ * 此时 resume 会双开同一原生会话（存储锁冲突），且切标签才是用户要的「回到它」。
  */
 function openEntryInTui(e: UnitHistoryEntry, unit: WorkUnit): void {
+  const markOpened = (): void => {
+    useHistoryPrefs
+      .getState()
+      .markViewed([e.key, ...(e.sessionId !== null ? [`session-${e.sessionId}`] : [])]);
+  };
+  const st = useTerminalStore.getState();
+  if (e.terminalId != null && e.terminalId !== "") {
+    const live = st.instances.find((i) => i.id === e.terminalId);
+    if (live) {
+      const group = st.groups.find((g) => collectLeafIds(g.rootLayout).includes(live.id));
+      if (group) st.setActiveGroup(group.id);
+      st.setActiveInstance(live.id);
+      const sh = useShell.getState();
+      sh.setMainView("chat");
+      sh.setConversationView("terminal");
+      markOpened();
+      return;
+    }
+  }
   const args = resumeArgsFor(e.runtimeId, e.resumeRef);
   if (args === null) return;
   const wb = useWorkbench.getState();
@@ -645,11 +666,38 @@ function openEntryInTui(e: UnitHistoryEntry, unit: WorkUnit): void {
       const sh = useShell.getState();
       sh.setMainView("chat");
       sh.setConversationView("terminal");
-      useHistoryPrefs
-        .getState()
-        .markViewed([e.key, ...(e.sessionId !== null ? [`session-${e.sessionId}`] : [])]);
+      markOpened();
     })
     .catch((err: unknown) => console.error("[Sidebar] TUI 恢复失败:", err));
+}
+
+/** bot 主绑定执行器（bindings.primary 优先，回落全局当前）—— TerminalPanel boundExecutor 同款口径 */
+function boundExecutorOf(unit: WorkUnit): string {
+  const wb = useWorkbench.getState();
+  const binding = unit.bindings.find((b) => b.primary) ?? unit.bindings[0];
+  const rid = binding?.runtimeId;
+  if (rid === undefined || rid === "") return wb.activeRuntimeId;
+  return (
+    wb.runtimes.find((r) => r.id === rid)?.id ??
+    wb.runtimes.find((r) => r.id === `daemon:${rid}`)?.id ??
+    wb.activeRuntimeId
+  );
+}
+
+/** 在该 bot 的工作空间直接起一个绑定执行器的全新 TUI（「新建会话」的终端形态） */
+function openNewTuiForUnit(unit: WorkUnit): void {
+  const bare = boundExecutorOf(unit).replace(/^daemon:/, "");
+  if (bare === "") return;
+  const wb = useWorkbench.getState();
+  if (String(wb.activeUnitId) !== String(unit.id)) wb.selectUnit(asUnitId(unit.id));
+  useTerminalStore.getState().notePendingUnitDispatch(unit.id);
+  void dispatchTerminal({ unitId: unit.id, unitName: unit.name, rootPath: unit.rootPath, runtimeId: bare })
+    .then(() => {
+      const sh = useShell.getState();
+      sh.setMainView("chat");
+      sh.setConversationView("terminal");
+    })
+    .catch((err: unknown) => console.error("[Sidebar] 新建 TUI 派发失败:", err));
 }
 
 /** 在该 bot 的工作空间开一个全新对话页（bot 行悬浮 ＋ 按钮与右键菜单共用） */
@@ -747,6 +795,8 @@ function UnitRow({
   const sessions = useWorkbench((s) => s.sessions);
   const activeSessionId = useWorkbench((s) => s.activeSessionId);
   const mainView = useShell((s) => s.mainView);
+  /** 终端标签实例（TUI 还开着的历史行 → 点行直切那个标签，不发 resume） */
+  const terminalInstances = useTerminalStore((s) => s.instances);
   const sessionStatusById = useMemo(() => {
     const m = new Map<string, string>();
     for (const x of sessions) m.set(String(x.id), x.status);
@@ -878,6 +928,7 @@ function UnitRow({
                   ]
                 : []),
               { label: "设置", icon: Settings, onSelect: onOpenSettings },
+              { label: "新建 TUI 会话", icon: SquareTerminal, onSelect: () => openNewTuiForUnit(unit) },
               { label: "新建会话", icon: Plus, onSelect: () => openNewChatForUnit(unit) },
             ]),
           )
@@ -997,8 +1048,13 @@ function UnitRow({
           {collapseForkVersions(filteredEntries ?? []).slice(0, visibleCount).map((slot) => {
             const e = slot.entry;
             const canChat = e.sessionId !== null && e.unitId !== undefined;
-            const canTui = resumeArgsFor(e.runtimeId, e.resumeRef) !== null;
-            // 默认打开方式：用户覆盖优先，缺省按来源（对话页建 → 聊天页，TUI 建 → TUI）
+            // TUI 还开着（前端有它的标签）也算「可在 TUI 打开」——点击会直切那个标签
+            const hasLiveTab =
+              e.terminalId != null && e.terminalId !== "" && terminalInstances.some((i) => i.id === e.terminalId);
+            const canTui = hasLiveTab || resumeArgsFor(e.runtimeId, e.resumeRef) !== null;
+            // 默认打开方式：用户覆盖优先，缺省按来源（对话页建 → 聊天页，TUI 建 → TUI）；
+            // 来源不可用才交叉回落（headless 无 cli_ref → TUI；TUI 无 resumeRef → 聊天页），
+            // 两者皆不可用时保留来源展示、点击落详情弹窗
             const originMode: "chat" | "tui" = e.launchMode === "terminal" ? "tui" : "chat";
             const override = historyPrefs.entryOpenMode[e.key];
             const effective: "chat" | "tui" =
@@ -1006,11 +1062,15 @@ function UnitRow({
                 ? "chat"
                 : override === "tui" && canTui
                   ? "tui"
-                  : canChat
-                    ? originMode
-                    : canTui
-                      ? (originMode === "chat" ? "tui" : "chat")
-                      : originMode;
+                  : originMode === "chat" && canChat
+                    ? "chat"
+                    : originMode === "tui" && canTui
+                      ? "tui"
+                      : canChat
+                        ? "chat"
+                        : canTui
+                          ? "tui"
+                          : originMode;
             const light = deriveHistoryLight(
               e,
               sessionStatusById,
@@ -1178,6 +1238,20 @@ function UnitRow({
           onMouseDown={(e) => e.stopPropagation()}
           onClick={(e) => {
             e.stopPropagation();
+            openNewTuiForUnit(unit);
+          }}
+          aria-label={`在 ${unit.name} 中新建 TUI 会话`}
+          title="新建 TUI 会话 —— 在终端里直接起这个 bot 绑定执行器的交互界面（免审批、记入历史）"
+          className="cursor-pointer rounded-btn p-1 text-ash hover:bg-line-soft hover:text-ink active:scale-90 transition"
+        >
+          <SquareTerminal size={12} />
+        </button>
+        <button
+          type="button"
+          draggable={false}
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
             openNewChatForUnit(unit);
           }}
           aria-label={`在 ${unit.name} 中新建会话`}
@@ -1247,6 +1321,10 @@ function HistoryListRow({
   const bareExec = entry.runtimeId.replace(/^daemon:/, "").replace(/:yolo$/, "");
   const dotCls = HISTORY_DOT_CLS[light];
   const canToggle = mode.effective === "chat" ? mode.canTui : mode.canChat;
+  const neither = !mode.canChat && !mode.canTui;
+  const openDesc = neither
+    ? "点击查看对话详情 —— 这条会话既接不回聊天页、也无法在 TUI 重现（执行器没留原生会话引用）"
+    : `点击＝在${mode.effective === "chat" ? "聊天页" : "TUI"}打开`;
   const modeLabel = mode.effective === "chat" ? "聊天" : "TUI";
   const otherLabel = mode.effective === "chat" ? "TUI" : "聊天页";
   const modeTip = !mode.canChat && !mode.canTui
@@ -1266,7 +1344,7 @@ function HistoryListRow({
       onClick={onOpenDefault}
       onContextMenu={onContextMenu}
       aria-current={active}
-      title={`${kindLabel} · ${entry.runtimeId}${launchTip}${entry.detail !== null && entry.detail !== "" ? `\n${entry.detail}` : ""}\n${entry.title}\n${formatRelative(entry.startedAt)}\n点击＝在${modeLabel === "聊天" ? "聊天页" : "TUI"}打开${active ? "（当前显示中）" : ""}`}
+      title={`${kindLabel} · ${entry.runtimeId}${launchTip}${entry.detail !== null && entry.detail !== "" ? `\n${entry.detail}` : ""}\n${entry.title}\n${formatRelative(entry.startedAt)}\n${openDesc}${active ? "（当前显示中）" : ""}`}
       className={cn(
         "group/hrow flex min-h-[30px] w-full cursor-pointer items-center gap-1.5 rounded-btn px-2 py-1.5 text-left transition",
         active ? "bg-teal-tint" : "hover:bg-line-soft",
