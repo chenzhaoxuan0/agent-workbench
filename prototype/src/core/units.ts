@@ -2,8 +2,10 @@
  * 领域原语：一个文件夹 = 一个工作单元，两种身份。
  *
  * 设计要点：bot模式与项目模式不是两类软件，而是同一个 WorkUnit 的两种 kind。
- * 运行时原语（目录 / agent 定义 / 会话 / 技能 / 权限）对两者完全一致。
+ * 运行原语（目录 / agent 定义 / 会话 / 技能 / 权限）对两者完全一致。
  */
+
+import type { SteerQueueItem } from "./events.ts";
 
 // ---------------------------------------------------------------------------
 // 品牌化 ID
@@ -358,6 +360,17 @@ export interface Session {
    * 工作树路径。源代码管理靠它防「删掉有活跃会话在跑的工作树」。缺省 = 旧 daemon。
    */
   readonly rootPath?: string;
+  /**
+   * T3 steer 待发送队列快照（daemon 权威，session.list / resume 返回时带上）。
+   * 缺省 = 空（旧 daemon / 无排队）。前端打开会话时以此为初值，
+   * 之后由 steer.queue 事件驱动更新。
+   */
+  readonly steerQueue?: readonly SteerQueueItem[];
+  /**
+   * 队列是否暂停：用户停止或轮失败后 daemon 不再自动出队，等显式恢复
+   * （session.queue.resume）或下一条新消息（届时按 FIFO 续排）。缺省 = false。
+   */
+  readonly steerPaused?: boolean;
   readonly stats: SessionStats;
 }
 

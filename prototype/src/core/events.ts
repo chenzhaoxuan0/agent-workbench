@@ -27,6 +27,15 @@ export interface PlanStep {
   readonly status: PlanStepStatus;
 }
 
+/**
+ * steer 待发送队列的条目形态（快照与 Session 行共用）：
+ * id 是 daemon 侧寻址键（删除 / 立刻发送用）。
+ */
+export interface SteerQueueItem {
+  readonly id: string;
+  readonly text: string;
+}
+
 export type RuntimeEvent =
   // ---- 会话生命周期 ----
   /**
@@ -160,13 +169,23 @@ export type RuntimeEvent =
     }
 
   // ---- steering（T3 语义：turn 进行中的插话排队与落点，WP-10 事件化）----
-  /** 插话进入排队（turn 进行中到达，等本轮落定后发出） */
-  | { readonly type: "steer.queued"; readonly sessionId: SessionId; readonly queueDepth: number }
+  /** 插话进入排队（turn 进行中到达，等本轮落定后发出）。id = 新条目的寻址 id */
+  | { readonly type: "steer.queued"; readonly sessionId: SessionId; readonly id: string; readonly queueDepth: number }
   /** 排队插话在轮边界被注入——前端据此把 A1（pre-steer）/A2（post-steer）分行 */
-  | { readonly type: "steer.boundary"; readonly sessionId: SessionId; readonly text: string }
+  | { readonly type: "steer.boundary"; readonly sessionId: SessionId; readonly id: string; readonly text: string }
   /** 会话终结时仍在排队的插话（没有下一轮可附着）——上游渠道应知晓这些消息未被投递 */
   | { readonly type: "steer.undelivered"; readonly sessionId: SessionId; readonly inputs: readonly string[] }
-
+  /**
+   * steer 队列权威快照：入队/移除/立刻发送（提队首）/暂停/恢复/派发后各发一份。
+   * 队列 UI 只认这个事件（快照免增量对账，断线重连后下一条即自愈）；
+   * steer.queued / steer.boundary 保留给 IM 渠道做「已排队 / 已注入」的通知语义。
+   */
+  | {
+      readonly type: "steer.queue";
+      readonly sessionId: SessionId;
+      readonly items: readonly SteerQueueItem[];
+      readonly paused: boolean;
+    }
   // ---- 计划（ZCode 的 plan-detail：agent 提计划 → 用户批 / 改 / 否）----
   | {
       readonly type: "plan.proposed";

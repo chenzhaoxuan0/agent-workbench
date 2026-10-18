@@ -167,8 +167,19 @@ interface HostSession {
   lastTool: string | null;
   /** 已落盘的执行器引用（去重，避免每事件重写） */
   lastCliRef: string | null;
-  /** T3 steer 语义：turn 进行中到达的消息在此排队，轮落定后自动发出 */
-  readonly pendingSends: Array<{ text: string; loop?: { readonly reasoningLevel?: string } }>;
+  /**
+   * T3 steer 语义：turn 进行中到达的消息在此排队，轮落定后自动发出。
+   * id 是队列管理（删除/立刻发送/快照）的寻址键。
+   */
+  readonly pendingSends: Array<{ id: string; text: string; loop?: { readonly reasoningLevel?: string } }>;
+  /** 队列 id 发号器（会话内单调） */
+  queueSeq: number;
+  /**
+   * 队列暂停位：用户停止或轮失败落定后置 true —— flushPendingSends 不再自动
+   * 出队，等显式恢复（session.queue.resume）或下一条新消息（按 FIFO 续排）。
+   * ZCode 的 autoDrain=false 同款语义。
+   */
+  queuePaused: boolean;
   /** 当前是否有未落定的轮 */
   turnBusy: boolean;
   /** 会话内单调轮号（ADR 0012：turn.started/completed 凭它配对） */
@@ -423,6 +434,8 @@ export class RuntimeHost {
         // 行上的 cli_ref 即恢复凭据（ADR 0012 readiness：lastCliRef 非空 = resumable）
         lastCliRef: row.cliRef,
         pendingSends: [],
+        queueSeq: 0,
+        queuePaused: false,
         turnBusy: false,
         turnOpen: false,
         cancelRequested: false,
@@ -905,6 +918,9 @@ export class RuntimeHost {
       // live = 进程内 impl 存活；resumable = 有执行器原生引用可接回
       live: h.impl !== null,
       resumable: h.lastCliRef !== null,
+      // T3 steer 队列快照：session.list / resume 返回时带上，前端打开会话的初值
+      steerQueue: h.pendingSends.map(({ id, text }) => ({ id, text })),
+      steerPaused: h.queuePaused,
       stats: { ...h.stats },
     };
   }
@@ -1026,6 +1042,8 @@ export class RuntimeHost {
       lastTool: null,
       lastCliRef: null,
       pendingSends: [],
+      queueSeq: 0,
+      queuePaused: false,
       turnBusy: true,
       turnCount: 1,
       turnOpen: true,
@@ -1377,14 +1395,92 @@ export class RuntimeHost {
       if (h.pendingSends.length >= 10) {
         throw adapterError("send_queue_full", "该会话已有 10 条排队消息 —— 等当前轮完成再发");
       }
-      h.pendingSends.push({ text, loop });
-      log.info("message queued (turn in flight)", { sessionId, queueDepth: h.pendingSends.length });
-      // WP-10：插话入队对客户端可见（steer.queued）
-      this.emitStamped(h, { type: "steer.queued", sessionId, queueDepth: h.pendingSends.length });
+      this.enqueueSend(h, text, loop);
+      return;
+    }
+    // 暂停中的队列还挂着（用户停止 / 轮失败后）：新消息排到队尾并恢复出队 ——
+    // FIFO 不被插队，用户也不需要先手动「恢复」才能继续说话。
+    if (h.pendingSends.length > 0) {
+      this.enqueueSend(h, text, loop);
+      h.queuePaused = false;
+      this.emitQueueSnapshot(h);
+      this.flushPendingSends(h);
       return;
     }
 
     this.dispatchSend(h, text, loop);
+  }
+
+  /** 入队（发号 + steer.queued 通知 + 权威快照）。调用方负责 flush/暂停语义 */
+  private enqueueSend(h: HostSession, text: string, loop?: { readonly reasoningLevel?: string }): void {
+    const id = `q${++h.queueSeq}`;
+    h.pendingSends.push({ id, text, loop });
+    log.info("message queued (turn in flight)", { sessionId: h.id, queueDepth: h.pendingSends.length });
+    // WP-10：插话入队对客户端可见（steer.queued）
+    this.emitStamped(h, { type: "steer.queued", sessionId: h.id, id, queueDepth: h.pendingSends.length });
+    this.emitQueueSnapshot(h);
+  }
+
+  /** steer 队列权威快照事件（队列 UI 只认这个，免增量对账） */
+  private emitQueueSnapshot(h: HostSession): void {
+    this.emitStamped(h, {
+      type: "steer.queue",
+      sessionId: h.id,
+      items: h.pendingSends.map(({ id, text }) => ({ id, text })),
+      paused: h.queuePaused,
+    });
+  }
+
+  /**
+   * 删除一条排队插话。「回到输入框编辑」= 先删（权威面）再由前端回填草稿 ——
+   * 对齐 ZCode deleteQueueItem 的「ACK 成功后才还原 composer」次序。
+   */
+  removeQueuedSend(sessionId: SessionId, id: string): { removed: string } {
+    const h = this.sessions.get(sessionId);
+    if (h === undefined) throw adapterError("unknown_session", `no such session: ${sessionId}`);
+    if (h.impl === null) throw adapterError("session_not_live", `session ${sessionId} is persisted but not live — resume it first`);
+    const i = h.pendingSends.findIndex((p) => p.id === id);
+    if (i < 0) throw adapterError("unknown_steer_item", `no queued item ${id} in session ${sessionId}`);
+    h.pendingSends.splice(i, 1);
+    this.emitQueueSnapshot(h);
+    return { removed: id };
+  }
+
+  /**
+   * 立刻发送一条排队插话（ZCode sendQueuedNow 的简化版）：
+   * 提到队首 + 恢复出队 + 取消当前轮 —— 轮落定后 flushPendingSends 从队首
+   * 派发的就是它；剩余队列在其后的轮边界按序续排（FIFO 不变）。
+   * cancel 失败（impl.cancel 抛）则条目留在队首，状态仍是排队 —— 前端如实展示。
+   */
+  async sendQueuedNow(sessionId: SessionId, id: string): Promise<void> {
+    const h = this.sessions.get(sessionId);
+    if (h === undefined) throw adapterError("unknown_session", `no such session: ${sessionId}`);
+    if (h.impl === null) throw adapterError("session_not_live", `session ${sessionId} is persisted but not live — resume it first`);
+    const i = h.pendingSends.findIndex((p) => p.id === id);
+    if (i < 0) throw adapterError("unknown_steer_item", `no queued item ${id} in session ${sessionId}`);
+    const [item] = h.pendingSends.splice(i, 1);
+    h.pendingSends.unshift(item!);
+    // 立刻发送是显式意图：不继承暂停位（否则自己的取消把队首又锁住了）
+    h.queuePaused = false;
+    this.emitQueueSnapshot(h);
+    if (!h.turnBusy) {
+      this.flushPendingSends(h);
+      return;
+    }
+    // 与 cancelSession 同款取消路径，但不走它的「队列转暂停」—— 这里的取消
+    // 就是为了让队首（目标条目）尽快出去
+    h.cancelRequested = true;
+    await h.impl.cancel();
+  }
+
+  /** 恢复暂停的队列：立即尝试出队（busy 时等下一个轮边界自然触发） */
+  resumeQueue(sessionId: SessionId): void {
+    const h = this.sessions.get(sessionId);
+    if (h === undefined) throw adapterError("unknown_session", `no such session: ${sessionId}`);
+    if (h.impl === null) throw adapterError("session_not_live", `session ${sessionId} is persisted but not live — resume it first`);
+    h.queuePaused = false;
+    this.emitQueueSnapshot(h);
+    this.flushPendingSends(h);
   }
 
   /** 实际发起一轮：置 turnBusy、写用户消息、fire-and-forget（结果走事件流） */
@@ -1473,6 +1569,15 @@ export class RuntimeHost {
               : "idle";
         this.settleTurn(cur, turnReason);
         cur.turnBusy = false;
+        // 轮失败落定且队列还有货：转入暂停（ZCode TurnError 同款）—— 继续往
+        // 失败会话里灌排队消息大概率是 error 风暴，等显式恢复或新消息续排
+        if ((turnReason === "failed" || turnReason === "error") && cur.pendingSends.length > 0 && !cur.queuePaused) {
+          cur.queuePaused = true;
+          this.emitQueueSnapshot(cur);
+        }
+        // 会话死挂时队列还有货：宣告未投递（此前只在 shutdown 宣告，
+        // 前端会一直挂着「排队中」没下文）
+        if (event.type === "session.ended") this.settleUndelivered(cur);
         this.flushPendingSends(cur);
       }
       // 唤醒等这一类事件的等待者（usage = turn 级完成，Ops 用）
@@ -1567,17 +1672,35 @@ export class RuntimeHost {
 
   private readonly eventSubs = new Map<SessionId, Array<{ type: string; cb: (event: RuntimeEvent, seq: number) => void }>>();
 
-  /** 依次发出排队消息；当前轮仍忙或会话死挂则停手（下一轮落定会再触发） */
+  /** 依次发出排队消息；当前轮仍忙 / 会话死挂 / 队列暂停则停手（下一轮落定会再触发） */
   private flushPendingSends(h: HostSession): void {
     // 评审 P2：ended 会话不再复活派发——session.ended 也走 flush 路径，无此守卫会把
     // 排队插话逐条打进死会话变成 error 风暴（与 steer.undelivered 语义矛盾）
     if (h.turnBusy || h.impl === null || h.endedAt !== undefined) return;
+    // 暂停位（用户停止 / 轮失败后置位）：不再自动连发，等显式恢复或新消息续排
+    if (h.queuePaused) return;
     const next = h.pendingSends.shift();
     if (next === undefined) return;
     log.info("dispatching queued message", { sessionId: h.id, remaining: h.pendingSends.length });
     // WP-10：注入点事件化——前端据此把 pre/post-steer 的助手消息分行
-    this.emitStamped(h, { type: "steer.boundary", sessionId: h.id, text: next.text });
+    this.emitStamped(h, { type: "steer.boundary", sessionId: h.id, id: next.id, text: next.text });
+    this.emitQueueSnapshot(h);
     this.dispatchSend(h, next.text, next.loop);
+  }
+
+  /**
+   * 会话已死但队列还有货：如实宣告未投递并清空（前端不再显示「排队中」）。
+   * makeSink 的 session.ended 分支与 endSession 两条终态路径共用。
+   */
+  private settleUndelivered(h: HostSession): void {
+    if (h.pendingSends.length === 0) return;
+    this.emitStamped(h, {
+      type: "steer.undelivered",
+      sessionId: h.id,
+      inputs: h.pendingSends.map((p) => p.text),
+    });
+    h.pendingSends.length = 0;
+    this.emitQueueSnapshot(h);
   }
 
   /**
@@ -1597,6 +1720,8 @@ export class RuntimeHost {
     this.track(h, ended);
     this.persistOnEvent(h, ended);
     h.turnBusy = false;
+    // 终态路径不经过 makeSink：这里也要把队列里的货如实宣告未投递
+    this.settleUndelivered(h);
     this.flushPendingSends(h);
     const ends = this.endWaiters.get(h.id);
     if (ends !== undefined) {
@@ -1641,6 +1766,13 @@ export class RuntimeHost {
     // 取消意图先记号：后续落定事件（各家口径不一）统一翻成 turn.completed: cancelled
     const wasBusy = h.turnBusy;
     if (wasBusy) h.cancelRequested = true;
+    // 用户显式停止：队列（若有）转入暂停 —— 落定后不再自动连发剩余排队消息，
+    // 等显式恢复（session.queue.resume）或下一条新消息（FIFO 续排）。
+    // 必须在 impl.cancel() 之前同步置位：落定事件可能在 cancel 的 await 期间到达。
+    if (wasBusy && h.pendingSends.length > 0 && !h.queuePaused) {
+      h.queuePaused = true;
+      this.emitQueueSnapshot(h);
+    }
     try {
       await h.impl.cancel();
     } catch (err: unknown) {
@@ -1691,8 +1823,7 @@ export class RuntimeHost {
         inputs: h.pendingSends.map((p) => p.text),
       });
       h.pendingSends.length = 0;
-    }
-    for (const adapter of this.adapters.values()) {
+    }    for (const adapter of this.adapters.values()) {
       await adapter.disconnect().catch((err: unknown) => log.warn("adapter disconnect failed", {
         adapter: adapter.id,
         error: err instanceof Error ? err.message : String(err),
