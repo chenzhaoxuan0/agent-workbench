@@ -8,14 +8,12 @@ import {
   CircleDot,
   Copy,
   GitBranch,
-  History,
   ListTodo,
   MessageSquare,
   RotateCcw,
   Sparkles,
   Terminal,
   Wrench,
-  X,
 } from "lucide-react";
 import {
   dispatchTerminal,
@@ -42,12 +40,19 @@ import { cn } from "./cn.ts";
  * 手动/IM 会话。核心目的是「打开就能看到这个 bot 历史执行过什么」，不用再去
  * 各执行器的 TUI 会话列表里翻。
  *
+ * 迁移自 HistoryDialog 弹窗（ZCode 右侧栏模式）：内容主体原样平移，只换壳 ——
+ * - 不再有 fixed overlay / Esc / 点遮罩关闭；关闭即关 tab（面板条上的 ×）
+ * - 跨 bot 保活：面板隐藏（切走 bot / 收起）时**不轮询不重置**，列表缓存与
+ *   展开态保留，切回即达；重新可见时立刻刷一次并恢复轮询
+ * - 「TUI 恢复 / 在聊天页继续」成功后调 onFinished 关掉这个 tab（弹窗时代
+ *   是 onClose 关弹窗 —— 动作完成，这个视图的使命就结束了）
+ *
  * - headless 条目带 sessionId，可展开内联看对话（session.messages，daemon 对
  *   历史会话有 store 兜底）
  * - TUI 条目没有消息流，只有运行状态与结果摘要（terminal exit / ended: …）
  */
 
-const KIND_META: Record<UnitHistoryEntry["kind"], { icon: typeof History; label: string; cls: string }> = {
+const KIND_META: Record<UnitHistoryEntry["kind"], { icon: typeof ListTodo; label: string; cls: string }> = {
   automation: { icon: AlarmClock, label: "定时", cls: "bg-teal-tint text-teal" },
   backlog: { icon: ListTodo, label: "待办", cls: "bg-amber-500/10 text-amber-600" },
   manual: { icon: Terminal, label: "手动", cls: "bg-violet-500/10 text-violet-500" },
@@ -112,24 +117,28 @@ const RESUME_ARGS: Record<string, (ref: string) => string[]> = {
   openclaw: (ref) => ["agent", "--session-id", ref],
 };
 
-/** 可恢复判定（侧栏子列表与详情弹窗共用） */
+/** 可恢复判定（侧栏子列表与历史面板共用） */
 export function resumeArgsFor(runtimeId: string, resumeRef: string | null): string[] | null {
   if (resumeRef === null) return null;
   const build = RESUME_ARGS[runtimeId];
   return build === undefined ? null : build(resumeRef);
 }
 
-export function HistoryDialog({
+export function HistoryPane({
   unitId,
   unitName,
-  onClose,
   focusKey,
+  isActive,
+  onFinished,
 }: {
   unitId: string;
   unitName: string;
-  onClose: () => void;
   /** 侧栏子列表点进来时预展开的条目（对话直接可见，不用再点一次） */
   focusKey?: string;
+  /** 面板当前可见且为本 tab（保活协议：false 时停轮询、保留缓存） */
+  isActive: boolean;
+  /** 「TUI 恢复 / 在聊天页继续」成功后关掉本 tab */
+  onFinished: () => void;
 }): ReactElement {
   const units = useWorkbench((s) => s.units);
   const [entries, setEntries] = useState<readonly UnitHistoryEntry[] | null>(null);
@@ -177,9 +186,9 @@ export function HistoryDialog({
         useHistoryPrefs
           .getState()
           .markViewed([e.key, ...(e.sessionId !== null ? [`session-${e.sessionId}`] : [])]);
-        onClose();
+        onFinished();
       })
-      .catch((err2: unknown) => console.error("[HistoryDialog] TUI 恢复失败:", err2))
+      .catch((err2: unknown) => console.error("[HistoryPane] TUI 恢复失败:", err2))
       .finally(() => setResumeBusy(null));
   };
 
@@ -198,12 +207,15 @@ export function HistoryDialog({
     sh.setConversationView("chat");
     // 打开即已读：熄掉侧栏的「完成未读」绿灯
     useHistoryPrefs.getState().markViewed([e.key, `session-${e.sessionId}`]);
-    onClose();
+    onFinished();
   };
 
   useEffect(() => {
     let alive = true;
-    setEntries(null);
+    // 保活协议：隐藏（切走 bot / 切到别的 tab / 收起面板）时不轮询不重置 ——
+    // 列表缓存留着，切回即达；重新可见时立刻刷一次再恢复 20s 轮询
+    //（运行中的条目状态会推进）
+    if (!isActive) return;
     setErr(null);
     const load = (): void => {
       if (!alive) return;
@@ -216,23 +228,23 @@ export function HistoryDialog({
         });
     };
     load();
-    // 打开期间保持新鲜：20s 轮询（运行中的条目状态会推进）
     const poll = setInterval(load, 20_000);
     return () => {
       alive = false;
       clearInterval(poll);
     };
-    // focusKey 不进依赖：弹窗开着换展开目标时只动 expanded，列表不重载不闪
+    // focusKey 不进依赖：面板开着换展开目标时只动 expanded，列表不重载不闪
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [unitId]);
+  }, [unitId, isActive]);
 
   useEffect(() => {
     setExpanded(focusKey ?? null);
   }, [focusKey]);
 
-  // 原生会话列表：切到该页签时拉一次（不轮询——磁盘事实源，弹窗期间基本不变）
+  // 原生会话列表：切到该页签且面板可见时拉一次（不轮询——磁盘事实源，基本不变；
+  // 拉过的结果在保活期间复用，切回不重拉）
   useEffect(() => {
-    if (tab !== "native" || nativeList !== null) return;
+    if (tab !== "native" || !isActive || nativeList !== null) return;
     let alive = true;
     setNativeErr(null);
     void fetchNativeSessions(unitId, 60)
@@ -245,7 +257,7 @@ export function HistoryDialog({
     return () => {
       alive = false;
     };
-  }, [tab, unitId, nativeList]);
+  }, [tab, unitId, nativeList, isActive]);
 
   /** 原生会话的 TUI 恢复：sessionId 即各家原生 id（与 RESUME_ARGS 口径一致） */
   const handleNativeResume = (s: NativeSessionSummary): void => {
@@ -267,9 +279,9 @@ export function HistoryDialog({
         const sh = useShell.getState();
         sh.setMainView("chat");
         sh.setConversationView("terminal");
-        onClose();
+        onFinished();
       })
-      .catch((err2: unknown) => console.error("[HistoryDialog] 原生会话 TUI 恢复失败:", err2))
+      .catch((err2: unknown) => console.error("[HistoryPane] 原生会话 TUI 恢复失败:", err2))
       .finally(() => setResumeBusy(null));
   };
 
@@ -288,97 +300,84 @@ export function HistoryDialog({
   }, [entries, hideFailedInDialog, focusKey]);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-6" onClick={onClose}>
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label={`${unitName} 历史会话`}
-        onClick={(e) => e.stopPropagation()}
-        className="flex h-[80vh] max-h-[92vh] w-[720px] max-w-[94vw] flex-col overflow-hidden rounded-card border border-line bg-card shadow-2xl"
-      >
-        <div className="flex h-12 shrink-0 items-center gap-2 border-b border-line px-4">
-          <History size={14} className="text-graphite" />
-          <p className="text-body-sm font-medium text-ink">{unitName} · 历史会话</p>
-
-          {/* 页签切换：daemon 运行台账 | 各 CLI 原生存储 */}
-          <div className="ml-2 flex items-center rounded-btn bg-line-soft/80 p-0.5">
-            <button
-              type="button"
-              onClick={() => setTab("runs")}
-              className={cn(
-                "rounded-btn px-2 py-0.5 text-caption font-medium transition",
-                tab === "runs" ? "bg-card text-teal font-semibold shadow-xs" : "text-graphite hover:text-ink",
-              )}
-            >
-              运行记录
-            </button>
-            <button
-              type="button"
-              onClick={() => setTab("native")}
-              title="各 CLI 自己的会话存储（TUI 里聊的、任何入口产生的都来自磁盘事实源）"
-              className={cn(
-                "rounded-btn px-2 py-0.5 text-caption font-medium transition",
-                tab === "native" ? "bg-card text-teal font-semibold shadow-xs" : "text-graphite hover:text-ink",
-              )}
-            >
-              原生会话
-            </button>
-          </div>
-
-          {tab === "runs" && failedCount > 0 && (
-            <button
-              type="button"
-              onClick={() => setPrefs({ hideFailedInDialog: !hideFailedInDialog })}
-              title={hideFailedInDialog ? "点击显示包含失败在内的全部会话" : "点击隐藏失败会话"}
-              className={cn(
-                "flex items-center gap-1.5 rounded-chip px-2 py-0.5 text-caption font-medium transition cursor-pointer",
-                hideFailedInDialog
-                  ? "bg-loss/10 text-loss hover:bg-loss/15"
-                  : "bg-line-soft text-graphite hover:bg-line",
-              )}
-            >
-              <CircleAlert size={11} className={hideFailedInDialog ? "text-loss" : "text-ash"} />
-              <span>{hideFailedInDialog ? `已隐藏 ${failedCount} 条失败（点击查看）` : `已显示失败（点击隐藏）`}</span>
-            </button>
-          )}
-          <span className="ml-auto text-caption text-ash">
-            {tab === "native"
-              ? nativeList === null
-                ? "加载中…"
-                : `${nativeList.length} 条`
-              : entries === null
-                ? "加载中…"
-                : hideFailedInDialog && failedCount > 0
-                  ? `${displayedEntries?.length ?? 0} / ${entries.length} 条`
-                  : `${entries.length} 条`}
-          </span>
-          <button onClick={onClose} aria-label="关闭" className="rounded-btn p-1 text-ash hover:bg-line-soft hover:text-ink">
-            <X size={13} />
+    <section aria-label={`${unitName} 历史会话`} className="flex h-full min-h-0 flex-col bg-card">
+      <div className="flex h-10 shrink-0 items-center gap-2 border-b border-line px-3">
+        {/* 页签切换：daemon 运行台账 | 各 CLI 原生存储 */}
+        <div className="flex items-center rounded-btn bg-line-soft/80 p-0.5">
+          <button
+            type="button"
+            onClick={() => setTab("runs")}
+            className={cn(
+              "rounded-btn px-2 py-0.5 text-caption font-medium transition",
+              tab === "runs" ? "bg-card text-teal font-semibold shadow-xs" : "text-graphite hover:text-ink",
+            )}
+          >
+            运行记录
+          </button>
+          <button
+            type="button"
+            onClick={() => setTab("native")}
+            title="各 CLI 自己的会话存储（TUI 里聊的、任何入口产生的都来自磁盘事实源）"
+            className={cn(
+              "rounded-btn px-2 py-0.5 text-caption font-medium transition",
+              tab === "native" ? "bg-card text-teal font-semibold shadow-xs" : "text-graphite hover:text-ink",
+            )}
+          >
+            原生会话
           </button>
         </div>
 
-        {tab === "native" ? (
-          <div className="min-h-0 flex-1 overflow-y-auto p-3">
-            {nativeErr !== null && <p className="rounded-btn bg-loss/5 px-2.5 py-2 text-caption text-loss">{nativeErr}</p>}
-            {nativeList !== null && nativeList.length === 0 && (
-              <p className="px-1 py-6 text-center text-caption text-ash">
-                这个工作目录下还没找到各 CLI 的原生会话 —— 在 TUI 里跑过之后会出现在这里
-              </p>
+        {tab === "runs" && failedCount > 0 && (
+          <button
+            type="button"
+            onClick={() => setPrefs({ hideFailedInDialog: !hideFailedInDialog })}
+            title={hideFailedInDialog ? "点击显示包含失败在内的全部会话" : "点击隐藏失败会话"}
+            className={cn(
+              "flex items-center gap-1.5 rounded-chip px-2 py-0.5 text-caption font-medium transition cursor-pointer",
+              hideFailedInDialog
+                ? "bg-loss/10 text-loss hover:bg-loss/15"
+                : "bg-line-soft text-graphite hover:bg-line",
             )}
-            {nativeList?.map((s) => (
-              <NativeRow
-                key={`${s.executorId}-${s.sessionId}`}
-                summary={s}
-                expanded={nativeExpanded === `${s.executorId}-${s.sessionId}`}
-                resumeBusy={resumeBusy === `native-${s.executorId}-${s.sessionId}`}
-                onToggle={() =>
-                  setNativeExpanded(nativeExpanded === `${s.executorId}-${s.sessionId}` ? null : `${s.executorId}-${s.sessionId}`)
-                }
-                onResume={() => handleNativeResume(s)}
-              />
-            ))}
-          </div>
-        ) : (
+          >
+            <CircleAlert size={11} className={hideFailedInDialog ? "text-loss" : "text-ash"} />
+            <span>{hideFailedInDialog ? `已隐藏 ${failedCount} 条失败（点击查看）` : `已显示失败（点击隐藏）`}</span>
+          </button>
+        )}
+        <span className="ml-auto shrink-0 text-caption text-ash">
+          {tab === "native"
+            ? nativeList === null
+              ? "加载中…"
+              : `${nativeList.length} 条`
+            : entries === null
+              ? "加载中…"
+              : hideFailedInDialog && failedCount > 0
+                ? `${displayedEntries?.length ?? 0} / ${entries.length} 条`
+                : `${entries.length} 条`}
+        </span>
+      </div>
+
+      {tab === "native" ? (
+        <div className="min-h-0 flex-1 overflow-y-auto p-3">
+          {nativeErr !== null && <p className="rounded-btn bg-loss/5 px-2.5 py-2 text-caption text-loss">{nativeErr}</p>}
+          {nativeList !== null && nativeList.length === 0 && (
+            <p className="px-1 py-6 text-center text-caption text-ash">
+              这个工作目录下还没找到各 CLI 的原生会话 —— 在 TUI 里跑过之后会出现在这里
+            </p>
+          )}
+          {nativeList?.map((s) => (
+            <NativeRow
+              key={`${s.executorId}-${s.sessionId}`}
+              summary={s}
+              expanded={nativeExpanded === `${s.executorId}-${s.sessionId}`}
+              resumeBusy={resumeBusy === `native-${s.executorId}-${s.sessionId}`}
+              onToggle={() =>
+                setNativeExpanded(nativeExpanded === `${s.executorId}-${s.sessionId}` ? null : `${s.executorId}-${s.sessionId}`)
+              }
+              onResume={() => handleNativeResume(s)}
+            />
+          ))}
+        </div>
+      ) : (
         <div className="min-h-0 flex-1 overflow-y-auto p-3">
           {err !== null && <p className="rounded-btn bg-loss/5 px-2.5 py-2 text-caption text-loss">{err}</p>}
           {entries !== null && entries.length === 0 && (
@@ -413,9 +412,8 @@ export function HistoryDialog({
             />
           ))}
         </div>
-        )}
-      </div>
-    </div>
+      )}
+    </section>
   );
 }
 

@@ -18,7 +18,8 @@ import { Sidebar } from "./ui/Sidebar.tsx";
 import { TerminalPanel } from "./ui/TerminalPanel.tsx";
 import { WorkspaceHeader } from "./ui/WorkspaceHeader.tsx";
 import { bindShellShortcuts, useShell } from "./store/useShell.ts";
-import { HistoryDialog } from "./ui/HistoryDialog.tsx";
+import { SidePaneColumn } from "./ui/SidePanePanel.tsx";
+import { useSidePane } from "./store/useSidePane.ts";
 import { MobileLayout } from "./ui/mobile/MobileLayout.tsx";
 import { useIsMobile } from "./ui/mobile/useIsMobile.ts";
 import { cn } from "./ui/cn.ts";
@@ -43,10 +44,16 @@ import { cn } from "./ui/cn.ts";
  */
 export function WorkspaceShell() {
   const settingsOpen = useShell((s) => s.settingsOpen);
-  const historyModal = useShell((s) => s.historyModal);
-  const closeHistoryModal = useShell((s) => s.closeHistoryModal);
+  const activeUnitId = useWorkbench((s) => s.activeUnitId);
   const { isMobile, preference, setPreference } = useIsMobile();
   useEffect(() => bindShellShortcuts(), []);
+
+  // 切 bot 联动：右侧面板按当前 bot 过滤可见 tab（隐藏不销毁、记忆恢复聚焦）。
+  // 用 effect 而不是订阅回调 —— selectUnit 与 openTab 可能同帧相邻发生
+  //（CommandCenter 先切 bot 再开 tab），effect 保证按 render 顺序收敛到最终值。
+  useEffect(() => {
+    useSidePane.getState().handleUnitChange(activeUnitId);
+  }, [activeUnitId]);
 
   // 首载重挂：F5 后把 daemon 里还活着的终端进程找回成标签（带最近输出回放）。
   // 不找回的话那些 PTY 就是界面再也关不掉的孤儿进程。
@@ -67,11 +74,12 @@ export function WorkspaceShell() {
       {/* 左上浮层 —— 侧栏开关 / 新建任务（ZCode 的 DesktopTopOverlay）。
           悬浮在侧栏区域上方，侧栏收起后原地保留，主视图切换不消失 */}
       <DesktopTopOverlay />
-      {/* 侧栏 + 主对话流 —— 极简双栏布局 */}
+      {/* 侧栏 + 主对话流 + 右侧标签面板 —— ZCode 三列布局 */}
       <Group orientation="horizontal" id="workbench-shell">
         <SidebarSlot />
         <ResizeHandle />
         <ConversationSlot />
+        <SidePaneColumn />
       </Group>
 
       {/* 设置覆盖层 —— 对齐 ZCode 的 WorkspaceSettingsLayer：absolute inset-0 压在
@@ -86,15 +94,6 @@ export function WorkspaceShell() {
       <ProposalBanner />
 
       <CommandCenter />
-
-      {historyModal && (
-        <HistoryDialog
-          unitId={historyModal.unitId}
-          unitName={historyModal.unitName}
-          focusKey={historyModal.focusKey}
-          onClose={closeHistoryModal}
-        />
-      )}
     </div>
   );
 }

@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "typecheck": "tsc -b",
     "check:models": "node --experimental-strip-types scripts/check-models.ts",
-    "check": "pnpm check:models",
+    "check:sidepane": "node --experimental-strip-types scripts/check-sidepane.ts",
+    "check": "pnpm check:models && pnpm check:sidepane",
     "check:bridge": "node --experimental-strip-types scripts/check-daemon-bridge.ts",
     "check:git-names": "node --experimental-strip-types scripts/check-git-names.ts"
   },

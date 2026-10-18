@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { useWorkbench } from "../store/useWorkbench.ts";
 import { SETTINGS_GROUPS, SETTINGS_SECTIONS, useShell } from "../store/useShell.ts";
+import { useSidePane } from "../store/useSidePane.ts";
 import { useGit } from "../store/useGit.ts";
 import { fetchUnitHistory, type UnitHistoryEntry } from "../adapters/daemon/client.ts";
 import { useHistoryPrefs } from "../store/useHistoryPrefs.ts";
@@ -141,9 +142,11 @@ export function CommandCenter() {
         meta: h.launchMode === "terminal" ? "TUI" : "后台",
         run: () => {
           if (uId) {
+            // 先切 bot 再开 tab（ZCode handleSelectTaskInChat 模式）：历史 tab 归属
+            // 各自 bot，切过去面板才会显示它；点当前 bot 则只聚焦已开的 tab
             useWorkbench.getState().selectUnit(asUnitId(uId));
-            useShell.getState().openHistoryModal({
-              unitId: uId,
+            useSidePane.getState().openTab({
+              unitId: asUnitId(uId),
               unitName: uName,
               focusKey: h.key,
             });
