@@ -15,6 +15,10 @@
  *   {decision:"approved"|"denied"}；译成 permission.requested 走统一权限闸
  * - usage 口径（对齐契约）：billedInput = inputTokens + cacheWriteInputTokens
  * - 会话事实源：app-server 同样落 ~/.codex/sessions rollout（Phase 1 reader 直读）
+ * - **计划无线面**（2026-10-19 实测，0.162.x）：明确要求调用 update_plan 也不调，
+ *   原生帧无任何 plan/todoList item 类型 —— host.planTools 的清单映射对 codex
+ *   暂无输入。未来版本加了计划 item 时，未知类型有 debug 痕迹（见 item/started），
+ *   到时在此处映射即可。
  *
  * 一个 adapter 共享一个 app-server 子进程（codex 自己的 daemon 设计），
  * 进程死掉下一次请求自动重连 + 重初始化（thread 幂等 resume）。
@@ -608,6 +612,10 @@ export class CodexAdapter implements ExecutorAdapter {
             title: item.command ?? "shell",
             input: { command: item.command },
           });
+        } else if (item.type !== "userMessage" && item.type !== "agentMessage" && item.type !== "reasoning" && item.type !== "fileChange") {
+          // 计划映射（host.planTools）等着清单类 item 出现的那天：未知类型留
+          // debug 痕迹，新 codex 加了 plan/todoList item 时这里第一时间看见
+          log.debug("codex unhandled item type", { type: item.type, keys: Object.keys(item).join(",") });
         }
         break;
       }
@@ -671,6 +679,7 @@ export class CodexAdapter implements ExecutorAdapter {
         break;
       }
       default:
+        log.debug("codex unhandled notification", { method });
         break; // thread/started、thread/status/changed 等生命周期噪音，host 侧状态机不依赖
     }
   }
