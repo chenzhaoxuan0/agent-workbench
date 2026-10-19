@@ -634,8 +634,12 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
     // 切单元 = 切对话视图：时间线跟着换（ADR 0012 后时间线不再随开新段清空，
     // 单元边界成了唯一的显式清空点之一）。分叉意图指向旧单元的段，一并作废
     // （零持久化，用户在新单元里重新发起即可）。输入历史同口径清空 ——
-    // 历史属于这场对话（终端换 shell），不该带进另一个 bot 的输入框
-    set({ activeUnitId, activeSessionId: null, timeline: [], pendingFork: null, inputHistory: [] });
+    // 历史属于这场对话（终端换 shell），不该带进另一个 bot 的输入框。
+    // busy 必须跟着复位：它是「活跃会话在跑」的镜像，活跃会话都被切走了还
+    // 挂 true 的话，后续 session.status 事件找不到活跃会话、永远没人清它 ——
+    // openSession 门禁从此锁死，被切走的运行中对话也回不去（底栏条目点的
+    // 就是这条路）。运行状态本身由任务栏（useTaskbar）继续跟踪。
+    set({ activeUnitId, activeSessionId: null, timeline: [], pendingFork: null, inputHistory: [], busy: false });
     try {
       localStorage.setItem("agent-workbench:active-unit", activeUnitId);
     } catch {}
@@ -694,11 +698,13 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
   },
 
   addUnit: async (u, opts) => {
+    // busy 复位同 selectUnit：活跃会话被顶掉后没人会再清它（见那边注释）
     set((s) => ({
       units: [...s.units, u],
       activeUnitId: u.id,
       activeSessionId: null,
       timeline: [],
+      busy: false,
     }));
     // WP-5 写穿：落盘 <rootPath>/.agent-workbench/bot.json 与 <rootPath>/AGENTS.md。
     // 这里**不吞异常**——目录不存在（root_not_found）时侧栏会多一个刷新即逝的幽灵 bot，
@@ -798,13 +804,14 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
 
   selectRuntime: (activeRuntimeId) => {
     const s = get();
-    // ADR 0012 切换门禁（idle-only）：turn 进行中 / 等权限 / 等输入时切换，
-    // 上一段会被丢在半空。同执行器的重复选择不是切换，不受门禁。
+    // 切换门禁（见 runtimeSwitchBlocked，底栏上线后只剩「等回答」半边）：
+    // 对话在等裁决/等输入时切换，待决问题会脱离现场。同执行器的重复选择
+    // 不是切换，不受门禁。
     const prevId = s.activeRuntimeId;
     if (activeRuntimeId !== prevId && runtimeSwitchBlocked(s)) {
       get().pushNotice(
-        "先让这一轮落定再切换执行器",
-        "当前对话正在执行或等待裁决 —— 此时切换会把这一段丢在半空。",
+        "当前对话在等你回答",
+        "它处于待裁决 / 待输入状态 —— 先处理完再切换执行器，切换会把待决问题脱离现场。",
         { level: "warn" },
       );
       return false;
@@ -846,9 +853,10 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
   },
 
   openSession: async (input) => {
-    // 与切换执行器同一道门禁：正在跑的对话不该被打开历史会话顶掉
+    // 门禁只剩「等回答」半边（见 runtimeSwitchBlocked）：运行中的对话可以随时
+    // 被打开的会话顶掉 —— 它继续在 daemon 里跑，底栏条目跟踪着，随时切回
     if (runtimeSwitchBlocked(get())) {
-      get().pushNotice("先让当前这一轮落定", "正在执行或等待裁决时不能打开历史会话。", { level: "warn" });
+      get().pushNotice("当前对话在等你回答", "它处于待裁决 / 待输入状态 —— 先在对话里处理完，再打开别的会话。", { level: "warn" });
       return;
     }
     const unit = get().units.find((u) => u.id === input.unitId);
@@ -1658,13 +1666,16 @@ function mapTurnStatus(raw: string): SessionStatus {
 }
 
 /**
- * 执行器切换门禁（ADR 0012，idle-only）：活跃段正在执行 / 等裁决 / 等输入，或
- * 本轮 busy 未落定时禁止切换。RuntimePicker 与 ⌘K 两处入口共用这一份判定。
+ * 执行器/会话切换门禁（ADR 0012 原 idle-only；底栏任务栏上线后放宽）：
+ * 只拦「对话在等你回答」（awaiting_permission / awaiting_input）—— 那是当前
+ * 视图里挂着的问题，切走会把待决问题藏起来（底栏琥珀灯会提醒，但对话内的
+ * 裁决弹层/输入请求只有回到现场才能处理）。运行中不再拦：会话在 daemon 侧
+ * 继续跑，底栏条目跟踪它的状态，openSession 谱系回放随时可切回。
+ * RuntimePicker 与 ⌘K 两处入口共用这一份判定。
  */
-export function runtimeSwitchBlocked(s: { busy: boolean; activeSessionId: SessionId | null; sessions: readonly { id: SessionId; status: SessionStatus }[] }): boolean {
-  if (s.busy) return true;
+export function runtimeSwitchBlocked(s: { activeSessionId: SessionId | null; sessions: readonly { id: SessionId; status: SessionStatus }[] }): boolean {
   const active = s.activeSessionId !== null ? s.sessions.find((x) => x.id === s.activeSessionId) : undefined;
-  return active !== undefined && (active.status === "running" || active.status === "awaiting_permission" || active.status === "awaiting_input");
+  return active !== undefined && (active.status === "awaiting_permission" || active.status === "awaiting_input");
 }
 
 /** 归一化事件流消费循环 —— UI 唯一的数据入口。每适配器挂一次，跨轮次常驻。 */
@@ -1677,9 +1688,20 @@ function consumeEvents(adapter: RuntimeAdapter): void {
       // 已渲染且带附件 chips。窗口不匹配的用户轮（渠道发起、断线期间其他端的
       // 消息经 resync 补拉）照常渲染，不再全局丢弃（review P1）。
       if (event.type === "message.delta" && event.role === "user" && consumeEcho(event)) continue;
-      useWorkbench.setState((s) => ({
-        timeline: [...s.timeline, { id: ++seq, event, at: Date.now() }],
-      }));
+      useWorkbench.setState((s) => {
+        // 谱系过滤（底栏任务栏的配套）：时间线只收「活跃视图」的事件。规则：
+        // 台账已认识、又不是活跃会话的 → 丢弃（被切走的运行中对话不再把事件
+        // 灌进新视图 —— 它的流由任务栏 useTaskbar 跟踪，回来时 openSession 的
+        // 谱系回放整段重建，不丢数据）；台账不认识的 → 收（run() 的 fork/续聊
+        // 开新段流程在 startSession 的 await 期间就要靠泵实时入账，那时
+        // activeSessionId 还没翻过去，fork 落位的 fresh 过滤依赖这些行已在）。
+        if ("sessionId" in event) {
+          const sid = String(event.sessionId);
+          const isActive = s.activeSessionId !== null && String(s.activeSessionId) === sid;
+          if (!isActive && s.sessions.some((x) => String(x.id) === sid)) return {};
+        }
+        return { timeline: [...s.timeline, { id: ++seq, event, at: Date.now() }] };
+      });
       // 会话生命周期回写：status 变化 / ended → sessions[].status + busy
       if (event.type === "session.status") {
         const status = mapTurnStatus(event.status);

@@ -18,9 +18,11 @@ import {
   Trash2,
   Smartphone,
   Laptop,
+  PanelBottom,
 } from "lucide-react";
 import { useAppearance } from "../store/useAppearance.ts";
 import { useLayoutStore } from "./mobile/useIsMobile.ts";
+import { useShell as useShellState } from "../store/useShell.ts";
 import {
   APPEARANCE_PRESETS,
   contrastRatio,
@@ -68,6 +70,30 @@ function SectionCard({
       </div>
       <div className="p-5">{children}</div>
     </div>
+  );
+}
+
+/** 底栏锁定开关（SettingsPage.Toggle 同款视觉；本文件内联避免与其循环依赖） */
+function StatusBarLockSwitch({ on, onChange }: { on: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      aria-label="锁定底栏高度"
+      onClick={() => onChange(!on)}
+      className={cn(
+        "flex h-5 w-9 shrink-0 items-center rounded-full px-0.5 transition-colors",
+        on ? "bg-teal" : "bg-line-strong",
+      )}
+    >
+      <span
+        className={cn(
+          "block h-4 w-4 rounded-full bg-white transition-all",
+          on ? "translate-x-4" : "translate-x-0",
+        )}
+      />
+    </button>
   );
 }
 
@@ -242,6 +268,10 @@ export function AppearanceSettingsSection() {
   const setLayoutPref = useLayoutStore((s) => s.setPreference);
   const windowIsMobile = useLayoutStore((s) => s.windowIsMobile);
 
+  const statusBarHeight = useShellState((s) => s.statusBarHeight);
+  const statusBarLocked = useShellState((s) => s.statusBarLocked);
+  const setStatusBarLocked = useShellState((s) => s.setStatusBarLocked);
+
   const { mode, resolvedAppearance, activeProfile, art, wallpaper, presetId } = store;
   const followsTheme = activeProfile.transparency === null;
   // 跟随默认的显示值按有无壁纸分档：无壁纸 0%（不透明），有壁纸 30%（否则壁纸被盖住）
@@ -412,6 +442,25 @@ export function AppearanceSettingsSection() {
           当前硬件检测为：{windowIsMobile ? "移动端（窄屏或触屏设备）" : "桌面端（宽屏桌面设备）"}。
           若在手机上切换到了「电脑视图」，可随时在顶部标题栏点击「📱 切回手机视图」返回。
         </p>
+      </SectionCard>
+
+      {/* ---------------------------------------------------- 底栏（任务栏） */}
+      <SectionCard
+        icon={<PanelBottom size={16} />}
+        title="底栏（任务栏）"
+        desc="折叠对话停靠的地方。高度可锁（任务栏锁定语义）：锁定时固定不可拖拽，默认锁定在最薄一档 28px。"
+      >
+        <div className="flex items-center justify-between gap-4">
+          <div className="min-w-0">
+            <p className="text-body-sm font-medium text-ink">锁定底栏高度</p>
+            <p className="mt-0.5 text-caption leading-relaxed text-ash">
+              {statusBarLocked
+                ? `已锁定在当前高度（${statusBarHeight}px）。解锁后可拖动底栏上缘调整。`
+                : "未锁定：拖动底栏上缘可在 28–44px 间调整（拉高显示任务详情行），双击手柄复位最薄档。"}
+            </p>
+          </div>
+          <StatusBarLockSwitch on={statusBarLocked} onChange={setStatusBarLocked} />
+        </div>
       </SectionCard>
 
       {/* ---------------------------------------------------- 配色 */}

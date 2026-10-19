@@ -420,7 +420,7 @@ function SwitchHintCopy() {
   const handoffOn = useWorkbench((s) => s.handoffOnSwitch);
   const setHandoffOn = useWorkbench((s) => s.setHandoffOnSwitch);
   if (blocked) {
-    return <p className="text-caption text-amber-600">本轮进行中 —— 落定后才能切换执行器</p>;
+    return <p className="text-caption text-amber-600">当前对话在等你回答（待裁决 / 待输入）—— 处理后才能切换执行器</p>;
   }
   if (hasActiveSegment) {
     return (

@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type ComponentType } from "react";
-import { Check, ChevronDown, FolderOpen, Smartphone, X } from "lucide-react";
+import { Check, ChevronDown, FolderOpen, PanelBottom, Smartphone, X } from "lucide-react";
 import { useShell } from "../store/useShell.ts";
 import { useWorkbench, selectActiveUnit } from "../store/useWorkbench.ts";
+import { useTaskbar } from "../store/useTaskbar.ts";
 import { useSidePane } from "../store/useSidePane.ts";
 import { sidePaneOccupies } from "../core/sidePaneTabs.ts";
 import { listEditors, openInEditor, type DaemonEditorInfo } from "../adapters/daemon/client.ts";
@@ -26,6 +27,7 @@ import { cn } from "./cn.ts";
  */
 export function WorkspaceHeader() {
   const sidebarCollapsed = useShell((s) => s.sidebarCollapsed);
+  const activeSessionId = useWorkbench((s) => s.activeSessionId);
 
   const { preference, setPreference, windowIsMobile } = useIsMobile();
   const unit = useWorkbench(selectActiveUnit);
@@ -100,6 +102,20 @@ export function WorkspaceHeader() {
             <Smartphone size={13} />
             <span className="hidden xs:inline">切回手机视图</span>
             <span className="xs:hidden">手机</span>
+          </button>
+        )}
+
+        {/* 折叠对话到底栏（任务栏最小化的对位）：有活跃会话才出现。折叠后对话列
+            回到空白态可开新对话，被折叠的会话停靠在底栏（运行中则任务转后台
+            跟踪），点底栏条目随时切回 —— 时间线由 openSession 谱系回放重建 */}
+        {activeSessionId !== null && (
+          <button
+            onClick={() => useTaskbar.getState().minimize()}
+            aria-label="折叠对话到底栏"
+            title="折叠当前对话到底栏（最小化，任何状态可用）：运行中的任务转后台继续、空闲对话停靠为「已折叠」，对话列回到空白可开新对话；从底栏条目随时点回"
+            className="flex h-7 w-7 items-center justify-center rounded-btn text-graphite transition hover:bg-line-soft hover:text-ink"
+          >
+            <PanelBottom size={13} />
           </button>
         )}
 
