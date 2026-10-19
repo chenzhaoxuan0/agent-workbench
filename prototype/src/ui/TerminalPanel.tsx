@@ -27,6 +27,7 @@ import { useAppearance } from "../store/useAppearance.ts";
 import { dispatchTerminal } from "../adapters/daemon/client.ts";
 import { useIsMobile } from "./mobile/useIsMobile.ts";
 import { cn } from "./cn.ts";
+import { QuickContextMenu, quickMenuFromEvent, type QuickMenuState } from "./QuickContextMenu.tsx";
 
 export function TerminalPanel({
   variant = "dock",
@@ -60,6 +61,8 @@ export function TerminalPanel({
     createTab,
     splitPane,
     closeTab,
+    closeOtherTabs,
+    closeAllTabs,
     setActiveGroup,
     setActiveInstance,
     toggleMaximize,
@@ -67,6 +70,8 @@ export function TerminalPanel({
 
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+  // 标签右键三件套（ZCode SidePaneTabTrigger 同款）
+  const [tabMenu, setTabMenu] = useState<QuickMenuState | null>(null);
 
   // 当前 bot 绑定的默认执行器（bindings.primary 优先；旧数据的裸 id 修复到注册表
   // 命名空间；绑定的执行器已不存在时回落全局默认）。没有 bot 绑定时跟随全局默认。
@@ -286,6 +291,25 @@ export function TerminalPanel({
               <div
                 key={group.id}
                 onClick={() => setActiveGroup(group.id)}
+                onContextMenu={(e) =>
+                  setTabMenu(
+                    quickMenuFromEvent(e, [
+                      { label: "关闭", icon: X, onSelect: () => closeTab(group.id) },
+                      {
+                        label: "关闭其它",
+                        icon: X,
+                        disabled: groups.filter((g) => g.id !== group.id).length === 0,
+                        onSelect: () => closeOtherTabs(group.id),
+                      },
+                      {
+                        label: "关闭全部",
+                        icon: X,
+                        disabled: groups.length === 0,
+                        onSelect: () => closeAllTabs(),
+                      },
+                    ]),
+                  )
+                }
                 className={cn(
                   "group relative flex h-7 items-center gap-1.5 rounded font-mono cursor-pointer transition select-none shrink-0",
                   isMobile
@@ -642,6 +666,7 @@ export function TerminalPanel({
           />
         </div>
       ) : null}
+      <QuickContextMenu menu={tabMenu} onClose={() => setTabMenu(null)} />
     </div>
   );
 }

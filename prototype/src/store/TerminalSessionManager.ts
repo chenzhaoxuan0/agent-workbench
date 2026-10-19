@@ -521,6 +521,36 @@ export class TerminalSession {
     this.term.focus();
   }
 
+  /** 右键菜单用：xterm 选区在 canvas 内部，Electron 原生菜单拿不到 */
+  hasSelection(): boolean {
+    return this.term.hasSelection();
+  }
+
+  /** 复制 xterm 选区到系统剪贴板（成功后清选区，对齐系统手感） */
+  async copySelection(): Promise<boolean> {
+    const text = this.term.getSelection();
+    if (!text) return false;
+    try {
+      await navigator.clipboard.writeText(text);
+      this.term.clearSelection();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** 粘贴：读系统剪贴板并作为键盘输入注入（与手动 Ctrl+V 同一通道） */
+  async pasteFromClipboard(): Promise<boolean> {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (!text) return false;
+      this.sendData(text);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   sendData(data: string): void {
     const client = DaemonClient.get(defaultDaemonEndpoint());
     void client

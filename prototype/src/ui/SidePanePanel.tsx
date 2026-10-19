@@ -11,6 +11,7 @@ import { LiveSessionPane } from "./LiveSessionPane.tsx";
 import { PlanPane } from "./PlanPane.tsx";
 import { DiffPane } from "./DiffPane.tsx";
 import { cn } from "./cn.ts";
+import { QuickContextMenu, quickMenuFromEvent, type QuickMenuState } from "./QuickContextMenu.tsx";
 
 /**
  * 右侧标签页面板 —— 工作台第三列（对齐 ZCode 的 AnimatedSidePanePanel，按本产品体量裁剪）。
@@ -155,7 +156,33 @@ function SidePanePanelBody({
   const tabs = useSidePane((s) => s.tabs);
   const activateTab = useSidePane((s) => s.activateTab);
   const closeTab = useSidePane((s) => s.closeTab);
+  const closeOtherTabs = useSidePane((s) => s.closeOtherTabs);
+  const closeVisibleTabs = useSidePane((s) => s.closeVisibleTabs);
   const visibleActiveTabId = visibleTabs.some((tab) => tab.id === activeTabId) ? activeTabId : "";
+  // tab 右键三件套（ZCode SidePaneTabTrigger 同款）：关闭 / 关闭其它 / 关闭全部
+  const [tabMenu, setTabMenu] = useState<QuickMenuState | null>(null);
+  const openTabMenu = useCallback(
+    (e: React.MouseEvent, tabId: string) => {
+      setTabMenu(
+        quickMenuFromEvent(e, [
+          { label: "关闭", icon: X, onSelect: () => closeTab(tabId) },
+          {
+            label: "关闭其它",
+            icon: X,
+            disabled: visibleTabs.filter((t) => t.id !== tabId).length === 0,
+            onSelect: () => closeOtherTabs(tabId),
+          },
+          {
+            label: "关闭全部",
+            icon: X,
+            disabled: visibleTabs.length === 0,
+            onSelect: () => closeVisibleTabs(),
+          },
+        ]),
+      );
+    },
+    [closeTab, closeOtherTabs, closeVisibleTabs, visibleTabs],
+  );
 
   return (
     <div className="flex h-full min-h-0 flex-col border-l border-line bg-card">
@@ -179,6 +206,7 @@ function SidePanePanelBody({
                 aria-selected={active}
                 tabIndex={0}
                 onClick={() => activateTab(tab.id)}
+                onContextMenu={(e) => openTabMenu(e, tab.id)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" || e.key === " ") activateTab(tab.id);
                 }}
@@ -240,6 +268,7 @@ function SidePanePanelBody({
           无可见 tab（或聚焦缺失）时落功能主页 —— 面板展开永远有东西可点。
           状态徽标（工作中 / 后台守护）已迁左侧栏底部，移动端远控已迁设置页
           remoteControl 分区 —— 面板底部不再有状态条 */}
+      <QuickContextMenu menu={tabMenu} onClose={() => setTabMenu(null)} />
       <div className="relative min-h-0 flex-1">
         {visibleActiveTabId === "" && <SidePaneHome />}
         {tabs.map((tab) => {

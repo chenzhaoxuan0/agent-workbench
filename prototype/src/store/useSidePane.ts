@@ -62,6 +62,10 @@ interface SidePaneStore extends sidePane.SidePaneState {
   openPlan: (request: sidePane.OpenUnitTabRequest) => void;
   openDiff: (request: sidePane.OpenUnitTabRequest) => void;
   closeTab: (tabId: string) => void;
+  /** tab 右键：关闭除该 tab 外的可见 tab（其它 bot 的隐藏 tab 保活） */
+  closeOtherTabs: (tabId: string) => void;
+  /** tab 右键：关闭当前视角全部可见 tab */
+  closeVisibleTabs: () => void;
   activateTab: (tabId: string) => void;
   toggleCollapsed: () => void;
   setPaneWidth: (w: number) => void;
@@ -121,6 +125,10 @@ export const useSidePane = create<SidePaneStore>((set, get) => ({
     }),
 
   closeTab: (tabId) => set((s) => sidePane.closeTab(s, tabId, s.scopeUnitId)),
+
+  closeOtherTabs: (tabId) => set((s) => sidePane.closeOtherTabs(s, tabId, s.scopeUnitId)),
+
+  closeVisibleTabs: () => set((s) => sidePane.closeVisibleTabs(s, s.scopeUnitId)),
 
   activateTab: (tabId) => set((s) => sidePane.activateTab(s, tabId)),
 

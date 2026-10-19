@@ -7,8 +7,11 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  Code2,
+  Copy,
   FileCode,
   FileDiff,
+  FolderOpen,
   GitBranch,
   Package,
   PencilLine,
@@ -24,11 +27,13 @@ import type { RuntimeEvent } from "../core/events.ts";
 import { SESSION_SOURCE_LABEL } from "../core/units.ts";
 import { useWorkbench, selectActiveUnit } from "../store/useWorkbench.ts";
 import { useAppearance } from "../store/useAppearance.ts";
+import { openInEditor } from "../adapters/daemon/client.ts";
 import { botAvatarStyle } from "./Sidebar.tsx";
 import { MarkdownContent } from "./MarkdownContent.tsx";
 import { AttachmentsBar } from "./AttachmentsBar.tsx";
 import type { ChatAttachment } from "../core/attachments.ts";
 import { SessionReadinessBadge } from "./SessionReadinessBadge.tsx";
+import { QuickContextMenu, quickMenuFromEvent, type QuickMenuState } from "./QuickContextMenu.tsx";
 import { cn } from "./cn.ts";
 
 /**
@@ -659,6 +664,61 @@ function UserMessageBubble({
   );
 }
 
+/**
+ * 文件改动 chip —— 右键：复制路径 / 复制完整路径 / 资源管理器定位（父目录，
+ * ZCode「文件→打开所在目录」语义，避免 explorer 直接用默认应用打开文件）/
+ * 用 VS Code 打开。path 是执行器口径（多为相对 bot 根），相对时拼 rootPath。
+ */
+function FileDiffRow({ data }: { data: { path: string; additions: number; deletions: number } }) {
+  const unit = useWorkbench(selectActiveUnit);
+  const [menu, setMenu] = useState<QuickMenuState | null>(null);
+  const rootPath = unit?.rootPath ?? "";
+  const isAbsolute = /^[a-zA-Z]:[\\/]/.test(data.path) || data.path.startsWith("\\\\") || data.path.startsWith("/");
+  const absPath =
+    isAbsolute || !rootPath
+      ? data.path
+      : `${rootPath.replace(/[\\/]+$/, "")}/${data.path.replace(/^[\\/]+/, "")}`;
+  const parentDir = absPath.replace(/[\\/][^\\/]*$/, "") || absPath;
+  const copy = (text: string): void => {
+    void navigator.clipboard.writeText(text).catch(() => {});
+  };
+
+  return (
+    <div
+      onContextMenu={(e) =>
+        setMenu(
+          quickMenuFromEvent(e, [
+            { label: "复制路径", icon: Copy, onSelect: () => copy(data.path) },
+            ...(isAbsolute
+              ? []
+              : [{ label: "复制完整路径", icon: Copy, onSelect: () => copy(absPath) }]),
+            { separator: true },
+            {
+              label: "在资源管理器中打开",
+              icon: FolderOpen,
+              onSelect: () => void openInEditor({ path: parentDir, editorId: "explorer" }),
+            },
+            {
+              label: "用 VS Code 打开",
+              icon: Code2,
+              onSelect: () => void openInEditor({ path: absPath, editorId: "vscode" }),
+            },
+          ]),
+        )
+      }
+      className="rounded-card bg-card px-4 py-3 shadow-subtle flex items-center gap-2 border border-line/60"
+    >
+      <FileDiff size={14} className="shrink-0 text-graphite" />
+      <span className="truncate font-mono text-body-sm text-ink">{data.path}</span>
+      <span className="tnum ml-auto shrink-0 font-mono text-caption">
+        <span className="text-gain">+{data.additions}</span>{" "}
+        <span className="text-loss">−{data.deletions}</span>
+      </span>
+      <QuickContextMenu menu={menu} onClose={() => setMenu(null)} />
+    </div>
+  );
+}
+
 function TimelineItemRow({
   item,
   unitName,
@@ -667,8 +727,7 @@ function TimelineItemRow({
 }: {
   item: GroupedItem;
   unitName: string;
-  busy: boolean;
-  lastUserTurnId: string | number | undefined;
+  busy: boolean;  lastUserTurnId: string | number | undefined;
 }) {
   switch (item.kind) {
     case "session.start":
@@ -749,16 +808,7 @@ function TimelineItemRow({
       );
 
     case "file.diff":
-      return (
-        <div className="rounded-card bg-card px-4 py-3 shadow-subtle flex items-center gap-2 border border-line/60">
-          <FileDiff size={14} className="shrink-0 text-graphite" />
-          <span className="truncate font-mono text-body-sm text-ink">{item.data.path}</span>
-          <span className="tnum ml-auto shrink-0 font-mono text-caption">
-            <span className="text-gain">+{item.data.additions}</span>{" "}
-            <span className="text-loss">−{item.data.deletions}</span>
-          </span>
-        </div>
-      );
+      return <FileDiffRow data={item.data} />;
 
     case "deliverable":
       return (

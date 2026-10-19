@@ -1,8 +1,9 @@
 import { useState } from "react";
-import { ChevronDown, ChevronRight, Loader2, Minus, Plus } from "lucide-react";
+import { ChevronDown, ChevronRight, Code2, Copy, FolderOpen, Loader2, Minus, Plus } from "lucide-react";
 import type { GitChangeEntry, GitDiffResult } from "../../core/git.ts";
-import { fetchGitDiff } from "../../adapters/daemon/client.ts";
+import { fetchGitDiff, openInEditor } from "../../adapters/daemon/client.ts";
 import { cn } from "../cn.ts";
+import { QuickContextMenu, quickMenuFromEvent, type QuickMenuState } from "../QuickContextMenu.tsx";
 import { ChangeDiffView } from "./ChangeDiffView.tsx";
 
 /**
@@ -84,9 +85,16 @@ function ChangeFileRow(props: {
   const [diff, setDiff] = useState<GitDiffResult | null>(null);
   const [diffError, setDiffError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  // 行右键：复制路径 / 定位 / 编辑器打开（ZCode GitPaneChangeCard 同款，提交
+  // 对话框与源码管理页共用本渲染，一处加两处生效）
+  const [menu, setMenu] = useState<QuickMenuState | null>(null);
 
   // 未跟踪目录条目（dist/）没有可比对的内容，展开没意义
   const expandable = !entry.path.endsWith("/");
+  const isDirEntry = entry.path.endsWith("/");
+  const absPath = `${props.rootPath.replace(/[\\/]+$/, "")}/${entry.path}`;
+  /** 目录条目开自身；文件条目开父目录（explorer 收到文件路径会用默认应用打开） */
+  const revealPath = isDirEntry ? absPath : absPath.replace(/[\\/][^\\/]*$/, "") || absPath;
 
   async function fetchDiff(): Promise<void> {
     setLoading(true);
@@ -116,7 +124,36 @@ function ChangeFileRow(props: {
 
   return (
     <div className="border-b border-line-soft last:border-b-0">
-      <div className="flex items-center gap-1 px-2 py-1 hover:bg-line-soft/50">
+      <div
+        className="flex items-center gap-1 px-2 py-1 hover:bg-line-soft/50"
+        onContextMenu={(e) =>
+          setMenu(
+            quickMenuFromEvent(e, [
+              {
+                label: "复制路径",
+                icon: Copy,
+                onSelect: () => void navigator.clipboard.writeText(entry.path).catch(() => {}),
+              },
+              {
+                label: "复制完整路径",
+                icon: Copy,
+                onSelect: () => void navigator.clipboard.writeText(absPath).catch(() => {}),
+              },
+              { separator: true },
+              {
+                label: "在资源管理器中打开",
+                icon: FolderOpen,
+                onSelect: () => void openInEditor({ path: revealPath, editorId: "explorer" }),
+              },
+              {
+                label: "用 VS Code 打开",
+                icon: Code2,
+                onSelect: () => void openInEditor({ path: absPath, editorId: "vscode" }),
+              },
+            ]),
+          )
+        }
+      >
         <button
           type="button"
           onClick={() => void toggle()}
@@ -188,6 +225,7 @@ function ChangeFileRow(props: {
           )}
         </div>
       )}
+      <QuickContextMenu menu={menu} onClose={() => setMenu(null)} />
     </div>
   );
 }

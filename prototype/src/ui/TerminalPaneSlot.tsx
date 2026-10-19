@@ -23,6 +23,8 @@ import { useAppearance } from "../store/useAppearance.ts";
 import { useShell } from "../store/useShell.ts";
 import { cn } from "./cn.ts";
 import { executorIconSrc } from "./executorIcon.ts";
+import { QuickContextMenu } from "./QuickContextMenu.tsx";
+import { useTerminalContextMenu } from "./terminalContextMenu.ts";
 
 export function ShellOrAgentIcon({
   icon,
@@ -88,6 +90,9 @@ export const TerminalPaneSlot = memo(function TerminalPaneSlot({
   const resolvedTheme = useAppearance((s) => s.resolvedAppearance);
   const terminalTransparency = useAppearance((s) => s.activeProfile.terminalTransparency);
   const settingsOpen = useShell((s) => s.settingsOpen);
+  // 终端右键：复制（xterm canvas 选区）/ 粘贴 —— 原生文本菜单对终端无效
+  const { menu: ctxMenu, onContextMenu: onTerminalContextMenu, closeMenu } =
+    useTerminalContextMenu(inst.id);
 
   const isActive = inst.id === activeInstanceId;
   const isMaximized = inst.id === maximizedInstanceId;
@@ -220,8 +225,10 @@ export const TerminalPaneSlot = memo(function TerminalPaneSlot({
       {/* xterm 实体挂载容器 */}
       <div
         ref={mountRef}
+        onContextMenu={onTerminalContextMenu}
         className="min-h-0 min-w-0 flex-1 overflow-hidden relative"
       />
+      <QuickContextMenu menu={ctxMenu} onClose={closeMenu} />
     </div>
   );
 });

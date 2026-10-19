@@ -235,6 +235,37 @@ export function activateTab(state: SidePaneState, tabId: string): SidePaneState 
   return { ...state, activeTabId: tabId };
 }
 
+/**
+ * 关闭「除 keepTabId 外的可见 tab」（ZCode closeOtherTabs 语义）：只动当前
+ * 视角看得见的，其它 bot 的隐藏 tab 原样保活。keepTabId 保持激活。
+ */
+export function closeOtherTabs(
+  state: SidePaneState,
+  keepTabId: string,
+  scopeUnitId?: UnitId | null,
+): SidePaneState {
+  if (!state.tabs.some((tab) => tab.id === keepTabId)) return state;
+  const visible =
+    scopeUnitId === undefined || scopeUnitId === null
+      ? state.tabs
+      : visibleTabsForUnit(state.tabs, scopeUnitId);
+  const kill = new Set(visible.filter((tab) => tab.id !== keepTabId).map((tab) => tab.id));
+  if (kill.size === 0) return state;
+  return { tabs: state.tabs.filter((tab) => !kill.has(tab.id)), activeTabId: keepTabId };
+}
+
+/** 关闭当前视角的全部可见 tab（其它 bot 的隐藏 tab 保活）；全关后聚焦归空落功能主页 */
+export function closeVisibleTabs(state: SidePaneState, scopeUnitId?: UnitId | null): SidePaneState {
+  const visible =
+    scopeUnitId === undefined || scopeUnitId === null
+      ? state.tabs
+      : visibleTabsForUnit(state.tabs, scopeUnitId);
+  if (visible.length === 0) return state;
+  const kill = new Set(visible.map((tab) => tab.id));
+  const tabs = state.tabs.filter((tab) => !kill.has(tab.id));
+  return { tabs, activeTabId: tabs.some((tab) => tab.id === state.activeTabId) ? state.activeTabId : "" };
+}
+
 // ---------------------------------------------------------------------------
 // bot 作用域
 // ---------------------------------------------------------------------------

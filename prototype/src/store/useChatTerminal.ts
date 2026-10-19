@@ -132,6 +132,10 @@ interface ChatTerminalState {
   addTab: (cwdLeaf: string) => void;
   /** 标签上的 ×：非末签杀 PTY 并激活相邻；末签只收面板（ZCode 同款保活语义） */
   closeTab: (id: string) => void;
+  /** 标签右键：保留该标签，杀掉其余全部并激活保留者 */
+  closeOtherTabs: (keepId: string) => void;
+  /** 标签右键：杀掉全部终端、清空标签并收起面板 */
+  closeAllTabs: () => void;
   /** PTY 自退：移除标签；末签自退连面板一起收（ZCode exitTerminalSession 同款） */
   removeExitedTab: (id: string) => void;
   setActiveTab: (id: string) => void;
@@ -202,6 +206,26 @@ export const useChatTerminal = create<ChatTerminalState>((set, get) => ({
     const nextActive = activeTabId === id ? fallback.id : activeTabId;
     set({ tabs: next, activeTabId: nextActive });
     persistTabs(next, nextActive);
+  },
+
+  // tab 右键三件套（ZCode SidePaneTabTrigger 同款）。与单签 closeTab 的「末签
+  // 保活」不同：批量关闭是显式的杀进程语义，dispose 全部目标会话。
+  closeOtherTabs: (keepId) => {
+    const { tabs } = get();
+    if (!tabs.some((t) => t.id === keepId) || tabs.length <= 1) return;
+    for (const t of tabs) {
+      if (t.id !== keepId) terminalSessionRegistry.dispose(t.id);
+    }
+    set({ tabs: tabs.filter((t) => t.id === keepId), activeTabId: keepId });
+    persistTabs([tabs.find((t) => t.id === keepId)!], keepId);
+  },
+
+  closeAllTabs: () => {
+    if (get().tabs.length === 0) return;
+    for (const t of get().tabs) terminalSessionRegistry.dispose(t.id);
+    clearTabs();
+    // 清空后空面板没有内容：连同面板一起收（重开时懒建第 1 个标签）
+    set({ tabs: [], activeTabId: null, open: false });
   },
 
   removeExitedTab: (id) => {

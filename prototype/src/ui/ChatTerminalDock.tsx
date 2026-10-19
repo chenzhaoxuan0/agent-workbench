@@ -16,6 +16,8 @@ import { useAppearance } from "../store/useAppearance.ts";
 import { useIsMobile } from "./mobile/useIsMobile.ts";
 import { MobileVirtualKeyBar } from "./mobile/MobileVirtualKeyBar.tsx";
 import { cn } from "./cn.ts";
+import { QuickContextMenu, quickMenuFromEvent, type QuickMenuState } from "./QuickContextMenu.tsx";
+import { useTerminalContextMenu } from "./terminalContextMenu.ts";
 
 /**
  * 对话页小终端 —— Composer 下方带标签页的快捷终端（Composer 工具栏按钮唤起）。
@@ -35,6 +37,11 @@ export function ChatTerminalDock() {
   const tabs = useChatTerminal((s) => s.tabs);
   const activeTabId = useChatTerminal((s) => s.activeTabId);
   const resolvedTheme = useAppearance((s) => s.resolvedAppearance);
+  // 终端右键：复制（xterm canvas 选区）/ 粘贴 —— 原生文本菜单对终端无效
+  const { menu: ctxMenu, onContextMenu: onTerminalContextMenu, closeMenu } =
+    useTerminalContextMenu(activeTabId ?? tabs[0]?.id);
+  // tab 右键三件套的菜单 state（与终端右键共用 QuickContextMenu 渲染位）
+  const [tabMenu, setTabMenu] = useState<QuickMenuState | null>(null);
 
   const profile = chatTerminalProfile(profileId);
   const mountRef = useRef<HTMLDivElement>(null);
@@ -223,6 +230,26 @@ export function ChatTerminalDock() {
               <div
                 key={tab.id}
                 onClick={() => useChatTerminal.getState().setActiveTab(tab.id)}
+                onContextMenu={(e) => {
+                  // tab 右键三件套（ZCode SidePaneTabTrigger 同款）
+                  setTabMenu(
+                    quickMenuFromEvent(e, [
+                      { label: "关闭", icon: X, onSelect: () => useChatTerminal.getState().closeTab(tab.id) },
+                      {
+                        label: "关闭其它",
+                        icon: X,
+                        disabled: tabs.filter((t) => t.id !== tab.id).length === 0,
+                        onSelect: () => useChatTerminal.getState().closeOtherTabs(tab.id),
+                      },
+                      {
+                        label: "关闭全部",
+                        icon: X,
+                        disabled: tabs.length === 0,
+                        onSelect: () => useChatTerminal.getState().closeAllTabs(),
+                      },
+                    ]),
+                  );
+                }}
                 className={cn(
                   "group relative inline-flex h-7 w-auto max-w-36 min-w-0 flex-none shrink-0 cursor-default items-center gap-1 overflow-hidden whitespace-nowrap rounded-lg pl-2 pr-1 text-xs font-medium transition-colors",
                   isActive
@@ -274,7 +301,12 @@ export function ChatTerminalDock() {
       </div>
 
       {/* xterm 挂载点：激活标签的 TerminalSession 常驻 DOM 直接 append 进来 */}
-      <div ref={mountRef} className="min-h-0 flex-1 overflow-hidden relative" />
+      <div
+        ref={mountRef}
+        onContextMenu={onTerminalContextMenu}
+        className="min-h-0 flex-1 overflow-hidden relative"
+      />
+      <QuickContextMenu menu={ctxMenu ?? tabMenu} onClose={() => { closeMenu(); setTabMenu(null); }} />
 
       {/* 移动端专属虚拟辅助按键栏（形式参照 Termux） */}
       {isMobile && <MobileVirtualKeyBar target="chat" />}

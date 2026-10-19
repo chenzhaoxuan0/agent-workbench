@@ -171,6 +171,12 @@ interface TerminalStoreState {
   /** 关闭整个标签页组 */
   closeTab: (groupId: string) => void;
 
+  /** 标签右键：保留该组，杀掉其余全部（含各组分屏窗格）并激活保留组 */
+  closeOtherTabs: (keepGroupId: string) => void;
+
+  /** 标签右键：杀掉全部终端、清空所有标签组 */
+  closeAllTabs: () => void;
+
   /** 设置当前活跃标签组 */
   setActiveGroup: (groupId: string) => void;
 
@@ -533,6 +539,40 @@ export const useTerminalStore = create<TerminalStoreState>((set, get) => ({
     set({
       activeGroupId: groupId,
       activeInstanceId: leaves[0] ?? null,
+      maximizedInstanceId: null,
+    });
+  },
+
+  // tab 右键三件套（ZCode SidePaneTabTrigger 同款）—— 批量关闭是显式杀进程语义
+  closeOtherTabs: (keepGroupId) => {
+    const { groups } = get();
+    const keep = groups.find((g) => g.id === keepGroupId);
+    if (!keep || groups.length <= 1) return;
+    for (const g of groups) {
+      if (g.id === keepGroupId) continue;
+      for (const id of collectLeafIds(g.rootLayout)) terminalSessionRegistry.dispose(id);
+    }
+    const keepLeaves = collectLeafIds(keep.rootLayout);
+    set((state) => ({
+      groups: state.groups.filter((g) => g.id === keepGroupId),
+      instances: state.instances.filter((i) => keepLeaves.includes(i.id)),
+      activeGroupId: keepGroupId,
+      activeInstanceId: keepLeaves[0] ?? null,
+      maximizedInstanceId: null,
+    }));
+  },
+
+  closeAllTabs: () => {
+    const { groups } = get();
+    if (groups.length === 0) return;
+    for (const g of groups) {
+      for (const id of collectLeafIds(g.rootLayout)) terminalSessionRegistry.dispose(id);
+    }
+    set({
+      groups: [],
+      instances: [],
+      activeGroupId: null,
+      activeInstanceId: null,
       maximizedInstanceId: null,
     });
   },
