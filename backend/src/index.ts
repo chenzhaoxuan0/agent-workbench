@@ -2977,14 +2977,21 @@ registerMethod("session.events.since", async (params) => {
   if (typeof p.sessionId !== "string") throw Object.assign(new Error("sessionId is required"), { code: "bad_params" });
   const afterSeq = typeof p.afterSeq === "number" ? p.afterSeq : 0;
   const hot = host.hotEventsSince(asSessionId(p.sessionId), afterSeq);
-  const parseLedger = (nd: string): Array<{ seq: number; at: number; event: unknown }> =>
-    nd
-      .split("\n")
-      .filter((l) => l !== "")
-      .map((l) => {
+  const parseLedger = (nd: string): Array<{ seq: number; at: number; event: unknown }> => {
+    const out: Array<{ seq: number; at: number; event: unknown }> = [];
+    for (const l of nd.split("\n")) {
+      if (l === "") continue;
+      try {
         const r = JSON.parse(l) as { seq: number; at?: number; event: unknown };
-        return { seq: r.seq, at: r.at ?? 0, event: r.event };
-      });
+        if (typeof r.seq === "number" && r.event !== undefined) {
+          out.push({ seq: r.seq, at: r.at ?? 0, event: r.event });
+        }
+      } catch {
+        // 坏行跳过：账本容错读（半刷行/截断行不崩 RPC）
+      }
+    }
+    return out;
+  };
   if (afterSeq === 0) {
     // 全量重建（openSession / 换代重拉，review P0）：以落盘账本为准 —— 热环只
     // 保留最近 500 条，直接吃环会静默截断长对话；trace append 是异步的，

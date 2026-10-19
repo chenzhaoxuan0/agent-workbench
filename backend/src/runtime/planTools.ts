@@ -45,8 +45,25 @@ function normalizeStatus(raw: unknown): PlanStepStatus {
   return "pending";
 }
 
-/** 从工具 input 里找清单数组：各家键名不同（todos/plan/steps/items/entries） */
-function findList(input: unknown): readonly unknown[] | null {
+/** 从工具 input 里找清单数组：各家键名不同（todos/plan/steps/items/entries），兼容直接数组与 JSON 字符串 */
+function findList(rawInput: unknown): readonly unknown[] | null {
+  let input = rawInput;
+  if (typeof input === "string") {
+    const trimmed = input.trim();
+    if (
+      (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+      (trimmed.startsWith("[") && trimmed.endsWith("]"))
+    ) {
+      try {
+        input = JSON.parse(trimmed);
+      } catch {
+        return null;
+      }
+    } else {
+      return null;
+    }
+  }
+  if (Array.isArray(input)) return input;
   if (input === null || typeof input !== "object") return null;
   const rec = input as Record<string, unknown>;
   for (const key of ["todos", "plan", "steps", "items", "entries"]) {

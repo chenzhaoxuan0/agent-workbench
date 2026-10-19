@@ -208,7 +208,15 @@ export function LiveSessionPane({
       .rpc<Array<{ seq: number; event: RuntimeEvent }> | null>("session.events.since", { sessionId, afterSeq: 0 }, 20000)
       .then((items) => {
         if (!alive) return;
-        const merged = [...(items ?? []), ...stash].sort((a, b) => a.seq - b.seq);
+        replayInFlight = false;
+        const bySeq = new Map<number, { seq: number; event: RuntimeEvent }>();
+        for (const it of items ?? []) {
+          bySeq.set(it.seq, it);
+        }
+        for (const it of stash) {
+          bySeq.set(it.seq, it);
+        }
+        const merged = Array.from(bySeq.values()).sort((a, b) => a.seq - b.seq);
         let next: readonly Row[] = [];
         for (const it of merged) {
           if (it.seq > seqRef.current) seqRef.current = it.seq;
@@ -219,10 +227,10 @@ export function LiveSessionPane({
       })
       .catch((err: unknown) => {
         if (!alive) return;
+        replayInFlight = false;
         setError(err instanceof Error ? err.message : String(err));
       })
       .finally(() => {
-        replayInFlight = false;
         if (alive) setLoading(false);
       });
     unsub = client.onEvent((event, seq) => {
@@ -234,6 +242,8 @@ export function LiveSessionPane({
           return;
         }
         seqRef.current = seq;
+      } else if (replayInFlight) {
+        return;
       }
       if (event.type === "session.ended") setEnded(event.reason);
       // 回放失败后实时帧继续到达：错误态不能把活数据挡在后面

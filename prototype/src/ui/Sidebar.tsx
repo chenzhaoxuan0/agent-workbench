@@ -23,7 +23,7 @@ import { useGit } from "../store/useGit.ts";
 import { useAppearance } from "../store/useAppearance.ts";
 import type { AvatarFrame } from "../core/appearance.ts";
 import { formatRelative } from "../core/automation.ts";
-import { dispatchTerminal, fetchUnitHistory, type UnitHistoryEntry } from "../adapters/daemon/client.ts";
+import { DaemonClient, defaultDaemonEndpoint, dispatchTerminal, fetchUnitHistory, type UnitHistoryEntry } from "../adapters/daemon/client.ts";
 import {
   asModelId,
   asRuntimeId,
@@ -840,27 +840,19 @@ function UnitRow({
       debounce = setTimeout(load, 300);
     };
     const poll = setInterval(load, 30_000);
-    const cleanupFns: Array<() => void> = [];
-    void (async () => {
-      const { DaemonClient, defaultDaemonEndpoint } = await import("../adapters/daemon/client.ts");
-      if (!alive) return;
-      const client = DaemonClient.get(defaultDaemonEndpoint());
-      const unsubFrame = client.onTerminalFrame((f) => {
-        if (f.kind === "created" || f.kind === "exit") scheduleLoad();
-      });
-      const unsubEvent = client.onEvent((e) => {
-        if (e.type === "session.started" || e.type === "session.ended") scheduleLoad();
-      });
-      cleanupFns.push(() => {
-        unsubFrame();
-        unsubEvent();
-      });
-    })();
+    const client = DaemonClient.get(defaultDaemonEndpoint());
+    const unsubFrame = client.onTerminalFrame((f) => {
+      if (f.kind === "created" || f.kind === "exit") scheduleLoad();
+    });
+    const unsubEvent = client.onEvent((e) => {
+      if (e.type === "session.started" || e.type === "session.ended") scheduleLoad();
+    });
     return () => {
       alive = false;
       clearInterval(poll);
       if (debounce !== null) clearTimeout(debounce);
-      for (const fn of cleanupFns) fn();
+      unsubFrame();
+      unsubEvent();
     };
   }, [historyOpen, unit.id]);
   // ZCode: unavailableLocalDirectory —— 路径不可用要显式说出来，不能当成正常单元
@@ -889,6 +881,18 @@ function UnitRow({
   const subtitle = unit.identity?.role ?? "";
   const avatarFrame = useAppearance((st) => st.avatarFrame);
   const avatar = botAvatarStyle(unit.name, avatarFrame);
+
+  const openHistoryTab = (focusKey?: string): void => {
+    // 同款切 bot 守卫：openTab 只切 chat 视图不动 activeUnitId，
+    // 开别人的详情 tab 不切 bot 同样会「点了没反应」
+    const wb = useWorkbench.getState();
+    if (String(wb.activeUnitId) !== String(unit.id)) wb.selectUnit(asUnitId(unit.id));
+    useSidePane.getState().openTab({
+      unitId: unit.id,
+      unitName: unit.name,
+      ...(focusKey !== undefined ? { focusKey } : {}),
+    });
+  };
 
   return (
     // 整行是 button，button 里再套 button 是非法 HTML —— 设置入口做成
@@ -1019,7 +1023,7 @@ function UnitRow({
               draggable={false}
               onClick={(e) => {
                 e.stopPropagation();
-                useSidePane.getState().openTab({ unitId: unit.id, unitName: unit.name });
+                openHistoryTab();
               }}
               className="w-full cursor-pointer rounded-btn px-1.5 py-1 text-left text-[10px] text-ash hover:bg-line-soft hover:text-graphite"
             >
@@ -1069,7 +1073,7 @@ function UnitRow({
               else if (canChat) openEntryInChat(e);
               else if (canTui) openEntryInTui(e, unit);
               else {
-                useSidePane.getState().openTab({ unitId: unit.id, unitName: unit.name, focusKey: e.key });
+                openHistoryTab(e.key);
               }
             };
             return (
@@ -1087,7 +1091,7 @@ function UnitRow({
                   if (feasible) setEntryOpenMode(e.key, other);
                 }}
                 onOpenDetail={() => {
-                  useSidePane.getState().openTab({ unitId: unit.id, unitName: unit.name, focusKey: e.key });
+                  openHistoryTab(e.key);
                 }}
                 onContextMenu={(ev) =>
                   setQuickMenu(
@@ -1135,11 +1139,7 @@ function UnitRow({
                         label: "对话详情",
                         icon: History,
                         onSelect: () => {
-                          // 同款切 bot 守卫：openTab 只切 chat 视图不动 activeUnitId，
-                          // 开别人的详情 tab 不切 bot 同样会「点了没反应」
-                          const wb = useWorkbench.getState();
-                          if (String(wb.activeUnitId) !== String(unit.id)) wb.selectUnit(asUnitId(unit.id));
-                          useSidePane.getState().openTab({ unitId: unit.id, unitName: unit.name, focusKey: e.key });
+                          openHistoryTab(e.key);
                         },
                       },
                     ]),
@@ -1175,7 +1175,7 @@ function UnitRow({
               draggable={false}
               onClick={(e) => {
                 e.stopPropagation();
-                useSidePane.getState().openTab({ unitId: unit.id, unitName: unit.name });
+                openHistoryTab();
               }}
               className="w-full cursor-pointer rounded-btn px-1.5 py-1 text-left text-[10px] text-ash hover:bg-line-soft hover:text-graphite"
             >

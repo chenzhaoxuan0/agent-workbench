@@ -1019,11 +1019,25 @@ export class RuntimeHost {
       (event) => sinkRef?.(event),
     );
 
+    // 谱系继承（ADR 0013）：一棵树一个 conversation_id。
+    // 若外部未显式传 conversationId 但指定了 fork，则从分叉父段继承；
+    // 父段自身的 conversationId ?? 父段 id。
+    let resolvedConversationId = input.conversationId ?? null;
+    if (resolvedConversationId === null && input.fork !== undefined) {
+      const parent =
+        this.sessions.get(input.fork.ofSessionId) ??
+        this.store.getSession(input.fork.ofSessionId) ??
+        null;
+      if (parent !== null) {
+        resolvedConversationId = parent.conversationId ?? String(parent.id);
+      }
+    }
+
     const h: HostSession = {
       id: impl.id,
       unitId: input.unitId,
       runtimeId: adapter.id as RuntimeId,
-      conversationId: input.conversationId ?? null,
+      conversationId: resolvedConversationId,
       forkOfSession: input.fork?.ofSessionId ?? null,
       forkAtSeq,
       forkKind: input.fork?.kind ?? null,

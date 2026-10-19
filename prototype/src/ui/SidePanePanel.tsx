@@ -241,22 +241,19 @@ function SidePanePanelBody({
           状态徽标（工作中 / 后台守护）已迁左侧栏底部，移动端远控已迁设置页
           remoteControl 分区 —— 面板底部不再有状态条 */}
       <div className="relative min-h-0 flex-1">
-        {visibleActiveTabId === "" ? (
-          <SidePaneHome />
-        ) : (
-          tabs.map((tab) => {
-            const shown = open && tab.id === visibleActiveTabId;
-            return (
-              <div
-                key={tab.id}
-                aria-hidden={!shown}
-                className={cn("absolute inset-0 min-h-0", shown ? "block" : "hidden")}
-              >
-                <SidePaneTabContent tab={tab} shown={shown} closeTab={closeTab} />
-              </div>
-            );
-          })
-        )}
+        {visibleActiveTabId === "" && <SidePaneHome />}
+        {tabs.map((tab) => {
+          const shown = open && tab.id === visibleActiveTabId;
+          return (
+            <div
+              key={tab.id}
+              aria-hidden={!shown}
+              className={cn("absolute inset-0 min-h-0", shown ? "block" : "hidden")}
+            >
+              <SidePaneTabContent tab={tab} shown={shown} closeTab={closeTab} />
+            </div>
+          );
+        })}
       </div>
     </div>
   );

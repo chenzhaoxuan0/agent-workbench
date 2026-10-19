@@ -133,8 +133,9 @@ export function PlanPane({ unitId, shown }: { unitId: UnitId; shown: boolean }) 
     let unsub: (() => void) | undefined;
     /** 回放期间的实时帧先进 stash，响应到达后按到达序合并 —— .then 的整表
      *  替换否则会把这窗口里到的 plan 事件吞掉（applyPlanEvent 幂等，合并安全） */
-    const stash: RuntimeEvent[] = [];
+    const stash: Array<{ seq: number; event: RuntimeEvent }> = [];
     let replayInFlight = true;
+    const seqRef = { current: 0 };
     setPlans([]);
     setLoading(true);
     setError(null);
@@ -143,26 +144,44 @@ export function PlanPane({ unitId, shown }: { unitId: UnitId; shown: boolean }) 
       .rpc<Array<{ seq: number; event: RuntimeEvent }> | null>("session.events.since", { sessionId, afterSeq: 0 }, 20000)
       .then((items) => {
         if (!alive) return;
+        replayInFlight = false;
+        const bySeq = new Map<number, { seq: number; event: RuntimeEvent }>();
+        for (const it of items ?? []) {
+          bySeq.set(it.seq, it);
+        }
+        for (const it of stash) {
+          bySeq.set(it.seq, it);
+        }
+        const merged = Array.from(bySeq.values()).sort((a, b) => a.seq - b.seq);
         let next: PlanModel[] = [];
-        for (const it of [...(items ?? []), ...stash.map((event) => ({ seq: Number.MAX_SAFE_INTEGER, event }))]) {
+        for (const it of merged) {
+          if (it.seq > seqRef.current) seqRef.current = it.seq;
           next = applyPlanEvent(next, it.event);
         }
         setPlans(next);
       })
       .catch((err: unknown) => {
-        if (alive) setError(err instanceof Error ? err.message : String(err));
+        if (!alive) return;
+        replayInFlight = false;
+        setError(err instanceof Error ? err.message : String(err));
       })
       .finally(() => {
-        replayInFlight = false;
         if (alive) setLoading(false);
       });
-    unsub = client.onEvent((event) => {
+    unsub = client.onEvent((event, seq) => {
       if (!("sessionId" in event) || String(event.sessionId) !== sessionId) return;
       if (event.type !== "plan.proposed" && event.type !== "plan.step.updated" && event.type !== "plan.resolved") return;
-      if (replayInFlight) {
-        stash.push(event);
+      if (seq !== undefined) {
+        if (seq <= seqRef.current) return;
+        if (replayInFlight) {
+          stash.push({ seq, event });
+          return;
+        }
+        seqRef.current = seq;
+      } else if (replayInFlight) {
         return;
       }
+      setError(null);
       setPlans((prev) => applyPlanEvent([...prev], event));
     });
     return () => {

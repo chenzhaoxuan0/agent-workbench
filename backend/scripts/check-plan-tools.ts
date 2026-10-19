@@ -49,6 +49,21 @@ const again = planProposedFromTodoTool(SID, "TodoWrite", {
 });
 assert(again !== null && again.type === "plan.proposed" && again.steps.length === 1, "后续快照原样合成（替换语义交给前端）");
 
+// 输入容错：JSON 字符串与直接数组兼容
+const jsonStr = planProposedFromTodoTool(
+  SID,
+  "TodoWrite",
+  JSON.stringify({ todos: [{ content: "JSON 序列化入参", status: "in_progress" }] }),
+);
+assert(jsonStr !== null && jsonStr.type === "plan.proposed" && jsonStr.steps[0]!.title === "JSON 序列化入参", "支持 JSON 字符串 input");
+
+const directArr = planProposedFromTodoTool(
+  SID,
+  "TodoWrite",
+  [{ content: "直接数组入参", status: "completed" }],
+);
+assert(directArr !== null && directArr.type === "plan.proposed" && directArr.steps[0]!.status === "done", "支持直接数组 input");
+
 // 非清单工具 / 空清单 / 提取不出步骤 → null
 assert(planProposedFromTodoTool(SID, "bash", { command: "ls" }) === null, "普通工具不合成");
 assert(planProposedFromTodoTool(SID, "plan", { anything: 1 }) === null, "裸 plan 不识别（防误伤）");

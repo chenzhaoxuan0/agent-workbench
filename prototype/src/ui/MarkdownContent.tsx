@@ -163,8 +163,12 @@ const components: Components = {
 /* ------------------------------------------------------------------ 代码块 */
 
 function extractCode(children: ReactNode): { lang: string; code: string } {
-  if (isValidElement(children)) {
-    const props = children.props as { className?: string; children?: ReactNode };
+  let target = children;
+  if (Array.isArray(target)) {
+    target = target.find(isValidElement) ?? target[0];
+  }
+  if (isValidElement(target)) {
+    const props = target.props as { className?: string; children?: ReactNode };
     const lang = /language-([\w+#.-]+)/.exec(props.className ?? "")?.[1] ?? "";
     const raw = props.children;
     const code =
@@ -174,6 +178,9 @@ function extractCode(children: ReactNode): { lang: string; code: string } {
           ? raw.filter((c): c is string => typeof c === "string").join("")
           : "";
     return { lang, code };
+  }
+  if (typeof target === "string") {
+    return { lang: "", code: target };
   }
   return { lang: "", code: "" };
 }
