@@ -56,6 +56,11 @@ interface SidePaneStore extends sidePane.SidePaneState {
 
   /** 打开（或复用）一个 bot 的历史 tab，并展开面板 */
   openTab: (request: sidePane.OpenHistoryTabRequest) => void;
+  /** 打开（或复用）一个会话的实时监控 tab，并展开面板 */
+  openLiveSession: (request: sidePane.OpenLiveTabRequest) => void;
+  /** 打开（或复用）当前 bot 的计划 / 变更审查 tab，并展开面板 */
+  openPlan: (request: sidePane.OpenUnitTabRequest) => void;
+  openDiff: (request: sidePane.OpenUnitTabRequest) => void;
   closeTab: (tabId: string) => void;
   activateTab: (tabId: string) => void;
   toggleCollapsed: () => void;
@@ -97,7 +102,25 @@ export const useSidePane = create<SidePaneStore>((set, get) => ({
       return { ...sidePane.openHistoryTab(s, request), collapsed: false };
     }),
 
-  closeTab: (tabId) => set((s) => sidePane.closeTab(s, tabId)),
+  openLiveSession: (request) =>
+    set((s) => {
+      useShell.getState().setMainView("chat");
+      return { ...sidePane.openLiveTab(s, request), collapsed: false };
+    }),
+
+  openPlan: (request) =>
+    set((s) => {
+      useShell.getState().setMainView("chat");
+      return { ...sidePane.openPlanTab(s, request), collapsed: false };
+    }),
+
+  openDiff: (request) =>
+    set((s) => {
+      useShell.getState().setMainView("chat");
+      return { ...sidePane.openDiffTab(s, request), collapsed: false };
+    }),
+
+  closeTab: (tabId) => set((s) => sidePane.closeTab(s, tabId, s.scopeUnitId)),
 
   activateTab: (tabId) => set((s) => sidePane.activateTab(s, tabId)),
 

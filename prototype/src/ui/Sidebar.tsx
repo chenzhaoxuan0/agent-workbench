@@ -12,6 +12,7 @@ import {
   PanelLeftClose,
   Pin,
   Plus,
+  Radio,
   Search,
   Settings,
   SquareTerminal,
@@ -1092,6 +1093,26 @@ function UnitRow({
                   setQuickMenu(
                     quickMenuFromEvent(ev, [
                       {
+                        label: "实时监控此会话",
+                        icon: Radio,
+                        disabled: e.sessionId === null,
+                        onSelect: () => {
+                          if (e.sessionId === null) return;
+                          // 历史 sublist 展开不切 bot：在 B 的行上开监控而 A 还
+                          // 活跃时，tab 归 B、按 owner 过滤后不可见 →「点了没
+                          // 反应」。先切到行所属 bot 再开（openTab 的 others
+                          // 入口同款守卫）
+                          const wb = useWorkbench.getState();
+                          if (String(wb.activeUnitId) !== String(unit.id)) wb.selectUnit(asUnitId(unit.id));
+                          useSidePane.getState().openLiveSession({
+                            unitId: unit.id,
+                            sessionId: e.sessionId,
+                            runtimeId: e.runtimeId,
+                            title: e.title,
+                          });
+                        },
+                      },
+                      {
                         label: "在聊天页打开（设为默认）",
                         icon: MessageSquare,
                         disabled: !canChat,
@@ -1114,6 +1135,10 @@ function UnitRow({
                         label: "对话详情",
                         icon: History,
                         onSelect: () => {
+                          // 同款切 bot 守卫：openTab 只切 chat 视图不动 activeUnitId，
+                          // 开别人的详情 tab 不切 bot 同样会「点了没反应」
+                          const wb = useWorkbench.getState();
+                          if (String(wb.activeUnitId) !== String(unit.id)) wb.selectUnit(asUnitId(unit.id));
                           useSidePane.getState().openTab({ unitId: unit.id, unitName: unit.name, focusKey: e.key });
                         },
                       },

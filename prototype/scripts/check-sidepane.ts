@@ -11,14 +11,21 @@
 import {
   activateTab,
   closeTab,
+  diffTabId,
   EMPTY_SIDE_PANE_STATE,
   historyTabId,
+  liveTabId,
+  openDiffTab,
   openHistoryTab,
+  openLiveTab,
+  openPlanTab,
+  planTabId,
   releaseUnits,
   resolveScopeOnUnitChange,
   sidePaneOccupies,
   visibleTabsForUnit,
   type HistorySidePaneTab,
+  type LiveSessionSidePaneTab,
 } from "../src/core/sidePaneTabs.ts";
 import { asUnitId } from "../src/core/units.ts";
 
@@ -150,6 +157,61 @@ function hist(unit: string, name = unit): HistorySidePaneTab {
   assert(rel.activeTabId === "", "激活 tab 被回收时 activeTabId 归空");
   const relKeep = releaseUnits({ tabs: [hist(String(A))], activeTabId: historyTabId(A) }, [A, B]);
   assert(relKeep.activeTabId === historyTabId(A) && relKeep.tabs.length === 1, "无回收发生时原样返回");
+}
+
+// ---------------------------------------------------------------------------
+// openLiveTab / openPlanTab / openDiffTab：新三类的幂等与归属
+// ---------------------------------------------------------------------------
+
+{
+  const live1 = openLiveTab(EMPTY_SIDE_PANE_STATE, { unitId: A, sessionId: "42", runtimeId: "zcode", title: "跑批" });
+  assert(live1.tabs.length === 1 && live1.activeTabId === liveTabId("42"), "打开监控 tab 并聚焦");
+
+  // 同会话重复开：不并排，title/runtimeId 原位刷新
+  const live2 = openLiveTab(live1, { unitId: A, sessionId: "42", runtimeId: "zcode", title: "跑批（改名）" });
+  assert(live2.tabs.length === 1, "同会话重复打开监控不并排（id 幂等）");
+  const liveTab = live2.tabs[0] as LiveSessionSidePaneTab;
+  assert(liveTab.title === "跑批（改名）" && liveTab.runtimeId === "zcode", "监控复用刷新 meta");
+
+  // 不同会话：并排；owner 跟随请求（监控 A 的会话归 A，即使从别处发起）
+  const live3 = openLiveTab(live2, { unitId: B, sessionId: "43", runtimeId: "codex", title: "乙的会话" });
+  assert(live3.tabs.length === 2 && (live3.tabs[1] as LiveSessionSidePaneTab).ownerUnitId === B, "不同会话并排多开，owner 跟随请求");
+
+  // plan / diff：按 unit 幂等
+  const p1 = openPlanTab(EMPTY_SIDE_PANE_STATE, { unitId: A, unitName: "甲" });
+  const p2 = openPlanTab(p1, { unitId: A, unitName: "甲改名" });
+  assert(p2.tabs.length === 1 && p2.tabs[0]!.type === "plan" && p2.tabs[0]!.unitName === "甲改名", "计划 tab 按 unit 幂等并刷新名");
+  const d1 = openDiffTab(p2, { unitId: A, unitName: "甲改名" });
+  const d2 = openDiffTab(d1, { unitId: B, unitName: "乙" });
+  assert(d2.tabs.length === 3 && d2.activeTabId === diffTabId(B), "变更 tab 不同 bot 并排、同 bot 幂等");
+
+  // 作用域过滤对新类型同样生效
+  assert(visibleTabsForUnit(d2.tabs, A).length === 2, "A 的作用域只看得到 A 的 tab（history/plan/diff 同口径）");
+}
+
+// ---------------------------------------------------------------------------
+// closeTab 作用域感知：右邻回落只在当前 scope 的可见集合里挑
+// ---------------------------------------------------------------------------
+
+{
+  // [history:A, live:B, plan:A]，A scope 下关激活的 plan:A —— 全量右邻没有
+  // 更靠后的 A tab，应落「最后一个可见」（history:A），而不是落进 B 的 live
+  let s = openHistoryTab(EMPTY_SIDE_PANE_STATE, { unitId: A, unitName: "甲" });
+  s = openLiveTab(s, { unitId: B, sessionId: "9", runtimeId: "zcode", title: "乙跑" });
+  s = openPlanTab(s, { unitId: A, unitName: "甲" });
+  const scopedClose = closeTab(s, planTabId(A), A);
+  assert(scopedClose.activeTabId === historyTabId(A), "作用域关激活 tab 不落到别的 bot 的 tab 上");
+  assert(scopedClose.tabs.length === 2, "被关 tab 移除、他人 tab 保留");
+
+  // 缺省（不传 scope）：保持旧的全量右邻语义 —— live:B 成为落点
+  const unscopedClose = closeTab(s, planTabId(A));
+  assert(unscopedClose.activeTabId === liveTabId("9"), "缺省 scope 保持全量右邻旧语义");
+
+  // scope 下右邻可见时仍取严格右邻：[live:A, history:A]，关 live:A 落 history:A
+  let s2 = openLiveTab(EMPTY_SIDE_PANE_STATE, { unitId: A, sessionId: "7", runtimeId: "zcode", title: "甲跑" });
+  s2 = openHistoryTab(s2, { unitId: A, unitName: "甲" });
+  const rightNeighbor = closeTab(s2, liveTabId("7"), A);
+  assert(rightNeighbor.activeTabId === historyTabId(A), "可见右邻仍取严格右邻");
 }
 
 // ---- 占位口径：列渲染 / 头部按钮态 / 开合动作共用（无 tab 也占位 = 功能主页兜底） ----

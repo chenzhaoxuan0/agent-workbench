@@ -1,11 +1,15 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { Panel, Separator, type PanelImperativeHandle } from "react-resizable-panels";
-import { History, LayoutGrid, PanelRightClose, X } from "lucide-react";
+import { FileDiff, History, LayoutGrid, ListChecks, PanelRightClose, Radio, X } from "lucide-react";
 import { useShell } from "../store/useShell.ts";
 import { useSidePane, SIDE_PANE_MIN } from "../store/useSidePane.ts";
 import { useWorkbench } from "../store/useWorkbench.ts";
 import { sidePaneOccupies, visibleTabsForUnit, type SidePaneTab } from "../core/sidePaneTabs.ts";
+import { fetchUnitHistory } from "../adapters/daemon/client.ts";
 import { HistoryPane } from "./HistoryPane.tsx";
+import { LiveSessionPane } from "./LiveSessionPane.tsx";
+import { PlanPane } from "./PlanPane.tsx";
+import { DiffPane } from "./DiffPane.tsx";
 import { cn } from "./cn.ts";
 
 /**
@@ -188,6 +192,15 @@ function SidePanePanelBody({
                 {tab.type === "history" && (
                   <History size={11} className={active ? "shrink-0 text-teal" : "shrink-0 text-ash"} />
                 )}
+                {tab.type === "live" && (
+                  <Radio size={11} className={cn("shrink-0", active ? "text-teal" : "text-ash", active && "animate-pulse")} />
+                )}
+                {tab.type === "plan" && (
+                  <ListChecks size={11} className={active ? "shrink-0 text-teal" : "shrink-0 text-ash"} />
+                )}
+                {tab.type === "diff" && (
+                  <FileDiff size={11} className={active ? "shrink-0 text-teal" : "shrink-0 text-ash"} />
+                )}
                 <span className="max-w-44 truncate">{sidePaneTabTitle(tab)}</span>
                 {/* 行根承担 tab 切换，关闭用 span 实现（button 套 button 非法） */}
                 <span
@@ -266,36 +279,97 @@ const SidePaneTabContent = memo(function SidePaneTabContent({
 }) {
   // 稳定引用：否则 memo 挡不住 —— 每次父渲染生成的新箭头函数都会击穿比较
   const onFinished = useCallback(() => closeTab(tab.id), [closeTab, tab.id]);
-  if (tab.type !== "history") return null;
-  return (
-    <HistoryPane
-      unitId={String(tab.ownerUnitId)}
-      unitName={tab.unitName}
-      focusKey={tab.focusKey}
-      isActive={shown}
-      onFinished={onFinished}
-    />
-  );
+  if (tab.type === "history") {
+    return (
+      <HistoryPane
+        unitId={String(tab.ownerUnitId)}
+        unitName={tab.unitName}
+        focusKey={tab.focusKey}
+        isActive={shown}
+        onFinished={onFinished}
+      />
+    );
+  }
+  if (tab.type === "live") {
+    return <LiveSessionPane sessionId={tab.sessionId} runtimeId={tab.runtimeId} title={tab.title} shown={shown} />;
+  }
+  if (tab.type === "plan") {
+    return <PlanPane unitId={tab.ownerUnitId} shown={shown} />;
+  }
+  return <DiffTabContent unitId={tab.ownerUnitId} shown={shown} />;
 });
 
+/** diff tab 的宿主：rootPath 从 units 现查（bot 改目录后 tab 跟着走），
+ *  bot 被注销时给出空态而不是白屏 */
+function DiffTabContent({ unitId, shown }: { unitId: SidePaneTab["ownerUnitId"]; shown: boolean }): ReactElement {
+  const rootPath = useWorkbench((s) => s.units.find((u) => String(u.id) === String(unitId))?.rootPath);
+  if (rootPath === undefined) {
+    return (
+      <div className="flex h-full items-center justify-center p-4 text-center text-caption text-ash">
+        这个 bot 已经不在了（目录或定义被移除），变更审查无从挂载
+      </div>
+    );
+  }
+  return <DiffPane rootPath={rootPath} shown={shown} />;
+}
+
 function sidePaneTabTitle(tab: SidePaneTab): string {
-  return tab.type === "history" ? `${tab.unitName} · 历史` : tab.id;
+  switch (tab.type) {
+    case "history":
+      return `${tab.unitName} · 历史`;
+    case "live":
+      return tab.title !== "" ? tab.title : "会话监控";
+    case "plan":
+      return `${tab.unitName} · 计划`;
+    case "diff":
+      return `${tab.unitName} · 变更`;
+  }
 }
 
 /* ------------------------------------------------------------- 功能主页 */
 
 /**
  * 面板功能主页 —— 展开时若无可见 tab（或聚焦缺失），面板直接列出当前可点的功能
- * 入口，点选后才把对应内容以 tab 形式打开。右侧栏现有功能就一类：各单元的历史
- * 会话（自动化任务、待办、心跳与手动会话的时间轴）；后续新功能以标签页形式
- * 入驻时，这里就是它们的统一入口页。状态类入口不在面板里：工作中 / 后台守护
- * 在左侧栏底部，移动端远控在设置页 remoteControl 分区。
+ * 入口，点选后才把对应内容以 tab 形式打开。四类入口：
+ * - 各单元的历史会话（自动化任务、待办、心跳与手动会话的时间轴）；
+ * - 会话实时监控：跟随一个在跑（或最近）的后台会话看它正在干什么；
+ * - 计划 / 任务进度：活跃会话的步骤清单（plan-detail 对位）；
+ * - 变更审查：工作目录改动面（git 对位，对话在左、改动在右）。
  */
 function SidePaneHome(): ReactElement {
   const units = useWorkbench((s) => s.units);
   const scopeUnitId = useSidePane((s) => s.scopeUnitId);
+  const [liveTarget, setLiveTarget] = useState<{ sessionId: string; runtimeId: string; title: string; running: boolean } | null>(null);
   const current = units.find((u) => String(u.id) === String(scopeUnitId));
   const others = units.filter((u) => String(u.id) !== String(scopeUnitId));
+
+  // 实时监控的默认目标：在跑的会话优先，否则最近一条有 id 的会话（回放也成立）。
+  // 换 bot 先清旧值 —— 主页跨 scope 常驻，不清会拿着上个 bot 的会话标题冒充
+  // 本 bot 的目标（点击还会开出一个 owner 错位的监控 tab）
+  const currentUnitId = current?.id;
+  useEffect(() => {
+    setLiveTarget(null);
+    if (currentUnitId === undefined) return;
+    let alive = true;
+    void fetchUnitHistory(currentUnitId, 30)
+      .then((list) => {
+        if (!alive) return;
+        const withId = list.filter((e) => e.sessionId !== null && e.sessionId !== "");
+        const running = withId.find((e) => e.status === "running");
+        const pick = running ?? withId[0];
+        setLiveTarget(
+          pick !== undefined && pick.sessionId !== null
+            ? { sessionId: pick.sessionId, runtimeId: pick.runtimeId, title: pick.title, running: pick.status === "running" }
+            : null,
+        );
+      })
+      .catch(() => {
+        if (alive) setLiveTarget(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [currentUnitId]);
 
   return (
     <div className="h-full min-h-0 overflow-y-auto p-3">
@@ -318,6 +392,64 @@ function SidePaneHome(): ReactElement {
             </span>
           </span>
         </button>
+      )}
+
+      {/* 伴随视角：监控 / 计划 / 变更（ZCode bash-output / plan-detail / git 的对位） */}
+      {current !== undefined && (
+        <>
+          <p className="mt-4 text-[10px] font-medium tracking-wide text-ash">伴随视角</p>
+          <div className="mt-1.5 space-y-1">
+            <button
+              type="button"
+              disabled={liveTarget === null}
+              onClick={() => {
+                if (liveTarget === null) return;
+                useSidePane.getState().openLiveSession({
+                  unitId: current.id,
+                  sessionId: liveTarget.sessionId,
+                  runtimeId: liveTarget.runtimeId,
+                  title: liveTarget.title,
+                });
+              }}
+              className="flex w-full cursor-pointer items-center gap-2 rounded-btn px-2 py-2 text-left transition hover:bg-line-soft disabled:cursor-default disabled:opacity-50"
+              title={liveTarget === null ? "还没有可监控的会话" : `跟随会话 ${liveTarget.sessionId} 的事件流`}
+            >
+              <Radio size={13} className={cn("shrink-0", liveTarget?.running ? "animate-pulse text-teal" : "text-ash")} />
+              <span className="min-w-0 flex-1">
+                <span className="block text-caption text-graphite">会话实时监控</span>
+                <span className="mt-0.5 block truncate text-[10px] text-ash">
+                  {liveTarget === null
+                    ? "还没有可监控的会话"
+                    : liveTarget.running
+                      ? `正在跑：${liveTarget.title}`
+                      : `最近：${liveTarget.title}（回放）`}
+                </span>
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => useSidePane.getState().openPlan({ unitId: current.id, unitName: current.name })}
+              className="flex w-full cursor-pointer items-center gap-2 rounded-btn px-2 py-2 text-left transition hover:bg-line-soft"
+            >
+              <ListChecks size={13} className="shrink-0 text-ash" />
+              <span className="min-w-0 flex-1">
+                <span className="block text-caption text-graphite">计划 / 任务进度</span>
+                <span className="mt-0.5 block text-[10px] text-ash">活跃会话的步骤清单，边干活边看进度</span>
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => useSidePane.getState().openDiff({ unitId: current.id, unitName: current.name })}
+              className="flex w-full cursor-pointer items-center gap-2 rounded-btn px-2 py-2 text-left transition hover:bg-line-soft"
+            >
+              <FileDiff size={13} className="shrink-0 text-ash" />
+              <span className="min-w-0 flex-1">
+                <span className="block text-caption text-graphite">变更审查</span>
+                <span className="mt-0.5 block text-[10px] text-ash">工作目录的改动与 diff，对话在左、改动在右</span>
+              </span>
+            </button>
+          </div>
+        </>
       )}
 
       {others.length > 0 && (
