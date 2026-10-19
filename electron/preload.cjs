@@ -5,10 +5,10 @@ contextBridge.exposeInMainWorld("electronAPI", {
   platform: process.platform,
   arch: process.arch,
   /**
-   * 窗口宽度插块：delta > 0 加宽、delta < 0 减回。resolve 实际变化宽度（屏幕边
-   * 截断时小于请求值）。纯浏览器访问（无 preload）时调用方拿不到本函数，静默降级。
+   * 原生目录选择对话框：系统文件资源管理器的「选择文件夹」窗口。
+   * resolve 选中的绝对路径；取消 / 不可用 resolve null。
    */
-  adjustWindowWidth: (delta) => ipcRenderer.invoke("window-adjust-width", delta),
+  pickDirectory: (opts) => ipcRenderer.invoke("dialog:pick-directory", opts),
 });
 
 // Ctrl+滚轮缩放：Electron 没有内置，这里捕获后转给主进程调 webContents.setZoomLevel

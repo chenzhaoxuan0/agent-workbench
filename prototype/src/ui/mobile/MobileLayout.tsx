@@ -1,9 +1,5 @@
 import { useState } from "react";
-import {
-  Menu,
-  MessageSquare,
-  SquareTerminal,
-} from "lucide-react";
+import { Menu } from "lucide-react";
 import { useWorkbench, selectActiveUnit } from "../../store/useWorkbench.ts";
 import { useShell } from "../../store/useShell.ts";
 import { Timeline } from "../Timeline.tsx";
@@ -12,6 +8,7 @@ import { ChatTerminalDock } from "../ChatTerminalDock.tsx";
 import { TerminalPanel } from "../TerminalPanel.tsx";
 import { ProposalBanner } from "../ProposalBanner.tsx";
 import { SettingsPage } from "../SettingsPage.tsx";
+import { ConversationViewSwitch } from "../ConversationViewSwitch.tsx";
 import { MobileConfirmationGate } from "./MobileConfirmationGate.tsx";
 import { MobileVirtualKeyBar } from "./MobileVirtualKeyBar.tsx";
 import { MobileDrawer } from "./MobileDrawer.tsx";
@@ -30,7 +27,6 @@ export function MobileLayout({
   const unit = useWorkbench(selectActiveUnit);
   const busy = useWorkbench((s) => s.busy);
   const conversationView = useShell((s) => s.conversationView);
-  const setConversationView = useShell((s) => s.setConversationView);
   const settingsOpen = useShell((s) => s.settingsOpen);
 
   return (
@@ -56,37 +52,9 @@ export function MobileLayout({
           )}
         </div>
 
-        {/* 右侧：形态切换 (对话/终端) */}
-        <div className="flex shrink-0 items-center gap-1.5">
-          <div className="flex items-center rounded-lg border border-line bg-card/80 p-0.5">
-            <button
-              onClick={() => setConversationView("chat")}
-              aria-label="切换至对话视图"
-              className={cn(
-                "flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium transition",
-                conversationView === "chat"
-                  ? "bg-line-soft text-teal font-semibold shadow-xs"
-                  : "text-graphite hover:text-ink",
-              )}
-            >
-              <MessageSquare size={12} />
-              <span>对话</span>
-            </button>
-            <button
-              onClick={() => setConversationView("terminal")}
-              aria-label="切换至终端视图"
-              className={cn(
-                "flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium transition",
-                conversationView === "terminal"
-                  ? "bg-line-soft text-teal font-semibold shadow-xs"
-                  : "text-graphite hover:text-ink",
-              )}
-            >
-              <SquareTerminal size={12} />
-              <span>终端</span>
-            </button>
-          </div>
-        </div>
+        {/* 右侧：形态切换 (对话/终端 TUI) —— 与 PC 头部同一组件、同一规格，
+            跨版式切换时位置（行尾）与外观（字号/内距/激活态）都不变 */}
+        <ConversationViewSwitch />
       </header>
 
       {/* 2. 主内容展示区 */}

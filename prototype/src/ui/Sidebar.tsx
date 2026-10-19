@@ -3,7 +3,6 @@ import {
   AlarmClock,
   ChevronLeft,
   FolderGit2,
-  FolderOpen,
   FolderPlus,
   GitBranch,
   History,
@@ -39,7 +38,6 @@ import {
 
 export { isResidentUnit, isSyntheticUnit };
 import { AddBotDialog, type AddBotDraft } from "./AddBotDialog.tsx";
-import { ImportBotDialog } from "./ImportBotDialog.tsx";
 import { UNIT_VIEWS, UnitViewSegment } from "./UnitViewSegment.tsx";
 import { ChannelMark, channelIdentityLabel } from "./ChannelMark.tsx";
 import { resumeArgsFor } from "./HistoryPane.tsx";
@@ -136,7 +134,6 @@ export function Sidebar() {
   const [zoneHover, setZoneHover] = useState<"resident" | "normal" | null>(null);
   // 「添加 bot」的对话框开关在 useShell —— 标题行的 ＋ 和单元区空态两个入口共用
   const addBotOpen = useShell((s) => s.addBotOpen);
-  const importBotOpen = useShell((s) => s.importBotOpen);
   const editUnitId = useShell((s) => s.editUnitId);
   const updateUnit = useWorkbench((s) => s.updateUnit);
   const settingsActive = useShell((s) => s.settingsOpen);
@@ -275,8 +272,11 @@ export function Sidebar() {
 
       {/* 单元列表标题行 —— h-9 与右侧终端工具栏同高，横向对齐。
           [bot|项目] 分段即标题：最左侧点击即切视图（docs/04 + ADR 0011），
-          右侧只留认领/新建。收窄时的取舍（容器查询）：先藏计数，四个按钮
-          （bot/项目/认领/新建）永不折行、永不挤压——要按的东西必须可按 */}
+          右侧只留新建。收窄时的取舍（容器查询）：先藏计数，三个按钮
+          （bot/项目/新建）永不折行、永不挤压——要按的东西必须可按。
+          新建＝新建＋认领单轨：指向已存在的文件夹时 daemon 只注册不搬动、
+          不覆盖其中的 AGENTS.md（详见 AddBotDialog 的探测预填），
+          所以不再需要第二个「认领」按钮。 */}
       <div className="@container flex h-9 shrink-0 items-center justify-between gap-1 px-2.5">
         <div className="flex shrink-0 items-center gap-1.5">
           <UnitViewSegment value={unitView} onChange={switchUnitView} />
@@ -284,19 +284,10 @@ export function Sidebar() {
         </div>
         <div className="flex shrink-0 items-center gap-1">
           <button
-            onClick={() => useShell.getState().openImportBot()}
-            aria-label="认领已有目录"
-            title="认领已有目录为 bot（文件夹留在原地，自动探测 AGENTS.md）"
-            className="flex items-center gap-0.5 rounded-btn px-1.5 py-0.5 text-caption text-graphite hover:bg-line-soft hover:text-ink"
-          >
-            <FolderOpen size={11} />
-            <span>认领</span>
-          </button>
-          <button
             onClick={() => useShell.getState().openAddBot()}
             aria-label="新建 bot"
-            title="新建 bot"
-            className="flex items-center gap-0.5 rounded-btn bg-ink px-1.5 py-0.5 text-caption font-medium text-canvas hover:opacity-90 active:scale-95 transition"
+            title="新建 bot —— 新文件夹自动创建；指向已有文件夹即为认领（原地注册，不动里面的文件）"
+            className="flex items-center gap-0.5 rounded-btn px-1.5 py-0.5 text-caption text-graphite hover:bg-line-soft hover:text-ink"
           >
             <Plus size={11} />
             <span>新建</span>
@@ -571,19 +562,8 @@ export function Sidebar() {
           }}
         />
       )}
-      {/* 导入已有文件夹（docs/09 §七）：只注册，不搬家 */}
-      {importBotOpen && (
-        <ImportBotDialog
-          open
-          onClose={() => useShell.getState().closeImportBot()}
-          onImported={({ unit }) => {
-            // 重新连接分支零写入（bot.json 早就在盘上），要自己并进 state；
-            // 认领/脚手架分支 addUnit 已经并过了，别重复
-            if (useWorkbench.getState().units.some((u) => u.id === unit.id)) return;
-            useWorkbench.setState((s) => ({ units: [...s.units, unit], activeUnitId: unit.id }));
-          }}
-        />
-      )}
+      {/* 导入已有文件夹（docs/09 §七）已并入新建对话框（单轨）：文件夹已存在时
+          daemon 原地注册、保留既有 AGENTS.md；重复注册被 root_taken 拦下。 */}
     </div>
   );
 }

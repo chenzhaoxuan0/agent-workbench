@@ -7,7 +7,7 @@ import { cn } from "../cn.ts";
  * 源代码管理对话框的共用外壳与表单基元。
  *
  * Esc 关闭：bindShellShortcuts 的 Esc 链只认 shell 级弹窗，页面级对话框自管
- * （与 AddBotDialog / ImportBotDialog 的最新约定一致）。
+ * （与 AddBotDialog 的最新约定一致）。
  */
 
 export function DialogShell(props: { title: string; children: ReactNode; onClose: () => void; widthClass?: string }) {

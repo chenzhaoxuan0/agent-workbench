@@ -1,19 +1,29 @@
 /**
- * 文件夹选择字段 —— 路径输入框 + 轻量目录浏览器弹出层（ADR 0011 第 1 条）。
+ * 文件夹选择字段 —— 路径输入框 + 浏览按钮。
  *
- * 「新建 / 认领不再要求复制粘贴路径」的兑现：浏览走 daemon 的 workspace.paths.list
- * （与对话输入 @ 提及同一提供面、同一防逃逸约束：一次列一层、跳过 node_modules/.git、
- * resolve 后必须仍在起始根之内），点目录名下钻、「选定此文件夹」把当前目录写回
- * 输入框。手输路径始终保留——输入框是唯一真相源，浏览器只是填它的另一种手段。
+ * 浏览的两种形态（自动择优）：
+ * 1. **原生对话框**（桌面端，Electron preload 的 electronAPI.pickDirectory）：
+ *    与上传附件时弹的同一个系统「选择文件夹」窗口，用户零学习成本；
+ * 2. **内置目录浏览器**（纯浏览器访问时的回落）：走 daemon 的 workspace.paths.list
+ *    （与对话输入 @ 提及同一提供面、同一防逃逸约束：一次列一层、跳过
+ *    node_modules/.git、resolve 后必须仍在起始根之内），点目录名下钻、「选定此
+ *    文件夹」把当前目录写回输入框。起始根候选来自 bot.defaultRoot 的
+ *    browseRoots（homeDir + 盘符根）；空 = daemon 未连接，浏览按钮禁用。
  *
- * 起始根候选来自 bot.defaultRoot 的 browseRoots（homeDir + 盘符根）；空 = daemon
- * 未连接，浏览按钮禁用，手输兜底。
+ * 手输路径始终保留——输入框是唯一真相源，浏览器只是填它的另一种手段。
  */
 
 import { useEffect, useRef, useState } from "react";
 import { ChevronUp, Folder, FolderSearch, Loader2, X } from "lucide-react";
 import { fetchWorkspacePaths } from "../adapters/daemon/client.ts";
 import { cn } from "./cn.ts";
+
+/** 桌面端注入的原生通道（electron/preload.cjs）。纯浏览器访问时不存在。 */
+const nativePicker: ((opts: { title?: string; defaultPath?: string }) => Promise<string | null>) | undefined = (
+  window as unknown as {
+    electronAPI?: { pickDirectory?: (opts: { title?: string; defaultPath?: string }) => Promise<string | null> };
+  }
+).electronAPI?.pickDirectory;
 
 export interface FolderPickerFieldProps {
   value: string;
@@ -100,8 +110,22 @@ export function FolderPickerField({ value, onChange, browseRoots, placeholder, a
     // eslint-disable-next-line react-hooks/exhaustive-deps -- reposition 是读 ref 的稳定闭包
   }, [open]);
 
-  const browseReady = browseRoots.length > 0;
+  const browseReady = nativePicker !== undefined || browseRoots.length > 0;
   const target = root === "" ? "" : joinDir(root, segments);
+
+  /** 浏览入口：桌面端开系统「选择文件夹」窗口；浏览器回落到内置目录浏览器 */
+  const onBrowse = (): void => {
+    if (nativePicker !== undefined) {
+      void nativePicker({ title: "选择文件夹", defaultPath: value.trim() || browseRoots[0] }).then((p) => {
+        if (typeof p === "string" && p !== "") onChange(p);
+      });
+      return;
+    }
+    if (browseRoots.length === 0) return;
+    setOpen((v) => !v);
+    setRootIdx(0);
+    setSegments([]);
+  };
 
   return (
     <div ref={wrapperRef} className="relative flex min-w-0 flex-1 items-center gap-1.5">
@@ -119,12 +143,7 @@ export function FolderPickerField({ value, onChange, browseRoots, placeholder, a
       {trailing}
       <button
         type="button"
-        onClick={() => {
-          if (!browseReady) return;
-          setOpen((v) => !v);
-          setRootIdx(0);
-          setSegments([]);
-        }}
+        onClick={onBrowse}
         disabled={!browseReady}
         title={browseReady ? "浏览选择文件夹" : "未连接 daemon，可直接手输路径"}
         className="flex shrink-0 items-center gap-1 rounded-btn border border-line bg-canvas px-2.5 py-1.5 text-caption font-medium text-graphite transition hover:bg-line-soft hover:text-ink disabled:opacity-40"

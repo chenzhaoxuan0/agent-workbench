@@ -639,6 +639,30 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
     try {
       localStorage.setItem("agent-workbench:active-unit", activeUnitId);
     } catch {}
+    // 新会话的默认执行器跟随 bot 主绑定：activeRuntimeId 是全局游标，此前切 bot
+    // 不动它——bot 指定了主执行器时，在它下面新建对话页默认却停在全局值（多半
+    // 是 zcode），第一条消息就发错执行器。绑定可用就带过去（连模型提示一起）；
+    // 没绑定的 bot（总管等）保持全局值。门禁沿用 idle-only 判定（本轮进行中不切）。
+    const s = get();
+    const unit = s.units.find((u) => u.id === activeUnitId);
+    const binding = unit?.bindings.find((b) => b.primary) ?? unit?.bindings[0];
+    const rid =
+      binding !== undefined && binding.runtimeId !== ""
+        ? (s.runtimes.find((r) => r.id === binding.runtimeId)?.id ??
+          s.runtimes.find((r) => r.id === `daemon:${binding.runtimeId}`)?.id ??
+          null)
+        : null;
+    if (rid !== null && rid !== s.activeRuntimeId && !runtimeSwitchBlocked(s)) {
+      const entry = s.runtimes.find((r) => r.id === rid);
+      const hint = binding?.modelHint;
+      const picked = entry !== undefined && hint !== undefined && canRuntimeUse(entry.models, hint) ? hint : undefined;
+      set((st) => {
+        const nextModel = picked ?? st.runtimeModels[rid] ?? entry?.defaultModel ?? null;
+        return nextModel === null
+          ? { activeRuntimeId: rid }
+          : { activeRuntimeId: rid, runtimeModels: { ...st.runtimeModels, [rid]: nextModel } };
+      });
+    }
   },
 
   refreshUnits: async () => {
@@ -680,8 +704,9 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
     // 这里**不吞异常**——目录不存在（root_not_found）时侧栏会多一个刷新即逝的幽灵 bot，
     // 调用方（新建对话框）需要把这句话摆到用户面前。daemon 没起时也照抛。
     // createRoot（自动安置，ADR 0011）：新建流的唯一必填交互是文件夹，预填的默认位置
-    // 本来就不存在，由 daemon 落笔时幂等建出。只有新建显式开启——认领（ImportBotDialog）
-    // 复用本方法时不开：认领的对象必须是已存在的文件夹，路径失效应当报错而非静默重建。
+    // 本来就不存在，由 daemon 落笔时幂等建出。新建＝新建＋认领单轨后恒开启——
+    // 指向已存在的文件夹时 daemon 只在缺失时才创建，认领路径不受影响；
+    // AGENTS.md 留空的提交也不会覆盖既有文件（putBot 的空正文分支）。
     const { putBotDefinition, defaultDaemonEndpoint } = await import("../adapters/daemon/client.ts");
     const r = await putBotDefinition(u, defaultDaemonEndpoint(), {}, { createRoot: opts?.createRoot === true });
     applyPutResult(set, get, u.id, r);
@@ -1995,6 +2020,9 @@ void (async () => {
           ? curActive
           : (merged.find((u) => u.id === "steward")?.id ?? merged[0]?.id ?? asUnitId(""));
         useWorkbench.setState({ units: merged, activeUnitId: defaultActive });
+        // 启动恢复的活跃 bot 若有主绑定执行器，跟着对齐（selectUnit 的口径；
+        // 此时时间线/会话都还是初始空值，顺带的清空没有副作用）
+        useWorkbench.getState().selectUnit(defaultActive);
         console.info(`[workbench] 已合并 ${valid.length} 个落盘 bot 定义${skipped > 0 ? `（跳过 ${skipped} 个不合格定义）` : ""}`);
         // 认出「哪个 bot 接的是哪个飞书机器人」。不传 profiles = 问 daemon 盘上所有
         // 已启用的飞书账号，它按 profile 去重，三个 bot 绑同一个机器人也只 spawn 一次。

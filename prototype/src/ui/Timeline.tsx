@@ -109,8 +109,9 @@ export function Timeline() {
     <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
       <div
         className={cn(
-          "mx-auto max-w-[900px] px-6 py-6 sm:px-8 sm:py-8",
-          items.length === 0 && "flex min-h-full flex-col justify-center pb-10 sm:pb-20 transition-all duration-200",
+          // 内边距跟对话列实际宽度走（容器查询）：面板/侧栏占宽时收紧，不按整窗摆阔
+          "mx-auto max-w-[900px] px-4 py-6 @min-[560px]:px-6 @min-[720px]:px-8 @min-[720px]:py-8",
+          items.length === 0 && "flex min-h-full flex-col justify-center pb-10 @min-[560px]:pb-20 transition-all duration-200",
         )}
       >
         {items.length === 0 ? (
@@ -1214,7 +1215,7 @@ function EmptyState() {
       </p>
       <p className="mt-1 text-body-sm text-graphite">
         {!unit
-          ? "新建一个 bot，或认领已有目录"
+          ? "新建一个 bot —— 指向已有文件夹即为认领（原地注册）"
           : unit.identity?.role
             ? `已装载岗位：${unit.identity.role} · 读 AGENTS.md`
             : "从对话或快捷任务开始"}

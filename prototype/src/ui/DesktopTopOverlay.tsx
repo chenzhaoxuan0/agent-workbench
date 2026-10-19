@@ -1,14 +1,16 @@
-import { PanelLeftOpen, Smartphone } from "lucide-react";
+import { PanelLeftOpen } from "lucide-react";
 import { useShell } from "../store/useShell.ts";
-import { useIsMobile } from "./mobile/useIsMobile.ts";
 
 /**
  * 左上浮层 —— 仅在侧边栏折叠时常驻左上角，提供侧栏展开入口。
- * 当侧栏展开时，由 Sidebar 自行渲染顶栏（A 图标、搜索、自动化、出图；或在子页面时顶掉为统一的返回工作台）。
+ * 当侧边栏展开时，由 Sidebar 自行渲染顶栏（A 图标、搜索、自动化、出图；或在子页面时顶掉为统一的返回工作台）。
+ *
+ * 只放这一颗图标（pl-3 + w-7 = 40px，头部内容从 48px 起排正好让出它）：
+ * 「手机视图」切换不在这里重复——工作区头部右侧那颗常驻的是唯一出口，
+ * 这里再放一颗会顶进头部 Agent 名称的对齐带。
  */
 export function DesktopTopOverlay() {
   const sidebarCollapsed = useShell((s) => s.sidebarCollapsed);
-  const { preference, setPreference, windowIsMobile } = useIsMobile();
 
   if (!sidebarCollapsed) {
     return null;
@@ -34,18 +36,6 @@ export function DesktopTopOverlay() {
             className="absolute inset-0 m-auto opacity-0 transition-opacity duration-150 group-hover:opacity-100"
           />
         </button>
-
-        {(preference === "desktop" || windowIsMobile) && (
-          <button
-            onClick={() => setPreference(windowIsMobile ? "auto" : "mobile")}
-            aria-label="切回手机视图"
-            title="切回手机视图"
-            className="flex h-7 items-center gap-1 rounded-btn px-2 text-caption font-medium text-teal border border-teal/40 bg-card/90 shadow-xs hover:bg-teal hover:text-white transition"
-          >
-            <Smartphone size={13} />
-            <span className="text-[11px]">手机视图</span>
-          </button>
-        )}
       </div>
     </div>
   );

@@ -68,7 +68,7 @@ export function ContextUsageBadge() {
         aria-label={`上下文占用 ${pct}%，点开查看口径明细与订阅余量`}
         title={`上下文 ≈${formatContext(used)} / ${formatContext(contextWindow)}（${pct}%）` +
           `\n点击查看口径明细与订阅余量`}
-        className="hidden sm:flex items-center justify-center rounded-btn h-7 w-7 sm:h-8 sm:w-8 select-none cursor-pointer transition hover:bg-line-soft"
+        className="hidden @min-[380px]:flex items-center justify-center rounded-btn h-7 w-7 @min-[480px]:h-8 @min-[480px]:w-8 select-none cursor-pointer transition hover:bg-line-soft"
       >
         <UsageRing pct={pct} tone={tone} className="h-3.5 w-3.5" />
       </button>
@@ -76,7 +76,7 @@ export function ContextUsageBadge() {
       {open && (
         <>
           <span className="fixed inset-0 z-30" onClick={() => setOpen(false)} aria-hidden />
-          <div className="absolute bottom-full right-0 z-40 mb-1.5 w-76 rounded-card border border-line bg-canvas p-3 shadow-subtle text-caption leading-relaxed">
+          <div className="absolute bottom-full right-0 z-40 mb-1.5 w-76 max-w-[calc(100cqw-32px)] rounded-card border border-line bg-canvas p-3 shadow-subtle text-caption leading-relaxed">
             <div className="flex items-center gap-2 border-b border-line-soft pb-1.5 text-body-sm font-medium text-ink">
               <UsageRing pct={pct} tone={tone} className="h-4 w-4" />
               上下文窗口 · {pct}%

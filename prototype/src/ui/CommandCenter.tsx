@@ -451,16 +451,9 @@ function useCommands(): readonly Command[] {
       {
         id: "new-agent",
         label: "新建 bot",
-        hint: "从 AGENTS.md 岗位说明书开始",
+        hint: "新文件夹自动创建；指向已有文件夹即为认领（原地注册）",
         group: "bot",
         run: () => shell().openAddBot(),
-      },
-      {
-        id: "import-agent",
-        label: "认领已有目录为 bot",
-        hint: "文件夹留在原地，只登记不搬家",
-        group: "bot",
-        run: () => shell().openImportBot(),
       },
     );
 

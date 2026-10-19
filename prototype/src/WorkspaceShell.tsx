@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { PanelRightOpen } from "lucide-react";
 import { Group, Panel, Separator, type PanelImperativeHandle } from "react-resizable-panels";
 import { AutomationsPage } from "./ui/AutomationsPage.tsx";
 import { BacklogPage } from "./ui/BacklogPage.tsx";
@@ -20,6 +21,8 @@ import { WorkspaceHeader } from "./ui/WorkspaceHeader.tsx";
 import { bindShellShortcuts, useShell } from "./store/useShell.ts";
 import { SidePaneColumn } from "./ui/SidePanePanel.tsx";
 import { useSidePane } from "./store/useSidePane.ts";
+import { sidePaneOccupies } from "./core/sidePaneTabs.ts";
+import { GlobalStatusBar } from "./ui/GlobalStatusBar.tsx";
 import { MobileLayout } from "./ui/mobile/MobileLayout.tsx";
 import { useIsMobile } from "./ui/mobile/useIsMobile.ts";
 import { cn } from "./ui/cn.ts";
@@ -71,16 +74,23 @@ export function WorkspaceShell() {
     /* 画布底色只由 body 刷一次（开壁纸时它就是唯一的全局半透明层），
        这里不再叠 bg-canvas —— 嵌套重复刷会让壁纸被多层 70% 黑乘到不可见 */
     <div className="relative flex h-screen flex-col">
-      {/* 左上浮层 —— 侧栏开关 / 新建任务（ZCode 的 DesktopTopOverlay）。
-          悬浮在侧栏区域上方，侧栏收起后原地保留，主视图切换不消失 */}
+      {/* 左上 / 右上浮层 —— 侧栏与右侧面板折叠时常驻角上的重开入口（互为镜像：
+          左上 = 侧栏展开钮，右上 = 面板展开钮）。悬浮在对应列上方，主视图切换不消失 */}
       <DesktopTopOverlay />
-      {/* 侧栏 + 主对话流 + 右侧标签面板 —— ZCode 三列布局 */}
-      <Group orientation="horizontal" id="workbench-shell">
-        <SidebarSlot />
-        <ResizeHandle />
-        <ConversationSlot />
-        <SidePaneColumn />
-      </Group>
+      <SidePaneTopOverlay />
+      {/* 三列主体（左栏 + 主对话流 + 右侧标签面板）。包一层 flex-1 容器：
+          下方还要放全局底栏，Group 的高度由这层约束 */}
+      <div className="min-h-0 flex-1">
+        <Group orientation="horizontal" id="workbench-shell">
+          <SidebarSlot />
+          <ResizeHandle />
+          <ConversationSlot />
+          <SidePaneColumn />
+        </Group>
+      </div>
+      {/* 全局底栏 —— 状态显示类功能的专席（工作状态 / 后台守护）。横贯全窗，
+          弹层有足够的水平空间向上展开，不再受任何一列的宽度钳制 */}
+      <GlobalStatusBar />
 
       {/* 设置覆盖层 —— 对齐 ZCode 的 WorkspaceSettingsLayer：absolute inset-0 压在
           shell 之上，shell 不卸载；Esc / 返回工作台退出（useShell.closeSettings） */}
@@ -133,16 +143,23 @@ function SidebarSlot() {
     return () => clearTimeout(timer);
   }, [initialWidth, collapsed]);
 
-  // WP-7 窄屏（手机局域网）：<900px 自动收侧栏，主列全宽——收起即归零语义复用；
-  // 只在从宽变窄的瞬间收一次，不把用户的手动展开反复压回
+  // WP-7 窄屏（手机局域网）：<900px 自动收侧栏，主列全宽——收起即归零语义复用。
+  // 自动收起会打上 sidebarAutoCollapsed 标记：宽回来时跟着自动展开（否则用户
+  // 每次缩放窗口都要手动点开一次）。手动收起（toggleSidebar / ⌘B）会清掉标记，
+  // 宽回来不替用户做主——那是显式选择。
   useEffect(() => {
     let wasWide = true;
     const onResize = (): void => {
       const wide = window.innerWidth >= 900;
-      if (wasWide && !wide && !useShell.getState().sidebarCollapsed) {
-        useShell.setState({ sidebarCollapsed: true });
-      }
+      if (wasWide === wide) return;
       wasWide = wide;
+      if (!wide) {
+        if (!useShell.getState().sidebarCollapsed) {
+          useShell.setState({ sidebarCollapsed: true, sidebarAutoCollapsed: true });
+        }
+      } else if (useShell.getState().sidebarAutoCollapsed) {
+        useShell.setState({ sidebarCollapsed: false, sidebarAutoCollapsed: false });
+      }
     };
     onResize();
     window.addEventListener("resize", onResize);
@@ -181,6 +198,37 @@ function SidebarSlot() {
   );
 }
 
+/* ------------------------------------------------------------- 右上面板浮层 */
+
+/**
+ * 右上浮层 —— 右侧面板收起时的常驻重开入口，与左侧栏的 DesktopTopOverlay
+ * 互为镜像（左栏折叠 → 左上出展开钮；面板收起 → 右上出展开钮）。面板自己的
+ * 收起钮在 tab 条最右（SidePanePanel），开合入口各自跟人走。
+ * 只在 chat 主视图出现：面板是 bot 作用域的，全局页（自动化 / 出图 / 待办 /
+ * 源代码管理）不挂它；头部相应让出右侧 pr-12 的对齐带。
+ */
+function SidePaneTopOverlay() {
+  const mainView = useShell((s) => s.mainView);
+  const paneOpen = useSidePane((s) =>
+    sidePaneOccupies(s.scopeUnitId, s.collapsed, mainView === "chat"),
+  );
+  if (paneOpen || mainView !== "chat") return null;
+  return (
+    <div className="pointer-events-none absolute right-0 top-0 z-30 flex h-12 items-center">
+      <div className="pointer-events-auto flex items-center gap-1 pr-3">
+        <button
+          onClick={() => useSidePane.getState().toggleFromHeader()}
+          aria-label="展开右侧面板"
+          title="展开右侧面板（从对话列右侧让出一列；没有标签时显示功能主页，面板里点选要开的功能）"
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-btn text-body-sm text-graphite hover:bg-line-soft hover:text-ink"
+        >
+          <PanelRightOpen size={14} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /* ------------------------------------------------------------- 对话区 */
 
 function ConversationSlot() {
@@ -210,7 +258,7 @@ function ConversationSlot() {
           <SourceControlPage />
         </main>
       ) : (
-        <main className="flex h-full min-h-0 flex-col" aria-label="会话">
+        <main className="@container flex h-full min-h-0 flex-col" aria-label="会话">
           {/* 工作区头部：Agent 身份卡 + 会话形态切换（对话/终端） */}
           <WorkspaceHeader />
 

@@ -273,7 +273,7 @@ export function RuntimePicker({
         }
         className={cn(
           "flex items-center justify-center rounded-lg transition",
-          "h-7 sm:h-8 px-1.5 sm:px-2 gap-1 sm:gap-1.5 text-xs sm:text-body-sm",
+          "h-7 @min-[480px]:h-8 px-1.5 @min-[480px]:px-2 gap-1 @min-[480px]:gap-1.5 text-xs @min-[480px]:text-body-sm",
           compact
             ? "border border-line-soft bg-card/60 text-graphite hover:bg-line-soft hover:text-ink active:scale-95"
             : "text-graphite hover:bg-line-soft hover:text-ink",
@@ -285,17 +285,17 @@ export function RuntimePicker({
         ) : (
           <span className="text-caption font-bold text-teal">CLI</span>
         )}
-        {/* 执行器名称：仅在宽屏 PC (lg:) 显示 */}
-        <span className="hidden lg:inline max-w-[80px] xl:max-w-[100px] truncate">
+        {/* 执行器名称：对话列宽充裕才显示（容器查询，跟着列实际宽度走而非整窗） */}
+        <span className="hidden @min-[760px]:inline max-w-[80px] @min-[1100px]:max-w-[100px] truncate">
           {active?.presentation.displayName ?? "执行器"}
         </span>
         {activeModel && (
           <>
-            <span className="hidden lg:inline text-ash" aria-hidden>·</span>
-            {/* 模型名称：在平板 (sm:) 及以上显示 */}
+            <span className="hidden @min-[760px]:inline text-ash" aria-hidden>·</span>
+            {/* 模型名称：列宽过窄先隐藏（容器查询） */}
             <span
               className={cn(
-                "hidden sm:inline max-w-[84px] md:max-w-[110px] truncate font-medium sm:font-normal",
+                "hidden @min-[480px]:inline max-w-[84px] @min-[760px]:max-w-[110px] truncate font-medium @min-[480px]:font-normal",
                 modelStale ? "text-amber-600 line-through" : "text-graphite",
               )}
             >
@@ -303,7 +303,7 @@ export function RuntimePicker({
             </span>
           </>
         )}
-        <ChevronDown size={11} className="hidden sm:inline shrink-0 text-ash" />
+        <ChevronDown size={11} className="hidden @min-[480px]:inline shrink-0 text-ash" />
       </button>
 
       {open && (
@@ -356,7 +356,9 @@ export function RuntimePicker({
         ) : (
           <div
             className={cn(
-              "absolute bottom-full z-40 mb-1.5 w-[360px] shadow-subtle",
+              // max-w 用容器查询单位（cqw）：面板/侧栏挤窄对话列时弹层跟着收，
+              // 不再按 100vw 摆阔溢出
+              "absolute bottom-full z-40 mb-1.5 w-[360px] max-w-[calc(100cqw-16px)] shadow-subtle",
               align === "right" ? "right-0" : "left-0",
             )}
           >

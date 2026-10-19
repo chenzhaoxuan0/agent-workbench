@@ -17,7 +17,7 @@ import {
 } from "lucide-react";
 import { useWorkbench, selectVisibleModels, BOT_CONFLICT, type BotWriteGuards } from "../store/useWorkbench.ts";
 import { type WorkUnit, type UnitKind, type BotChannel } from "../core/units.ts";
-import { fetchBotDefaultRoot, openFolder } from "../adapters/daemon/client.ts";
+import { fetchBotDefaultRoot, inspectBotFolder, openFolder } from "../adapters/daemon/client.ts";
 import { ChannelSection } from "./ChannelSection.tsx";
 import { FolderPickerField } from "./FolderPickerField.tsx";
 import { cn } from "./cn.ts";
@@ -27,9 +27,14 @@ import { cn } from "./cn.ts";
  *
  * 新建的唯一必填交互 = 文件夹：打开时向 daemon 要「自动安置默认位置」
  * （`<homeDir>/bots/<建议名>`）预填进输入框——用户不动就是自动安置，改了
- * （手输或点「浏览」目录浏览器）就是自定义指位。名字默认跟随文件夹名，可改。
+ * （手输或点「浏览」）就是自定义指位。名字默认跟随文件夹名，可改。
  * 其余一切（persona / AGENTS.md / 渠道 / 记忆 / 绑定）全部可选、后补；
  * AGENTS.md 留空保存时 daemon 静默生成最小占位（文件即数据库不破）。
+ *
+ * **新建＝新建＋认领单轨**（原 ImportBotDialog 已并入）：指向一个已存在的
+ * 文件夹时，输入框防抖探测一次——有 AGENTS.md 就预填派生身份，已被别的
+ * bot 注册就当场说破；提交时 daemon 对已存在目录只注册不搬动，AGENTS.md
+ * 留空不覆盖既有文件（putBot 的「带空正文不碰盘上文件」分支）。
  *
  * 编辑模式额外暴露 kind 切换（bot ↔ 项目，弱标签）：判据问句文案，
  * 保存走既有 putBot 乐观锁链路。
@@ -157,6 +162,8 @@ export function AddBotDialog({
   /** 渠道配置。空 = 纯工作台内 bot。改了跟着保存一起写穿 bot.json。 */
   const [channels, setChannels] = useState<readonly BotChannel[]>(initial?.channels ?? []);
   const [folderOpened, setFolderOpened] = useState(false);
+  /** 认领提示：目标文件夹已被别的 bot 注册（提交会被 daemon 的 root_taken 拦下） */
+  const [claimHint, setClaimHint] = useState<string | null>(null);
 
   const isEdit = Boolean(initial);
 
@@ -199,6 +206,7 @@ export function AddBotDialog({
     setError(null);
     setConflict(null);
     setDiskNote(null);
+    setClaimHint(null);
     setSection("identity");
     let cancelled = false;
     const fetchPlacement = async (prefill: boolean): Promise<void> => {
@@ -255,6 +263,58 @@ export function AddBotDialog({
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [open, onClose]);
+
+  // 认领并入新建的探测（只读，防抖 350ms）：新建模式下文件夹指向一个已存在的
+  // 目录时问一次 bot.inspect —— 已被注册当场说破（提交也会被 root_taken 拦，
+  // 早说早省事）；有 AGENTS.md 就预填派生身份（名字未手改时跟随，角色只补空）；
+  // 文件夹里已有 bot.json（换机/移动目录后的重连场景）则身份与主执行器直接取
+  // 既有定义，尽量让这次注册与原定义内容一致。daemon 不可达 / 路径不存在都
+  // 静默：前者提交时自会报错，后者是「将自动创建」。
+  useEffect(() => {
+    if (!open || isEdit) return;
+    const target = rootPath.trim();
+    if (target === "") {
+      setClaimHint(null);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      void inspectBotFolder(target)
+        .then(({ report, existing }) => {
+          if (cancelled) return;
+          const taken = report.conflicts.alreadyRegistered;
+          if (report.exists && taken !== null) {
+            setClaimHint(`这个目录已经是「${taken.name}」的工作目录 —— 换一个，或直接在侧栏里用它`);
+            return;
+          }
+          setClaimHint(null);
+          if (!report.exists) return;
+          if (report.hasBotJson && existing !== null) {
+            if (existing.name !== "" && !nameTouchedRef.current) setName(existing.name);
+            const role = existing.identity?.role;
+            if (role !== undefined && role !== "") setRole((r) => (r.trim() === "" ? role : r));
+            const b = existing.bindings.find((x) => x.primary) ?? existing.bindings[0];
+            if (b !== undefined && runtimes.some((r) => r.id === b.runtimeId)) {
+              setRuntimeId(b.runtimeId);
+              setModelHint(b.modelHint ?? null);
+            }
+            return;
+          }
+          const derived = report.hasAgentsMd ? report.derived : null;
+          if (derived !== null && derived.name !== "" && !nameTouchedRef.current) {
+            setName(derived.name);
+          }
+          if (derived !== null && derived.role !== "") {
+            setRole((r) => (r.trim() === "" ? derived.role : r));
+          }
+        })
+        .catch(() => undefined);
+    }, 350);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [open, isEdit, rootPath, runtimes]);
 
   /** 选图 → 居中裁 96×96 → dataURL（webp 优先，浏览器不支持时 toDataURL 自动回退 png） */
   const onAvatarFile = (file: File): void => {
@@ -412,7 +472,7 @@ export function AddBotDialog({
                   hint={
                     isEdit
                       ? "这个 bot 的根文件夹（AGENTS.md 与产出都放这里）。编辑时目录必须已存在——改成不存在的路径会报错"
-                      : "这个 bot 的根文件夹（AGENTS.md 与产出都放这里）。不动就是自动安置；改了就是自定义指位，目录不存在时会自动创建"
+                      : "这个 bot 的根文件夹（AGENTS.md 与产出都放这里）。不动就是自动安置；指向已有文件夹即为认领（原地注册、不覆盖里面的文件），不存在的路径会自动创建"
                   }
                 >
                   <FolderPickerField
@@ -448,6 +508,9 @@ export function AddBotDialog({
                     }
                   />
                 </Field>
+                {!isEdit && claimHint !== null && (
+                  <p className="-mt-3 text-caption text-loss">{claimHint}</p>
+                )}
                 <Field label="头像" hint="可选，上传后居中裁成方形；外框形态跟随外观设置的「bot 头像框形态」">
                   <div className="flex items-center gap-3">
                     {avatar ? (
@@ -793,7 +856,7 @@ export function AddBotDialog({
               <p className="text-caption text-ash">
                 {isEdit
                   ? "保存写穿到 bot.json 与工作目录下的 AGENTS.md"
-                  : "唯一必填的是文件夹；创建后的一切都在这个文件夹里，名字、人设、AGENTS.md、渠道都可以后补"}
+                  : "唯一必填的是文件夹；指向已有文件夹即为认领（原地注册，不动里面的文件），创建后的一切都在这个文件夹里，名字、人设、AGENTS.md、渠道都可以后补"}
               </p>
               )}
               <div className="ml-auto flex items-center gap-2">

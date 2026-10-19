@@ -16,16 +16,21 @@ import { useShell } from "./useShell.ts";
  */
 
 const WIDTH_KEY = "agent-workbench:sidepane-width-px";
-/** 弹窗时代 720px；成列后按「主对话为主、面板为辅」收窄默认值 */
-const SIDE_PANE_DEFAULT = 520;
-const SIDE_PANE_MIN = 360;
+/** 与左栏默认一致（useShell.SIDEBAR_DEFAULT）：两侧面板打开时的视觉重量对称 */
+const SIDE_PANE_DEFAULT = 264;
+/** 面板最窄即默认宽 —— 历史列表在 264px 下仍可读，窄于此宁可收起面板 */
+const SIDE_PANE_MIN = 264;
 
 function readWidth(): number {
   if (typeof window === "undefined") return SIDE_PANE_DEFAULT;
   try {
     const raw = window.localStorage.getItem(WIDTH_KEY);
     const n = raw === null ? NaN : Number(raw);
-    if (!Number.isFinite(n) || n <= 0) return SIDE_PANE_DEFAULT;
+    // 旧默认 520（弹窗时代 720 → 成列时代 520 的遗留）重置为新默认：改默认宽度
+    // 不能只改常量，存量用户盘上存的就是旧默认，读出来永远盖住新值
+    if (!Number.isFinite(n) || n <= 0 || n === 520) {
+      return SIDE_PANE_DEFAULT;
+    }
     return Math.max(SIDE_PANE_MIN, Math.round(n));
   } catch {
     return SIDE_PANE_DEFAULT;

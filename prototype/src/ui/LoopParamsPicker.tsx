@@ -131,7 +131,7 @@ export function ReasoningEffortPicker({
         title="设置执行器推理思考力度（默认跟随执行器原生设定）"
         className={cn(
           "flex items-center justify-center rounded-lg transition",
-          "h-7 sm:h-8 px-1.5 sm:px-2 gap-1 sm:gap-1.5 text-xs sm:text-body-sm",
+          "h-7 @min-[480px]:h-8 px-1.5 @min-[480px]:px-2 gap-1 @min-[480px]:gap-1.5 text-xs @min-[480px]:text-body-sm",
           compact ? "border border-line-soft bg-card/60 active:scale-95" : "hover:bg-line-soft",
           open
             ? "bg-line-soft text-ink ring-1 ring-teal/30"
@@ -141,8 +141,8 @@ export function ReasoningEffortPicker({
         )}
       >
         <Sparkles size={14} className={cn("shrink-0", isCustom ? "text-teal" : "text-ash")} />
-        <span className="hidden sm:inline max-w-[90px] truncate font-medium sm:font-normal">{label}</span>
-        <ChevronDown size={11} className="hidden sm:inline shrink-0 opacity-60" />
+        <span className="hidden @min-[560px]:inline max-w-[90px] truncate font-medium @min-[560px]:font-normal">{label}</span>
+        <ChevronDown size={11} className="hidden @min-[560px]:inline shrink-0 opacity-60" />
       </button>
 
       {open && (
@@ -187,7 +187,8 @@ export function ReasoningEffortPicker({
         ) : (
           <div
             className={cn(
-              "absolute bottom-full z-40 mb-1.5 w-64 max-w-[calc(100vw-32px)] overflow-hidden rounded-input border border-line bg-canvas shadow-[0_8px_24px_rgb(0_0_0/0.14)]",
+              // 100cqw（容器查询单位）：弹层宽度跟着对话列实际宽度收，不按整窗摆阔
+              "absolute bottom-full z-40 mb-1.5 w-64 max-w-[calc(100cqw-32px)] overflow-hidden rounded-input border border-line bg-canvas shadow-[0_8px_24px_rgb(0_0_0/0.14)]",
               align === "left" ? "left-0" : "right-0",
             )}
           >

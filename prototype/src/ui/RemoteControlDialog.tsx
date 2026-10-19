@@ -34,7 +34,7 @@ import { useWorkbench, selectActiveUnit } from "../store/useWorkbench.ts";
 import { useShell } from "../store/useShell.ts";
 import { cn } from "./cn.ts";
 
-export function RemoteControlDialog({ onClose }: { onClose: () => void }) {
+export function RemoteControlDialog({ onClose, embedded = false }: { onClose: () => void; embedded?: boolean }) {
   const dialogTitleId = useId();
   const [tab, setTab] = useState<"lan" | "tunnel" | "im">("lan");
   const [interfaces, setInterfaces] = useState<readonly NetworkInterfaceInfo[]>([]);
@@ -218,12 +218,24 @@ export function RemoteControlDialog({ onClose }: { onClose: () => void }) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs animate-in fade-in duration-200"
-      role="dialog"
-      aria-modal="true"
+      className={
+        embedded
+          ? // 内嵌形态（设置页 remoteControl 分区）：去掉全屏遮罩与圆角浮层壳，
+            // 直接填充分区内容列；标题栏的关闭钮由分区自己渲染，这里不画
+            "relative flex h-full min-h-0 w-full flex-col overflow-hidden bg-canvas text-ink"
+          : "fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs animate-in fade-in duration-200"
+      }
+      role={embedded ? undefined : "dialog"}
+      aria-modal={embedded ? undefined : true}
       aria-labelledby={dialogTitleId}
     >
-      <div className="relative flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-line/80 bg-canvas text-ink shadow-2xl">
+      <div
+        className={cn(
+          embedded
+            ? "flex h-full min-h-0 w-full flex-col overflow-hidden bg-canvas text-ink"
+            : "relative flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-line/80 bg-canvas text-ink shadow-2xl",
+        )}
+      >
         {/* 顶部标题栏 */}
         <div className="flex items-center justify-between border-b border-line/60 bg-rail/60 px-6 py-4">
           <div className="flex items-center gap-3">
@@ -239,13 +251,15 @@ export function RemoteControlDialog({ onClose }: { onClose: () => void }) {
               </p>
             </div>
           </div>
-          <button
-            onClick={onClose}
-            aria-label="关闭弹窗"
-            className="rounded-btn p-1.5 text-graphite transition hover:bg-line-soft hover:text-ink"
-          >
-            <X size={18} />
-          </button>
+          {!embedded && (
+            <button
+              onClick={onClose}
+              aria-label="关闭弹窗"
+              className="rounded-btn p-1.5 text-graphite transition hover:bg-line-soft hover:text-ink"
+            >
+              <X size={18} />
+            </button>
+          )}
         </div>
 
         {/* 选项卡切换 */}
@@ -292,7 +306,7 @@ export function RemoteControlDialog({ onClose }: { onClose: () => void }) {
         </div>
 
         {/* 内容区 */}
-        <div className="flex-1 overflow-y-auto p-6">
+        <div className="min-h-0 flex-1 overflow-y-auto p-6">
           {tab === "lan" ? (
             <div className="space-y-6">
               {/* 网卡选择器 */}

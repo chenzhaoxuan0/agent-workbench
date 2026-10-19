@@ -382,7 +382,10 @@ export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
 
   return (
     <div className="shrink-0">
-      <div className={cn("mx-auto max-w-[900px]", isMobile ? "px-3 pb-2 pt-1" : "px-8 pb-4 pt-2")}>
+      {/* 内边距与列宽联动（@container，挂在对话列 main 上）：面板/侧栏任何一列
+          占宽时 Composer 按自己的实际宽度收紧，而不是按整窗宽度摆阔 —— 否则
+          列已被挤窄、工具条还按宽屏规格排，溢出出横向滚动条 */}
+      <div className={cn("mx-auto max-w-[900px]", isMobile ? "px-3 pb-2 pt-1" : "px-3 pb-4 pt-2 @min-[560px]:px-8")}>
         <div
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
@@ -619,10 +622,14 @@ export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
             </div>
           )}
 
-          {/* 底部工具栏 */}
-          <div className="mt-2 flex items-center justify-between gap-1.5">
+          {/* 底部工具栏。压缩优先级（均为容器查询，跟对话列实际宽度）：
+              文字标签先于一切让位且按次序收——完全访问（<640 隐）→ 推理强度
+              （<560 隐）→ 执行器模型名（<480 隐，最后收，此时只剩图标）；
+              图标钮不缩，列再窄到连图标行都放不下时 flex-wrap 兜底换行（右组
+              ml-auto 保持右对齐），而不是溢出出滚动条 */}
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-1.5">
             {/* 左侧操作：[+] 扩展菜单（附件/斜杠指令/@引用） + 模式形式 (plan / accept edits / ask / bypass) */}
-            <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
+            <div className="flex items-center gap-1 @min-[480px]:gap-1.5 shrink-0">
               <div className="relative" ref={plusMenuRef}>
                 <button
                   type="button"
@@ -632,7 +639,7 @@ export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
                   title="添加附件、快捷指令，或 @ 引用文件"
                   className={cn(
                     "flex shrink-0 items-center justify-center rounded-lg border border-line-soft bg-card/60 text-teal hover:bg-line-soft active:scale-95 transition",
-                    "h-7 w-7 sm:h-8 sm:w-8",
+                    "h-7 w-7 @min-[480px]:h-8 @min-[480px]:w-8",
                     plusMenuOpen && "bg-teal-tint text-teal ring-1 ring-teal/30",
                   )}
                 >
@@ -725,8 +732,9 @@ export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
               <ChatTerminalToggleButton />
             </div>
 
-            {/* 右侧操作：上下文容量/额度徽标 + 执行器与模型（单图标） + 推理力度（单图标） + 发送/停止按钮 */}
-            <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
+            {/* 右侧操作：上下文容量/额度徽标 + 执行器与模型（单图标） + 推理力度（单图标） + 发送/停止按钮。
+                ml-auto：与左侧组同排放不下而换行时，独占一行也保持右对齐 */}
+            <div className="ml-auto flex items-center gap-1 @min-[480px]:gap-1.5 shrink-0">
               <ContextUsageBadge />
               <RuntimePicker compact={isMobile} align="right" />
               <ReasoningEffortPicker compact={isMobile} align="right" />
@@ -737,7 +745,7 @@ export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
                   onClick={() => useWorkbench.getState().cancelRun()}
                   aria-label="停止"
                   title="停止"
-                  className="flex shrink-0 items-center justify-center rounded-lg bg-ink text-canvas hover:opacity-90 active:scale-95 transition h-7 w-7 sm:h-8 sm:w-8"
+                  className="flex shrink-0 items-center justify-center rounded-lg bg-ink text-canvas hover:opacity-90 active:scale-95 transition h-7 w-7 @min-[480px]:h-8 @min-[480px]:w-8"
                 >
                   <Square size={isMobile ? 10 : 12} fill="currentColor" />
                 </button>
@@ -748,7 +756,7 @@ export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
                   disabled={!draft.trim() && attachments.length === 0}
                   aria-label="发送"
                   title="发送 · Enter"
-                  className="flex shrink-0 items-center justify-center rounded-lg bg-teal text-canvas hover:opacity-90 active:scale-95 disabled:opacity-30 disabled:bg-ink transition shadow-xs h-7 w-7 sm:h-8 sm:w-8"
+                  className="flex shrink-0 items-center justify-center rounded-lg bg-teal text-canvas hover:opacity-90 active:scale-95 disabled:opacity-30 disabled:bg-ink transition shadow-xs h-7 w-7 @min-[480px]:h-8 @min-[480px]:w-8"
                 >
                   <ArrowUp size={isMobile ? 14 : 16} strokeWidth={2.5} />
                 </button>

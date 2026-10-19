@@ -7,12 +7,12 @@
  * bot 与项目并列等价：面板顶部 [bot|项目] 分段一点即切（打开时自动落在
  * 当前单元所在的形态），不再纵向堆两组把项目沉底。列表顺序与侧栏完全
  * 同序（orderUnitsLikeSidebar：常驻/置顶在前、普通节跟用户拖拽序）——
- * 侧栏里排在哪，这里就排在哪。底部「新建 bot / 认领文件夹」直通既有
+ * 侧栏里排在哪，这里就排在哪。底部「新建 bot」直通既有（新建＝认领单轨）
  * 入口。移动端不走这里——芯片点开的是移动抽屉，那本来就是单元切换器。
  */
 
 import { useEffect, useRef, useState } from "react";
-import { Bot, Check, ChevronDown, FolderGit2, FolderOpen, Plus } from "lucide-react";
+import { Bot, Check, ChevronDown, FolderGit2, Plus } from "lucide-react";
 import { useWorkbench, type ViewMode } from "../store/useWorkbench.ts";
 import { useShell } from "../store/useShell.ts";
 import { isProjectUnit, orderUnitsLikeSidebar, type WorkUnit } from "../core/units.ts";
@@ -176,6 +176,7 @@ export function UnitSwitcher(props: {
               </div>
             </div>
           </div>
+          {/* 新建＝新建＋认领单轨：指向已有文件夹即为认领，不再另设入口 */}
           <div className="flex items-center gap-1.5 border-t border-line-soft p-1.5">
             <button
               type="button"
@@ -187,17 +188,6 @@ export function UnitSwitcher(props: {
             >
               <Plus size={12} />
               新建 bot…
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setOpen(false);
-                useShell.getState().openImportBot();
-              }}
-              className="flex flex-1 items-center justify-center gap-1 rounded-btn px-2 py-1.5 text-caption font-medium text-graphite transition hover:bg-line-soft hover:text-ink"
-            >
-              <FolderOpen size={12} />
-              认领文件夹…
             </button>
           </div>
         </div>

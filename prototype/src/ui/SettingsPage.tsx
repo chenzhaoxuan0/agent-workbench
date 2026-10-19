@@ -19,6 +19,7 @@ import {
   Plus,
   Settings2,
   Shield,
+  Smartphone,
   SquareTerminal,
   Wand,
 } from "lucide-react";
@@ -38,6 +39,7 @@ import { SkillsSettingsSection } from "./SkillsSettingsSection.tsx";
 import { McpSettingsSection } from "./McpSettingsSection.tsx";
 import { BrowserControlSection } from "./BrowserControlSection.tsx";
 import { ComputerControlSection } from "./ComputerControlSection.tsx";
+import { RemoteControlDialog } from "./RemoteControlDialog.tsx";
 import { ImageSettingsSection } from "./ImageSettingsSection.tsx";
 import { AppearanceSettingsSection } from "./AppearanceSettingsSection.tsx";
 import { useHistoryPrefs } from "../store/useHistoryPrefs.ts";
@@ -63,6 +65,7 @@ const ICONS: Record<string, typeof Settings2> = {
   terminal: SquareTerminal,
   globe: Globe,
   monitor: Monitor,
+  smartphone: Smartphone,
 };
 
 /** 居中内容列：max-w-5xl 给予多列执行器与模型管理更充裕的呼吸空间 */
@@ -255,6 +258,15 @@ function SectionBody({ section }: { section: SettingsSectionDef }) {
       return <BrowserControlSection />;
     case "computerControl":
       return <ComputerControlSection />;
+    case "remoteControl":
+      /* 移动端远控（原右侧栏状态条入口迁入）：低频设置项归设置页。
+          embedded 形态去掉全屏遮罩直接填充内容列；FRAME 的 px-6 与弹窗自身的
+          内边距会叠加，改用负外边距抵消弹窗 p-6 的横向内边距 */
+      return (
+        <div className="-mx-6">
+          <RemoteControlDialog embedded onClose={() => undefined} />
+        </div>
+      );
     case "memory":
       return <MemorySettingsSection />;
     case "image":

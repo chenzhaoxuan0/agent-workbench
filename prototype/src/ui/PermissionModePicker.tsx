@@ -135,7 +135,7 @@ export function PermissionModePicker({
         title={`${def.label} · ${def.desc}`}
         className={cn(
           "flex items-center justify-center transition rounded-lg",
-          "h-7 sm:h-8 px-1.5 sm:px-2 gap-1 sm:gap-1.5 text-xs sm:text-body-sm",
+          "h-7 @min-[480px]:h-8 px-1.5 @min-[480px]:px-2 gap-1 @min-[480px]:gap-1.5 text-xs @min-[480px]:text-body-sm",
           compact ? "border border-line-soft bg-card/60 active:scale-95" : "hover:bg-line-soft",
           open
             ? "bg-line-soft text-ink ring-1 ring-teal/30"
@@ -145,8 +145,8 @@ export function PermissionModePicker({
         )}
       >
         <TriggerIcon size={14} className={cn("shrink-0", def.danger ? "text-loss" : "text-ink")} />
-        <span className="hidden sm:inline max-w-[84px] truncate font-medium sm:font-normal">{def.label}</span>
-        <ChevronDown size={11} className="hidden sm:inline shrink-0 opacity-60" />
+        <span className="hidden @min-[640px]:inline max-w-[84px] truncate font-medium @min-[640px]:font-normal">{def.label}</span>
+        <ChevronDown size={11} className="hidden @min-[640px]:inline shrink-0 opacity-60" />
       </button>
 
       {open && (
@@ -191,7 +191,8 @@ export function PermissionModePicker({
         ) : (
           <div
             className={cn(
-              "absolute bottom-full z-40 mb-1.5 w-64 max-w-[calc(100vw-32px)] overflow-hidden rounded-input border border-line bg-canvas py-1 shadow-lg",
+              // 100cqw（容器查询单位）：弹层宽度跟着对话列实际宽度收，不按整窗摆阔
+              "absolute bottom-full z-40 mb-1.5 w-64 max-w-[calc(100cqw-32px)] overflow-hidden rounded-input border border-line bg-canvas py-1 shadow-lg",
               align === "left" ? "left-0" : "right-0",
             )}
           >

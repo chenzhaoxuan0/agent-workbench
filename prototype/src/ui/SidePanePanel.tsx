@@ -12,6 +12,12 @@ import { cn } from "./cn.ts";
  * 右侧标签页面板 —— 工作台第三列（对齐 ZCode 的 AnimatedSidePanePanel，按本产品体量裁剪）。
  *
  * 关键行为（都不是样式问题）：
+ * - **与左侧栏同款布局逻辑**：面板就是窗口内的一列 Panel —— 展开/收起/拖宽只是
+ *   三列（左栏 / 对话列 / 面板）内部的宽度重新分配，**不碰 Electron 窗口尺寸**。
+ *   此前「面板占位 = 整窗加宽一块」的插块机制已移除：窗口最大化时加宽不生效、
+ *   主对话列被面板硬挤到出横向滚动条；拖宽面板时高频 setBounds 让整窗剧烈
+ *   抖动甚至持续变高。对话列内容的压缩改由它自己的容器宽度驱动（见
+ *   WorkspaceShell 的 @container 与 Composer 等的容器查询）。
  * - **bot 作用域**：tab 条只画当前 bot 的 tab，但内容区挂载**全量** tab ——
  *   切 bot 隐藏不销毁，A 的展开态/滚动位置在切回时原样恢复（保活）。
  * - **只在 chat 主视图展开**（ZCode：workspaceMainView === "chat" && isSidePaneOpen）：
@@ -20,10 +26,9 @@ import { cn } from "./cn.ts";
  *   openTab 会顺带切回 chat（见 useSidePane.openTab）。
  * - **展开即有内容**：无可见 tab 时面板显示**功能主页**（SidePaneHome）—— 直接在
  *   面板里点选要开的功能，而不是空壳或整列消失；用户收起才归零（含分隔条不占空间）。
- *   重开入口有二 —— 工作区头部最右的开合钮（useSidePane.toggleFromHeader，ZCode
- *   头部状态感知开关同款）与各业务入口的 openTab（永远展开面板）。
- * - **窗口宽度插块**（Electron）：面板占位 = 整窗加宽面板那块宽度，让位 = 减回 ——
- *   对话列宽度恒定，「右侧插进来/拿走一块窗口」而非对话区被压窄（见 SidePaneColumn）。
+ *   开合入口与左栏对称：面板展开时收起钮在 tab 条最右（本组件内，镜像左栏顶部的
+ *   开关）；收起后的重开走右上浮层钮（WorkspaceShell 的 SidePaneTopOverlay，与
+ *   左侧栏折叠浮层互为镜像）以及各业务入口的 openTab（永远展开面板）。
  * - tab 关闭语义见 core/sidePaneTabs.ts（关激活落右邻）。
  *
  * 后续扩展位（tab 类型 ≥ 2 时再做）：tab 拖拽排序、⌄ 总览搜索、最近关闭重开。
@@ -36,40 +41,11 @@ export function SidePaneColumn(): ReactElement | null {
   const collapsed = useSidePane((s) => s.collapsed);
   const scopeUnitId = useSidePane((s) => s.scopeUnitId);
   const mainView = useShell((s) => s.mainView);
-  const paneWidth = useSidePane((s) => s.paneWidth);
   const visibleTabs = useMemo(() => visibleTabsForUnit(tabs, scopeUnitId), [tabs, scopeUnitId]);
 
   // 面板真实占位（口径见 core/sidePaneTabs.sidePaneOccupies —— 列卸载/切主视图都算让位；
   // 无可见 tab 时也占位，显示功能主页）
   const open = sidePaneOccupies(scopeUnitId, collapsed, mainView === "chat");
-
-  // 窗口宽度插块（Electron）：窗口宽度始终跟随「面板占位宽度」—— 展开/收起翻转
-  // 与拖宽/拖窄都走同一账本（appliedRef 记当前已插进去的宽度），对话列宽度在两侧
-  // 都不动，视觉上是「右侧插进来/拿走/变宽一块窗口」而非对话区被压窄。
-  // 屏幕边截断时主进程返回实际生效宽度，缺口从账面扣除 —— 下次开合从真实基数
-  // 出发，不留净漂移。纯浏览器访问没有窗口控制面，静默降级为现状（对话列让宽）。
-  const appliedRef = useRef(0);
-  useEffect(() => {
-    const api = (
-      window as Window & {
-        electronAPI?: { adjustWindowWidth?: (delta: number) => Promise<number> };
-      }
-    ).electronAPI;
-    if (api?.adjustWindowWidth === undefined) return;
-    const target = open ? paneWidth : 0;
-    const delta = target - appliedRef.current;
-    // 死区：±1px 的拖动抖动/取整差不惊动窗口（账本按累计差额记账，跳过不破坏口径）
-    if (Math.abs(delta) < 2) return;
-    appliedRef.current = target;
-    void api
-      .adjustWindowWidth(delta)
-      .then((real) => {
-        appliedRef.current -= delta - real;
-      })
-      .catch(() => {
-        appliedRef.current -= delta; // 失败当作没插进去，下个回合从原基数重算
-      });
-  }, [open, paneWidth]);
 
   // 卸载判据只有「无 tab 可保活」：收起/切主视图时保持挂载、面板 collapse 到 0 ——
   // 全量 tab（含其他 bot 的）的展开态/滚动位置在重开时原样恢复。
@@ -175,13 +151,13 @@ function SidePanePanelBody({
   const tabs = useSidePane((s) => s.tabs);
   const activateTab = useSidePane((s) => s.activateTab);
   const closeTab = useSidePane((s) => s.closeTab);
-  const toggleCollapsed = useSidePane((s) => s.toggleCollapsed);
   const visibleActiveTabId = visibleTabs.some((tab) => tab.id === activeTabId) ? activeTabId : "";
 
   return (
     <div className="flex h-full min-h-0 flex-col border-l border-line bg-card">
       {/* tab 条：横向滚动；激活 tab 高亮，hover 出关闭 ×。无可见 tab 时标「功能」，
-          此时内容区就是功能主页 */}
+          此时内容区就是功能主页。最右是收起钮 —— 与左栏顶部开关镜像（右侧栏自己
+          的开关在自己身上，不在主对话页；收起后重开走右上浮层钮） */}
       <div role="tablist" aria-label="右侧面板标签页" className="flex h-10 shrink-0 items-center gap-1 border-b border-line pl-2 pr-1">
         <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
           {visibleTabs.length === 0 && (
@@ -238,9 +214,9 @@ function SidePanePanelBody({
         </div>
         <button
           type="button"
-          onClick={toggleCollapsed}
+          onClick={() => useSidePane.getState().toggleFromHeader()}
           aria-label="收起右侧面板"
-          title="收起右侧面板（从历史等入口可重新打开）"
+          title="收起右侧面板（对话列随之展宽；右上浮层钮与侧栏历史入口可重新打开）"
           className="shrink-0 rounded-btn p-1 text-ash transition hover:bg-line-soft hover:text-ink"
         >
           <PanelRightClose size={14} />
@@ -248,7 +224,9 @@ function SidePanePanelBody({
       </div>
 
       {/* 内容区：全量 tab 挂载（保活），仅「面板可见且激活」的那个显示；
-          无可见 tab（或聚焦缺失）时落功能主页 —— 面板展开永远有东西可点 */}
+          无可见 tab（或聚焦缺失）时落功能主页 —— 面板展开永远有东西可点。
+          状态徽标（工作中 / 后台守护）已迁左侧栏底部，移动端远控已迁设置页
+          remoteControl 分区 —— 面板底部不再有状态条 */}
       <div className="relative min-h-0 flex-1">
         {visibleActiveTabId === "" ? (
           <SidePaneHome />
@@ -309,8 +287,9 @@ function sidePaneTabTitle(tab: SidePaneTab): string {
 /**
  * 面板功能主页 —— 展开时若无可见 tab（或聚焦缺失），面板直接列出当前可点的功能
  * 入口，点选后才把对应内容以 tab 形式打开。右侧栏现有功能就一类：各单元的历史
- * 会话（自动化任务、待办、心跳与手动会话的时间轴）；后续新功能（移动端远控等）
- * 以标签页形式入驻时，这里就是它们的统一入口页。
+ * 会话（自动化任务、待办、心跳与手动会话的时间轴）；后续新功能以标签页形式
+ * 入驻时，这里就是它们的统一入口页。状态类入口不在面板里：工作中 / 后台守护
+ * 在左侧栏底部，移动端远控在设置页 remoteControl 分区。
  */
 function SidePaneHome(): ReactElement {
   const units = useWorkbench((s) => s.units);
@@ -374,3 +353,11 @@ function SidePaneHome(): ReactElement {
     </div>
   );
 }
+
+/* ------------------------------------------------------------- 状态条（已迁出） */
+
+/**
+ * 面板底部状态条（PaneStatusStrip）已移除：工作中 / 后台守护迁左侧栏底部
+ * （Sidebar，全局状态跟左栏全局动作区同级），移动端远控迁设置页 remoteControl
+ * 分区（低频设置项归设置页）。面板回归纯「按需查看的内容区」。
+ */

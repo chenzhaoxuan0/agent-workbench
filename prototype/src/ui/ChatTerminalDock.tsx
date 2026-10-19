@@ -292,7 +292,7 @@ export function ChatTerminalToggleButton() {
       title="对话终端 —— 在对话输入框下方唤起终端（Shell 在设置 → 终端里选）"
       className={cn(
         "flex shrink-0 items-center justify-center rounded-lg border border-line-soft bg-card/60 active:scale-95 transition",
-        "h-7 w-7 sm:h-8 sm:w-8",
+        "h-7 w-7 @min-[480px]:h-8 @min-[480px]:w-8",
         open ? "bg-teal-tint text-teal ring-1 ring-teal/30" : "text-graphite hover:text-teal hover:bg-line-soft",
       )}
     >

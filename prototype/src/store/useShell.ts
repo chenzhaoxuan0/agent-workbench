@@ -53,7 +53,8 @@ export type SettingsSectionId =
   | "skills"
   | "mcp"
   | "browserControl"
-  | "computerControl";
+  | "computerControl"
+  | "remoteControl";
 
 export type SettingsGroupId = "basics" | "agentCapabilities";
 
@@ -90,6 +91,7 @@ export const SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
   { id: "mcp", title: "MCP 服务", desc: "分执行器管理各家原生配置里的 MCP：增删改、停用库、跨执行器复制", groupId: "agentCapabilities", icon: "plug" },
   { id: "browserControl", title: "浏览器控制", desc: "playwright-mcp 一键扇出到全部执行器；隔离 / 接管（共享 Chrome）两模式", groupId: "agentCapabilities", icon: "globe" },
   { id: "computerControl", title: "电脑控制", desc: "执行器操作真实桌面（截图 / 键鼠 / 窗口）：总闸、急停与动作日志", groupId: "agentCapabilities", icon: "monitor" },
+  { id: "remoteControl", title: "移动端远控", desc: "扫码直连手机 Web 触控界面、公网穿透与 IM 渠道守护状态", groupId: "agentCapabilities", icon: "smartphone" },
   { id: "image", title: "出图", desc: "图像供应商 profile 管理（gpt_image_playground 字段全集）", groupId: "agentCapabilities", icon: "image" },
 ];
 
@@ -141,6 +143,12 @@ function persistWidth(w: number): void {
 interface ShellState {
   sidebarWidth: number;
   sidebarCollapsed: boolean;
+  /**
+   * 当前折叠是不是「窗口变窄触发的自动折叠」。窄→宽时要跟着自动展开；
+   * 用户手动收起（toggleSidebar）会清掉这个标记 —— 显式选择优先于自动恢复。
+   * 会话内记忆，不持久化：重启后无从谈起。
+   */
+  sidebarAutoCollapsed: boolean;
 
   commandOpen: boolean;
   mainView: MainView;
@@ -148,14 +156,12 @@ interface ShellState {
   settingsSection: SettingsSectionId;
   /** 新建 bot 对话框（AGENTS.md 岗位说明书）。放 store 而不是 Sidebar 局部状态：
    *  「添加 bot」的按钮收进了侧栏 ⋯ 之后，单元区的空态要能当第二个入口，
-   *  两处共用一个开关。 */
+   *  两处共用一个开关。新建＝新建＋认领单轨：指向已有文件夹时原地注册，
+   *  不再另设导入对话框（原 ImportBotDialog 已并入）。 */
   addBotOpen: boolean;
   /** 正在编辑的单元 id —— 非 null 时同一个对话框切到「保存」模式并预填该 bot。
    *  和 addBotOpen 二选一：新建 / 编辑共用一个对话框组件，不开第二份表单状态。 */
   editUnitId: UnitId | null;
-  /** 导入已有文件夹对话框（docs/09 §七）。与 addBotOpen 互斥：两个都是「加一个 bot 进来」，
-   *  但一个建新东西、一个只登记现成文件夹，后果不同，表单也不能复用。 */
-  importBotOpen: boolean;
   /** 会话内视图：默认结构化聊天（docs/13 决策），终端画布为可切换的并行形态 */
   conversationView: ConversationView;
 
@@ -173,8 +179,6 @@ interface ShellState {
   setCommandOpen: (open: boolean) => void;
   openAddBot: () => void;
   closeAddBot: () => void;
-  openImportBot: () => void;
-  closeImportBot: () => void;
   openUnitSettings: (id: UnitId) => void;
   closeUnitSettings: () => void;
 }
@@ -182,6 +186,7 @@ interface ShellState {
 export const useShell = create<ShellState>((set, get) => ({
   sidebarWidth: readWidth(),
   sidebarCollapsed: false,
+  sidebarAutoCollapsed: false,
 
   commandOpen: false,
   mainView: "chat",
@@ -189,7 +194,6 @@ export const useShell = create<ShellState>((set, get) => ({
   settingsSection: "models",
   addBotOpen: false,
   editUnitId: null,
-  importBotOpen: false,
   conversationView: "chat",
 
   setMainView: (mainView) => set({ mainView }),
@@ -210,15 +214,14 @@ export const useShell = create<ShellState>((set, get) => ({
     persistWidth(clamped);
   },
 
-  toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
+  // 手动开合 = 用户接管：清掉自动折叠标记，宽回来时不替用户做主
+  toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed, sidebarAutoCollapsed: false })),
 
   setCommandOpen: (commandOpen) => set({ commandOpen }),
 
-  openAddBot: () => set({ addBotOpen: true, editUnitId: null, importBotOpen: false }),
+  openAddBot: () => set({ addBotOpen: true, editUnitId: null }),
   closeAddBot: () => set({ addBotOpen: false }),
-  openImportBot: () => set({ importBotOpen: true, addBotOpen: false, editUnitId: null }),
-  closeImportBot: () => set({ importBotOpen: false }),
-  openUnitSettings: (editUnitId) => set({ editUnitId, addBotOpen: false, importBotOpen: false }),
+  openUnitSettings: (editUnitId) => set({ editUnitId, addBotOpen: false }),
   closeUnitSettings: () => set({ editUnitId: null }),
 }));
 
@@ -257,7 +260,6 @@ export function bindShellShortcuts(): () => void {
       const s = useShell.getState();
       if (s.commandOpen) s.setCommandOpen(false);
       else if (s.addBotOpen) s.closeAddBot();
-      else if (s.importBotOpen) s.closeImportBot();
       else if (s.editUnitId !== null) s.closeUnitSettings();
       else if (s.settingsOpen) s.closeSettings();
       return;
