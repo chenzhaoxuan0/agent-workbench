@@ -210,8 +210,8 @@ export function PlanPane({ unitId, shown }: { unitId: UnitId; shown: boolean }) 
           />
         ) : latest === null ? (
           <EmptyBlock
-            title="当前跟随的会话还没有提出计划"
-            desc={`跟随的会话：${sessionId}。注意：目前仅 mcode 执行器会把原生计划映射成计划事件，其他执行器的会话在这里是空态。`}
+            title="当前跟随的会话还没有报告过计划"
+            desc={`跟随的会话：${sessionId}。计划来自执行器的原生任务清单 —— mcode 的 plan_update 帧，以及 Claude TodoWrite / Codex update_plan 等清单类工具（daemon 统一映射）；这家执行器在这场会话里还没用过。`}
           />
         ) : (
           <div className="space-y-2">

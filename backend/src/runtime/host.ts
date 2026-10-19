@@ -28,6 +28,7 @@ import type {
 import { log } from "../log.ts";
 import { ensureWorktree } from "../git/repo.ts";
 import { asSessionId, type SessionSource } from "../../../prototype/src/core/units.ts";
+import { planProposedFromTodoTool } from "./planTools.ts";
 import type { TraceSink } from "./trace.ts";
 import type { Store } from "../store/db.ts";
 import type { PermissionGate } from "../permissions/gate.ts";
@@ -1553,6 +1554,18 @@ export class RuntimeHost {
       this.emitStamped(cur, event);
       this.track(cur, event);
       this.persistOnEvent(cur, event);
+      // 清单类工具 → 计划事件：在汇点合成而不是逐适配器映射 —— 一处覆盖
+      // 全部现有与未来执行器（Claude TodoWrite / Codex update_plan 等本来就走
+      // tool.started 带原始 input），且合成事件同样盖章进账本，计划面板的
+      // 补拉 / 回放与实时帧同源
+      if (event.type === "tool.started") {
+        const proposed = planProposedFromTodoTool(cur.id, event.toolName, event.input);
+        if (proposed !== null) {
+          this.emitStamped(cur, proposed);
+          this.track(cur, proposed);
+          this.persistOnEvent(cur, proposed);
+        }
+      }
       if (event.type === "permission.requested") this.evaluateGate(cur, event);
       // 轮落定（status idle/failed 或 ended）→ 收口 turn → 清 turnBusy → 自动发出排队消息（T3 steer）
       if (

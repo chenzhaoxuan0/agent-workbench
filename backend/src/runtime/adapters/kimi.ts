@@ -580,7 +580,8 @@ export class KimiAdapter implements ExecutorAdapter {
           callId: String(p["id"] ?? p["call_id"] ?? `call_${Date.now()}`),
           toolName: String(p["name"] ?? p["tool"] ?? "tool"),
           title: String(p["title"] ?? p["name"] ?? ""),
-          input: {},
+          // 原生参数透传：清单类工具（TodoWrite 等）的步骤全在这里
+          input: ((p["input"] ?? p["arguments"] ?? p["args"]) as unknown) ?? {},
         });
         break;
       }

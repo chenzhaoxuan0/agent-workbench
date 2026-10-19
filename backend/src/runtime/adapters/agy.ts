@@ -527,7 +527,7 @@ export class AgyAdapter implements ExecutorAdapter {
         sink({ type: 'message.delta', sessionId: state.sessionId, messageId, role: 'assistant', text });
       }
     } else if (evt === 'tool') {
-      sink({ type: 'tool.started', sessionId: state.sessionId, callId: 't_' + Date.now(), toolName: String(msg['toolName'] ?? 'tool'), title: String(msg['toolName'] ?? ''), input: {} });
+      sink({ type: 'tool.started', sessionId: state.sessionId, callId: 't_' + Date.now(), toolName: String(msg['toolName'] ?? 'tool'), title: String(msg['toolName'] ?? ''), input: ((msg['input'] ?? msg['arguments'] ?? msg['args']) as unknown) ?? {} });
     } else if (evt === 'started') {
       const cid = String(msg['conversationId'] ?? '');
       if (cid !== '') state.cliConversationId = cid;

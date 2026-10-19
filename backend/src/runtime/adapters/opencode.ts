@@ -743,7 +743,9 @@ export class OpencodeAdapter implements ExecutorAdapter {
               callId: partID,
               toolName: String(tool["name"]),
               title: String(tool["title"] ?? tool["name"]),
-              input: {},
+              // 原生参数透传（input/args）：清单类工具（TodoWrite 等）的步骤
+              // 全在这里，写死 {} 会把 daemon 侧的计划映射饿死
+              input: ((tool["input"] ?? tool["args"] ?? tool["state"]) as unknown) ?? {},
             });
           }
           if (part["status"] === "completed" || part["status"] === "failed" || tool["status"] === "completed" || tool["status"] === "failed") {
