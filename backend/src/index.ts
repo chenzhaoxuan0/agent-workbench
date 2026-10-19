@@ -44,6 +44,7 @@ import * as gitRepo from "./git/repo.ts";
 import { GIT_ERROR_CODES } from "./contract.ts";
 import { GitWatcher } from "./git/watch.ts";
 import { listWorkspacePaths } from "./workspacePaths.ts";
+import { listInstalledEditors, openInEditorApp } from "./workspaceEditors.ts";
 import {
   mcpCopy,
   mcpInventory,
@@ -3036,6 +3037,25 @@ registerMethod("workspace.openFolder", async (params) => {
     throw Object.assign(new Error("path or botId is required"), { code: "bad_params" });
   }
   return launchFileManager(targetPath);
+});
+
+// 头部「打开方式」按钮的编辑器通道（检测与打开逻辑见 workspaceEditors.ts，
+// 移植自 ZCode editors.ts/openInEditor.ts）。explorer 走既有 launchFileManager。
+registerMethod("workspace.listEditors", () => listInstalledEditors());
+
+registerMethod("workspace.openInEditor", async (params) => {
+  const p = (params ?? {}) as { path?: string; botId?: string; editorId?: string };
+  let targetPath = p.path;
+  if (!targetPath && p.botId) {
+    const b = await botRegistry.getBot(p.botId);
+    if (b) targetPath = b.rootPath;
+  }
+  if (!targetPath || typeof targetPath !== "string") {
+    throw Object.assign(new Error("path or botId is required"), { code: "bad_params" });
+  }
+  const editorId = typeof p.editorId === "string" && p.editorId !== "" ? p.editorId : "explorer";
+  if (editorId === "explorer") return launchFileManager(targetPath);
+  return openInEditorApp(editorId, targetPath);
 });
 
 registerMethod("health", () => healthPayload(config, startedAt));

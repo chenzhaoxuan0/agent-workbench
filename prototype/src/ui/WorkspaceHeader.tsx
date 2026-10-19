@@ -1,17 +1,13 @@
-import { useState } from "react";
-import { Check, FolderOpen, Smartphone } from "lucide-react";
+import { useEffect, useRef, useState, type ComponentType } from "react";
+import { Check, ChevronDown, FolderOpen, Smartphone, X } from "lucide-react";
 import { useShell } from "../store/useShell.ts";
 import { useWorkbench, selectActiveUnit } from "../store/useWorkbench.ts";
 import { useSidePane } from "../store/useSidePane.ts";
 import { sidePaneOccupies } from "../core/sidePaneTabs.ts";
-import { openFolder } from "../adapters/daemon/client.ts";
+import { listEditors, openInEditor, type DaemonEditorInfo } from "../adapters/daemon/client.ts";
 import { useIsMobile } from "./mobile/useIsMobile.ts";
 import { ConversationViewSwitch } from "./ConversationViewSwitch.tsx";
 import { cn } from "./cn.ts";
-
-/** 图标按钮的统一规格：28px 命中区（ZCode 的 icon-md），14px 图标 */
-const iconBtn =
-  "rounded-btn p-1.5 text-graphite hover:bg-line-soft hover:text-ink disabled:opacity-35 disabled:hover:bg-transparent";
 
 /**
  * 工作区头部 —— 只留高频操作：单元身份卡（左）＋ 会话形态切换（右）。
@@ -74,10 +70,11 @@ export function WorkspaceHeader() {
             </span>
           </button>
 
-          {/* 单元目录：单击直接在资源管理器中打开，路径悬停可见（<560 隐藏——移动端不需要） */}
+          {/* 单元目录：主钮单击用上次选择的打开方式（默认资源管理器），
+              箭头切换资源管理器 / VS Code（<560 隐藏——移动端不需要） */}
           {unit && (
             <span className="hidden shrink-0 @min-[560px]:inline-flex">
-              <OpenWorkspaceFolder path={unit.rootPath} />
+              <OpenWorkspaceWith path={unit.rootPath} />
             </span>
           )}
         </div>
@@ -115,29 +112,212 @@ export function WorkspaceHeader() {
 
 /* ------------------------------------------------------------- 工作区直达 */
 
+/** VS Code 官方 logo（品牌蓝 #007ACC 的官方剪影轮廓，小尺寸下与原版无差） */
+function VscodeBrandIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        fill="#007ACC"
+        d="M23.15 2.587 18.21.21a1.494 1.494 0 0 0-1.705.29l-9.46 8.63-4.12-3.128a.999.999 0 0 0-1.276.057L.327 7.261a1 1 0 0 0-.002 1.479L3.899 12 .325 15.26a1 1 0 0 0 .002 1.479l1.322 1.201a.999.999 0 0 0 1.276.057l4.12-3.128 9.46 8.63a1.492 1.492 0 0 0 1.704.29l4.942-2.377A1.5 1.5 0 0 0 24 19.89V4.1a1.5 1.5 0 0 0-.85-1.513zM17.996 15.448 10.818 12l7.178-5.448v10.896z"
+      />
+    </svg>
+  );
+}
+
+/** 资源管理器文件夹：深黄背板 + 亮黄前板的两片式，对齐 Windows 系统观感 */
+function ExplorerFolderBrandIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        fill="#D9A13B"
+        d="M3.75 3.5h5.52c.43 0 .84.19 1.12.51l1.49 1.74h8.37c.97 0 1.75.78 1.75 1.75v10.75c0 .97-.78 1.75-1.75 1.75H3.75c-.97 0-1.75-.78-1.75-1.75V5.25c0-.97.78-1.75 1.75-1.75z"
+      />
+      <path
+        fill="#FFC84A"
+        d="M4.02 7.5h18.17c.78 0 1.33.73 1.15 1.49l-1.91 8.02c-.17.71-.8 1.21-1.54 1.21H1.73c-.78 0-1.33-.73-1.15-1.49l2.12-8.02c.17-.71.8-1.21 1.54-1.21z"
+      />
+    </svg>
+  );
+}
+
 /**
- * 工作区打开按钮 —— 单击直接在资源管理器中打开，不再经弹层二跳。
- * 路径放 title 里悬停可见；打开成功短暂打勾作为反馈（daemon 不可达时失败只进 console）。
+ * 打开方式图标映射 —— 留存的两个入口都用真实应用图标（daemon 只回 id/name，
+ * 应用图标是 Electron nativeImage 能力，Web UI 内联官方 SVG 代替）；未知 id
+ * 兜底成 lucide FolderOpen
  */
-function OpenWorkspaceFolder({ path }: { path: string }) {
-  const [opened, setOpened] = useState(false);
+const OPEN_WITH_ICONS: Record<string, ComponentType<{ size?: number }>> = {
+  explorer: ExplorerFolderBrandIcon,
+  vscode: VscodeBrandIcon,
+};
+
+/** daemon 不可达时的回退清单：结构与 RPC 结果一致，点击时由后端兜底报错 */
+const FALLBACK_OPEN_WITH: DaemonEditorInfo[] = [
+  { id: "explorer", name: "资源管理器" },
+  { id: "vscode", name: "VS Code" },
+];
+
+const OPEN_WITH_STORAGE_KEY = "awb.header.openWith";
+
+/** 合法打开方式集合（偏好读取时归一：早期版本存过后来砍掉的 IDE id） */
+const SUPPORTED_OPEN_WITH_IDS = new Set(["explorer", "vscode"]);
+
+function readPreferredOpenWith(): string {
+  try {
+    const saved = localStorage.getItem(OPEN_WITH_STORAGE_KEY);
+    return saved !== null && SUPPORTED_OPEN_WITH_IDS.has(saved) ? saved : "explorer";
+  } catch {
+    return "explorer";
+  }
+}
+
+function writePreferredOpenWith(editorId: string): void {
+  try {
+    localStorage.setItem(OPEN_WITH_STORAGE_KEY, editorId);
+  } catch {
+    // 隐私模式等场景写不进就算了，本次会话内仍生效（state 里记着）
+  }
+}
+
+/**
+ * 工作区打开按钮 —— 分裂式（对齐 ZCode WorkspaceEditorButtonGroup）：
+ * 主钮用「上次选择的打开方式」直接打开（默认资源管理器），箭头钮下拉切换
+ * 打开方式（资源管理器 / VS Code，daemon 检测已安装者），
+ * 选择即打开并持久化。路径放 title 里悬停可见；成功短暂打勾、失败短暂打叉。
+ */
+function OpenWorkspaceWith({ path }: { path: string }) {
+  const [preferredId, setPreferredId] = useState(readPreferredOpenWith);
+  const [editors, setEditors] = useState<DaemonEditorInfo[] | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [feedback, setFeedback] = useState<"idle" | "ok" | "fail">("idle");
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  // 清单懒加载：首次展开下拉才探测（ZCode onOpenChange → loadEditors 同款）
+  useEffect(() => {
+    if (!menuOpen || editors !== null) return;
+    let disposed = false;
+    void listEditors()
+      .then((res) => {
+        if (!disposed && res.editors.length > 0) setEditors(res.editors);
+      })
+      .catch((err: unknown) =>
+        console.warn("[WorkspaceHeader] 拉取打开方式清单失败，回退静态清单:", err),
+      );
+    return () => {
+      disposed = true;
+    };
+  }, [menuOpen, editors]);
+
+  // 外点 / Escape 关下拉（ReasoningEffortPicker 同款）
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setMenuOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [menuOpen]);
+
+  const flash = (state: "ok" | "fail") => {
+    setFeedback(state);
+    window.setTimeout(() => setFeedback("idle"), 1500);
+  };
+
+  const openWith = (editorId: string) => {
+    setPreferredId(editorId);
+    writePreferredOpenWith(editorId);
+    setMenuOpen(false);
+    void openInEditor({ path, editorId })
+      .then((res) => {
+        if (res.ok) {
+          flash("ok");
+        } else {
+          flash("fail");
+          console.error(`[WorkspaceHeader] 用 ${editorId} 打开失败:`, res.error);
+        }
+      })
+      .catch((err: unknown) => {
+        flash("fail");
+        console.error(`[WorkspaceHeader] 用 ${editorId} 打开失败:`, err);
+      });
+  };
+
+  const options = editors ?? FALLBACK_OPEN_WITH;
+  const preferred = options.find((o) => o.id === preferredId);
+  const PreferredIcon = OPEN_WITH_ICONS[preferredId] ?? FolderOpen;
+  const preferredName = preferred?.name ?? "资源管理器";
 
   return (
-    <button
-      onClick={() => {
-        void openFolder({ path })
-          .then(() => {
-            setOpened(true);
-            window.setTimeout(() => setOpened(false), 1500);
-          })
-          .catch((err: unknown) => console.error("[WorkspaceHeader] 打开文件夹失败:", err));
-      }}
-      aria-label="在资源管理器中打开单元文件夹"
-      title={`单元路径：${path}
-单击在资源管理器中打开`}
-      className={cn(iconBtn, opened && "text-gain")}
-    >
-      {opened ? <Check size={14} className="text-gain" /> : <FolderOpen size={14} />}
-    </button>
+    <div ref={rootRef} className="relative inline-flex items-center">
+      {/* 主钮：上次选择的打开方式直开 */}
+      <button
+        onClick={() => openWith(preferredId)}
+        aria-label={`用${preferredName}打开单元文件夹`}
+        title={`单元路径：${path}
+单击用${preferredName}打开（箭头可切换打开方式）`}
+        className={cn(
+          "rounded-btn rounded-r-none p-1.5 pr-1 text-graphite hover:bg-line-soft hover:text-ink",
+          feedback === "ok" && "text-gain",
+          feedback === "fail" && "text-loss",
+        )}
+      >
+        {feedback === "ok" ? (
+          <Check size={14} className="text-gain" />
+        ) : feedback === "fail" ? (
+          <X size={14} className="text-loss" />
+        ) : (
+          <PreferredIcon size={14} />
+        )}
+      </button>
+      {/* 箭头钮：展开打开方式下拉 */}
+      <button
+        onClick={() => setMenuOpen((o) => !o)}
+        aria-label="选择打开方式"
+        aria-expanded={menuOpen}
+        aria-haspopup="listbox"
+        title="选择打开方式（资源管理器 / VS Code）"
+        className={cn(
+          "rounded-btn rounded-l-none py-1.5 pl-0.5 pr-1 text-graphite hover:bg-line-soft hover:text-ink",
+          menuOpen && "bg-line-soft text-ink",
+        )}
+      >
+        <ChevronDown size={11} className="opacity-70" />
+      </button>
+
+      {menuOpen && (
+        <div
+          role="listbox"
+          aria-label="打开方式"
+          className="absolute left-0 top-full z-40 mt-1.5 w-44 overflow-hidden rounded-input border border-line bg-canvas py-1 shadow-[0_8px_24px_rgb(0_0_0/0.14)]"
+        >
+          {options.map((opt) => {
+            const Icon = OPEN_WITH_ICONS[opt.id] ?? FolderOpen;
+            const active = opt.id === preferredId;
+            return (
+              <button
+                key={opt.id}
+                role="option"
+                aria-selected={active}
+                onClick={() => openWith(opt.id)}
+                className={cn(
+                  "flex w-full items-center gap-2.5 px-3 py-1.5 text-left text-body-sm transition",
+                  active ? "bg-teal-tint text-teal" : "text-graphite hover:bg-line-soft hover:text-ink",
+                )}
+              >
+                <Icon size={14} className="shrink-0" />
+                <span className={cn("flex-1", active && "font-medium")}>{opt.name}</span>
+                {active && <Check size={13} className="shrink-0" />}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
   );
 }

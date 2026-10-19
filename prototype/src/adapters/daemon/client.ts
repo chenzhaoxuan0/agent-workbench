@@ -1037,6 +1037,37 @@ export async function openFolder(
 }
 
 // ---------------------------------------------------------------------------
+// 头部「打开方式」：已安装编辑器清单 + 指定编辑器打开（daemon 侧检测，
+// 移植自 ZCode editors.ts；explorer id 即上面的 openFolder 通道）
+// ---------------------------------------------------------------------------
+
+export interface DaemonEditorInfo {
+  readonly id: string;
+  readonly name: string;
+}
+
+/** 已安装编辑器清单（explorer 永远排最前；daemon 缓存，探测 IO 只花一次） */
+export async function listEditors(
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<{ editors: DaemonEditorInfo[] }> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<{ editors: DaemonEditorInfo[] }>("workspace.listEditors", {}, 10000);
+}
+
+/** 用指定编辑器（vscode / explorer）打开目标文件夹 */
+export async function openInEditor(
+  params: { path?: string; botId?: string; editorId: string },
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<{ ok: boolean; path?: string; error?: string }> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<{ ok: boolean; path?: string; error?: string }>(
+    "workspace.openInEditor",
+    params,
+    10000,
+  );
+}
+
+// ---------------------------------------------------------------------------
 // 自动化（Phase 5 v2）—— 定时任务 CRUD / 开关 / 立即运行 / 运行记录。
 // daemon 返回的是带 scheduleRule 的权威形态（调度引擎与 UI 共享同一份规则对象），
 // 映射成 core/automation.ts 的 Automation 给页面用。
