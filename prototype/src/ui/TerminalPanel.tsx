@@ -25,6 +25,7 @@ import { TerminalSplitTree } from "./TerminalSplitTree.tsx";
 import { TerminalPaneSlot, ShellOrAgentIcon } from "./TerminalPaneSlot.tsx";
 import { useAppearance } from "../store/useAppearance.ts";
 import { dispatchTerminal } from "../adapters/daemon/client.ts";
+import { useIsMobile } from "./mobile/useIsMobile.ts";
 import { cn } from "./cn.ts";
 
 export function TerminalPanel({
@@ -40,6 +41,7 @@ export function TerminalPanel({
   const activeRuntimeId = useWorkbench((s) => s.activeRuntimeId);
   const runtimes = useWorkbench((s) => s.runtimes);
   const runtime = useWorkbench((s) => s.runtimes.find((r) => r.id === s.activeRuntimeId));
+  const { isMobile } = useIsMobile();
 
   const isCanvas = variant === "canvas";
   const isPage = variant === "page";
@@ -262,7 +264,12 @@ export function TerminalPanel({
       {/* VS Code 同款终端多标签栏与自由分屏工具条 */}
       <div className="relative z-30 flex h-9 shrink-0 items-center border-b border-line/40 bg-rail px-2 select-none">
         {/* 左侧：多终端 Tabs 标签页列表 */}
-        <div className="flex h-full max-w-[calc(100%-280px)] items-center gap-1 overflow-x-auto no-scrollbar py-1">
+        <div
+          className={cn(
+            "flex h-full items-center gap-1 overflow-x-auto no-scrollbar py-1 scroll-smooth touch-pan-x",
+            isMobile ? "flex-1 min-w-0 pr-1" : "max-w-[calc(100%-280px)]",
+          )}
+        >
           {groups.map((group) => {
             const isGroupActive = group.id === activeGroupId;
             const leaves = collectLeafIds(group.rootLayout);
@@ -280,7 +287,10 @@ export function TerminalPanel({
                 key={group.id}
                 onClick={() => setActiveGroup(group.id)}
                 className={cn(
-                  "group relative flex h-7 items-center gap-1.5 rounded px-2.5 text-caption font-mono cursor-pointer transition select-none max-w-[210px]",
+                  "group relative flex h-7 items-center gap-1.5 rounded font-mono cursor-pointer transition select-none shrink-0",
+                  isMobile
+                    ? "px-2 text-[11px] max-w-[150px] min-w-[70px]"
+                    : "px-2.5 text-caption max-w-[210px]",
                   isGroupActive
                     ? "bg-canvas text-ink font-medium shadow-sm border border-line/60"
                     : "text-ash/80 hover:bg-line-soft hover:text-ink",
@@ -289,12 +299,12 @@ export function TerminalPanel({
                 title={tabTitle}
               >
                 {isSplitGroup ? (
-                  <Columns2 size={12} className="text-teal" />
+                  <Columns2 size={12} className="shrink-0 text-teal" />
                 ) : (
                   <ShellOrAgentIcon icon={firstInst?.icon || "pwsh"} />
                 )}
 
-                <span className="truncate">{tabTitle}</span>
+                <span className="truncate flex-1 min-w-0">{tabTitle}</span>
 
                 {/* 派发徽章：autoterm_ 前缀 = 经派发系统（自动化/待办/手动派发），
                     会进该 bot 的历史；普通标签没有它 */}
@@ -309,12 +319,12 @@ export function TerminalPanel({
 
                 {/* 分屏窗格数量小徽章 */}
                 {isSplitGroup && (
-                  <span className="rounded bg-teal/10 px-1 py-0.2 text-[9px] text-teal font-sans">
+                  <span className="shrink-0 rounded bg-teal/10 px-1 py-0.2 text-[9px] text-teal font-sans">
                     {leaves.length}P
                   </span>
                 )}
 
-                {/* 关闭单标签按钮 */}
+                {/* 关闭单标签按钮（手机端常驻可见且易于点击，避免无 hover 导致无法关闭） */}
                 <button
                   type="button"
                   onClick={(e) => {
@@ -322,14 +332,21 @@ export function TerminalPanel({
                     closeTab(group.id);
                   }}
                   title="关闭标签页"
+                  aria-label={`关闭标签页 ${tabTitle}`}
                   className={cn(
-                    "ml-1 rounded p-0.5 text-ash hover:bg-line-soft hover:text-rose-400 transition",
-                    isGroupActive
-                      ? "opacity-80 hover:opacity-100"
-                      : "opacity-0 group-hover:opacity-80",
+                    "flex shrink-0 items-center justify-center rounded text-ash transition",
+                    "hover:bg-line-soft hover:text-rose-400 active:bg-rose-500/20 active:text-loss",
+                    isMobile
+                      ? "h-5 w-5 opacity-70 active:opacity-100 -mr-1"
+                      : cn(
+                          "ml-1 p-0.5",
+                          isGroupActive
+                            ? "opacity-80 hover:opacity-100"
+                            : "opacity-0 group-hover:opacity-80",
+                        ),
                   )}
                 >
-                  <X size={11} />
+                  <X size={isMobile ? 12 : 11} />
                 </button>
               </div>
             );
@@ -357,129 +374,197 @@ export function TerminalPanel({
             </button>
           </div>
 
-          {/* 下拉弹出菜单 */}
+          {/* 移动端全屏半透明遮罩（点按背景关闭） */}
+          {menuOpen && isMobile && (
+            <div
+              className="fixed inset-0 z-40 bg-black/50 backdrop-blur-xs animate-in fade-in duration-150"
+              onClick={() => setMenuOpen(false)}
+            />
+          )}
+
+          {/* 下拉弹出菜单（移动端支持平滑上下滑动、触控滚动及 UI 压缩） */}
           {menuOpen && (
-            <div className="absolute left-0 top-full mt-1.5 z-50 min-w-[250px] rounded-panel border border-line bg-card p-1.5 shadow-2xl backdrop-blur">
-              {/* 分组 1：Agent 执行器 —— 全部经派发系统打开（记入历史 + 免审批 + 「派发」徽章） */}
-              <div className="px-2 py-1 text-[11px] font-semibold text-teal/80 tracking-wide uppercase flex items-center gap-1">
-                <Zap size={11} />
-                <span>Agent CLI (TUI · 派发)</span>
-                <span className="ml-auto text-[9px] normal-case tracking-normal text-ash/50">记入历史</span>
-              </div>
-              {executorOptions.map((r) => {
-                return (
+            <div
+              className={cn(
+                "z-50 rounded-panel border border-line bg-card shadow-2xl backdrop-blur flex flex-col",
+                isMobile
+                  ? "fixed inset-x-3 top-12 max-h-[72dvh] p-2.5 animate-in fade-in zoom-in-95 duration-150"
+                  : "absolute left-0 top-full mt-1.5 min-w-[260px] max-h-[480px] p-1.5",
+              )}
+            >
+              {/* 移动端顶部标题栏与关闭叉号 */}
+              {isMobile && (
+                <div className="flex items-center justify-between pb-2 mb-1.5 border-b border-line/50 px-1 shrink-0">
+                  <div className="flex items-center gap-1.5">
+                    <Zap size={13} className="text-teal" />
+                    <span className="text-body-sm font-semibold text-ink">选择派发执行器或终端</span>
+                  </div>
                   <button
-                    key={r.id}
-                    onClick={() => handleLaunchExecutor(r.id, r.presentation.displayName)}
-                    className="flex w-full items-center gap-2.5 rounded px-2.5 py-1.5 text-left text-body-sm text-ink hover:bg-teal-tint hover:text-teal transition"
+                    type="button"
+                    onClick={() => setMenuOpen(false)}
+                    className="p-1 rounded text-ash hover:text-ink hover:bg-line-soft active:scale-90 transition"
                   >
-                    <ShellOrAgentIcon icon={r.id} />
-                    <div className="flex flex-col flex-1 min-w-0">
-                      <span className="text-caption font-mono font-medium truncate">
-                        {r.presentation.displayName}
-                      </span>
-                      <span className="text-[10px] text-ash/60 font-sans truncate">
-                        免审批 TUI · 运行记录进历史
-                      </span>
-                    </div>
-                    {activeRuntimeId === r.id && (
-                      <span className="text-[10px] text-teal/70 font-sans">当前</span>
-                    )}
+                    <X size={14} />
                   </button>
-                );
-              })}
+                </div>
+              )}
 
-              <div className="my-1.5 h-px bg-line/50" />
-
-              {/* 分组 2：原生系统 Shell */}
-              <div className="px-2 py-1 text-[11px] font-semibold text-ash/70 tracking-wide uppercase">
-                原生系统终端
-              </div>
-              {SUPPORTED_TERMINAL_PROFILES.map((profile) => (
-                <button
-                  key={profile.id}
-                  onClick={() => handleCreateProfile(profile.id)}
-                  className="flex w-full items-center gap-2.5 rounded px-2.5 py-1.5 text-left text-body-sm text-ink hover:bg-teal-tint hover:text-teal transition"
-                >
-                  <ShellOrAgentIcon icon={profile.icon} />
-                  <span className="flex-1 text-caption font-mono">{profile.name}</span>
-                  {profile.id === defaultProfileId && (
-                    <span className="text-[10px] text-teal/70 font-sans">默认</span>
-                  )}
-                </button>
-              ))}
-
-              <div className="my-1.5 h-px bg-line/50" />
-
-              {/* 分组 3：自由分屏操作 */}
-              <div className="px-2 py-1 text-[11px] font-semibold text-ash/70 tracking-wide uppercase">
-                自由分屏操作
-              </div>
-              <button
-                onClick={() => {
-                  setMenuOpen(false);
-                  splitPane({ direction: "horizontal" });
-                }}
-                className="flex w-full items-center gap-2.5 rounded px-2.5 py-1.5 text-left text-body-sm text-ink hover:bg-teal-tint hover:text-teal transition"
+              {/* 滚动容器：添加 touch-pan-y 与 iOS 原生平滑滚动 */}
+              <div
+                className="min-h-0 flex-1 overflow-y-auto overscroll-contain touch-pan-y scrollbar-thin flex flex-col pr-0.5"
+                style={{ WebkitOverflowScrolling: "touch" }}
               >
-                <Columns2 size={13} className="text-teal" />
-                <span className="text-caption font-mono">向右拆分当前窗格 (Split Right)</span>
-              </button>
-              <button
-                onClick={() => {
-                  setMenuOpen(false);
-                  splitPane({ direction: "vertical" });
-                }}
-                className="flex w-full items-center gap-2.5 rounded px-2.5 py-1.5 text-left text-body-sm text-ink hover:bg-teal-tint hover:text-teal transition"
-              >
-                <Rows2 size={13} className="text-teal" />
-                <span className="text-caption font-mono">向下拆分当前窗格 (Split Down)</span>
-              </button>
+                {/* 分组 1：Agent 执行器 —— 全部经派发系统打开 */}
+                <div className="px-2 py-1 text-[11px] font-semibold text-teal/80 tracking-wide uppercase flex items-center gap-1 shrink-0">
+                  <Zap size={11} />
+                  <span>Agent CLI (TUI · 派发)</span>
+                  <span className="ml-auto text-[9px] normal-case tracking-normal text-ash/50">
+                    记入历史
+                  </span>
+                </div>
+                <div className="flex flex-col gap-0.5">
+                  {executorOptions.map((r) => {
+                    return (
+                      <button
+                        key={r.id}
+                        onClick={() => handleLaunchExecutor(r.id, r.presentation.displayName)}
+                        className={cn(
+                          "flex w-full items-center rounded text-left text-ink hover:bg-teal-tint hover:text-teal active:bg-teal-tint transition",
+                          isMobile
+                            ? "gap-2 px-2 py-1.5 min-h-8.5"
+                            : "gap-2.5 px-2.5 py-1.5 text-body-sm",
+                        )}
+                      >
+                        <ShellOrAgentIcon icon={r.id} />
+                        <div className="flex flex-1 items-center justify-between min-w-0 gap-1.5">
+                          <span className="text-caption font-mono font-medium truncate">
+                            {r.presentation.displayName}
+                          </span>
+                          <div className="flex items-center gap-1 shrink-0">
+                            {activeRuntimeId === r.id && (
+                              <span className="rounded bg-teal/15 px-1 py-0.2 text-[9px] font-sans font-medium text-teal">
+                                当前
+                              </span>
+                            )}
+                            <span className="rounded bg-line-soft px-1 py-0.2 text-[9px] font-sans text-ash">
+                              TUI 派发
+                            </span>
+                          </div>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="my-1.5 h-px bg-line/50 shrink-0" />
+
+                {/* 分组 2：原生系统 Shell */}
+                <div className="px-2 py-1 text-[11px] font-semibold text-ash/70 tracking-wide uppercase shrink-0">
+                  原生系统终端
+                </div>
+                <div className="flex flex-col gap-0.5">
+                  {SUPPORTED_TERMINAL_PROFILES.map((profile) => (
+                    <button
+                      key={profile.id}
+                      onClick={() => handleCreateProfile(profile.id)}
+                      className={cn(
+                        "flex w-full items-center rounded text-left text-ink hover:bg-teal-tint hover:text-teal active:bg-teal-tint transition",
+                        isMobile
+                          ? "gap-2 px-2 py-1.5 min-h-8"
+                          : "gap-2.5 px-2.5 py-1.5 text-body-sm",
+                      )}
+                    >
+                      <ShellOrAgentIcon icon={profile.icon} />
+                      <span className="flex-1 text-caption font-mono truncate">{profile.name}</span>
+                      {profile.id === defaultProfileId && (
+                        <span className="text-[9px] text-teal/80 bg-teal/10 px-1 py-0.2 rounded font-sans shrink-0">
+                          默认
+                        </span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+
+                {/* 分组 3：自由分屏操作（仅在桌面端显示，手机屏幕过窄拆分分屏体验不佳） */}
+                {!isMobile && (
+                  <>
+                    <div className="my-1.5 h-px bg-line/50 shrink-0" />
+                    <div className="px-2 py-1 text-[11px] font-semibold text-ash/70 tracking-wide uppercase shrink-0">
+                      自由分屏操作
+                    </div>
+                    <button
+                      onClick={() => {
+                        setMenuOpen(false);
+                        splitPane({ direction: "horizontal" });
+                      }}
+                      className="flex w-full items-center gap-2.5 rounded px-2.5 py-1.5 text-left text-body-sm text-ink hover:bg-teal-tint hover:text-teal transition"
+                    >
+                      <Columns2 size={13} className="text-teal" />
+                      <span className="text-caption font-mono">向右拆分当前窗格 (Split Right)</span>
+                    </button>
+                    <button
+                      onClick={() => {
+                        setMenuOpen(false);
+                        splitPane({ direction: "vertical" });
+                      }}
+                      className="flex w-full items-center gap-2.5 rounded px-2.5 py-1.5 text-left text-body-sm text-ink hover:bg-teal-tint hover:text-teal transition"
+                    >
+                      <Rows2 size={13} className="text-teal" />
+                      <span className="text-caption font-mono">向下拆分当前窗格 (Split Down)</span>
+                    </button>
+                  </>
+                )}
+              </div>
             </div>
           )}
         </div>
 
         {/* 右侧：全局终端操作工具条 */}
         <div className="ml-auto flex shrink-0 items-center gap-1">
-          {/* 向右拆分 */}
-          <button
-            type="button"
-            onClick={() => splitPane({ direction: "horizontal" })}
-            title="向右拆分当前窗格 (Split Right)"
-            className="flex items-center gap-1 rounded-btn px-2 py-0.5 text-caption text-ash hover:bg-line-soft hover:text-ink transition"
-          >
-            <Columns2 size={12} />
-            <span className="hidden xl:inline">向右拆分</span>
-          </button>
+          {/* 桌面端才展示向右拆分、向下拆分与最大化，移动端直接隐藏节省横向空间 */}
+          {!isMobile && (
+            <>
+              {/* 向右拆分 */}
+              <button
+                type="button"
+                onClick={() => splitPane({ direction: "horizontal" })}
+                title="向右拆分当前窗格 (Split Right)"
+                className="flex items-center gap-1 rounded-btn px-2 py-0.5 text-caption text-ash hover:bg-line-soft hover:text-ink transition"
+              >
+                <Columns2 size={12} />
+                <span className="hidden xl:inline">向右拆分</span>
+              </button>
 
-          {/* 向下拆分 */}
-          <button
-            type="button"
-            onClick={() => splitPane({ direction: "vertical" })}
-            title="向下拆分当前窗格 (Split Down)"
-            className="flex items-center gap-1 rounded-btn px-2 py-0.5 text-caption text-ash hover:bg-line-soft hover:text-ink transition"
-          >
-            <Rows2 size={12} />
-            <span className="hidden xl:inline">向下拆分</span>
-          </button>
+              {/* 向下拆分 */}
+              <button
+                type="button"
+                onClick={() => splitPane({ direction: "vertical" })}
+                title="向下拆分当前窗格 (Split Down)"
+                className="flex items-center gap-1 rounded-btn px-2 py-0.5 text-caption text-ash hover:bg-line-soft hover:text-ink transition"
+              >
+                <Rows2 size={12} />
+                <span className="hidden xl:inline">向下拆分</span>
+              </button>
 
-          {/* 最大化 / 还原 */}
-          <button
-            type="button"
-            onClick={() => toggleMaximize()}
-            title={maximizedInstanceId ? "还原分屏窗格" : "最大化当前聚焦窗格"}
-            className={cn(
-              "flex items-center gap-1 rounded-btn px-2 py-0.5 text-caption transition",
-              maximizedInstanceId
-                ? "bg-teal-tint text-teal"
-                : "text-ash hover:bg-line-soft hover:text-ink",
-            )}
-          >
-            {maximizedInstanceId ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
-            <span className="hidden sm:inline">
-              {maximizedInstanceId ? "还原" : "最大化"}
-            </span>
-          </button>
+              {/* 最大化 / 还原 */}
+              <button
+                type="button"
+                onClick={() => toggleMaximize()}
+                title={maximizedInstanceId ? "还原分屏窗格" : "最大化当前聚焦窗格"}
+                className={cn(
+                  "flex items-center gap-1 rounded-btn px-2 py-0.5 text-caption transition",
+                  maximizedInstanceId
+                    ? "bg-teal-tint text-teal"
+                    : "text-ash hover:bg-line-soft hover:text-ink",
+                )}
+              >
+                {maximizedInstanceId ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
+                <span className="hidden sm:inline">
+                  {maximizedInstanceId ? "还原" : "最大化"}
+                </span>
+              </button>
+            </>
+          )}
 
           {/* 清屏 */}
           <button

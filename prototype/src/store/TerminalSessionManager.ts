@@ -285,14 +285,24 @@ export class TerminalSession {
       if (f.terminalId !== this.terminalId) return;
       if (f.kind === "data" && f.data !== undefined) {
         // 自动应答 CLI 发起的 OSC 10 / OSC 11 终端前景色与背景色查询（如 Codex, bat, fzf, vim 等）
+        // 仅对明确查询的项回复标准 XTerm RGB 格式并以 ST (\x1b\\) 结束，绝不发送重复格式或 \x07(BEL)，
+        // 避免 Windows ConPTY 将未消费的备选序列直接当作用户键盘输入泄露至命令行。
         if (f.data.includes("]10;?") || f.data.includes("]11;?")) {
           const isDarkNow = getIsDarkMode();
-          const oscReply = isDarkNow
-            ? "\x1b]10;rgb:fafa/f9f9/f6f6\x1b\\\x1b]11;rgb:0000/0000/0000\x1b\\\x1b]10;#faf9f6\x07\x1b]11;#000000\x07"
-            : "\x1b]10;rgb:2626/2525/1e1e\x1b\\\x1b]11;rgb:f2f2/f1f1/eded\x1b\\\x1b]10;#26251e\x07\x1b]11;#f2f1ed\x07";
-          void client
-            .rpc("terminal.input", { terminalId: this.terminalId, data: oscReply }, 3000)
-            .catch(() => {});
+          const fg = isDarkNow ? "fafa/f9f9/f6f6" : "2626/2525/1e1e";
+          const bg = isDarkNow ? "0000/0000/0000" : "f2f2/f1f1/eded";
+          let oscReply = "";
+          if (f.data.includes("]10;?")) {
+            oscReply += `\x1b]10;rgb:${fg}\x1b\\`;
+          }
+          if (f.data.includes("]11;?")) {
+            oscReply += `\x1b]11;rgb:${bg}\x1b\\`;
+          }
+          if (oscReply) {
+            void client
+              .rpc("terminal.input", { terminalId: this.terminalId, data: oscReply }, 3000)
+              .catch(() => {});
+          }
         }
         this.term.write(f.data);
       }
@@ -495,37 +505,6 @@ export class TerminalSession {
         } catch {}
       });
     });
-
-    // 6. 向后台 PTY 注入终端主题模式通知（DEC Mode 2031 + OSC 10/11 颜色通报）
-    // 让正在前台运行的 TUI 应用（如 ZCode、Codex 等）立即同步收到主题变更信号，触发内置的主题重绘！
-    // 颜色取自当前外观档案推导出的终端配色，用户改过配色后通报的也是新色。
-    try {
-      const client = DaemonClient.get(defaultDaemonEndpoint());
-      const themeSeq = buildThemeNotification(theme, isDark);
-      void client
-        .rpc("terminal.input", { terminalId: this.terminalId, data: themeSeq }, 3000)
-        .catch(() => {});
-
-      // 7. 发送尺寸微调 (jitter resize) 通知后台 PTY / ConPTY 触发全屏 TUI 重绘 (SIGWINCH)
-      // OpenTUI 与 crossterm 内部防抖通常为 100ms，微颤维持 120ms，确保子进程防抖定时器捕获并原位全屏刷新
-      const cols = this.lastCols;
-      const rows = this.lastRows;
-      if (cols >= 10 && rows >= 4) {
-        const jitterCols = cols > 20 ? cols - 1 : cols + 1;
-        this.term.resize(jitterCols, rows);
-        void client
-          .rpc("terminal.resize", { terminalId: this.terminalId, cols: jitterCols, rows }, 8000)
-          .catch(() => {});
-        setTimeout(() => {
-          if (this.disposed) return;
-          this.term.resize(cols, rows);
-          void client
-            .rpc("terminal.resize", { terminalId: this.terminalId, cols, rows }, 8000)
-            .catch(() => {});
-          this.term.refresh(0, Math.max(1, this.term.rows - 1));
-        }, 120);
-      }
-    } catch {}
   }
 
   detach(): void {
