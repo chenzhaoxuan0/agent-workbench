@@ -2029,7 +2029,19 @@ void (async () => {
         void useWorkbench.getState().refreshChannelIdentity();
       }
     } catch (err: unknown) {
-      console.info("[workbench] 落盘 bot 定义缺失（不致命）", err instanceof Error ? err.message : err);
+      console.info("[workbench] 落盘 bot 定义首次拉取失败（daemon 未就绪？），退避重试", err instanceof Error ? err.message : err);
+      // 启动竞态自愈：daemon 起得比前端慢时这里第一次拉不到，而桌面端没有别的
+      // 重新拉全量的入口 —— 空列表会一直挂到手动刷新。有界退避重试拉回
+      //（refreshUnits 与上面的合并同一套最小必填面守卫，成功即装填 units）。
+      // 注册表真空（用户真删光了）时重试 6 次后安静放弃，不算错误。
+      const retryBootMerge = (attempt: number): void => {
+        if (attempt > 6 || useWorkbench.getState().units.length > 0) return;
+        void useWorkbench
+          .getState()
+          .refreshUnits()
+          .finally(() => setTimeout(() => retryBootMerge(attempt + 1), 1500 * attempt));
+      };
+      setTimeout(() => retryBootMerge(1), 1500);
     }
     // 自动化（Phase 5 v2）：daemon 可达时拉全量列表，页面打开即有数据
     void useWorkbench.getState().refreshAutomations();
