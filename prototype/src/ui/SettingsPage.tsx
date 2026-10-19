@@ -45,6 +45,7 @@ import { AppearanceSettingsSection } from "./AppearanceSettingsSection.tsx";
 import { useHistoryPrefs } from "../store/useHistoryPrefs.ts";
 import { useChatTerminal } from "../store/useChatTerminal.ts";
 import { SUPPORTED_TERMINAL_PROFILES } from "../store/useTerminalStore.ts";
+import { TitleBarClearance } from "./WindowControls.tsx";
 import { cn } from "./cn.ts";
 
 const ICONS: Record<string, typeof Settings2> = {
@@ -95,9 +96,10 @@ export function SettingsPage() {
 
   return (
     <div className="flex h-full min-h-0">
-      {/* 左导航：宽度 264px 与侧边栏一致，顶栏高 48px 与工作台顶栏完全对齐 */}
+      {/* 左导航：宽度 264px 与侧边栏一致，顶栏高 48px 与工作台顶栏完全对齐。
+          桌面端无边框窗口：这一行同时是左列的窗口拖拽热区（titlebar-drag） */}
       <nav className="flex h-full w-[264px] shrink-0 min-h-0 flex-col border-r border-line bg-rail">
-        <div className="flex h-12 shrink-0 items-center border-b border-line/60 px-3">
+        <div className="titlebar-drag flex h-12 shrink-0 items-center border-b border-line/60 px-3">
           <button
             onClick={() => useShell.getState().closeSettings()}
             className="flex h-8 w-full items-center gap-1.5 rounded-btn bg-teal-tint px-2.5 text-body-sm font-medium text-teal transition hover:bg-teal/15"
@@ -142,10 +144,12 @@ export function SettingsPage() {
         {/* 面包屑头，对齐 ZCode 的 SettingsHeaderBreadcrumb —— 只呈现路径，
             返回动作在左导航列顶部。h-12 与内容列顶带同高 */}
         <div className="sticky top-0 z-10 border-b border-line bg-rail/95 backdrop-blur">
-          <div className={cn(FRAME_HEAD, "flex h-12 items-center gap-2")}>
+          <div className={cn(FRAME_HEAD, "titlebar-drag flex h-12 items-center gap-2")}>
             <span className="text-body-sm text-ink">设置</span>
             <span className="text-line">/</span>
             <span className="text-body-sm font-medium text-ink">{current.title}</span>
+            {/* drag 行行内 no-drag 占位：让出右上角窗口控制钮带（--wco-w） */}
+            <TitleBarClearance width="var(--wco-w, 0px)" push />
           </div>
         </div>
 

@@ -200,9 +200,10 @@ export function Sidebar() {
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-rail">
-      {/* 顶部 48px 区域：在出图/自动化时顶掉 A 标渲染返回工作台；在正常对话时渲染 A 图标与全局独立动作 */}
+      {/* 顶部 48px 区域：在出图/自动化时顶掉 A 标渲染返回工作台；在正常对话时渲染 A 图标与全局独立动作。
+          桌面端无边框窗口：这一行同时是左列的窗口拖拽热区（titlebar-drag） */}
       {mainView !== "chat" ? (
-        <div className="flex h-12 shrink-0 items-center border-b border-line/60 px-2.5">
+        <div className="titlebar-drag flex h-12 shrink-0 items-center border-b border-line/60 px-2.5">
           <button
             onClick={() => useShell.getState().setMainView("chat")}
             className="flex h-8 w-full items-center gap-1.5 rounded-btn bg-teal-tint px-2.5 text-body-sm font-medium text-teal transition hover:bg-teal/15"
@@ -212,7 +213,7 @@ export function Sidebar() {
           </button>
         </div>
       ) : (
-        <div className="flex h-12 shrink-0 items-center justify-between border-b border-line/60 px-2.5">
+        <div className="titlebar-drag flex h-12 shrink-0 items-center justify-between border-b border-line/60 px-2.5">
           {/* 侧栏开关：新品牌 icon ↔ 收起图标 hover 变形 */}
           <button
             onClick={() => useShell.getState().toggleSidebar()}

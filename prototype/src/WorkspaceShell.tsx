@@ -18,6 +18,7 @@ import { useTerminalStore } from "./store/useTerminalStore.ts";
 import { Sidebar } from "./ui/Sidebar.tsx";
 import { TerminalPanel } from "./ui/TerminalPanel.tsx";
 import { WorkspaceHeader } from "./ui/WorkspaceHeader.tsx";
+import { WindowControls } from "./ui/WindowControls.tsx";
 import { bindShellShortcuts, useShell } from "./store/useShell.ts";
 import { SidePaneColumn } from "./ui/SidePanePanel.tsx";
 import { useSidePane } from "./store/useSidePane.ts";
@@ -67,7 +68,13 @@ export function WorkspaceShell() {
   }, []);
 
   if (isMobile) {
-    return <MobileLayout preference={preference} onSetPreference={setPreference} />;
+    return (
+      <>
+        <MobileLayout preference={preference} onSetPreference={setPreference} />
+        {/* 桌面端缩窄到手机布局时窗口控制按钮仍要常驻（纯浏览器时自渲染为空） */}
+        <WindowControls />
+      </>
+    );
   }
 
   return (
@@ -78,6 +85,8 @@ export function WorkspaceShell() {
           左上 = 侧栏展开钮，右上 = 面板展开钮）。悬浮在对应列上方，主视图切换不消失 */}
       <DesktopTopOverlay />
       <SidePaneTopOverlay />
+      {/* 桌面端无边框窗口的右上角控制钮 —— 常驻所有视图（含设置页），浏览器不渲染 */}
+      <WindowControls />
       {/* 三列主体（左栏 + 主对话流 + 右侧标签面板）。包一层 flex-1 容器：
           下方还要放全局底栏，Group 的高度由这层约束 */}
       <div className="min-h-0 flex-1">
@@ -214,8 +223,13 @@ function SidePaneTopOverlay() {
   );
   if (paneOpen || mainView !== "chat") return null;
   return (
-    <div className="pointer-events-none absolute right-0 top-0 z-30 flex h-12 items-center">
-      <div className="pointer-events-auto flex items-center gap-1 pr-3">
+    /* 桌面端无边框窗口：浮层钮要让出右上角窗口控制按钮条（--wco-w，浏览器为 0）。
+       titlebar-no-drag：它悬浮在下方的 titlebar-drag 头部之上，必须显式打洞才可点击 */
+    <div
+      className="pointer-events-none absolute top-0 z-30 flex h-12 items-center"
+      style={{ right: "var(--wco-w, 0px)" }}
+    >
+      <div className="titlebar-no-drag pointer-events-auto flex items-center gap-1 pr-3">
         <button
           onClick={() => useSidePane.getState().toggleFromHeader()}
           aria-label="展开右侧面板"

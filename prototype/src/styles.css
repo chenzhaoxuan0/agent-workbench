@@ -6,6 +6,37 @@
 @source "../node_modules/streamdown/dist";
 
 /* ==========================================================================
+   桌面端无边框窗口（Electron titleBarStyle:hidden，仅 Win/Linux）
+   - .titlebar-drag 行 = 窗口拖拽热区；行内交互元素（按钮/输入/下拉等）由下面的
+     选择器统一回退 no-drag，组件不必逐个标注。浏览器里 -webkit-app-region 无效，
+     挂着无害。
+   - --wco-w = 右上角窗口控制按钮条（WindowControls.tsx 自绘三钮）的占位宽度。
+     各顶行的右侧内边距 / 右上浮层的偏移都引用它让位；浏览器端同一份样式照常
+     （--wco-w 为 0，见 html:not(.aw-desktop) 分支）。
+   ========================================================================== */
+:root {
+  --wco-w: 132px;
+}
+html:not(.aw-desktop) {
+  --wco-w: 0px;
+}
+
+.titlebar-drag {
+  -webkit-app-region: drag;
+}
+.titlebar-drag
+  :is(button, a, input, select, textarea, label, [role="button"], [role="tab"], [role="combobox"]) {
+  -webkit-app-region: no-drag;
+}
+
+/* 悬浮在 drag 行「上方」的兄弟元素专用（窗口控制钮 / 左上右上浮层钮）：
+   拖拽区域按绘制区域并集计算，上层元素默认的 auto 不会在下方 drag 区域上打洞，
+   必须显式 no-drag，否则点击被系统当标题栏拖拽吞掉（双击触发最大化） */
+.titlebar-no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* ==========================================================================
    Design tokens — 中性灰阶 + 单一青色强调
    对标 Grok @Bot 的视觉取向：黑白灰、扁平、单色克制
 

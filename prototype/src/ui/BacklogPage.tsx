@@ -31,6 +31,7 @@ import { useBacklog } from "../store/useBacklog.ts";
 import { useWorkbench, visibleModelsFor } from "../store/useWorkbench.ts";
 import { ModelSelect } from "./ModelSelect.tsx";
 import { BacklogDialog } from "./BacklogDialog.tsx";
+import { TitleBarClearance } from "./WindowControls.tsx";
 import { cn } from "./cn.ts";
 
 /**
@@ -105,9 +106,11 @@ export function BacklogPage(): ReactElement {
   return (
     <div className="h-full min-h-0 overflow-y-auto">
       <div className="sticky top-0 z-10 border-b border-line bg-canvas">
-        <div className="mx-auto flex h-12 max-w-4xl items-center gap-2 px-8">
+        <div className="titlebar-drag mx-auto flex h-12 max-w-4xl items-center gap-2 px-8">
           <span className="text-body-sm font-medium text-ink">待办</span>
           <span className="rounded-chip bg-teal-tint px-1.5 py-0.5 text-[10px] text-teal">目标驱动 · 空闲心跳 · 确认门</span>
+          {/* 让出右上角窗口控制钮带（drag 行的行内 no-drag 占位，浏览器为 0） */}
+          <TitleBarClearance width="var(--wco-w, 0px)" push />
         </div>
       </div>
       <div className="mx-auto max-w-4xl px-8 pb-12">

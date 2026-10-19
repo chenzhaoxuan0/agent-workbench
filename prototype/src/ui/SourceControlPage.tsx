@@ -18,6 +18,7 @@ import { ChangeFileList } from "./sourceControl/ChangeFileList.tsx";
 import { WorktreeRow, worktreeTitle } from "./sourceControl/WorktreeRow.tsx";
 import { CreateBranchDialog } from "./sourceControl/CreateBranchDialog.tsx";
 import { CreateWorktreeDialog } from "./sourceControl/CreateWorktreeDialog.tsx";
+import { TitleBarClearance } from "./WindowControls.tsx";
 import { ConfirmDialog } from "./sourceControl/ConfirmDialog.tsx";
 import { StartSessionDialog } from "./sourceControl/StartSessionDialog.tsx";
 
@@ -178,8 +179,10 @@ export function SourceControlPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-y-auto">
-      {/* 头部：仓库 + 当前分支状态 */}
-      <header className="flex h-12 shrink-0 items-center gap-2.5 border-b border-line px-4">
+      {/* 头部：仓库 + 当前分支状态。桌面端无边框窗口：整行是拖拽热区，
+          右侧行内 no-drag 占位让出窗口控制按钮带（兄弟悬浮的 no-drag 不参与
+          拖拽区减法，必须是本行子元素，见 TitleBarClearance） */}
+      <header className="titlebar-drag flex h-12 shrink-0 items-center gap-2.5 border-b border-line pl-4">
         <FolderGit2 size={15} className="shrink-0 text-teal" />
         <span className="truncate text-body font-medium text-ink" title={root}>
           {repoName}
@@ -199,6 +202,8 @@ export function SourceControlPage() {
             <RefreshCw size={14} className={loading || loadingChanges ? "animate-spin" : undefined} />
           </button>
         </div>
+        {/* 让出右上角窗口控制钮带（--wco-w；浏览器为 0 不占位） */}
+        <TitleBarClearance width="calc(var(--wco-w, 0px) + 1rem)" />
       </header>
 
       {/* 错误横幅（分支被别的工作树占用时给「打开那个工作树」出口） */}

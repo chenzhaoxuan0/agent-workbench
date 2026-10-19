@@ -92,6 +92,28 @@ ipcMain.handle("dialog:pick-directory", (_event, opts) => {
     .then((r) => (r.canceled || r.filePaths.length === 0 ? null : r.filePaths[0]));
 });
 
+/**
+ * 前端自绘窗口控制按钮（WindowControls.tsx）的主进程侧：
+ * 最小化 / 最大化切换 / 关闭三个动作 + 最大化状态推送（切图标用）。
+ */
+ipcMain.on("window:minimize", () => {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.minimize();
+});
+
+ipcMain.on("window:toggle-maximize", () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.isMaximized()) mainWindow.unmaximize();
+  else mainWindow.maximize();
+});
+
+ipcMain.on("window:close", () => {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.close();
+});
+
+ipcMain.handle("window:is-maximized", () => {
+  return Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isMaximized());
+});
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1520,
@@ -103,6 +125,12 @@ function createWindow() {
     backgroundColor: "#f7f7f4",
     show: true, // 立即显示窗口，防止 ready-to-show 被阻塞
     autoHideMenuBar: true,
+    // 无边框窗口：隐藏系统标题栏，网页内容铺到窗口最顶端。拖拽移动 / 双击最大化 /
+    // Win+方向贴靠仍是系统原生行为（前端顶行挂 .titlebar-drag 热区）。
+    // 右上角的窗口控制按钮由前端自绘（WindowControls.tsx）：Electron 44 在 Win10
+    // 上 titleBarOverlay 的运行时换色不可靠（symbolColor 不重绘、多次调用会串色），
+    // WCO 方案验证过被否。macOS 保持系统边框不变。
+    ...(process.platform === "darwin" ? {} : { titleBarStyle: "hidden" }),
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
@@ -113,6 +141,13 @@ function createWindow() {
   });
 
   bindZoomShortcuts(mainWindow.webContents);
+
+  // 最大化状态推送：前端 WindowControls 靠它切换「最大化/还原」图标
+  const sendMaximized = (value) => {
+    if (!mainWindow.isDestroyed()) mainWindow.webContents.send("window:maximized-changed", value);
+  };
+  mainWindow.on("maximize", () => sendMaximized(true));
+  mainWindow.on("unmaximize", () => sendMaximized(false));
 
   // 文本编辑语义的右键菜单（剪切/复制/粘贴/复制选区）——见 buildTextContextMenuTemplate 注释。
   // 之前完全没有 context-menu 处理，输入框里右键粘贴、选中对话文字右键复制都像被禁用了。

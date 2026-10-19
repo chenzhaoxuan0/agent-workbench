@@ -1,3 +1,4 @@
+import { TitleBarClearance } from "./WindowControls.tsx";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { Panel, Separator, type PanelImperativeHandle } from "react-resizable-panels";
 import { FileDiff, History, LayoutGrid, ListChecks, PanelRightClose, Radio, X } from "lucide-react";
@@ -188,8 +189,14 @@ function SidePanePanelBody({
     <div className="flex h-full min-h-0 flex-col border-l border-line bg-card">
       {/* tab 条：横向滚动；激活 tab 高亮，hover 出关闭 ×。无可见 tab 时标「功能」，
           此时内容区就是功能主页。最右是收起钮 —— 与左栏顶部开关镜像（右侧栏自己
-          的开关在自己身上，不在主对话页；收起后重开走右上浮层钮） */}
-      <div role="tablist" aria-label="右侧面板标签页" className="flex h-10 shrink-0 items-center gap-1 border-b border-line pl-2 pr-1">
+          的开关在自己身上，不在主对话页；收起后重开走右上浮层钮）。
+          桌面端无边框窗口：tab 条是右列顶部的窗口拖拽热区；最右让出系统窗口
+          控制按钮条（--wco-w，浏览器为 0），收起钮不被其压住 */}
+      <div
+        role="tablist"
+        aria-label="右侧面板标签页"
+        className="titlebar-drag flex h-10 shrink-0 items-center gap-1 border-b border-line pl-2 pr-1"
+      >
         <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
           {visibleTabs.length === 0 && (
             <span className="flex h-7 shrink-0 select-none items-center gap-1.5 rounded-btn border border-teal/40 bg-teal-tint/60 px-2 text-caption text-ink">
@@ -262,6 +269,9 @@ function SidePanePanelBody({
         >
           <PanelRightClose size={14} />
         </button>
+        {/* 本行顶到窗口右缘：no-drag 占位让出窗口控制钮带（--wco-w）。
+            必须是 drag 行的行内子元素 —— 兄弟悬浮元素的 no-drag 不参与拖拽区减法 */}
+        <TitleBarClearance width="calc(var(--wco-w, 0px) + 4px)" />
       </div>
 
       {/* 内容区：全量 tab 挂载（保活），仅「面板可见且激活」的那个显示；

@@ -7,6 +7,7 @@ import { sidePaneOccupies } from "../core/sidePaneTabs.ts";
 import { listEditors, openInEditor, type DaemonEditorInfo } from "../adapters/daemon/client.ts";
 import { useIsMobile } from "./mobile/useIsMobile.ts";
 import { ConversationViewSwitch } from "./ConversationViewSwitch.tsx";
+import { TitleBarClearance } from "./WindowControls.tsx";
 import { cn } from "./cn.ts";
 
 /**
@@ -38,14 +39,16 @@ export function WorkspaceHeader() {
   return (
     <header
       className={cn(
-        "@container flex h-12 shrink-0 items-center gap-2 border-b border-line/60 bg-rail transition-[padding] duration-300",
-        // 左：折叠时只让出浮层展开钮（pl-3 + w-7 = 40px）加 8px 间隙，名称顶着图标
-        // 右侧对齐；右：面板收起时同样让出右上浮层钮的对齐带 —— 与左对称
-        sidebarCollapsed ? "pl-12" : "pl-4",
-        paneOpen ? "pr-4" : "pr-12",
+        "titlebar-drag @container flex h-12 shrink-0 items-center gap-2 border-b border-line/60 bg-rail transition-[padding] duration-300",
+        "pl-4",
+        paneOpen ? "pr-4" : "pr-0",
       )}
       aria-label="单元"
     >
+      {/* 左上浮层钮（侧栏收起时）的 no-drag 让位：占位必须是 drag 行的子元素，
+          拖拽区减法才生效（pl-4 + 2rem = 原 pl-12 的几何），见 TitleBarClearance */}
+      {sidebarCollapsed && <TitleBarClearance width="2rem" />}
+
       {/* ---- 左区：单元身份卡片 ---- */}
       {unit ? (
         <div className="flex min-w-0 items-center gap-2">
@@ -106,6 +109,9 @@ export function WorkspaceHeader() {
             右侧，跨版式阈值时位置与外观都不变。挤压全由左侧身份卡按阶梯吸收 */}
         <ConversationViewSwitch />
       </div>
+
+      {/* 面板收起时本列顶到窗口右缘：no-drag 占位让出窗口控制钮带 + 浮层钮对齐带 */}
+      {!paneOpen && <TitleBarClearance width="calc(var(--wco-w, 0px) + 3rem)" />}
     </header>
   );
 }

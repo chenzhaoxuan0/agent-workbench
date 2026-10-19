@@ -18,7 +18,8 @@ export function DesktopTopOverlay() {
 
   return (
     <div className="pointer-events-none absolute left-0 top-0 z-30 flex h-12 items-center">
-      <div className="pointer-events-auto flex items-center gap-1 pl-3 text-body-sm">
+      {/* titlebar-no-drag：悬浮在下方 titlebar-drag 头部之上，必须显式打洞才可点击 */}
+      <div className="titlebar-no-drag pointer-events-auto flex items-center gap-1 pl-3 text-body-sm">
         {/* 侧栏开关：点击展开侧栏 */}
         <button
           onClick={() => useShell.getState().toggleSidebar()}
