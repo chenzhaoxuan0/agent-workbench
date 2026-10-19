@@ -14,6 +14,7 @@ import {
 import { useWorkbench } from "../store/useWorkbench.ts";
 import { useAppearance } from "../store/useAppearance.ts";
 import { useIsMobile } from "./mobile/useIsMobile.ts";
+import { MobileVirtualKeyBar } from "./mobile/MobileVirtualKeyBar.tsx";
 import { cn } from "./cn.ts";
 
 /**
@@ -274,6 +275,9 @@ export function ChatTerminalDock() {
 
       {/* xterm 挂载点：激活标签的 TerminalSession 常驻 DOM 直接 append 进来 */}
       <div ref={mountRef} className="min-h-0 flex-1 overflow-hidden relative" />
+
+      {/* 移动端专属虚拟辅助按键栏（形式参照 Termux） */}
+      {isMobile && <MobileVirtualKeyBar target="chat" />}
     </div>
   );
 }

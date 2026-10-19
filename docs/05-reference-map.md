@@ -24,6 +24,7 @@
 | gpt_image_playground | 开源（CookSleep，MIT，本地克隆） | 出图全链路 | `core/imageApi.ts` `useImageStudio.ts` `ImageStudioPage.tsx` `ImageSettingsSection.tsx` | `C:\Users\chenziyu\project\Agent\gpt_image_playground` | `core/imageApi.ts` 请求体 / SSE 解析契约（现为客户端直连） |
 | WeKnora | 开源（本地 Docker 部署） | 记忆后端渠道之一 | `core/weknora.ts` | 源码克隆 `C:\Users\chenziyu\project\WeKnora\WeKnora`（Tencent/WeKnora，参照用）；部署根目录 `C:\Users\chenziyu\project\WeKnora`（Docker 容器 + update 脚本） | `core/weknora.ts` 三接口 listKb / saveFact / search（已是真 API 客户端） |
 | agents.md 规范 | 规范文档（本地克隆） | bot 的岗位说明书 | `AddBotDialog.tsx` | `C:\Users\chenziyu\project\Agent\zocdeusually\agents.md` | 无 |
+| termux-app | 本地克隆（GPL-3.0） | 移动端终端虚拟键盘辅助按键栏形式与排布（2x7 双行网格、倒 T 方向键集群、修饰键粘滞状态机） | `prototype/src/ui/mobile/MobileVirtualKeyBar.tsx` | `C:\Users\chenziyu\project\Agent\termux-app` | 无（纯前端触控交互） |
 | GrokBot | 视觉参照 | 侧栏 bot 头像形态 | `Sidebar.tsx` `UnitRow` | 无本地克隆（仅视觉参照） | 无 |
 
 > 上述 git 克隆（含 WeKnora 源码）已于 2026-09-29 全量 `git pull --ff-only` 同步至各自上游 HEAD；
@@ -220,3 +221,21 @@ ZCode 是工作台布局与交互习惯的**总参照**，几乎每个壳层文�
 **服务端参照入口**：playwright-mcp `src/`（工具面与 profile 逻辑）；win-computer-use-mcp `mcp/computer-use-mcp/`（Windows 坑对照）；anthropic-quickstarts `computer-use-demo/`（动作 schema）。
 
 **未移植**（二期）：Chrome 扩展接管模式（`--extension`）、MCP server 层高危确认门、UIA 结构化快照（ZCode 式 state_id/elements）、截图流面板。
+
+---
+
+## 十五、termux-app —— 移动端终端虚拟按键栏
+
+设计落点：`prototype/src/ui/mobile/MobileVirtualKeyBar.tsx`；许可证声明见 `README.md` 与 `THIRD-PARTY-NOTICES.md`。
+
+| Termux 的概念 / 布局 | 本项目落点 | 备注 |
+|---|---|---|
+| `extra-keys` 两行七列网格（`DEFAULT_IVALUE_EXTRA_KEYS`） | `MobileVirtualKeyBar.tsx` 主网格 | Row 1: `ESC / - HOME ↑ END PGUP`；Row 2: `TAB CTRL ALT ← ↓ → PGDN`。彻底消除单行横向滚动的低效，所有高频终端操作键一屏直达 |
+| 倒 T 方向键与导航集群（`HOME ↑ END PGUP` / `← ↓ → PGDN`） | 4 列导航区 | 上下垂直对齐、左右居中围绕、行首/行尾与翻页成列，极大提升移动端光标与命令历史翻查效率 |
+| 修饰键（`CTRL` / `ALT`）粘滞与锁定机制 | `ModifierState`（off → active → locked） | 单击一次生效后自动复位，双击锁定常驻；配合唤出 `Ctrl+C/D/Z/L/A/E` 快捷指令条，解决手机软键盘无 Ctrl 的痛点 |
+| 副键上滑手势（`{key: '-', popup: '|'}`） | `isSwipedUp` 触控手势 | 键位上滑触发副键（`-` 上滑为 `|`，`/` 上滑为 `\`，`ESC` 上滑为 `CLR` 清屏，`CTRL` 上滑为 `^C` 中断等） |
+| 长按自动连发（`PRIMARY_REPETITIVE_KEYS`） | `isRepetitive` 定时器 | 方向键与翻页键长按 320ms 后以 70ms 间隔平滑连击，无需反复狂点屏幕 |
+
+> **开源许可证边界严正说明：**
+> Termux（`termux-app`）基于 GPL-3.0 协议开源，本项目基于 MIT 协议开源。
+> 本项目**未复制或包含任何 Termux 的 Java / Android 源代码或二进制资产**，仅参考其按键排布的网格形式与交互逻辑，在 React 19 + TypeScript 环境下独立全新开发。

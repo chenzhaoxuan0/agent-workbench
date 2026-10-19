@@ -172,6 +172,7 @@ agent-workbench/
 | **OpenClaw**（OpenClaw Foundation） | MIT | 渠道插件抽象（ChannelPlugin）与渠道编排 |
 | **GrokBot / Meta Muse** | 闭源 | 侧栏彩色 blob 头像、时间线思考折叠与工具卡片、行结构与相对时间 —— **仅视觉与交互参照，未复制任何代码或资产** |
 | **WeKnora**（Tencent） | MIT（含第三方组件声明） | 记忆后端渠道之一（知识库 listKb / saveFact / search 客户端为自写实现） |
+| **termux-app**（Termux） | GPL-3.0 | **仅参考形式未抄源码**：移动端终端虚拟辅助按键栏的布局形式（上下左右与 Home/End/PgUp/PgDn 经典方向导航集群，Esc/Tab/Ctrl/Alt 控制键阵列与修饰键交互形态）。因 Termux 采用 GPL-3.0 协议而本项目为 MIT 协议，严守开源许可证边界，本项目未复制或使用 Termux 仓库的任何源码与资产，仅借鉴其按键排列形式与交互体验，在 React / Web 前端全自研独立实现（落点：`prototype/src/ui/mobile/MobileVirtualKeyBar.tsx`）。 |
 | **agents.md 规范**（OpenAI） | MIT | bot 岗位说明书（AGENTS.md）格式 |
 
 第三方代码与资产（移植代码、品牌图标）的著作权与许可声明，
