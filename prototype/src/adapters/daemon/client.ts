@@ -1324,6 +1324,8 @@ export interface UnitHistoryEntry {
   readonly forkOf?: string | null;
   readonly forkAtSeq?: number | null;
   readonly forkKind?: "branch" | "revision" | null;
+  /** 会话来源（workbench/feishu/mobile/automation…，仅 session 类行带）：来源标签用 */
+  readonly source?: string | null;
 }
 
 export async function fetchUnitHistory(

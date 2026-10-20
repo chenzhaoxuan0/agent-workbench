@@ -35,6 +35,8 @@ import {
   isResidentUnit,
   isSyntheticUnit,
   orderUnitsLikeSidebar,
+  SESSION_SOURCE_LABEL,
+  type SessionSource,
 } from "../core/units.ts";
 
 export { isResidentUnit, isSyntheticUnit };
@@ -1324,6 +1326,35 @@ function formatHistoryTime(ts: number): string {
  * 行内：执行器图标（hover 淡入为置顶钮；已置顶恒显实心 pin）+ 状态灯
  * （仅异常/执行/未读时出现）+ 标题 + 分叉徽标 + 打开方式徽标 + 时间（固定最右，对齐）。
  */
+/**
+ * 历史行的来源标签 —— 这条会话怎么来的：
+ * - 定时（automation）：trigger=manual 是用户点的「立即运行」，标「定时·手跑」；
+ * - 待办（backlog）：心跳/GTD 提议确认后自动执行；手动点的一次执行标「待办·手动」；
+ * - 手动（manual）：对话页手动派发的 TUI；
+ * - 会话（session）：非工作台来源（飞书/手机端/自动化…）标来源；工作台自己的
+ *   普通对话是默认形态，不带标签（颜色口径与 HistoryPane 的 KIND_META 一致）。
+ */
+function historyOriginTag(entry: UnitHistoryEntry): { label: string; cls: string; tip: string } | null {
+  if (entry.kind === "automation") {
+    return entry.trigger === "manual"
+      ? { label: "定时·手跑", cls: "bg-teal-tint text-teal", tip: "定时任务 · 手动点的一次「立即运行」" }
+      : { label: "定时", cls: "bg-teal-tint text-teal", tip: "定时任务到点自动触发" };
+  }
+  if (entry.kind === "backlog") {
+    return entry.trigger === "manual"
+      ? { label: "待办·手动", cls: "bg-amber-500/10 text-amber-600", tip: "待办任务 · 手动点的一次执行" }
+      : { label: "待办", cls: "bg-amber-500/10 text-amber-600", tip: "待办任务自动触发（心跳提议、确认后执行）" };
+  }
+  if (entry.kind === "manual") {
+    return { label: "手动", cls: "bg-violet-500/10 text-violet-500", tip: "在对话页手动派发的 TUI 会话" };
+  }
+  if (entry.kind === "session" && entry.source != null && entry.source !== "" && entry.source !== "workbench") {
+    const label = SESSION_SOURCE_LABEL[entry.source as SessionSource] ?? entry.source;
+    return { label, cls: "bg-line-soft text-graphite", tip: `这条会话从${label}发起` };
+  }
+  return null;
+}
+
 function HistoryListRow({
   entry,
   versionCount,
@@ -1373,6 +1404,7 @@ function HistoryListRow({
         ? "只能在 TUI 重现（没有聊天页会话记录）"
         : `当前默认：在${modeLabel === "聊天" ? "聊天页" : "TUI"}打开。点击切换为在${otherLabel}打开（右键菜单同款）`;
   const launchTip = entry.launchMode === "terminal" ? " · TUI 创建" : " · 对话页创建";
+  const originTag = historyOriginTag(entry);
 
   return (
     <button
@@ -1434,6 +1466,16 @@ function HistoryListRow({
       {/* 状态灯：只讲异常与值得注意的事 —— 执行中呼吸、未读完成绿灯、出错红灯、
           仅开着蓝静态；日常已读状态不亮灯（对齐 ZCode deriveTaskLeadingIndicator） */}
       {dotCls !== null && <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", dotCls)} />}
+      {/* 来源标签：这条会话怎么来的（定时/待办/手动/渠道）；工作台普通对话不带
+          标签 —— 默认形态不占位，带标签的都是「值得说明来历」的 */}
+      {originTag !== null && (
+        <span
+          className={cn("shrink-0 rounded-full px-1 py-px text-[9px] font-medium", originTag.cls)}
+          title={originTag.tip}
+        >
+          {originTag.label}
+        </span>
+      )}
       <span className="min-w-0 flex-1 truncate text-[11px] text-graphite">{entry.title}</span>
       {(versionCount !== undefined && versionCount > 1) || entry.forkKind === "branch" || entry.forkKind === "revision" ? (
         <span

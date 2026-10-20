@@ -1078,6 +1078,7 @@ export class RuntimeHost {
       endedAt: null,
       cliRef: null,
       rootPath,
+      source: h.source,
       conversationId: h.conversationId,
       lastSeq: 0,
       turnCount: h.turnCount,

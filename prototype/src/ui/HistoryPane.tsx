@@ -31,7 +31,7 @@ import { useWorkbench } from "../store/useWorkbench.ts";
 import { useSidePane } from "../store/useSidePane.ts";
 import { useHistoryPrefs } from "../store/useHistoryPrefs.ts";
 import { useTerminalStore } from "../store/useTerminalStore.ts";
-import { asSessionId, asUnitId } from "../core/units.ts";
+import { asSessionId, asUnitId, SESSION_SOURCE_LABEL, type SessionSource } from "../core/units.ts";
 import { useShell } from "../store/useShell.ts";
 import { collapseForkVersions } from "./forkHistory.ts";
 import { MarkdownContent } from "./MarkdownContent.tsx";
@@ -631,6 +631,22 @@ function HistoryRow({
           <KIcon size={10} className="mr-0.5 inline-block align-[-1px]" />
           {kind.label}
         </span>
+        {entry.kind === "session" && entry.source != null && entry.source !== "" && entry.source !== "workbench" && (
+          <span
+            className="mt-0.5 shrink-0 rounded-chip bg-line-soft px-1.5 py-px text-[10px] text-graphite"
+            title={`这条会话从${SESSION_SOURCE_LABEL[entry.source as SessionSource] ?? entry.source}发起`}
+          >
+            {SESSION_SOURCE_LABEL[entry.source as SessionSource] ?? entry.source}
+          </span>
+        )}
+        {entry.trigger === "manual" && (entry.kind === "automation" || entry.kind === "backlog") && (
+          <span
+            className="mt-0.5 shrink-0 rounded-chip bg-line-soft px-1.5 py-px text-[10px] text-graphite"
+            title="手动点的一次执行（非到点自动触发）"
+          >
+            手动触发
+          </span>
+        )}
         {badge !== null && (
           <span
             role={family !== undefined && family.length > 1 ? "button" : undefined}
@@ -813,6 +829,7 @@ function HistoryRow({
               terminalId={entry.terminalId ?? null}
               runtimeId={entry.runtimeId}
               detail={entry.detail}
+              resumeRef={entry.resumeRef}
             />
           )}
         </>
@@ -865,20 +882,51 @@ function SessionMessages({ sessionId }: { sessionId: string }): ReactElement {
   );
 }
 
-/** 展开的终端会话输出快照（ANSI 过滤后的纯文本日志，支持复制与滚动） */
+/**
+ * 展开的终端会话回看，双源：
+ * 1. **原生对话转录**（resumeRef 可解析时，经 history reader 读 CLI 自己的会话库）：
+ *    user/assistant 结构化两栏流 —— 「回看执行时聊了什么」的正主；
+ * 2. **终端输出快照**（ANSI 过滤后的纯文本日志）：原生转录拿不到或为空时的兜底，
+ *    以及想看 TUI 界面原始输出的场合（复制/滚动）。
+ * 两源都空（早期历史 / 会话无输出即退出 / daemon 换代丢了快照）时给出说明。
+ */
 function TerminalTranscript({
   terminalId,
   runtimeId,
   detail,
+  resumeRef,
 }: {
   terminalId: string | null;
   runtimeId: string;
   detail: string | null;
+  resumeRef: string | null;
 }): ReactElement {
+  const bareExec = runtimeId.replace(/^daemon:/, "").replace(/:yolo$/, "");
+  const [native, setNative] = useState<NativeSessionDetail | null | "failed">(resumeRef !== null ? null : "failed");
   const [text, setText] = useState<string | null>(null);
   const [loading, setLoading] = useState(terminalId !== null);
   const [err, setErr] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+
+  // 原生转录：resumeRef 在（回溯/实时捕获链路补齐后覆盖 14 家执行器）
+  useEffect(() => {
+    if (resumeRef === null) {
+      setNative("failed");
+      return;
+    }
+    let alive = true;
+    setNative(null);
+    void fetchNativeSessionDetail(bareExec, resumeRef)
+      .then((d) => {
+        if (alive) setNative(d !== null && d.transcript.length > 0 ? d : "failed");
+      })
+      .catch(() => {
+        if (alive) setNative("failed");
+      });
+    return () => {
+      alive = false;
+    };
+  }, [bareExec, resumeRef]);
 
   useEffect(() => {
     if (!terminalId) {
@@ -915,41 +963,87 @@ function TerminalTranscript({
   };
 
   const lineCount = text ? text.split("\n").length : 0;
+  const nativeReady = native !== null && native !== "failed";
 
   return (
-    <div className="mx-2 mb-2 overflow-hidden rounded-btn border border-line bg-rail/80">
-      <div className="flex h-7 items-center justify-between border-b border-line/60 bg-rail px-2.5 text-[10px] text-ash">
-        <div className="flex items-center gap-1.5 font-mono">
-          <Terminal size={11} className="text-teal" />
-          <span>终端输出记录 · {runtimeId}</span>
-          {lineCount > 0 && <span className="text-ash/60">({lineCount} 行)</span>}
-        </div>
-        {text && text.trim() !== "" && (
-          <button
-            type="button"
-            onClick={handleCopy}
-            className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-ash transition hover:bg-line-soft hover:text-ink cursor-pointer"
-          >
-            <Copy size={10} />
-            <span>{copied ? "已复制" : "复制输出"}</span>
-          </button>
-        )}
-      </div>
-
-      <div className="p-2.5">
-        {loading && <p className="text-caption text-ash">正在读取终端输出…</p>}
-        {err !== null && <p className="text-caption text-loss">输出读取失败：{err}</p>}
-        {!loading && err === null && text && text.trim() !== "" && (
-          <pre className="max-h-72 overflow-y-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-ink select-text">
-            {text}
-          </pre>
-        )}
-        {!loading && err === null && (!text || text.trim() === "") && (
-          <div className="space-y-1 text-caption text-ash">
-            <p>未截获到终端文本输出（会话在产生输出前已退出，或属于早期历史会话）。</p>
-            {detail && <p className="font-mono text-[11px] text-graphite">结果摘要：{detail}</p>}
+    <div className="mx-2 mb-2 space-y-2">
+      {/* 源一：原生对话转录（结构化 user/assistant 流，执行器自己的会话记录） */}
+      {native === null && <p className="text-caption text-ash">正在读取原生对话记录…</p>}
+      {nativeReady && (
+        <div className="overflow-hidden rounded-btn border border-line bg-rail/80">
+          <div className="flex h-7 items-center border-b border-line/60 bg-rail px-2.5 text-[10px] text-ash">
+            <div className="flex items-center gap-1.5 font-mono">
+              <MessageSquare size={11} className="text-teal" />
+              <span>
+                原生对话记录 · {runtimeId}
+                {native.title !== "" && <span className="text-ash/60">（{native.title.slice(0, 30)}）</span>}
+              </span>
+            </div>
           </div>
-        )}
+          <div className="max-h-72 space-y-1.5 overflow-y-auto p-2.5">
+            {native.transcript.map((t, i) => (
+              <div key={i} className="flex items-start gap-2">
+                <span
+                  className={cn(
+                    "w-14 shrink-0 text-right text-caption",
+                    t.kind === "user" ? "text-teal" : t.kind === "assistant" ? "text-graphite" : "text-ash/60",
+                  )}
+                >
+                  {t.kind === "user" ? "用户" : t.kind === "assistant" ? "助手" : t.kind === "thinking" ? "思考" : "工具"}
+                </span>
+                <p
+                  className={cn(
+                    "min-w-0 flex-1 whitespace-pre-wrap break-words text-caption leading-relaxed",
+                    t.kind === "user" ? "text-ink" : t.kind === "assistant" ? "text-graphite" : "text-ash",
+                  )}
+                >
+                  {t.toolName !== undefined && <span className="mr-1 font-mono text-[10px] text-teal">[{t.toolName}]</span>}
+                  {t.text}
+                </p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 源二：终端输出快照（原始 TUI 文本；原生转录缺席时是唯一回看面） */}
+      <div className="overflow-hidden rounded-btn border border-line bg-rail/80">
+        <div className="flex h-7 items-center justify-between border-b border-line/60 bg-rail px-2.5 text-[10px] text-ash">
+          <div className="flex items-center gap-1.5 font-mono">
+            <Terminal size={11} className="text-teal" />
+            <span>终端输出记录 · {runtimeId}</span>
+            {lineCount > 0 && <span className="text-ash/60">({lineCount} 行)</span>}
+          </div>
+          {text && text.trim() !== "" && (
+            <button
+              type="button"
+              onClick={handleCopy}
+              className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-ash transition hover:bg-line-soft hover:text-ink cursor-pointer"
+            >
+              <Copy size={10} />
+              <span>{copied ? "已复制" : "复制输出"}</span>
+            </button>
+          )}
+        </div>
+
+        <div className="p-2.5">
+          {loading && <p className="text-caption text-ash">正在读取终端输出…</p>}
+          {err !== null && <p className="text-caption text-loss">输出读取失败：{err}</p>}
+          {!loading && err === null && text && text.trim() !== "" && (
+            <pre className="max-h-72 overflow-y-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-ink select-text">
+              {text}
+            </pre>
+          )}
+          {!loading && err === null && (!text || text.trim() === "") && !nativeReady && (
+            <div className="space-y-1 text-caption text-ash">
+              <p>未截获到终端文本输出（会话在产生输出前已退出，或属于早期历史会话）。</p>
+              {detail && <p className="font-mono text-[11px] text-graphite">结果摘要：{detail}</p>}
+            </div>
+          )}
+          {!loading && err === null && (!text || text.trim() === "") && nativeReady && (
+            <p className="text-caption text-ash">没有终端输出快照（上方为该会话的原生对话记录）。</p>
+          )}
+        </div>
       </div>
     </div>
   );

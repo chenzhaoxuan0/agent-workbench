@@ -27,6 +27,8 @@ export interface SessionRow {
   readonly endedAt: number | null;
   readonly cliRef: string | null;
   readonly rootPath: string | null;
+  /** 会话来源（workbench/feishu/mobile/automation…）：历史列表来源标签用。旧行/测试桩缺省 */
+  readonly source?: string | null;
   /**
    * 会话谱系（ADR 0012）：切换执行器开新段时指向旧段的谱系 id。NULL = 自身为根。
    * 不可变 —— 行创建后改谱系等于改写历史，账本不允许。
@@ -109,6 +111,7 @@ export class Store {
         ended_at INTEGER,
         cli_ref TEXT,
         root_path TEXT,
+        source TEXT,
         stats_json TEXT NOT NULL DEFAULT '{}'
       );
       CREATE TABLE IF NOT EXISTS messages (
@@ -318,6 +321,9 @@ export class Store {
       // 来源：manual = 用户手建；quota_resume = 用量耗尽后自动排的续跑。
       // 自动排的那条要去重（同一窗口只排一条），这个标记就是去重的凭据。
       `ALTER TABLE automations ADD COLUMN origin TEXT`,
+      // 会话来源（workbench/feishu/mobile/automation…）：历史列表的来源标签用。
+      // 旧行 NULL 按工作台读（产品初期只有工作台一个入口）
+      `ALTER TABLE sessions ADD COLUMN source TEXT`,
     ]) {
       try {
         this.db.exec(stmt);
@@ -340,8 +346,8 @@ export class Store {
   upsertSession(row: SessionRow): void {
     this.db
       .prepare(
-        `INSERT INTO sessions (id, unit_id, runtime_id, title, status, started_at, ended_at, cli_ref, root_path, conversation_id, last_seq, turn_count, fork_of_session, fork_at_seq, fork_kind, stats_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO sessions (id, unit_id, runtime_id, title, status, started_at, ended_at, cli_ref, root_path, source, conversation_id, last_seq, turn_count, fork_of_session, fork_at_seq, fork_kind, stats_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET title=excluded.title, status=excluded.status,
            ended_at=excluded.ended_at, cli_ref=excluded.cli_ref, root_path=excluded.root_path,
            last_seq=MAX(last_seq, excluded.last_seq), turn_count=MAX(turn_count, excluded.turn_count), stats_json=excluded.stats_json`,
@@ -356,6 +362,8 @@ export class Store {
         row.endedAt,
         row.cliRef,
         row.rootPath,
+        // 来源与血缘同属「行创建后不可变」：续跑/续聊不改写这条会话怎么来的
+        row.source ?? null,
         row.conversationId,
         row.lastSeq,
         row.turnCount,
@@ -1270,6 +1278,7 @@ export class Store {
       endedAt: r["ended_at"] === null || r["ended_at"] === undefined ? null : Number(r["ended_at"]),
       cliRef: r["cli_ref"] === null || r["cli_ref"] === undefined ? null : String(r["cli_ref"]),
       rootPath: r["root_path"] === null || r["root_path"] === undefined ? null : String(r["root_path"]),
+      source: r["source"] === null || r["source"] === undefined ? null : String(r["source"]),
       conversationId: r["conversation_id"] === null || r["conversation_id"] === undefined ? null : String(r["conversation_id"]),
       lastSeq: Number(r["last_seq"] ?? 0),
       turnCount: Number(r["turn_count"] ?? 0),

@@ -1560,6 +1560,8 @@ interface UnitHistoryEntry {
   forkOf?: string | null;
   forkAtSeq?: number | null;
   forkKind?: "branch" | "revision" | null;
+  /** 会话来源（workbench/feishu/mobile/automation…，仅 session 类行带）：来源标签用 */
+  source?: string | null;
 }
 
 /**
@@ -1807,6 +1809,8 @@ registerMethod("unit.history", async (params) => {
       sessionId: s.id,
       resumeRef: s.cliRef,
       terminalId: null,
+      // 来源标签（workbench 缺省不显，渠道/自动化来源让用户知道「这条怎么来的」）
+      source: s.source,
       forkOf: s.forkOfSession,
       forkAtSeq: s.forkAtSeq,
       forkKind: s.forkKind,
