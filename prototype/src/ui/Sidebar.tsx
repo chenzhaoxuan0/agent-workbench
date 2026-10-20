@@ -861,12 +861,20 @@ function UnitRow({
     const unsubEvent = client.onEvent((e) => {
       if (e.type === "session.started" || e.type === "session.ended") scheduleLoad();
     });
+    // 导入外部会话完成（设置页/bot 设置里）的即时刷新：导入的那一刻用户就
+    // 指望在子列表最顶上看到它，等 30s 轮询等于没导入
+    const onImported = (ev: Event): void => {
+      const detail = (ev as CustomEvent<{ unitId?: string }>).detail;
+      if (detail?.unitId === undefined || String(detail.unitId) === String(unit.id)) scheduleLoad();
+    };
+    window.addEventListener("awb:history-refresh", onImported as EventListener);
     return () => {
       alive = false;
       clearInterval(poll);
       if (debounce !== null) clearTimeout(debounce);
       unsubFrame();
       unsubEvent();
+      window.removeEventListener("awb:history-refresh", onImported as EventListener);
     };
   }, [historyOpen, unit.id]);
   // ZCode: unavailableLocalDirectory —— 路径不可用要显式说出来，不能当成正常单元

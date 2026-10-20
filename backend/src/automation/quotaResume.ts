@@ -237,10 +237,12 @@ export class QuotaResumeWatcher {
     }
   }
 
-  /** 该执行器最近一个还能 resume 的会话（cli_ref 非空才接得回来） */
+  /** 该执行器最近一个还能 resume 的会话（cli_ref 非空才接得回来）。
+   *  导入的外部会话（source="imported"）不算 —— 它们是收进来的档案，不是
+   *  工作台管理的对话，用量墙续跑不该自动往里发消息 */
   private latestResumable(runtimeId: string): { id: string; rootPath: string | null } | undefined {
     for (const s of this.deps.store.listSessions()) {
-      if (s.runtimeId !== runtimeId || s.cliRef === null) continue;
+      if (s.runtimeId !== runtimeId || s.cliRef === null || s.source === "imported") continue;
       return { id: s.id, rootPath: s.rootPath };
     }
     return undefined;

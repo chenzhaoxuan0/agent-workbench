@@ -5,6 +5,7 @@ import {
   importNativeSessions,
   type ImportableNativeSession,
 } from "../adapters/daemon/client.ts";
+import { useHistoryPrefs } from "../store/useHistoryPrefs.ts";
 import { useWorkbench } from "../store/useWorkbench.ts";
 import { cn } from "./cn.ts";
 
@@ -80,7 +81,13 @@ export function ImportSessionsSection({ unitId }: { unitId: string }): ReactElem
       picked.map((r) => ({ sessionId: r.sessionId, title: r.title, startedAt: r.startedAt, updatedAt: r.updatedAt })),
     )
       .then((r) => {
-        setDone(`已导入 ${r.imported} 条${r.skipped > 0 ? `（跳过已在历史中的 ${r.skipped} 条）` : ""} —— 见侧栏该 bot 的历史列表（带「导入」标签）`);
+        // 导入即关注：自动置顶（久远会话按时间排百名开外，「导入成功」却在
+        // 列表里找不到，等于失败）+ 广播让已展开的侧栏子列表立刻重拉
+        if (r.keys.length > 0) useHistoryPrefs.getState().pinKeys(r.keys);
+        window.dispatchEvent(new CustomEvent("awb:history-refresh", { detail: { unitId } }));
+        setDone(
+          `已导入 ${r.imported} 条${r.skipped > 0 ? `（跳过已在历史中的 ${r.skipped} 条）` : ""} —— 已置顶到侧栏该 bot 的历史列表（带「导入」标签）`,
+        );
         load();
       })
       .catch((e: unknown) => setErr(e instanceof Error ? e.message : String(e)))

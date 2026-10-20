@@ -1380,6 +1380,15 @@ export async function fetchSessions(
   return client.rpc<readonly DaemonSessionRow[]>("session.list", null, 15000);
 }
 
+/** 删除一条会话台账（行 + 消息，不可恢复；运行中的会话会被 daemon 拒绝） */
+export async function forgetSession(
+  sessionId: string,
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<void> {
+  const client = DaemonClient.get(endpoint);
+  await client.rpc<{ forgotten: string }>("session.forget", { sessionId }, 15000);
+}
+
 /** 读取终端会话的输出文本快照（ANSI 过滤后的纯文本日志） */
 export async function fetchTerminalTranscript(
   terminalId: string,
@@ -1472,15 +1481,15 @@ export async function fetchImportableSessions(
   );
 }
 
-/** 把选中的外部会话导入工作台历史（daemon 落 sessions 表，source = "imported"） */
+/** 把选中的外部会话导入工作台历史（daemon 落 sessions 表，source = "imported"）；keys = 导入行的 entry key（自动置顶用） */
 export async function importNativeSessions(
   unitId: string,
   runtimeId: string,
   sessions: readonly { sessionId: string; title: string; startedAt: number; updatedAt: number }[],
   endpoint: string = defaultDaemonEndpoint(),
-): Promise<{ imported: number; skipped: number }> {
+): Promise<{ imported: number; skipped: number; keys: string[] }> {
   const client = DaemonClient.get(endpoint);
-  return client.rpc<{ imported: number; skipped: number }>(
+  return client.rpc<{ imported: number; skipped: number; keys: string[] }>(
     "history.import.apply",
     { unitId, runtimeId, sessions },
     30000,

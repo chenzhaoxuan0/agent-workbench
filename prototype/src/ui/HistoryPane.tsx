@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type ReactElement } from "react";
 import {
   AlarmClock,
+  Check,
   ChevronDown,
   ChevronRight,
   CircleAlert,
@@ -14,6 +15,7 @@ import {
   RotateCcw,
   Sparkles,
   Terminal,
+  Trash2,
   Wrench,
 } from "lucide-react";
 import {
@@ -23,6 +25,7 @@ import {
   fetchSessionMessages,
   fetchTerminalTranscript,
   fetchUnitHistory,
+  forgetSession,
   type NativeSessionDetail,
   type NativeSessionSummary,
   type UnitHistoryEntry,
@@ -154,6 +157,16 @@ export function HistoryPane({
   const [nativeErr, setNativeErr] = useState<string | null>(null);
   const [nativeExpanded, setNativeExpanded] = useState<string | null>(null);
 
+  /** 整理模式：勾选删除会话行（测试会话堆积的清理面）。删除走 session.forget，
+   *  只对 session 类行开放（含导入行）—— 自动化/待办/TUI 运行记录没有删除 RPC */
+  const [organizing, setOrganizing] = useState(false);
+  const [picked, setPicked] = useState<ReadonlySet<string>>(new Set());
+  const [reloadNonce, setReloadNonce] = useState(0);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteErr, setDeleteErr] = useState<string | null>(null);
+  /** 两步确认：第一下亮红「确认删除」，第二下才动手（不弹模态） */
+  const [armed, setArmed] = useState(false);
+
   /**
    * 在 TUI 中恢复：按条目执行器派发终端，带各家 resume 口径的参数（见 RESUME_ARGS）。
    * 依据是 cli_ref（执行器原生会话 id），不是我们的内部 id —— 记录侧只存 id，
@@ -239,9 +252,10 @@ export function HistoryPane({
       alive = false;
       clearInterval(poll);
     };
-    // focusKey 不进依赖：面板开着换展开目标时只动 expanded，列表不重载不闪
+    // focusKey 不进依赖：面板开着换展开目标时只动 expanded，列表不重载不闪；
+    // reloadNonce 是整理模式删除后的手动重拉通道
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [unitId, isActive]);
+  }, [unitId, isActive, reloadNonce]);
 
   useEffect(() => {
     setExpanded(focusKey ?? null);
@@ -305,6 +319,47 @@ export function HistoryPane({
     return entries.filter((e) => e.status !== "failed" || e.key === focusKey);
   }, [entries, hideFailedInDialog, focusKey]);
 
+  /** 可删行：session 类（含导入）且非活会话 —— 运行中的 daemon 会拒绝 forget */
+  const pickableOf = (e: UnitHistoryEntry): boolean =>
+    e.kind === "session" &&
+    e.key.startsWith("session-") &&
+    e.status !== "running" &&
+    e.status !== "awaiting_permission" &&
+    e.status !== "awaiting_input";
+
+  const togglePick = (key: string): void => {
+    setArmed(false);
+    setPicked((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  const runDelete = (): void => {
+    if (deleting || picked.size === 0) return;
+    if (!armed) {
+      setArmed(true);
+      return;
+    }
+    setDeleting(true);
+    setDeleteErr(null);
+    const ids = [...picked].filter((k) => k.startsWith("session-")).map((k) => k.slice("session-".length));
+    void Promise.allSettled(ids.map((id) => forgetSession(id)))
+      .then((results) => {
+        const failedCount = results.filter((r) => r.status === "rejected").length;
+        if (failedCount > 0) setDeleteErr(`${failedCount} 条删除失败（运行中的会话不能删），其余已完成`);
+        else setDeleteErr(null);
+        setPicked(new Set());
+        setArmed(false);
+        setReloadNonce((n) => n + 1);
+        // 侧栏子列表同步刷新（它不知道这里删了东西）
+        window.dispatchEvent(new CustomEvent("awb:history-refresh", { detail: { unitId } }));
+      })
+      .finally(() => setDeleting(false));
+  };
+
   return (
     <section aria-label={`${unitName} 历史会话`} className="flex h-full min-h-0 flex-col">
       <div className="flex h-10 shrink-0 items-center gap-2 border-b border-line px-3">
@@ -349,7 +404,27 @@ export function HistoryPane({
             <span>{hideFailedInDialog ? `已隐藏 ${failedCount} 条失败（点击查看）` : `已显示失败（点击隐藏）`}</span>
           </button>
         )}
-        <span className="ml-auto shrink-0 text-caption text-ash">
+        {tab === "runs" && (
+          <button
+            type="button"
+            onClick={() => {
+              setOrganizing(!organizing);
+              setPicked(new Set());
+              setArmed(false);
+              setDeleteErr(null);
+            }}
+            aria-pressed={organizing}
+            title={organizing ? "退出整理模式" : "整理：勾选删除不再需要的会话（测试会话堆积的清理面）"}
+            className={cn(
+              "ml-auto flex shrink-0 items-center gap-1 rounded-chip px-2 py-0.5 text-caption font-medium transition cursor-pointer",
+              organizing ? "bg-loss/10 text-loss" : "bg-line-soft text-graphite hover:bg-line hover:text-ink",
+            )}
+          >
+            <Trash2 size={11} />
+            <span>{organizing ? "退出整理" : "整理"}</span>
+          </button>
+        )}
+        <span className={cn("shrink-0 text-caption text-ash", tab === "runs" && organizing && "hidden")}>
           {tab === "native"
             ? nativeList === null
               ? "加载中…"
@@ -416,8 +491,45 @@ export function HistoryPane({
               onResume={() => handleResume(slot.entry)}
               onOpenInChat={slot.entry.sessionId !== null ? () => handleOpenInChat(slot.entry) : undefined}
               onOpenFamilyMember={(m) => handleOpenInChat(m)}
+              organizing={organizing}
+              pickable={pickableOf(slot.entry)}
+              picked={picked.has(slot.entry.key)}
+              onTogglePick={() => togglePick(slot.entry.key)}
             />
           ))}
+        </div>
+      )}
+
+      {/* 整理模式底栏：全选可删行 + 两步确认删除 */}
+      {tab === "runs" && organizing && (
+        <div className="flex h-11 shrink-0 items-center gap-2 border-t border-line bg-rail px-3">
+          <button
+            type="button"
+            onClick={() => {
+              setArmed(false);
+              const pickableKeys = new Set((entries ?? []).filter(pickableOf).map((e) => e.key));
+              setPicked((prev) => (prev.size >= pickableKeys.size ? new Set() : pickableKeys));
+            }}
+            className="rounded-btn px-2 py-1 text-caption text-graphite transition hover:bg-line-soft hover:text-ink cursor-pointer"
+          >
+            {picked.size > 0 && picked.size >= (entries ?? []).filter(pickableOf).length ? "取消全选" : "全选可删行"}
+          </button>
+          <span className="text-caption text-ash">
+            已选 {picked.size} 条{deleteErr !== null && <span className="ml-2 text-loss">{deleteErr}</span>}
+          </span>
+          <button
+            type="button"
+            disabled={picked.size === 0 || deleting}
+            onClick={runDelete}
+            className={cn(
+              "ml-auto flex items-center gap-1.5 rounded-btn px-3 py-1.5 text-caption font-medium transition cursor-pointer disabled:opacity-40",
+              armed ? "bg-loss text-canvas hover:opacity-90" : "bg-line-soft text-loss hover:bg-loss/10",
+            )}
+            title="删除所选会话行及其消息（不可恢复）；自动化/待办/TUI 运行记录不参与删除"
+          >
+            <Trash2 size={12} />
+            {deleting ? "删除中…" : armed ? `确认删除 ${picked.size} 条` : `删除所选 ${picked.size} 条`}
+          </button>
         </div>
       )}
     </section>
@@ -585,6 +697,10 @@ function HistoryRow({
   onResume,
   onOpenInChat,
   onOpenFamilyMember,
+  organizing,
+  pickable,
+  picked,
+  onTogglePick,
 }: {
   /** 面板所属 bot —— 打开/监控跳转的 unitId 用它（entry.unitId 是可选字段，见 Sidebar 同注） */
   unitId: string;
@@ -600,6 +716,12 @@ function HistoryRow({
   onOpenInChat?: () => void;
   /** 家族成员「在聊天页继续」（版本导航的落点） */
   onOpenFamilyMember?: (m: UnitHistoryEntry) => void;
+  /** 整理模式：行点击从「展开」切换为「勾选」 */
+  organizing: boolean;
+  /** 整理模式下可勾选（session 类且非活会话；运行记录无删除 RPC 不可选） */
+  pickable: boolean;
+  picked: boolean;
+  onTogglePick: () => void;
 }): ReactElement {
   const kind = KIND_META[entry.kind];
   const st = useMemo(() => statusMeta(entry.status), [entry.status]);
@@ -618,15 +740,34 @@ function HistoryRow({
           : null;
 
   return (
-    <div className="border-b border-line-soft last:border-b-0">
+    <div className={cn("border-b border-line-soft last:border-b-0", picked && "bg-loss/5")}>
       <button
-        onClick={expandable ? onToggle : undefined}
+        onClick={organizing ? (pickable ? onTogglePick : undefined) : expandable ? onToggle : undefined}
         className={cn(
           "flex w-full items-start gap-2 rounded-btn px-2 py-2 text-left transition",
-          expandable ? "hover:bg-line-soft" : "cursor-default",
+          organizing ? (pickable ? "cursor-pointer hover:bg-line-soft" : "cursor-default opacity-60") : expandable ? "hover:bg-line-soft" : "cursor-default",
         )}
-        title={expandable ? "点击查看对话内容或终端输出快照" : undefined}
+        title={
+          organizing
+            ? pickable
+              ? picked ? "点击取消勾选" : "勾选后可在底栏批量删除（不可恢复）"
+              : "运行记录（自动化 / 待办 / TUI 派发）暂不支持删除"
+            : expandable
+              ? "点击查看对话内容或终端输出快照"
+              : undefined
+        }
       >
+        {organizing && (
+          <span
+            className={cn(
+              "mt-0.5 flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded border",
+              picked ? "border-loss bg-loss text-canvas" : "border-line-strong",
+              !pickable && "border-line opacity-50",
+            )}
+          >
+            {picked && <Check size={10} strokeWidth={3} />}
+          </span>
+        )}
         <span className={cn("mt-0.5 shrink-0 rounded-chip px-1.5 py-0.5 text-[10px]", kind.cls)}>
           <KIcon size={10} className="mr-0.5 inline-block align-[-1px]" />
           {kind.label}

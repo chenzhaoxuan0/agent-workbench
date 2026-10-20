@@ -97,6 +97,8 @@ export interface HistoryPrefsStore {
   setEntryOpenMode: (key: string, mode: "chat" | "tui" | null) => void;
   /** 置顶 / 取消置顶一条历史会话（entry key；幂等切换） */
   togglePinned: (key: string) => void;
+  /** 批量置顶（导入会话用） */
+  pinKeys: (keys: string[]) => void;
 }
 
 export const useHistoryPrefs = create<HistoryPrefsStore>((set, get) => ({
@@ -146,6 +148,15 @@ export const useHistoryPrefs = create<HistoryPrefsStore>((set, get) => ({
         ? state.prefs.pinnedKeys.filter((k) => k !== key)
         : [...state.prefs.pinnedKeys, key].slice(-PINNED_CAP);
       const next = { ...state.prefs, pinnedKeys: nextPinned };
+      persist(next);
+      return { prefs: next };
+    }),
+  /** 批量置顶（导入会话用：导入的那一刻就是想立刻在侧栏最顶上看到它们） */
+  pinKeys: (keys) =>
+    set((state) => {
+      const fresh = keys.filter((k) => k !== "" && !state.prefs.pinnedKeys.includes(k));
+      if (fresh.length === 0) return {};
+      const next = { ...state.prefs, pinnedKeys: [...state.prefs.pinnedKeys, ...fresh].slice(-PINNED_CAP) };
       persist(next);
       return { prefs: next };
     }),

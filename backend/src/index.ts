@@ -524,7 +524,8 @@ function resolveSendTarget(
     if (hit !== null) return hit;
   }
   for (const s of store.listSessions()) {
-    if (s.runtimeId !== automation.runtimeId || s.cliRef === null) continue;
+    // 导入的外部会话是档案不是可续发的对话 —— 自动续接不往里投
+    if (s.runtimeId !== automation.runtimeId || s.cliRef === null || s.source === "imported") continue;
     return s.id;
   }
   return null;
@@ -1824,7 +1825,14 @@ registerMethod("unit.history", async (params) => {
   }
 
   entries.sort((a, b) => b.startedAt - a.startedAt);
-  return { entries: entries.slice(0, limit) };
+  // 导入行是用户亲手收进来的（数量少、有明确关注）：不受 limit 截断 —— 否则导入
+  // 一条久远的会话，它按 startedAt 排到百名开外，侧栏永远看不到，「导入成功」
+  // 在用户眼里就是假的。其余行照常按 limit 截，合并后维持时间序（前端依赖
+  // daemon 的排序，置顶由前端 pinnedKeys 负责）
+  const importedRows = entries.filter((e) => e.source === "imported");
+  const merged = [...entries.filter((e) => e.source !== "imported").slice(0, Math.max(0, limit - importedRows.length)), ...importedRows];
+  merged.sort((a, b) => b.startedAt - a.startedAt);
+  return { entries: merged };
 });
 
 // ---- 原生会话历史（history.native.*，docs/13 Phase 1）-------------------------
@@ -1917,6 +1925,7 @@ registerMethod("history.import.apply", async (params) => {
   const known = knownNativeRefs();
   let imported = 0;
   let skipped = 0;
+  const keys: string[] = [];
   for (const s of p.sessions) {
     const nativeId = typeof s?.sessionId === "string" ? s.sessionId : "";
     if (nativeId === "") continue;
@@ -1927,9 +1936,10 @@ registerMethod("history.import.apply", async (params) => {
     const startedAt = typeof s.startedAt === "number" && Number.isFinite(s.startedAt) ? s.startedAt : 0;
     const updatedAt = typeof s.updatedAt === "number" && Number.isFinite(s.updatedAt) ? s.updatedAt : startedAt;
     const title = typeof s.title === "string" && s.title.trim() !== "" ? s.title.trim().slice(0, 120) : "（外部导入会话）";
+    const rowId = `imp_${bare}_${nativeId}`.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 200);
     store.upsertSession({
       // imp_ 前缀与真实会话 id 空间隔离；原生 id 里可能出现的不安全字符压成 _
-      id: `imp_${bare}_${nativeId}`.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 200),
+      id: rowId,
       unitId: p.unitId,
       runtimeId: bare,
       title,
@@ -1948,10 +1958,13 @@ registerMethod("history.import.apply", async (params) => {
       stats: { messages: 0, toolCalls: 0, inputTokens: 0, outputTokens: 0, costUsd: 0, durationMs: 0 },
     });
     known.add(`${bare}|${nativeId}`);
+    keys.push(`session-${rowId}`);
     imported++;
   }
   if (imported > 0) log.info("native sessions imported", { unitId: p.unitId, runtimeId: bare, imported, skipped });
-  return { imported, skipped };
+  // keys = 这些行在 unit.history 里的 entry key，前端拿去自动置顶（导入即想在
+  // 侧栏最顶上看到，这是用户选择导入的那一刻的期待）
+  return { imported, skipped, keys };
 });
 
 
