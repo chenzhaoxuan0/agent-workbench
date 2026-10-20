@@ -3,6 +3,7 @@ import {
   Bot,
   Brain,
   Check,
+  Download,
   FileText,
   FolderOpen,
   ImagePlus,
@@ -19,6 +20,7 @@ import { useWorkbench, selectVisibleModels, BOT_CONFLICT, type BotWriteGuards } 
 import { type WorkUnit, type UnitKind, type BotChannel } from "../core/units.ts";
 import { fetchBotDefaultRoot, inspectBotFolder, openFolder } from "../adapters/daemon/client.ts";
 import { ChannelSection } from "./ChannelSection.tsx";
+import { ImportSessionsSection } from "./ImportSessionsSection.tsx";
 import { FolderPickerField } from "./FolderPickerField.tsx";
 import { cn } from "./cn.ts";
 
@@ -64,7 +66,7 @@ export interface AddBotDraft {
   readonly kind: UnitKind;
 }
 
-type Section = "identity" | "persona" | "memory" | "agentsmd" | "channels";
+type Section = "identity" | "persona" | "memory" | "agentsmd" | "channels" | "importSessions";
 
 const SECTIONS: readonly { id: Section; label: string; icon: LucideIcon; hint: string }[] = [
   { id: "identity", label: "身份", icon: FileText, hint: "目录、名称、角色、执行器" },
@@ -442,6 +444,25 @@ export function AddBotDialog({
                 </span>
               </button>
             ))}
+            {/* 导入外部会话：编辑态专属（新建还没落盘，没有可查的工作目录） */}
+            {isEdit && (
+              <button
+                onClick={() => setSection("importSessions")}
+                aria-current={section === "importSessions"}
+                className={cn(
+                  "flex items-start gap-2 rounded-btn px-2 py-2 text-left",
+                  section === "importSessions" ? "bg-teal-tint" : "hover:bg-line-soft",
+                )}
+              >
+                <Download size={13} className={cn("mt-0.5 shrink-0", section === "importSessions" ? "text-teal" : "text-ash")} />
+                <span className="min-w-0">
+                  <span className={cn("block truncate text-body-sm", section === "importSessions" ? "font-medium text-ink" : "text-graphite")}>
+                    导入会话
+                  </span>
+                  <span className="block truncate text-caption text-ash">收入外部终端跑的 CLI 会话</span>
+                </span>
+              </button>
+            )}
           </nav>
 
           {/* 内容区 */}
@@ -813,6 +834,22 @@ export function AddBotDialog({
               />
             )}
           </div>
+
+          {section === "importSessions" && isEdit && (
+            <div className="space-y-3">
+              <div>
+                <h2 className="text-body-sm font-medium text-ink">导入外部会话</h2>
+                <p className="mt-0.5 text-caption text-ash">
+                  工作目录：<span className="font-mono">{rootPath || "（未设置）"}</span>
+                </p>
+              </div>
+              {rootPath ? (
+                <ImportSessionsSection unitId={String(initial!.id)} />
+              ) : (
+                <p className="text-caption text-ash">先在「身份」里设置工作目录 —— 外部会话按它匹配。</p>
+              )}
+            </div>
+          )}
         </div>
 
         {/* 底部 */}

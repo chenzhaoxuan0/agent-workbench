@@ -1657,7 +1657,10 @@ registerMethod("unit.history", async (params) => {
 
   // 预载全部 bot 映射，支持单 bot 历史或跨 bot 全局历史
   const allBots = await botRegistry.listBots().catch(() => []);
-  const botMap = new Map(allBots.map((b) => [b.unitId, b]));
+  // BotDefinition 的键字段是 id（bot.json 形态），不是 unitId —— 此前按 b.unitId
+  // 建键全部落 undefined，unitName/rootPath 解析从未生效（历史行一直显示裸
+  // unitId、terminal 回溯拿不到 bot 目录），这是顺带修掉的存量 bug
+  const botMap = new Map(allBots.map((b) => [String(b.id ?? ""), b]));
   const defaultBotRootPath = targetUnitId ? (botMap.get(targetUnitId)?.rootPath ? String(botMap.get(targetUnitId)?.rootPath) : "") : "";
 
   for (const a of store.listAutomations()) {
@@ -1782,6 +1785,9 @@ registerMethod("unit.history", async (params) => {
 
   for (const s of store.listSessions()) {
     if ((targetUnitId !== null && s.unitId !== targetUnitId) || claimedSessionIds.has(s.id)) continue;
+    // 导入的外部会话：terminal 形态呈现 —— 点击走 TUI resume（cliRef=原生 id）、
+    // 展开走原生转录；不给 sessionId（host 账本里没有它，聊天页接不回）
+    const imported = s.source === "imported";
     let title = s.title.trim();
     if (title === "" || title === "（无标题会话）") {
       const firstMsg = store.listMessages(s.id, 1)[0];
@@ -1800,16 +1806,16 @@ registerMethod("unit.history", async (params) => {
       title: title === "" ? "（无标题会话）" : title,
       subtitle: null,
       runtimeId: s.runtimeId,
-      launchMode: "headless",
+      launchMode: imported ? "terminal" : "headless",
       status: s.status,
       trigger: null,
       startedAt: s.startedAt,
       endedAt: s.endedAt,
       detail: null,
-      sessionId: s.id,
+      sessionId: imported ? null : s.id,
       resumeRef: s.cliRef,
       terminalId: null,
-      // 来源标签（workbench 缺省不显，渠道/自动化来源让用户知道「这条怎么来的」）
+      // 来源标签（workbench 缺省不显，渠道/自动化/导入来源让用户知道「这条怎么来的」）
       source: s.source,
       forkOf: s.forkOfSession,
       forkAtSeq: s.forkAtSeq,
@@ -1835,8 +1841,8 @@ registerMethod("history.native.list", async (params) => {
   // unitId → rootPath 过滤（不传 = 全量跨 bot）
   let rootPath: string | null = null;
   if (typeof p.unitId === "string" && p.unitId.trim() !== "") {
-    const bots = await botRegistry.listBots().catch(() => [] as { unitId: string; rootPath?: unknown }[]);
-    const bot = bots.find((b) => b.unitId === p.unitId);
+    const bots = await botRegistry.listBots().catch(() => [] as { id?: string; rootPath?: unknown }[]);
+    const bot = bots.find((b) => String(b.id ?? "") === p.unitId);
     rootPath = bot !== undefined && typeof bot.rootPath === "string" && bot.rootPath !== "" ? bot.rootPath : null;
   }
   const sessions = await listNativeSessions(rootPath, executorIds, limit);
@@ -1851,6 +1857,101 @@ registerMethod("history.native.detail", async (params) => {
   const detail = await readNativeSession(p.executorId, p.sessionId);
   if (detail === null) throw Object.assign(new Error("会话不存在或读取失败"), { code: "not_found" });
   return { detail };
+});
+
+// ---- 外部会话导入（history.import.*）-------------------------------------------
+//
+// 面向「工作台外、直接在外部终端里跑的 CLI 会话」：按 bot 工作区 + 执行器列出
+// 原生会话（cc-switch 式的查询面），勾选后落进 sessions 表（source = "imported"，
+// id 用 imp_ 前缀与真实会话隔离，cli_ref 存原生 id）。导入后的行在 unit.history
+// 里以 terminal 形态出现 —— 点击走 TUI resume（原生 id），展开走原生转录回看。
+
+/** 工作台已认识的 (执行器|原生会话 id) 集：sessions.cliRef + terminal_runs.resume_ref */
+function knownNativeRefs(): Set<string> {
+  const known = new Set<string>();
+  for (const s of store.listSessions()) {
+    if (s.cliRef !== null && s.cliRef !== "") known.add(`${s.runtimeId}|${s.cliRef}`);
+  }
+  for (const r of store.listTerminalRuns(undefined, 500)) {
+    if (r.resumeRef !== null && r.resumeRef !== "") known.add(`${r.runtimeId.replace(/^daemon:/, "")}|${r.resumeRef}`);
+  }
+  return known;
+}
+
+registerMethod("history.import.list", async (params) => {
+  const p = (params ?? {}) as { unitId?: string; runtimeId?: string; limit?: number };
+  if (typeof p.unitId !== "string" || p.unitId === "") {
+    throw Object.assign(new Error("unitId 必填"), { code: "bad_params" });
+  }
+  const bots = await botRegistry.listBots().catch(() => [] as { id?: string; rootPath?: unknown }[]);
+  const bot = bots.find((b) => String(b.id ?? "") === p.unitId);
+  const rootPath = bot !== undefined && typeof bot.rootPath === "string" && bot.rootPath !== "" ? bot.rootPath : null;
+  if (rootPath === null) {
+    throw Object.assign(new Error("该单元没有工作目录，无从匹配外部会话"), { code: "bad_params" });
+  }
+  const executorIds = typeof p.runtimeId === "string" && p.runtimeId !== "" ? [p.runtimeId.replace(/^daemon:/, "")] : [];
+  const limit = Math.min(Math.max(typeof p.limit === "number" ? Math.round(p.limit) : 60, 1), 200);
+  const rows = await listNativeSessions(rootPath, executorIds, limit);
+  const known = knownNativeRefs();
+  return {
+    rootPath,
+    sessions: rows.map((r) => ({ ...r, known: known.has(`${r.executorId}|${r.sessionId}`) })),
+  };
+});
+
+registerMethod("history.import.apply", async (params) => {
+  const p = (params ?? {}) as {
+    unitId?: string;
+    unitName?: string;
+    runtimeId?: string;
+    sessions?: Array<{ sessionId?: unknown; title?: unknown; startedAt?: unknown; updatedAt?: unknown }>;
+  };
+  if (typeof p.unitId !== "string" || p.unitId === "" || typeof p.runtimeId !== "string" || p.runtimeId === "" ||
+      !Array.isArray(p.sessions)) {
+    throw Object.assign(new Error("unitId, runtimeId, sessions 必填"), { code: "bad_params" });
+  }
+  const bare = p.runtimeId.replace(/^daemon:/, "");
+  const bots = await botRegistry.listBots().catch(() => [] as { id?: string; rootPath?: unknown; name?: unknown }[]);
+  const bot = bots.find((b) => String(b.id ?? "") === p.unitId);
+  const rootPath = bot !== undefined && typeof bot.rootPath === "string" && bot.rootPath !== "" ? bot.rootPath : null;
+  const known = knownNativeRefs();
+  let imported = 0;
+  let skipped = 0;
+  for (const s of p.sessions) {
+    const nativeId = typeof s?.sessionId === "string" ? s.sessionId : "";
+    if (nativeId === "") continue;
+    if (known.has(`${bare}|${nativeId}`)) {
+      skipped++;
+      continue;
+    }
+    const startedAt = typeof s.startedAt === "number" && Number.isFinite(s.startedAt) ? s.startedAt : 0;
+    const updatedAt = typeof s.updatedAt === "number" && Number.isFinite(s.updatedAt) ? s.updatedAt : startedAt;
+    const title = typeof s.title === "string" && s.title.trim() !== "" ? s.title.trim().slice(0, 120) : "（外部导入会话）";
+    store.upsertSession({
+      // imp_ 前缀与真实会话 id 空间隔离；原生 id 里可能出现的不安全字符压成 _
+      id: `imp_${bare}_${nativeId}`.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 200),
+      unitId: p.unitId,
+      runtimeId: bare,
+      title,
+      status: "done",
+      startedAt,
+      endedAt: updatedAt,
+      cliRef: nativeId,
+      rootPath,
+      source: "imported",
+      conversationId: null,
+      lastSeq: 0,
+      turnCount: 0,
+      forkOfSession: null,
+      forkAtSeq: null,
+      forkKind: null,
+      stats: { messages: 0, toolCalls: 0, inputTokens: 0, outputTokens: 0, costUsd: 0, durationMs: 0 },
+    });
+    known.add(`${bare}|${nativeId}`);
+    imported++;
+  }
+  if (imported > 0) log.info("native sessions imported", { unitId: p.unitId, runtimeId: bare, imported, skipped });
+  return { imported, skipped };
 });
 
 

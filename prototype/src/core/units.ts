@@ -297,7 +297,9 @@ export type SessionSource =
   | "discord"
   | "webhook"
   | "mcp"
-  | "automation";
+  | "automation"
+  /** 外部终端里跑的 CLI 会话，经「导入外部会话」收入历史（不是真实事件来源，仅台账标记） */
+  | "imported";
 
 /** 来源徽标文案 —— Timeline / 历史弹窗共用（docs/13 结构化聊天恢复） */
 export const SESSION_SOURCE_LABEL: Record<SessionSource, string> = {
@@ -310,6 +312,7 @@ export const SESSION_SOURCE_LABEL: Record<SessionSource, string> = {
   webhook: "webhook",
   mcp: "MCP",
   automation: "自动化",
+  imported: "导入",
 };
 
 export interface Session {

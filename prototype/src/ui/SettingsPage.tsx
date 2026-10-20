@@ -43,6 +43,7 @@ import { RemoteControlDialog } from "./RemoteControlDialog.tsx";
 import { ImageSettingsSection } from "./ImageSettingsSection.tsx";
 import { AppearanceSettingsSection } from "./AppearanceSettingsSection.tsx";
 import { HeartbeatSettingsSection } from "./HeartbeatSettingsSection.tsx";
+import { ImportSessionsSection } from "./ImportSessionsSection.tsx";
 import { useHistoryPrefs } from "../store/useHistoryPrefs.ts";
 import { useChatTerminal } from "../store/useChatTerminal.ts";
 import { SUPPORTED_TERMINAL_PROFILES } from "../store/useTerminalStore.ts";
@@ -219,8 +220,38 @@ import { Toggle } from "./Toggle.tsx";
 
 /* ------------------------------------------------------------- 分区内容 */
 
-function SectionBody({ section }: { section: SettingsSectionDef }) {
-  switch (section.id) {
+/** 导入外部会话的全局形态：先选 bot（外部会话按它的工作目录匹配），再走共享查询/导入区 */
+function ImportSessionsGlobalSection() {
+  const units = useWorkbench((s) => s.units).filter((u) => u.rootPath !== "");
+  const [unitId, setUnitId] = useState<string>(units[0] !== undefined ? String(units[0].id) : "");
+  const current = units.find((u) => String(u.id) === unitId) ?? units[0];
+
+  if (units.length === 0) {
+    return <p className="text-caption text-ash">还没有任何 bot —— 先在侧栏添加（指向已有文件夹即为认领）。</p>;
+  }
+  return (
+    <div className="space-y-3">
+      <label className="flex items-center gap-2 text-caption text-ash">
+        导入到哪个 bot
+        <select
+          value={current !== undefined ? String(current.id) : ""}
+          onChange={(e) => setUnitId(e.target.value)}
+          className="rounded-input border border-line bg-canvas px-2 py-1 text-body-sm text-ink outline-none focus:border-teal"
+        >
+          {units.map((u) => (
+            <option key={String(u.id)} value={String(u.id)}>
+              {u.name}
+            </option>
+          ))}
+        </select>
+        {current !== undefined && <span className="font-mono text-[10px] text-ash/70">{current.rootPath}</span>}
+      </label>
+      {current !== undefined && <ImportSessionsSection unitId={String(current.id)} />}
+    </div>
+  );
+}
+
+function SectionBody({ section }: { section: SettingsSectionDef }) {  switch (section.id) {
     case "appearance":
       return <AppearanceSettingsSection />;
     case "models":
@@ -232,7 +263,22 @@ function SectionBody({ section }: { section: SettingsSectionDef }) {
     case "shortcuts":
       return <ShortcutsSection />;
     case "history":
-      return <HistorySettingsSection />;
+      return (
+        <div className="space-y-6">
+          <HistorySettingsSection />
+          {/* 外部会话导入：全局入口（bot 设置页有同款、免选 bot 的版本）。
+              单元选择在这里做，查询/导入本体共用 ImportSessionsSection */}
+          <section className="space-y-3 rounded-card border border-line bg-rail/60 p-4">
+            <div>
+              <h2 className="font-medium text-ink">导入外部会话</h2>
+              <p className="mt-0.5 text-caption text-ash">
+                收入在工作台外、直接用 CLI 在 bot 工作目录里跑过的会话（查询面参照 cc-switch）
+              </p>
+            </div>
+            <ImportSessionsGlobalSection />
+          </section>
+        </div>
+      );
     case "heartbeat":
       return <HeartbeatSettingsSection />;
     case "terminal":

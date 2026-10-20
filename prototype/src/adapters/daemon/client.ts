@@ -1403,6 +1403,8 @@ export interface NativeSessionSummary {
   readonly startedAt: number;
   readonly updatedAt: number;
   readonly messageCount: number;
+  /** 来源标识（文件路径 / db 表），提示用 */
+  readonly source?: string;
 }
 
 /** 原生会话转录条目 */
@@ -1445,6 +1447,44 @@ export async function fetchNativeSessionDetail(
     20000,
   );
   return r.detail;
+}
+
+// ---- 外部会话导入 -------------------------------------------------------------
+
+/** 可导入的外部会话行：原生会话 + 工作台认识状态（known = 已在历史中，不重复导） */
+export interface ImportableNativeSession extends NativeSessionSummary {
+  /** 已在历史中（作为会话行或 TUI 运行记录被认识） */
+  readonly known: boolean;
+}
+
+/** 按 bot 工作区（+可选执行器）列出外部终端里跑过的 CLI 会话 */
+export async function fetchImportableSessions(
+  unitId: string,
+  runtimeId: string | null,
+  limit = 60,
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<{ rootPath: string | null; sessions: readonly ImportableNativeSession[] }> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<{ rootPath: string | null; sessions: readonly ImportableNativeSession[] }>(
+    "history.import.list",
+    { unitId, runtimeId: runtimeId ?? undefined, limit },
+    20000,
+  );
+}
+
+/** 把选中的外部会话导入工作台历史（daemon 落 sessions 表，source = "imported"） */
+export async function importNativeSessions(
+  unitId: string,
+  runtimeId: string,
+  sessions: readonly { sessionId: string; title: string; startedAt: number; updatedAt: number }[],
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<{ imported: number; skipped: number }> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<{ imported: number; skipped: number }>(
+    "history.import.apply",
+    { unitId, runtimeId, sessions },
+    30000,
+  );
 }
 
 /**
