@@ -584,8 +584,10 @@ function guardsOf(u: WorkUnit): BotWriteGuards {
 /**
  * 在聊天页打开一条历史会话（ADR 0012 resume-in-chat）。
  * 侧栏子列表直点与右键菜单共用 —— 点击历史行 = 左侧栏的「垂直标签页」切换。
- * unitId 由调用方传行所属 bot：daemon 的 unit.history 条目从不填 unitId 字段，
- * 依赖 entry.unitId 会让 canChat 恒 false —— 点击全部落进「无法重现」兜底。
+ * unitId 由调用方传行所属 bot 而不是读 entry.unitId：后者是 daemon 的可选
+ * 字段（TS 契约 unitId?），且跨单元展示的行（别的 bot 的历史折进本列表）条目
+ * 归属与行归属可以不同 —— 点击语义是「在这个 bot 的语境里打开它」，行所属
+ * bot 永远是确定答案。
  */
 function openEntryInChat(e: UnitHistoryEntry, ownerUnitId: string): void {
   if (e.sessionId === null) return;
@@ -1040,7 +1042,7 @@ function UnitRow({
           )}
           {collapseForkVersions(filteredEntries ?? []).slice(0, visibleCount).map((slot) => {
             const e = slot.entry;
-            // unitId 用行所属 bot（daemon 的 history 条目不填 unitId 字段，见 openEntryInChat 注释）
+            // unitId 用行所属 bot（entry.unitId 是可选字段且可能指向别的单元，见 openEntryInChat 注释）
             const canChat = e.sessionId !== null;
             // TUI 还开着（前端有它的标签）也算「可在 TUI 打开」——点击会直切那个标签
             const hasLiveTab =

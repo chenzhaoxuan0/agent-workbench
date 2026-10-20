@@ -200,7 +200,8 @@ export function HistoryPane({
    * 与 TUI 恢复互补：TUI 走执行器自己的存储（原生原味），这里走 host 账本投影。
    */
   const handleOpenInChat = (e: UnitHistoryEntry): void => {
-    // unitId 用面板自身的所属 bot（daemon 的 history 条目不填 unitId，见 Sidebar 同注）
+    // unitId 用面板自身的所属 bot：entry.unitId 是 daemon 的可选字段，且面板
+    // 固定属于一个 bot（见 Sidebar.openEntryInChat 同注）
     if (e.sessionId === null) return;
     void useWorkbench
       .getState()
@@ -583,7 +584,7 @@ function HistoryRow({
   onOpenInChat,
   onOpenFamilyMember,
 }: {
-  /** 面板所属 bot —— 监控跳转用（daemon 的 history 条目不填 unitId） */
+  /** 面板所属 bot —— 打开/监控跳转的 unitId 用它（entry.unitId 是可选字段，见 Sidebar 同注） */
   unitId: string;
   entry: UnitHistoryEntry;
   /** 同锚点的 revision 家族（旧 → 新，含 entry；ADR 0013 P2 版本折叠） */

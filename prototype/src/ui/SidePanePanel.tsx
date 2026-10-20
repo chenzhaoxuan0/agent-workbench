@@ -45,6 +45,12 @@ import {
  *   快捷键（Ctrl+Alt+B / Alt+1..9 / Ctrl+Tab）在 store/sidePaneShortcuts.ts。
  */
 
+/** 分隔条拖拽手势登记（模块级：Handle 与 PanelSlot 是兄弟节点，共享这份状态）。
+ *  宽度的**落盘**只发生在真实手势上 —— 程序性 resize（重试应用的持久宽、窗口
+ *  缩放的重分配、晚挂载时 Group 的自动分配宽）没有写回通道，「一打开非常宽」
+ *  的错宽从此不可能进 localStorage（见 SidePanePanelSlot 的 onResize） */
+const resizeGesture = { dragging: false };
+
 /** 工作台 Group 的第三列。收起/切主视图只折叠不卸载（保活），无 tab 可保才卸载。 */
 export function SidePaneColumn(): ReactElement | null {
   const tabs = useSidePane((s) => s.tabs);
@@ -71,13 +77,33 @@ export function SidePaneColumn(): ReactElement | null {
 }
 
 function SidePaneResizeHandle(): ReactElement {
+  const commitPaneWidth = useSidePane((s) => s.commitPaneWidth);
+  // 手势结束（含指针移出窗口/被系统取消）落定宽度；监听挂 window 才接得住
+  // 分隔条之外的 pointerup
+  useEffect(() => {
+    const finish = (): void => {
+      if (!resizeGesture.dragging) return;
+      resizeGesture.dragging = false;
+      commitPaneWidth();
+    };
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", finish);
+    return () => {
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", finish);
+    };
+  }, [commitPaneWidth]);
   return (
     <Separator
       className="group relative w-px bg-line cursor-col-resize transition-colors data-[separator=active]:bg-teal hover:bg-teal/50"
       style={{ cursor: "col-resize" }}
     >
-      {/* 16px 宽的命中区域，带明确的 col-resize 光标与 hover/active 激活高亮条 */}
+      {/* 16px 宽的命中区域，带明确的 col-resize 光标与 hover/active 激活高亮条。
+          pointerdown 冒泡到 Separator 驱动库的拖拽，这里只登记手势开始 */}
       <span
+        onPointerDown={() => {
+          resizeGesture.dragging = true;
+        }}
         className="absolute inset-y-0 -left-2 -right-2 z-20 cursor-col-resize transition-colors group-hover:bg-teal/20 group-data-[separator=active]:bg-teal/30"
         aria-hidden
       />
@@ -98,26 +124,23 @@ function SidePanePanelSlot({
   // ⚠ initialWidth 只在挂载时读取一次持久化宽度作为 defaultSize。
   const [initialWidth] = useState(() => useSidePane.getState().paneWidth);
   const ref = useRef<PanelImperativeHandle>(null);
-  const isMountedRef = useRef(false);
-
-  // 挂载稳定后才接收真实用户手势的宽度更新（挡掉程序性 resize 的回写）
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      isMountedRef.current = true;
-    }, 150);
-    return () => clearTimeout(timer);
-  }, []);
 
   // 折叠/展开 + 展开时的持久化宽度应用。**刚挂载的条件节点当帧不能直接调
   // imperative API**：react-resizable-panels 的 Group 还没把这个新 Panel 登记
   // 进布局，立即 resize/expand 会抛 "Layout not found"（侧栏不炸是因为它跟
   // Group 同帧挂载、带初始布局；本列是点开才挂载）。
-  // 只推迟一帧不够稳：赶不上登记时面板被留在 Group 的自动分配宽度上（可到
-  // maxSize 50% —— 「一打开非常宽」的来源），150ms 后 onResize 还会把错宽
-  // 持久化，之后每次打开都宽。改成有限帧重试：expand/resize 幂等，登记完成
-  // 后剩余帧是空转；挂载守卫挡住重试期的程序性回写。
+  // 只推迟一帧不够稳：登记偶尔更晚，面板被留在 Group 的自动分配宽度上（可到
+  // maxSize 50% —— 「一打开非常宽」的来源）。改成有限帧重试（12 帧 ≈ 200ms，
+  // 覆盖常规登记延迟）：expand/resize 幂等，登记完成后剩余帧是空转。极端情况下
+  // 登记晚于重试耗尽仍会暂时显示错宽，但 onResize 只认分隔条手势（resizeGesture），
+  // 错宽既进不了 localStorage 也覆盖不了内存值 —— 下一次展开重新应用正确宽，
+  // 自愈且无残留。
   useEffect(() => {
     if (!open) {
+      // 拖拽途中面板被收起（切主视图 / 点关闭）时 Handle 已卸载、收不到
+      // pointerup —— 手势标志必须在这里复位，否则重开后程序性 resize 会被
+      // 误判成手势、把布局宽写进状态
+      resizeGesture.dragging = false;
       ref.current?.collapse();
       return;
     }
@@ -147,10 +170,9 @@ function SidePanePanelSlot({
       collapsedSize="0px"
       collapsible
       onResize={(size) => {
-        // 仅在真实交互/挂载就绪后，且未折叠时才持久化宽度（折叠过程的 0 不写回）
-        if (isMountedRef.current && open) {
-          setPaneWidth(size.inPixels);
-        }
+        // 状态只在分隔条手势中跟随（拖拽实时进内存，pointerup 由 Handle 落盘）；
+        // 程序性 resize 一律不写 —— 折叠过程的 0、自动分配的错宽都没有写回通道
+        if (open && resizeGesture.dragging) setPaneWidth(size.inPixels);
       }}
       className="min-w-0 overflow-hidden"
     >
@@ -238,7 +260,9 @@ function SidePanePanelBody({
     [closeTab, closeOtherTabs, closeVisibleTabs, visibleTabs],
   );
 
-  // ＋ 新增下拉：分组「会话类（跟 bot）/ 工作区类」，条目与功能主页同源。
+  // ＋ 新增下拉：分组「会话类（跟 bot）/ 工作区类」，条目从 SIDE_PANE_HOME_ENTRIES
+  // 生成（与功能主页真正同源 —— 新增 tab 类型只改 sidePaneTabMeta 一处，这里
+  // 自动跟班）。历史会话是主页的大卡不在该清单里，菜单单独补第一项。
   // toggle 语义：菜单开着时点 ＋ 是「关闭」—— 但 QuickContextMenu 的外部
   // mousedown 关闭先于 click 到达，闭包里的 addMenu 已不可信，用刚关闭的
   // 时间戳压制 150ms 内的重开（QuickMenu 自身选中项后关闭也走同一路径）
@@ -254,40 +278,31 @@ function SidePanePanelBody({
       const r = e.currentTarget.getBoundingClientRect();
       const items: QuickMenuItem[] = [];
       if (current !== undefined) {
-        const unit = { unitId: current.id, unitName: current.name };
-        items.push(
-          {
-            label: "历史会话",
-            icon: SIDE_PANE_TAB_META.history.icon,
-            onSelect: () => useSidePane.getState().openTab(unit),
-          },
-          {
-            label: "会话实时监控",
-            icon: SIDE_PANE_TAB_META.live.icon,
-            disabled: liveTarget === null,
-            onSelect: () => {
-              if (liveTarget === null) return;
-              useSidePane.getState().openLiveSession({ ...unit, ...liveTarget });
-            },
-          },
-          {
-            label: "计划 / 任务进度",
-            icon: SIDE_PANE_TAB_META.plan.icon,
-            onSelect: () => useSidePane.getState().openPlan(unit),
-          },
-          {
-            label: "变更审查",
-            icon: SIDE_PANE_TAB_META.diff.icon,
-            onSelect: () => useSidePane.getState().openDiff(unit),
-          },
-          { separator: true },
-        );
+        const args = { unitId: current.id, unitName: current.name };
+        items.push({
+          label: "历史会话",
+          icon: SIDE_PANE_TAB_META.history.icon,
+          onSelect: () => useSidePane.getState().openTab(args),
+        });
+        for (const entry of SIDE_PANE_HOME_ENTRIES) {
+          if (entry.group !== "companion") continue;
+          items.push({
+            label: entry.label,
+            icon: entry.icon,
+            disabled: entry.requiresLiveTarget === true && liveTarget === null,
+            onSelect: () => entry.open({ ...args, liveTarget }),
+          });
+        }
+        items.push({ separator: true });
       }
-      items.push({
-        label: "通知中心",
-        icon: SIDE_PANE_TAB_META.notify.icon,
-        onSelect: () => useSidePane.getState().openNotifications(),
-      });
+      for (const entry of SIDE_PANE_HOME_ENTRIES) {
+        if (entry.group !== "workspace") continue;
+        items.push({
+          label: entry.label,
+          icon: entry.icon,
+          onSelect: () => entry.open({ unitId: null, unitName: "", liveTarget }),
+        });
+      }
       setAddMenu({ x: r.left, y: r.bottom + 4, items });
     },
     [current, liveTarget],

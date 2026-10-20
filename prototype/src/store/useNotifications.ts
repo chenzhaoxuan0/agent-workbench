@@ -5,6 +5,7 @@ import { SESSION_SOURCE_LABEL, type SessionSource } from "../core/units.ts";
 import {
   DaemonClient,
   defaultDaemonEndpoint,
+  fetchAutomations,
   fetchSessions,
   type DaemonSessionRow,
 } from "../adapters/daemon/client.ts";
@@ -28,7 +29,8 @@ import { useWorkbench } from "./useWorkbench.ts";
  *    upsert）。上限 100 条。
  * 3. **不改 daemon**。自动化终态没有专用事件 —— 用 source === "automation" 的
  *    session.ended 表达（daemon 侧 finishAutomationRun 也是挂在它身上的），
- *    不为通知中心单开 RPC。
+ *    任务名/失败详情由 enrichAutomationEnd 拉既有 automation.list 补偿解析
+ *    （docs/19），不为通知中心单开 RPC。
  *
  * 持久化到 localStorage（通知是日志不是状态机，F5 不该清空）。
  */
@@ -173,6 +175,47 @@ function notifySessionEnded(sid: string, reason: string): void {
     sourceLabel,
     sessionId: sid,
   });
+  enrichAutomationEnd(sid, reason);
+}
+
+/** 自动化终态补偿解析的在途标记：同一会话重复终态事件不重复拉台账 */
+const automationLookupInFlight = new Set<string>();
+
+/**
+ * 自动化终态补偿解析（docs/19）：终态事件只带 sessionId，任务名在 automation
+ * 台账里 —— 拉一次 automation.list（每条内嵌最近 10 次 run）找到 sessionId
+ * 对应的 run，把先发的兜底通知**原位刷新**（同去重键）成「任务名 + 失败详情」。
+ * 不改 daemon；不阻塞首条通知（台账拉不到就停在兜底文案上）；只刷新已存在的
+ * 通知 —— 保持「你不在它面前」的过滤口径不被异步回调绕过。
+ */
+function enrichAutomationEnd(sid: string, reason: string): void {
+  const meta = sessionMeta.get(sid);
+  if (meta?.source !== "automation" || automationLookupInFlight.has(sid)) return;
+  automationLookupInFlight.add(sid);
+  void fetchAutomations()
+    .then((list) => {
+      const exists = useNotifications.getState().items.some((n) => n.id === `end:${sid}`);
+      if (!exists) return;
+      for (const a of list) {
+        const run = a.runs.find((r) => r.sessionId === sid);
+        if (run === undefined) continue;
+        upsert({
+          id: `end:${sid}`,
+          at: Date.now(),
+          level: run.status === "failed" || isFailureReason(reason) ? "loss" : reason === "cancelled" ? "warn" : "ok",
+          kind: "session",
+          title: `自动化「${a.name}」${endReasonLabel(reason)}`,
+          text: clip(run.summary ?? meta.title ?? a.description ?? sid),
+          sourceLabel: SESSION_SOURCE_LABEL.automation,
+          sessionId: sid,
+        });
+        return;
+      }
+    })
+    .catch(() => {
+      /* 台账拉不到：兜底通知已经在了，不再补 */
+    })
+    .finally(() => automationLookupInFlight.delete(sid));
 }
 
 export const useNotifications = create<NotificationsStore>((set) => ({

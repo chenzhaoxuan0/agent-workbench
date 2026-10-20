@@ -42,7 +42,14 @@ function withoutUnread(unread: Readonly<Record<string, true>>, tabId: string): R
   return next;
 }
 
-const WIDTH_KEY = "agent-workbench:sidepane-width-px";
+/**
+ * v2 起盘上的宽度只来自用户拖拽落定（程序性 resize 不落盘，见 SidePanePanel 的
+ * onResize 与 commitPaneWidth）—— 读到什么信什么，不需要再猜哪份是污染。
+ */
+const WIDTH_KEY = "agent-workbench:sidepane-width-px.v2";
+/** v1 键是 onResize 无差别写回时代的产物（晚挂载错宽、布局自动分配宽都进过盘），
+ *  读档时一次性迁移清理 */
+const WIDTH_KEY_V1 = "agent-workbench:sidepane-width-px";
 /**
  * 最小宽 = tab 条不打架的下限：条内固定内容（⌄ 总览 22 + ＋ 22 + ✕ 23 + 内边距
  * 与间距 ≈ 83px）+ 桌面端给系统窗口钮让位的 --wco-w 带（132+4）≈ 219px，再放
@@ -78,19 +85,61 @@ function shouldCollapseOnClose(
   return hadVisible && !hasVisibleAfter;
 }
 
+/** 四个 open* 动作（history/live/plan/diff）共用的收尾：展开面板 + 写聚焦记忆 +
+ *  清「最近关闭」同 id 记录（「点了就能看到」的切主视图在各自 action 里） */
+function openUnitTabSet(
+  s: SidePaneStore,
+  opened: sidePane.SidePaneState,
+  tabId: string,
+  ownerUnitId: UnitId,
+): Partial<SidePaneStore> {
+  return {
+    ...opened,
+    collapsed: false,
+    lastActiveTabByUnit: focusMemoryFor(s.lastActiveTabByUnit, ownerUnitId, tabId),
+    recentlyClosed: dropClosed(s.recentlyClosed, tabId),
+  };
+}
+
+/** 三条关闭路径（closeTab/closeOtherTabs/closeVisibleTabs）共用的收尾：契约结果 →
+ *  记录被关 tab → 清它们的未读点 → 最后一条可见 tab 被关掉时收起面板 */
+function settleClose(s: SidePaneStore, next: sidePane.SidePaneState): Partial<SidePaneStore> {
+  const closed = closedTabsOf(s.tabs, next.tabs);
+  if (closed.length === 0) return next;
+  const unreadTabIds = { ...s.unreadTabIds };
+  for (const t of closed) delete unreadTabIds[t.id];
+  return {
+    tabs: next.tabs,
+    activeTabId: next.activeTabId,
+    collapsed: shouldCollapseOnClose(s, next.tabs) ? true : s.collapsed,
+    recentlyClosed: recordClosed(s.recentlyClosed, closed),
+    unreadTabIds,
+  };
+}
+
 function readWidth(): number {
   if (typeof window === "undefined") return SIDE_PANE_DEFAULT;
   try {
     const raw = window.localStorage.getItem(WIDTH_KEY);
-    const n = raw === null ? NaN : Number(raw);
-    // 旧默认 520（弹窗时代 720 → 成列时代 520 的遗留）与 >480 的值一并重置：
-    // 后者是「晚挂载 resize 赶不上布局登记、面板停在 50% 宽被 onResize 写回」
-    // 的污染值 —— 那种宽从来不是用户拖出来的意图。改默认宽度不能只改常量，
-    // 存量用户盘上存的就是旧值，读出来永远盖住新值
-    if (!Number.isFinite(n) || n <= 0 || n === 520 || n > 480) {
+    if (raw !== null) {
+      const n = Number(raw);
+      if (Number.isFinite(n) && n >= SIDE_PANE_MIN) return Math.round(n);
       return SIDE_PANE_DEFAULT;
     }
-    return Math.max(SIDE_PANE_MIN, Math.round(n));
+    // v1 → v2 一次性迁移：v1 的值混有「晚挂载错宽 / 50% 自动分配宽被 onResize
+    // 写回」的污染，与用户真实拖宽无法区分（面板 maxSize 是 50%，宽窗口下
+    // 真拖到 600px+ 完全合法）—— 只能按可疑处理，>480 一律回新默认。此后
+    // 盘上的值只可能来自拖拽手势，不再需要怀疑
+    const legacy = window.localStorage.getItem(WIDTH_KEY_V1);
+    if (legacy !== null) {
+      window.localStorage.removeItem(WIDTH_KEY_V1);
+      const n = Number(legacy);
+      if (Number.isFinite(n) && n >= SIDE_PANE_MIN && n <= 480) {
+        persistWidth(Math.round(n));
+        return Math.round(n);
+      }
+    }
+    return SIDE_PANE_DEFAULT;
   } catch {
     return SIDE_PANE_DEFAULT;
   }
@@ -143,7 +192,10 @@ interface SidePaneStore extends sidePane.SidePaneState {
   /** 面板可见且聚焦 = 正在看，未读点熄灭（clear-on-shown 路径用） */
   clearUnread: (tabId: string) => void;
   toggleCollapsed: () => void;
+  /** 拖拽中实时跟随（只写内存不落盘） */
   setPaneWidth: (w: number) => void;
+  /** 分隔条拖拽落定时落盘 —— 宽度持久化只认用户手势这一个入口 */
+  commitPaneWidth: () => void;
 
   /**
    * 头部开合钮（面板收起后的唯一重开入口，ZCode「收起即归零 + 头部状态感知
@@ -180,13 +232,7 @@ export const useSidePane = create<SidePaneStore>((set, get) => ({
       // 保持弹窗时代「点了就能看到」的语义（ZCode handleSelectTaskInChat 先
       // showChatMainView 再开面板，同一条规则）
       useShell.getState().setMainView("chat");
-      const tabId = sidePane.historyTabId(request.unitId);
-      return {
-        ...sidePane.openHistoryTab(s, request),
-        collapsed: false,
-        lastActiveTabByUnit: focusMemoryFor(s.lastActiveTabByUnit, request.unitId, tabId),
-        recentlyClosed: dropClosed(s.recentlyClosed, tabId),
-      };
+      return openUnitTabSet(s, sidePane.openHistoryTab(s, request), sidePane.historyTabId(request.unitId), request.unitId);
     }),
 
   openLiveSession: (request) =>
@@ -194,10 +240,7 @@ export const useSidePane = create<SidePaneStore>((set, get) => ({
       useShell.getState().setMainView("chat");
       const tabId = sidePane.liveTabId(request.sessionId);
       return {
-        ...sidePane.openLiveTab(s, request),
-        collapsed: false,
-        lastActiveTabByUnit: focusMemoryFor(s.lastActiveTabByUnit, request.unitId, tabId),
-        recentlyClosed: dropClosed(s.recentlyClosed, tabId),
+        ...openUnitTabSet(s, sidePane.openLiveTab(s, request), tabId, request.unitId),
         // 复用已有 live tab 聚焦时顺带清未读点 —— 否则从通知/主页跳过来，
         // 看完切走后旧点又亮回来
         unreadTabIds: withoutUnread(s.unreadTabIds, tabId),
@@ -207,25 +250,13 @@ export const useSidePane = create<SidePaneStore>((set, get) => ({
   openPlan: (request) =>
     set((s) => {
       useShell.getState().setMainView("chat");
-      const tabId = sidePane.planTabId(request.unitId);
-      return {
-        ...sidePane.openPlanTab(s, request),
-        collapsed: false,
-        lastActiveTabByUnit: focusMemoryFor(s.lastActiveTabByUnit, request.unitId, tabId),
-        recentlyClosed: dropClosed(s.recentlyClosed, tabId),
-      };
+      return openUnitTabSet(s, sidePane.openPlanTab(s, request), sidePane.planTabId(request.unitId), request.unitId);
     }),
 
   openDiff: (request) =>
     set((s) => {
       useShell.getState().setMainView("chat");
-      const tabId = sidePane.diffTabId(request.unitId);
-      return {
-        ...sidePane.openDiffTab(s, request),
-        collapsed: false,
-        lastActiveTabByUnit: focusMemoryFor(s.lastActiveTabByUnit, request.unitId, tabId),
-        recentlyClosed: dropClosed(s.recentlyClosed, tabId),
-      };
+      return openUnitTabSet(s, sidePane.openDiffTab(s, request), sidePane.diffTabId(request.unitId), request.unitId);
     }),
 
   openNotifications: () =>
@@ -238,59 +269,20 @@ export const useSidePane = create<SidePaneStore>((set, get) => ({
       };
     }),
 
-  /** 三条关闭路径共用：算契约结果 → 记录被关 tab → 清它们的未读点。
+  /** 三条关闭路径共用收尾（settleClose），口径注释在此：
    *  关掉当前视角最后一个**可见** tab 时顺带收起面板 —— 回退功能主页会让
    *  「关闭」的预期落空（用户点 X 是想让它消失，不是想看功能页）；
    *  功能主页只在用户主动展开面板时出现（toggleFromHeader）。
    *  判据是「可见集合从非空变空」而不是「关后为空」：面板停在功能主页时，
    *  从 ⌄ 总览关掉一条别的 bot 的隐藏 tab 不该把整个面板收走。 */
   closeTab: (tabId) =>
-    set((s) => {
-      const next = sidePane.closeTab(s, tabId, s.scopeUnitId);
-      const closed = closedTabsOf(s.tabs, next.tabs);
-      if (closed.length === 0 && next.tabs === s.tabs) return next;
-      const unreadTabIds = { ...s.unreadTabIds };
-      for (const t of closed) delete unreadTabIds[t.id];
-      return {
-        tabs: next.tabs,
-        activeTabId: next.activeTabId,
-        collapsed: shouldCollapseOnClose(s, next.tabs) ? true : s.collapsed,
-        recentlyClosed: recordClosed(s.recentlyClosed, closed),
-        unreadTabIds,
-      };
-    }),
+    set((s) => settleClose(s, sidePane.closeTab(s, tabId, s.scopeUnitId))),
 
   closeOtherTabs: (tabId) =>
-    set((s) => {
-      const next = sidePane.closeOtherTabs(s, tabId, s.scopeUnitId);
-      const closed = closedTabsOf(s.tabs, next.tabs);
-      if (closed.length === 0) return next;
-      const unreadTabIds = { ...s.unreadTabIds };
-      for (const t of closed) delete unreadTabIds[t.id];
-      return {
-        tabs: next.tabs,
-        activeTabId: next.activeTabId,
-        collapsed: shouldCollapseOnClose(s, next.tabs) ? true : s.collapsed,
-        recentlyClosed: recordClosed(s.recentlyClosed, closed),
-        unreadTabIds,
-      };
-    }),
+    set((s) => settleClose(s, sidePane.closeOtherTabs(s, tabId, s.scopeUnitId))),
 
   closeVisibleTabs: () =>
-    set((s) => {
-      const next = sidePane.closeVisibleTabs(s, s.scopeUnitId);
-      const closed = closedTabsOf(s.tabs, next.tabs);
-      if (closed.length === 0) return next;
-      const unreadTabIds = { ...s.unreadTabIds };
-      for (const t of closed) delete unreadTabIds[t.id];
-      return {
-        tabs: next.tabs,
-        activeTabId: next.activeTabId,
-        collapsed: shouldCollapseOnClose(s, next.tabs) ? true : s.collapsed,
-        recentlyClosed: recordClosed(s.recentlyClosed, closed),
-        unreadTabIds,
-      };
-    }),
+    set((s) => settleClose(s, sidePane.closeVisibleTabs(s, s.scopeUnitId))),
 
   activateTab: (tabId) =>
     set((s) => {
@@ -371,7 +363,10 @@ export const useSidePane = create<SidePaneStore>((set, get) => ({
   setPaneWidth: (paneWidth) => {
     const clamped = Math.max(SIDE_PANE_MIN, Math.round(paneWidth));
     set({ paneWidth: clamped });
-    persistWidth(clamped);
+  },
+
+  commitPaneWidth: () => {
+    persistWidth(get().paneWidth);
   },
 
   handleUnitChange: (unitId) => {
