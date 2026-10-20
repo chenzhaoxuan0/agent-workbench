@@ -17,6 +17,10 @@ import { createKimiReader } from "./readers/kimi.ts";
 import { createDshReader } from "./readers/dsh.ts";
 import { createZcodeReader } from "./readers/zcode.ts";
 import { createHermesReader } from "./readers/hermes.ts";
+import { createOpencodeReader } from "./readers/opencode.ts";
+import { createOpenclawReader } from "./readers/openclaw.ts";
+import { createAntigravityReader } from "./readers/antigravity.ts";
+import { createCursorReader } from "./readers/cursor.ts";
 
 /** 单家 reader 的预算：超时跳过（历史是增强面，不许拖死聚合） */
 const READER_BUDGET_MS = 2500;
@@ -31,6 +35,12 @@ const readers: readonly SessionReader[] = [
   createDshReader(),
   createZcodeReader(),
   createHermesReader(),
+  createOpencodeReader(),
+  createOpenclawReader(),
+  createAntigravityReader(),
+  // cursor 与 cursor-agent 是同一 CLI 的新旧名，共享 ~/.cursor/chats 一份存储
+  createCursorReader("cursor"),
+  createCursorReader("cursor-agent"),
 ];
 
 function withBudget<T>(p: Promise<T>, executorId: string): Promise<T | null> {
