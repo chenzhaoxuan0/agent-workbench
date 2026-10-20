@@ -1,7 +1,7 @@
 import { TitleBarClearance } from "./WindowControls.tsx";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { Panel, Separator, type PanelImperativeHandle } from "react-resizable-panels";
-import { LayoutGrid, PanelRightClose, Plus, X } from "lucide-react";
+import { LayoutGrid, PanelRightClose, Plus, X, ChevronDown, ChevronRight } from "lucide-react";
 import { useShell } from "../store/useShell.ts";
 import { useSidePane, SIDE_PANE_MIN } from "../store/useSidePane.ts";
 import { useWorkbench } from "../store/useWorkbench.ts";
@@ -581,9 +581,14 @@ const SidePaneTabContent = memo(function SidePaneTabContent({
 
 /**
  * 面板功能主页 —— 展开时若无可见 tab（或聚焦缺失），面板直接列出当前可点的功能
- * 入口，点选后才把对应内容以 tab 形式打开。入口清单消费 sidePaneTabMeta 的
- * SIDE_PANE_HOME_ENTRIES（与 ＋ 新增下拉同源）；「其他单元 · 历史」与当前 bot
- * 的历史大卡保持独立渲染。
+ * 入口，点选后才把对应内容以 tab 形式打开。
+ *
+ * 分组只讲两条真实的语义轴（docs/19 后续调整：原「伴随视角/其他单元」四组收敛）：
+ * - **当前单元**（标题即 bot 名）：历史会话大卡 + 监控/计划/变更行 —— 内容随 bot；
+ * - **工作区**：通知中心 —— 不随 bot 切换。
+ * 「其他单元的历史」不是独立功能，是历史会话的跨单元参数 —— 折进历史大卡的
+ * 卡脚（「其他单元 ▾」），切 bot 的副作用也因此离「历史」这个语境更近。
+ * 入口清单消费 sidePaneTabMeta 的 SIDE_PANE_HOME_ENTRIES（与 ＋ 新增下拉同源）。
  */
 function SidePaneHome({
   current,
@@ -597,6 +602,8 @@ function SidePaneHome({
   const others = units.filter((u) => String(u.id) !== String(current?.id));
   const companion = SIDE_PANE_HOME_ENTRIES.filter((e) => e.group === "companion");
   const workspace = SIDE_PANE_HOME_ENTRIES.filter((e) => e.group === "workspace");
+  const [othersOpen, setOthersOpen] = useState(false);
+  const HistoryIcon = SIDE_PANE_TAB_META.history.icon;
 
   return (
     <div className="h-full min-h-0 overflow-y-auto p-3">
@@ -604,28 +611,80 @@ function SidePaneHome({
       <p className="mt-0.5 text-[10px] text-ash">点选要打开的功能，它将以标签页入驻本面板</p>
 
       {current !== null && (
-        <button
-          type="button"
-          onClick={() => useSidePane.getState().openTab({ unitId: current.id, unitName: current.name })}
-          className="mt-3 flex w-full cursor-pointer items-start gap-2.5 rounded-card border border-line bg-canvas p-3 text-left transition hover:border-teal-edge hover:bg-teal-tint/40"
-        >
-          {(() => {
-            const Icon = SIDE_PANE_TAB_META.history.icon;
-            return <Icon size={16} className="mt-0.5 shrink-0 text-teal" />;
-          })()}
-          <span className="min-w-0">
-            <span className="block text-body-sm font-medium text-ink">历史会话</span>
-            <span className="mt-0.5 block text-caption text-graphite">
-              {current.name} 的自动化任务、待办、心跳与手动会话时间轴
+        <div className="mt-3 overflow-hidden rounded-card border border-line bg-canvas">
+          <button
+            type="button"
+            onClick={() => useSidePane.getState().openTab({ unitId: current.id, unitName: current.name })}
+            className="flex w-full cursor-pointer items-start gap-2.5 p-3 text-left transition hover:bg-teal-tint/40"
+          >
+            <HistoryIcon size={16} className="mt-0.5 shrink-0 text-teal" />
+            <span className="min-w-0">
+              <span className="block text-body-sm font-medium text-ink">历史会话</span>
+              <span className="mt-0.5 block text-caption text-graphite">
+                {current.name} 的自动化任务、待办、心跳与手动会话时间轴
+              </span>
             </span>
-          </span>
-        </button>
+          </button>
+          {others.length > 0 && (
+            <div className="border-t border-line-soft">
+              <button
+                type="button"
+                onClick={() => setOthersOpen(!othersOpen)}
+                aria-expanded={othersOpen}
+                className="flex w-full cursor-pointer items-center gap-1 px-3 py-1.5 text-[10px] text-ash transition hover:text-ink"
+              >
+                {othersOpen ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
+                其他单元的历史（{others.length}）
+              </button>
+              {othersOpen && (
+                <div className="pb-1">
+                  {others.map((u) => (
+                    <button
+                      key={String(u.id)}
+                      type="button"
+                      onClick={() => {
+                        // 开别人的历史要顺带切 bot：tab 按 owner 过滤可见，不切就「点了没反应」
+                        useWorkbench.getState().selectUnit(u.id);
+                        useSidePane.getState().openTab({ unitId: u.id, unitName: u.name });
+                      }}
+                      title={`切换到 ${u.name} 并打开它的历史`}
+                      className="flex w-full cursor-pointer items-center gap-1.5 rounded-btn px-3 py-1 text-left text-caption text-graphite transition hover:bg-line-soft hover:text-ink"
+                    >
+                      <HistoryIcon size={11} className="shrink-0 text-ash" />
+                      <span className="min-w-0 truncate">{u.name}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       )}
 
-      {/* 伴随视角（ZCode bash-output / plan-detail / git 的对位）：跟 bot，入口清单与 ＋ 菜单同源 */}
+      {/* 兜底：bot 还没激活（或已注销）但台账里有单元 —— 大卡没挂靠点，历史入口降级为平铺 */}
+      {current === null && others.length > 0 && (
+        <div className="mt-3 space-y-1">
+          {others.map((u) => (
+            <button
+              key={String(u.id)}
+              type="button"
+              onClick={() => {
+                useWorkbench.getState().selectUnit(u.id);
+                useSidePane.getState().openTab({ unitId: u.id, unitName: u.name });
+              }}
+              className="flex w-full cursor-pointer items-center gap-2 rounded-btn px-2 py-1.5 text-left text-caption text-graphite transition hover:bg-line-soft hover:text-ink"
+            >
+              <HistoryIcon size={12} className="shrink-0 text-ash" />
+              <span className="min-w-0 truncate">{u.name} 的历史</span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* 当前单元的跟随面：标题即作用域（bot 名），不再用「伴随视角」这类走查黑话 */}
       {current !== null && (
         <>
-          <p className="mt-4 text-[10px] font-medium tracking-wide text-ash">伴随视角</p>
+          <p className="mt-4 text-[10px] font-medium tracking-wide text-ash">{current.name}</p>
           <div className="mt-1.5 space-y-1">
             {companion.map((entry) => {
               const Icon = entry.icon;
@@ -696,32 +755,6 @@ function SidePaneHome({
           );
         })}
       </div>
-
-      {others.length > 0 && (
-        <>
-          <p className="mt-4 text-[10px] font-medium tracking-wide text-ash">其他单元 · 历史</p>
-          <div className="mt-1.5 space-y-1">
-            {others.map((u) => (
-              <button
-                key={String(u.id)}
-                type="button"
-                onClick={() => {
-                  // 开别人的历史要顺带切 bot：tab 按 owner 过滤可见，不切就「点了没反应」
-                  useWorkbench.getState().selectUnit(u.id);
-                  useSidePane.getState().openTab({ unitId: u.id, unitName: u.name });
-                }}
-                className="flex w-full cursor-pointer items-center gap-2 rounded-btn px-2 py-1.5 text-left text-caption text-graphite transition hover:bg-line-soft hover:text-ink"
-              >
-                {(() => {
-                  const Icon = SIDE_PANE_TAB_META.history.icon;
-                  return <Icon size={12} className="shrink-0 text-ash" />;
-                })()}
-                <span className="min-w-0 truncate">{u.name} 的历史</span>
-              </button>
-            ))}
-          </div>
-        </>
-      )}
 
       {units.length === 0 && (
         <p className="mt-3 text-caption text-ash">还没有单元 —— 左侧栏添加单元后面板功能会在这里列出。</p>
