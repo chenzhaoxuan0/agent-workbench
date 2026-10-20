@@ -1,7 +1,15 @@
-const { app, BrowserWindow, dialog, shell, ipcMain, Menu } = require("electron");
+const { app, BrowserWindow, dialog, shell, ipcMain, Menu, Tray } = require("electron");
 const path = require("path");
 
 let mainWindow = null;
+let tray = null;
+/**
+ * 关窗语义：X 不再退出进程，而是藏进通知区域（托盘）—— 后台守护（定时任务 /
+ * IM 渠道 / 心跳）还在值班，任务栏托盘灯就是「它还在」的可见凭证。真正退出
+ * 走托盘右键菜单的「退出」。
+ */
+let quitting = false;
+let hideNotified = false;
 
 /** zoomLevel 上下限：±4 档（每档 0.5），够用且不会把页面变成像素汤 */
 const ZOOM_MAX = 4;
@@ -114,6 +122,41 @@ ipcMain.handle("window:is-maximized", () => {
   return Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isMaximized());
 });
 
+/** 从托盘 / 菜单把主窗口带回来（销毁过则重建） */
+function showMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow();
+    return;
+  }
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+/**
+ * Windows 通知区域（托盘）图标 —— 关掉前台窗口后「后台还在不在」的答案就在这：
+ * 绿托盘 = 守护还在。左键点开工作台，右键菜单可退出（退出会连带工作台 UI 进程；
+ * dev 模式下 daemon 由 concurrently 另起，生命周期独立于本进程）。
+ */
+function createTray() {
+  tray = new Tray(path.join(__dirname, "icon.png"));
+  tray.setToolTip("Agent Workbench · 后台运行中");
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      { label: "打开工作台", click: () => showMainWindow() },
+      { type: "separator" },
+      {
+        label: "退出（关闭工作台）",
+        click: () => {
+          quitting = true;
+          app.quit();
+        },
+      },
+    ]),
+  );
+  tray.on("click", () => showMainWindow());
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1520,
@@ -148,6 +191,21 @@ function createWindow() {
   };
   mainWindow.on("maximize", () => sendMaximized(true));
   mainWindow.on("unmaximize", () => sendMaximized(false));
+
+  // 关窗 = 藏进托盘（见顶部 quitting 注释）。首次藏的时候用系统气泡说一声，
+  // 不然用户以为程序没了 —— 这正是托盘要解决的「后台不可见」问题本身
+  mainWindow.on("close", (event) => {
+    if (quitting || !tray) return;
+    event.preventDefault();
+    mainWindow.hide();
+    if (!hideNotified && process.platform === "win32" && typeof tray.displayBalloon === "function") {
+      hideNotified = true;
+      tray.displayBalloon({
+        title: "Agent Workbench 仍在后台运行",
+        content: "定时任务、IM 渠道与心跳照常工作。点托盘图标重新打开窗口；右键托盘图标可退出。",
+      });
+    }
+  });
 
   // 文本编辑语义的右键菜单（剪切/复制/粘贴/复制选区）——见 buildTextContextMenuTemplate 注释。
   // 之前完全没有 context-menu 处理，输入框里右键粘贴、选中对话文字右键复制都像被禁用了。
@@ -190,12 +248,19 @@ function createWindow() {
 
 app.whenReady().then(() => {
   createWindow();
+  createTray();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow();
     }
   });
+});
+
+// 任何退出路径（托盘退出 / Cmd+Q / app.quit）都标记 quitting，
+// 让窗口 close 处理器放行 —— 否则藏托盘的 preventDefault 会拦住退出
+app.on("before-quit", () => {
+  quitting = true;
 });
 
 app.on("window-all-closed", () => {

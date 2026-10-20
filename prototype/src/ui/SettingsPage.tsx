@@ -42,6 +42,7 @@ import { ComputerControlSection } from "./ComputerControlSection.tsx";
 import { RemoteControlDialog } from "./RemoteControlDialog.tsx";
 import { ImageSettingsSection } from "./ImageSettingsSection.tsx";
 import { AppearanceSettingsSection } from "./AppearanceSettingsSection.tsx";
+import { HeartbeatSettingsSection } from "./HeartbeatSettingsSection.tsx";
 import { useHistoryPrefs } from "../store/useHistoryPrefs.ts";
 import { useChatTerminal } from "../store/useChatTerminal.ts";
 import { SUPPORTED_TERMINAL_PROFILES } from "../store/useTerminalStore.ts";
@@ -252,6 +253,8 @@ function SectionBody({ section }: { section: SettingsSectionDef }) {
       return <ShortcutsSection />;
     case "history":
       return <HistorySettingsSection />;
+    case "heartbeat":
+      return <HeartbeatSettingsSection />;
     case "terminal":
       return <TerminalSettingsSection />;
     case "skills":

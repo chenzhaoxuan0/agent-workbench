@@ -63,6 +63,16 @@ function closedTabsOf(before: readonly sidePane.SidePaneTab[], after: readonly s
   return before.filter((t) => !afterIds.has(t.id));
 }
 
+/** 关最后一个可见 tab = 收起面板：可见集合从非空变为空才算数 */
+function shouldCollapseOnClose(
+  before: { tabs: readonly sidePane.SidePaneTab[]; scopeUnitId: UnitId | null },
+  afterTabs: readonly sidePane.SidePaneTab[],
+): boolean {
+  const hadVisible = sidePane.visibleTabsForUnit(before.tabs, before.scopeUnitId).length > 0;
+  const hasVisibleAfter = sidePane.visibleTabsForUnit(afterTabs, before.scopeUnitId).length > 0;
+  return hadVisible && !hasVisibleAfter;
+}
+
 function readWidth(): number {
   if (typeof window === "undefined") return SIDE_PANE_DEFAULT;
   try {
@@ -221,7 +231,12 @@ export const useSidePane = create<SidePaneStore>((set, get) => ({
       };
     }),
 
-  /** 三条关闭路径共用：算契约结果 → 记录被关 tab → 清它们的未读点 */
+  /** 三条关闭路径共用：算契约结果 → 记录被关 tab → 清它们的未读点。
+   *  关掉当前视角最后一个**可见** tab 时顺带收起面板 —— 回退功能主页会让
+   *  「关闭」的预期落空（用户点 X 是想让它消失，不是想看功能页）；
+   *  功能主页只在用户主动展开面板时出现（toggleFromHeader）。
+   *  判据是「可见集合从非空变空」而不是「关后为空」：面板停在功能主页时，
+   *  从 ⌄ 总览关掉一条别的 bot 的隐藏 tab 不该把整个面板收走。 */
   closeTab: (tabId) =>
     set((s) => {
       const next = sidePane.closeTab(s, tabId, s.scopeUnitId);
@@ -232,6 +247,7 @@ export const useSidePane = create<SidePaneStore>((set, get) => ({
       return {
         tabs: next.tabs,
         activeTabId: next.activeTabId,
+        collapsed: shouldCollapseOnClose(s, next.tabs) ? true : s.collapsed,
         recentlyClosed: recordClosed(s.recentlyClosed, closed),
         unreadTabIds,
       };
@@ -247,6 +263,7 @@ export const useSidePane = create<SidePaneStore>((set, get) => ({
       return {
         tabs: next.tabs,
         activeTabId: next.activeTabId,
+        collapsed: shouldCollapseOnClose(s, next.tabs) ? true : s.collapsed,
         recentlyClosed: recordClosed(s.recentlyClosed, closed),
         unreadTabIds,
       };
@@ -262,6 +279,7 @@ export const useSidePane = create<SidePaneStore>((set, get) => ({
       return {
         tabs: next.tabs,
         activeTabId: next.activeTabId,
+        collapsed: shouldCollapseOnClose(s, next.tabs) ? true : s.collapsed,
         recentlyClosed: recordClosed(s.recentlyClosed, closed),
         unreadTabIds,
       };

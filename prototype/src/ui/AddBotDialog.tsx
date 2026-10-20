@@ -67,8 +67,8 @@ export interface AddBotDraft {
 type Section = "identity" | "persona" | "memory" | "agentsmd" | "channels";
 
 const SECTIONS: readonly { id: Section; label: string; icon: LucideIcon; hint: string }[] = [
-  { id: "identity", label: "身份", icon: FileText, hint: "名称、角色、目录、执行器" },
-  { id: "persona", label: "系统提示词", icon: Wand2, hint: "人设与语气（SOUL），可后补" },
+  { id: "identity", label: "身份", icon: FileText, hint: "目录、名称、角色、执行器" },
+  { id: "persona", label: "soul.md", icon: Wand2, hint: "人设与语气（SOUL），可后补" },
   { id: "memory", label: "记忆", icon: Brain, hint: "接入哪几类记忆" },
   { id: "agentsmd", label: "AGENTS.md", icon: FileText, hint: "岗位说明书（可选，可后补）" },
   { id: "channels", label: "渠道", icon: Radio, hint: "把 bot 接到 IM / webhook" },
@@ -448,31 +448,15 @@ export function AddBotDialog({
           <div className="min-w-0 flex-1 overflow-y-auto p-4">
             {section === "identity" && (
               <div className="space-y-4">
-                <Field label="名称" hint="名字决定头像的颜色与形状；留空则跟随文件夹名">
-                  <input
-                    value={name}
-                    onChange={(e) => {
-                      nameTouchedRef.current = true;
-                      setName(e.target.value);
-                    }}
-                    placeholder="例如：竞品分析师"
-                    className="w-full rounded-input border border-transparent bg-rail px-2.5 py-1.5 text-body-sm text-ink outline-none placeholder:text-ash focus:border-teal"
-                  />
-                </Field>
-                <Field label="一句话角色" hint="做什么，一句话讲清（可留空后补）">
-                  <input
-                    value={role}
-                    onChange={(e) => setRole(e.target.value)}
-                    placeholder="例如：每天跟踪竞品动态并产出对比简报"
-                    className="w-full rounded-input border border-transparent bg-rail px-2.5 py-1.5 text-body-sm text-ink outline-none placeholder:text-ash focus:border-teal"
-                  />
-                </Field>
+                {/* 工作目录放第一行（必填，主题色星标）：bot 的本体是文件夹，
+                    目录定了名字才有跟随来源；先选目录，名称自动跟随文件夹名 */}
                 <Field
                   label="工作目录"
+                  required
                   hint={
                     isEdit
-                      ? "这个 bot 的根文件夹（AGENTS.md 与产出都放这里）。编辑时目录必须已存在——改成不存在的路径会报错"
-                      : "这个 bot 的根文件夹（AGENTS.md 与产出都放这里）。不动就是自动安置；指向已有文件夹即为认领（原地注册、不覆盖里面的文件），不存在的路径会自动创建"
+                      ? "必填。这个 bot 的根文件夹（AGENTS.md 与产出都放这里）。编辑时目录必须已存在——改成不存在的路径会报错"
+                      : "必填。这个 bot 的根文件夹（AGENTS.md 与产出都放这里）。不动就是自动安置；指向已有文件夹即为认领（原地注册、不覆盖里面的文件），不存在的路径会自动创建"
                   }
                 >
                   <FolderPickerField
@@ -511,6 +495,25 @@ export function AddBotDialog({
                 {!isEdit && claimHint !== null && (
                   <p className="-mt-3 text-caption text-loss">{claimHint}</p>
                 )}
+                <Field label="名称" hint="名字决定头像的颜色与形状；留空则跟随文件夹名">
+                  <input
+                    value={name}
+                    onChange={(e) => {
+                      nameTouchedRef.current = true;
+                      setName(e.target.value);
+                    }}
+                    placeholder="例如：竞品分析师"
+                    className="w-full rounded-input border border-transparent bg-rail px-2.5 py-1.5 text-body-sm text-ink outline-none placeholder:text-ash focus:border-teal"
+                  />
+                </Field>
+                <Field label="一句话角色" hint="做什么，一句话讲清（可留空后补）">
+                  <input
+                    value={role}
+                    onChange={(e) => setRole(e.target.value)}
+                    placeholder="例如：每天跟踪竞品动态并产出对比简报"
+                    className="w-full rounded-input border border-transparent bg-rail px-2.5 py-1.5 text-body-sm text-ink outline-none placeholder:text-ash focus:border-teal"
+                  />
+                </Field>
                 <Field label="头像" hint="可选，上传后居中裁成方形；外框形态跟随外观设置的「bot 头像框形态」">
                   <div className="flex items-center gap-3">
                     {avatar ? (
@@ -673,8 +676,8 @@ export function AddBotDialog({
             {section === "persona" && (
               <div className="flex h-full min-h-0 flex-col gap-2">
                 <Field
-                  label="系统提示词 · 人设与语气"
-                  hint="对应 waku 的 SOUL.md：运行时拼进 system prompt 的「你是谁、什么语气、什么原则」。与 AGENTS.md（岗位说明书）分开维护。"
+                  label="soul.md · 人设与语气"
+                  hint="本质是 bot 的 soul（住在文件夹里的 SOUL.md 语义位）：运行时拼进 system prompt 的「你是谁、什么语气、什么原则」。与 AGENTS.md（岗位说明书）分开维护。"
                 >
                   <span />
                 </Field>
@@ -685,7 +688,7 @@ export function AddBotDialog({
                     setPersona(e.target.value);
                   }}
                   spellCheck={false}
-                  aria-label="系统提示词"
+                  aria-label="soul.md 人设与语气"
                   placeholder="留空则使用默认语气：简洁、务实、结论先行。"
                   className="min-h-0 flex-1 resize-none rounded-card border border-line bg-canvas p-3 font-mono text-caption leading-relaxed text-ink outline-none placeholder:text-ash focus:border-teal"
                 />
@@ -923,10 +926,17 @@ function MemoryToggle({
   );
 }
 
-function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+function Field({ label, hint, required, children }: { label: string; hint?: string; required?: boolean; children: React.ReactNode }) {
   return (
     <label className="block space-y-1">
-      <span className="block text-caption font-medium text-graphite">{label}</span>
+      <span className="block text-caption font-medium text-graphite">
+        {label}
+        {required && (
+          <span className="ml-1 text-teal" title="必填">
+            *
+          </span>
+        )}
+      </span>
       {children}
       {hint && <span className="block text-caption text-ash">{hint}</span>}
     </label>

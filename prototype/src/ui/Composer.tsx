@@ -9,6 +9,7 @@ import {
   X,
 } from "lucide-react";
 import { useWorkbench, selectActiveUnit } from "../store/useWorkbench.ts";
+import { useShell } from "../store/useShell.ts";
 import { nativeCommandsFor, useNativeCommands } from "../store/useNativeCommands.ts";
 import { fetchWorkspacePaths } from "../adapters/daemon/client.ts";
 import type { NativeCommandInfo } from "../core/adapter.ts";
@@ -50,6 +51,7 @@ import { cn } from "./cn.ts";
  */
 export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
   const { isMobile } = useIsMobile();
+  const chatColumnWidth = useShell((s) => s.chatColumnWidth);
   const draft = useWorkbench((s) => s.draft);
   const setDraft = useWorkbench((s) => s.setDraft);
   const run = useWorkbench((s) => s.run);
@@ -384,8 +386,12 @@ export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
     <div className="shrink-0">
       {/* 内边距与列宽联动（@container，挂在对话列 main 上）：面板/侧栏任何一列
           占宽时 Composer 按自己的实际宽度收紧，而不是按整窗宽度摆阔 —— 否则
-          列已被挤窄、工具条还按宽屏规格排，溢出出横向滚动条 */}
-      <div className={cn("mx-auto max-w-[900px]", isMobile ? "px-3 pb-2 pt-1" : "px-3 pb-4 pt-2 @min-[560px]:px-8")}>
+          列已被挤窄、工具条还按宽屏规格排，溢出出横向滚动条。
+          列宽与时间线阅读列共用 useShell.chatColumnWidth —— 输入框和对话永远等宽 */}
+      <div
+        style={{ maxWidth: chatColumnWidth }}
+        className={cn("mx-auto w-full", isMobile ? "px-3 pb-2 pt-1" : "px-3 pb-4 pt-2 @min-[560px]:px-8")}
+      >
         <div
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}

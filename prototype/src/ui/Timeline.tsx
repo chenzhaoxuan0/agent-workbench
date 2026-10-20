@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   ArrowUp,
@@ -27,6 +27,8 @@ import type { RuntimeEvent } from "../core/events.ts";
 import { SESSION_SOURCE_LABEL } from "../core/units.ts";
 import { useWorkbench, selectActiveUnit } from "../store/useWorkbench.ts";
 import { useAppearance } from "../store/useAppearance.ts";
+import { useShell } from "../store/useShell.ts";
+import { useIsMobile } from "./mobile/useIsMobile.ts";
 import { openInEditor } from "../adapters/daemon/client.ts";
 import { botAvatarStyle } from "./Sidebar.tsx";
 import { MarkdownContent } from "./MarkdownContent.tsx";
@@ -81,6 +83,8 @@ export function Timeline() {
   const unit = useWorkbench(selectActiveUnit);
   const sessions = useWorkbench((s) => s.sessions);
   const runtimes = useWorkbench((s) => s.runtimes);
+  const chatColumnWidth = useShell((s) => s.chatColumnWidth);
+  const { isMobile } = useIsMobile();
   const scrollRef = useStickToBottom();
 
   // sessionId → 执行器显示名（divider 合成用；Map 每次渲染重建，sessions 规模下可忽略）
@@ -103,6 +107,10 @@ export function Timeline() {
   // 事件流归并处理：合并流式连续思考片段，配对工具调用
   const items = useMemo(() => groupTimelineEvents(timeline, nameOf, sessionOf), [timeline, nameOf, sessionOf]);
 
+  // 非正文折叠（对齐 ZCode 的 turn history 手风琴）：连续的 思考/工具调用 归并成
+  // 一个可折叠的工作组，回复正文不再被一串工具行往下拖 —— 见 buildWorkRuns
+  const renderUnits = useMemo(() => buildWorkRuns(items), [items]);
+
   // 最后一条用户消息的 item id：编辑重发（revision）只对它开放（latestQueryEditOnly）
   const lastUserTurnId = useMemo(() => {
     let last: string | number | undefined;
@@ -113,19 +121,28 @@ export function Timeline() {
   return (
     <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
       <div
+        style={{ maxWidth: chatColumnWidth }}
         className={cn(
-          // 内边距跟对话列实际宽度走（容器查询）：面板/侧栏占宽时收紧，不按整窗摆阔
-          "mx-auto max-w-[900px] px-4 py-6 @min-[560px]:px-6 @min-[720px]:px-8 @min-[720px]:py-8",
-          items.length === 0 && "flex min-h-full flex-col justify-center pb-10 @min-[560px]:pb-20 transition-all duration-200",
+          // 阅读列：mx-auto 居中 + 可设置的最大宽度（useShell.chatColumnWidth，默认
+          // 900 ≈ ZCode 的 max-w-4xl）。输入框（Composer）用同一宽度 —— 两者永远对齐。
+          // 空态的底部留白只在移动端加大：PC 上跟随容器断点变化的 pb 会让居中内容
+          // 随列宽收窄上下跳（开右侧栏就跳一下），那是 bug 不是设计
+          "mx-auto w-full px-4 py-6 @min-[560px]:px-6 @min-[720px]:px-8 @min-[720px]:py-8",
+          items.length === 0 &&
+            cn("flex min-h-full flex-col justify-center pb-10 transition-all duration-200", isMobile && "pb-16"),
         )}
       >
         {items.length === 0 ? (
           <EmptyState />
         ) : (
           <div className="space-y-4">
-            {items.map((item) => (
-              <TimelineItemRow key={item.id} item={item} unitName={unit?.name ?? "bot"} busy={busy} lastUserTurnId={lastUserTurnId} />
-            ))}
+            {renderUnits.map((u) =>
+              u.kind === "item" ? (
+                <TimelineItemRow key={u.key} item={u.item} busy={busy} lastUserTurnId={lastUserTurnId} />
+              ) : (
+                <WorkGroupRow key={u.key} entries={u.entries} running={u.running} busy={busy} lastUserTurnId={lastUserTurnId} />
+              ),
+            )}
             {busy && (
               <div className="flex items-center gap-2 text-body-sm text-teal">
                 <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-teal" aria-hidden />
@@ -469,6 +486,100 @@ function ForkPointRow({
   );
 }
 
+/* ------------------------------------------------------------- 非正文工作组 */
+
+/**
+ * 连续的 思考/工具调用 归并成一个可折叠「工作组」（对齐 ZCode turn 的
+ * AssistantHistory 手风琴：完成后收起，只留一行摘要；正文始终是主角）。
+ * permission / file.diff / deliverable 等需要用户看见的行不进组，原样穿插。
+ */
+type RenderUnit =
+  | { kind: "item"; key: string; item: GroupedItem }
+  | { kind: "work"; key: string; entries: GroupedItem[]; running: boolean };
+
+function buildWorkRuns(items: readonly GroupedItem[]): RenderUnit[] {
+  const out: RenderUnit[] = [];
+  let buf: GroupedItem[] = [];
+  const flush = (): void => {
+    if (buf.length === 0) return;
+    out.push({
+      kind: "work",
+      key: `work-${buf[0]!.id}`,
+      entries: buf,
+      running: buf.some((e) => e.kind === "tool" && e.data?.completed !== true),
+    });
+    buf = [];
+  };
+  for (const it of items) {
+    if (it.kind === "thinking" || it.kind === "tool") buf.push(it);
+    else {
+      flush();
+      out.push({ kind: "item", key: String(it.id), item: it });
+    }
+  }
+  flush();
+  return out;
+}
+
+/** 工作组手风琴：跑动中自动展开、完成即收起（可手动展开回看每一步） */
+function WorkGroupRow({
+  entries,
+  running,
+  busy,
+  lastUserTurnId,
+}: {
+  entries: GroupedItem[];
+  running: boolean;
+  busy: boolean;
+  lastUserTurnId: string | number | undefined;
+}) {
+  const [open, setOpen] = useState(running);
+  useEffect(() => {
+    // 跑动 → 展开；收口 → 收起（ZCode 的 autoCollapseOnComplete 同款：
+    // 完成的工作不值得占屏，摘要行足够）。手动展开已完成组不受影响 ——
+    // running 翻转只发生在收口那一刻
+    if (running) setOpen(true);
+    else setOpen(false);
+  }, [running]);
+
+  const toolCount = entries.filter((e) => e.kind === "tool").length;
+  const thinkCount = entries.filter((e) => e.kind === "thinking").length;
+  const failed = entries.some((e) => e.kind === "tool" && e.data?.ok === false);
+
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        className={cn(
+          "flex w-full cursor-pointer items-center gap-1.5 rounded-btn border-b border-line/50 pb-1.5 text-left text-caption transition",
+          running ? "text-graphite" : "text-ash hover:text-graphite",
+        )}
+      >
+        <Sparkles size={11} className={cn("shrink-0", running ? "animate-pulse text-teal" : failed ? "text-loss" : "text-ash")} />
+        <span className={cn("shrink-0 font-medium", running && "text-teal")}>{running ? "工作中" : "已工作"}</span>
+        <span className="min-w-0 truncate">
+          {toolCount > 0 && `· ${toolCount} 次工具调用`}
+          {thinkCount > 0 && ` · 思考 ${thinkCount} 段`}
+          {failed && " · 有失败"}
+        </span>
+        <ChevronRight
+          size={12}
+          className={cn("ml-auto shrink-0 transition-transform", open ? "rotate-90" : "rotate-0")}
+        />
+      </button>
+      {open && (
+        <div className="ml-2 mt-2 space-y-2 border-l border-line pl-3">
+          {entries.map((e) => (
+            <TimelineItemRow key={e.id} item={e} busy={busy} lastUserTurnId={lastUserTurnId} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ------------------------------------------------------------- 行渲染 */
 
 /** 段边界 divider 行：执行器切换点 + 上一段 readiness（从 sessions 台账读） */
@@ -563,7 +674,7 @@ function UserMessageBubble({
   if (editing) {
     return (
       <div className="flex w-full flex-col items-end">
-        <div className="w-full max-w-[85%] rounded-[16px] rounded-tr-[4px] border border-teal/40 bg-card px-3.5 py-2.5 shadow-xs focus-within:border-teal/60">
+        <div className="w-full max-w-full rounded-[16px] rounded-tr-[4px] border border-teal/40 bg-card px-3.5 py-2.5 shadow-xs focus-within:border-teal/60">
           <textarea
             autoFocus
             value={editDraft}
@@ -626,7 +737,7 @@ function UserMessageBubble({
           {attachments && attachments.length > 0 && (
             <AttachmentsBar attachments={[...attachments]} readOnly />
           )}
-          <div className="max-w-[85%] rounded-[16px] rounded-tr-[4px] border border-line bg-card px-3.5 py-2.5 shadow-xs flex items-center gap-2.5">
+          <div className="max-w-full rounded-[16px] rounded-tr-[4px] border border-line bg-card px-3.5 py-2.5 shadow-xs flex items-center gap-2.5">
             <div className="flex h-5 w-5 shrink-0 items-center justify-center rounded bg-ink text-canvas font-mono text-[11px] font-bold leading-none">
               /
             </div>
@@ -655,7 +766,7 @@ function UserMessageBubble({
           <AttachmentsBar attachments={[...attachments]} readOnly />
         )}
         {text.trim() && (
-          <div className="max-w-[85%] rounded-[16px] rounded-tr-[4px] border border-line bg-card px-4 py-3 shadow-xs">
+          <div className="max-w-full rounded-[16px] rounded-tr-[4px] border border-line bg-card px-4 py-3 shadow-xs">
             <p className="whitespace-pre-wrap text-body leading-relaxed text-ink">{text}</p>
           </div>
         )}
@@ -721,12 +832,10 @@ function FileDiffRow({ data }: { data: { path: string; additions: number; deleti
 
 function TimelineItemRow({
   item,
-  unitName,
   busy,
   lastUserTurnId,
 }: {
   item: GroupedItem;
-  unitName: string;
   busy: boolean;  lastUserTurnId: string | number | undefined;
 }) {
   switch (item.kind) {
@@ -770,7 +879,6 @@ function TimelineItemRow({
       return (
         <AssistantMessageBlock
           text={item.data.text}
-          unitName={unitName}
           at={item.at}
           messageId={typeof item.data.messageId === "string" ? item.data.messageId : ""}
           sessionId={typeof item.data.sessionId === "string" ? item.data.sessionId : ""}
@@ -823,14 +931,11 @@ function TimelineItemRow({
 
     case "usage":
       // 兜底行：usage 通常已并入助手消息底部 meta；找不到挂靠点时才独立渲染
-      //（不显示计费 —— 用户明确不要）
+      //（不显示计费与 token 上下行 —— 用户明确不要，↑↓ 语义无人能读）
       return (
         <div className="flex items-center gap-2 pl-1 text-caption text-ash">
           <Wallet size={12} />
           <span className="font-mono">{item.data.model}</span>
-          <span className="tnum font-mono">
-            {item.data.inputTokens}↑ / {item.data.outputTokens}↓
-          </span>
         </div>
       );
 
@@ -1045,13 +1150,14 @@ function formatInputBrief(input: unknown): string {
 
 /**
  * 助手消息块（布局参考 ZCode ConversationAssistantTextActions）：
- * 顶部只有头像+名字（流式态带脉冲点）；正文 markdown；**底部 meta 行**——
- * 左 = 时间 + 「从此处分叉」（分叉锚点挂在这条回复上，branch=through 含本轮），
- * 右 = 模型 · token 上下行（usage 并入，不显示计费）。
+ * 不带头像与名字 —— 「当前在跟谁说话」由页面语境与执行器切换 divider 交代，
+ * 每条回复重复一遍只是噪音；流式脉冲点移到 meta 行时间旁。
+ * 正文 markdown；**底部 meta 行**——
+ * 左 = 时间 + 「从此处分叉」+ 复制全文（分叉锚点挂在这条回复上，branch=through 含本轮），
+ * 右 = 执行器模型名（usage 并入；token 上下行已删 —— ↑↓ 语义无人能读，且不显示计费）。
  */
 function AssistantMessageBlock({
   text,
-  unitName,
   at,
   messageId,
   sessionId,
@@ -1060,7 +1166,6 @@ function AssistantMessageBlock({
   busy,
 }: {
   text: string;
-  unitName: string;
   at: number;
   /** daemon 侧的助手消息 id —— 分叉锚点（resolveForkAtSeq 按它定位轮边界） */
   messageId: string;
@@ -1070,9 +1175,9 @@ function AssistantMessageBlock({
   usage?: { model: string; inputTokens: number; outputTokens: number };
   busy: boolean;
 }) {
-  const avatar = botAvatarStyle(unitName);
   const startFork = useWorkbench((s) => s.startFork);
   const sourceStatus = useWorkbench((s) => s.sessions.find((x) => String(x.id) === sessionId)?.status);
+  const [copied, setCopied] = useState(false);
 
   // idle 门禁（ADR 0013 不变量 6）：本轮流式中 / 源段 running/awaiting_* 时禁止分叉
   const blocked =
@@ -1082,28 +1187,34 @@ function AssistantMessageBlock({
     sourceStatus === "awaiting_input";
   const canFork = !streaming && !blocked && messageId !== "";
 
+  const copyReply = (): void => {
+    const finish = (): void => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    };
+    if (navigator.clipboard?.writeText !== undefined) {
+      navigator.clipboard.writeText(text).then(finish, () => {});
+    } else {
+      // 非安全上下文（http 源）兜底：execCommand 已废弃但仍是唯一通路
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+      finish();
+    }
+  };
+
   return (
     <div className="group/msg py-1">
-      {/* 头部：Agent 头像与名字（时间在底部 meta 行，不再放头部） */}
-      <div className="mb-1.5 flex items-center gap-2">
-        <span
-          className={cn("flex h-5 w-5 shrink-0 items-center justify-center text-[11px] font-medium text-canvas", avatar.shape)}
-          style={{ backgroundColor: avatar.color }}
-        >
-          {unitName.slice(0, 1)}
-        </span>
-        <span className="text-body-sm font-medium text-ink">{unitName}</span>
-        {streaming && (
-          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-teal" aria-label="生成中" />
-        )}
-      </div>
-
       {/* 正文 Markdown 渲染（流式态容错未闭合围栏、跳过高亮） */}
-      <div className="pl-7">
+      <div>
         <MarkdownContent content={text} streaming={streaming} />
 
-        {/* 底部 meta 行：左 = 时间 + 分叉；右 = 模型 · token 上下行 */}
+        {/* 底部 meta 行：左 = 流式点 + 时间 + 分叉 + 复制；右 = 执行器模型名 */}
         <div className="mt-2 flex items-center gap-2.5 text-caption text-ash">
+          {streaming && <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-teal" aria-label="生成中" />}
           <span className="tnum shrink-0">{clock(at)}</span>
           <button
             onClick={() => startFork({ ofSessionId: sessionId as never, anchorMessageId: messageId, kind: "branch" })}
@@ -1122,15 +1233,17 @@ function AssistantMessageBlock({
           >
             <GitBranch size={12} />
           </button>
+          <button
+            onClick={copyReply}
+            aria-label="复制这条回复"
+            title={copied ? "已复制" : "复制这条回复全文"}
+            className="flex shrink-0 cursor-pointer items-center gap-1 rounded-btn p-1 text-ash transition hover:bg-line-soft hover:text-ink"
+          >
+            {copied ? <Check size={12} className="text-gain" /> : <Copy size={12} />}
+          </button>
           {usage !== undefined && (
-            <span
-              className="ml-auto flex min-w-0 shrink-0 items-center gap-1.5 font-mono"
-              title={`本轮模型与 token 用量：输入 ${usage.inputTokens} / 输出 ${usage.outputTokens}`}
-            >
+            <span className="ml-auto flex min-w-0 shrink-0 items-center font-mono" title={`本轮由 ${usage.model} 执行`}>
               <span className="truncate">{usage.model}</span>
-              <span className="tnum">
-                {usage.inputTokens}↑ / {usage.outputTokens}↓
-              </span>
             </span>
           )}
         </div>

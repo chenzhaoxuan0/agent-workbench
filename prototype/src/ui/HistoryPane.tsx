@@ -200,10 +200,11 @@ export function HistoryPane({
    * 与 TUI 恢复互补：TUI 走执行器自己的存储（原生原味），这里走 host 账本投影。
    */
   const handleOpenInChat = (e: UnitHistoryEntry): void => {
-    if (e.sessionId === null || e.unitId === undefined) return;
+    // unitId 用面板自身的所属 bot（daemon 的 history 条目不填 unitId，见 Sidebar 同注）
+    if (e.sessionId === null) return;
     void useWorkbench
       .getState()
-      .openSession({ sessionId: asSessionId(e.sessionId), unitId: asUnitId(e.unitId), runtimeId: e.runtimeId });
+      .openSession({ sessionId: asSessionId(e.sessionId), unitId: asUnitId(unitId), runtimeId: e.runtimeId });
     const sh = useShell.getState();
     sh.setMainView("chat");
     sh.setConversationView("chat");
@@ -302,7 +303,7 @@ export function HistoryPane({
   }, [entries, hideFailedInDialog, focusKey]);
 
   return (
-    <section aria-label={`${unitName} 历史会话`} className="flex h-full min-h-0 flex-col bg-card">
+    <section aria-label={`${unitName} 历史会话`} className="flex h-full min-h-0 flex-col">
       <div className="flex h-10 shrink-0 items-center gap-2 border-b border-line px-3">
         {/* 页签切换：daemon 运行台账 | 各 CLI 原生存储 */}
         <div className="flex items-center rounded-btn bg-line-soft/80 p-0.5">
@@ -402,6 +403,7 @@ export function HistoryPane({
           {displayedEntries !== null && collapseForkVersions(displayedEntries).map((slot) => (
             <HistoryRow
               key={slot.entry.key}
+              unitId={unitId}
               entry={slot.entry}
               family={slot.family}
               expanded={expanded === slot.entry.key}
@@ -409,7 +411,7 @@ export function HistoryPane({
               resumable={resumable(slot.entry)}
               resumeBusy={resumeBusy === slot.entry.key}
               onResume={() => handleResume(slot.entry)}
-              onOpenInChat={slot.entry.sessionId !== null && slot.entry.unitId !== undefined ? () => handleOpenInChat(slot.entry) : undefined}
+              onOpenInChat={slot.entry.sessionId !== null ? () => handleOpenInChat(slot.entry) : undefined}
               onOpenFamilyMember={(m) => handleOpenInChat(m)}
             />
           ))}
@@ -570,6 +572,7 @@ function NativeTranscript({ executorId, sessionId }: { executorId: string; sessi
 }
 
 function HistoryRow({
+  unitId,
   entry,
   family,
   expanded,
@@ -580,6 +583,8 @@ function HistoryRow({
   onOpenInChat,
   onOpenFamilyMember,
 }: {
+  /** 面板所属 bot —— 监控跳转用（daemon 的 history 条目不填 unitId） */
+  unitId: string;
   entry: UnitHistoryEntry;
   /** 同锚点的 revision 家族（旧 → 新，含 entry；ADR 0013 P2 版本折叠） */
   family?: readonly UnitHistoryEntry[];
@@ -679,14 +684,14 @@ function HistoryRow({
                 在聊天页继续
               </span>
             )}
-            {entry.sessionId !== null && entry.unitId !== undefined && (
+            {entry.sessionId !== null && (
               <span
                 role="button"
                 tabIndex={0}
                 onClick={(ev) => {
                   ev.stopPropagation();
                   useSidePane.getState().openLiveSession({
-                    unitId: asUnitId(String(entry.unitId)),
+                    unitId: asUnitId(unitId),
                     sessionId: entry.sessionId!,
                     runtimeId: entry.runtimeId,
                     title: entry.title,
@@ -698,7 +703,7 @@ function HistoryRow({
                   ev.preventDefault();
                   ev.stopPropagation();
                   useSidePane.getState().openLiveSession({
-                    unitId: asUnitId(String(entry.unitId)),
+                    unitId: asUnitId(unitId),
                     sessionId: entry.sessionId!,
                     runtimeId: entry.runtimeId,
                     title: entry.title,
@@ -777,8 +782,7 @@ function HistoryRow({
                 <span className="shrink-0 text-[10px] text-teal">当前</span>
               ) : (
                 onOpenFamilyMember !== undefined &&
-                m.sessionId !== null &&
-                m.unitId !== undefined && (
+                m.sessionId !== null && (
                   <span
                     role="button"
                     tabIndex={0}

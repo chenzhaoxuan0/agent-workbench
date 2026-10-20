@@ -19,7 +19,7 @@ import { Sidebar } from "./ui/Sidebar.tsx";
 import { TerminalPanel } from "./ui/TerminalPanel.tsx";
 import { WorkspaceHeader } from "./ui/WorkspaceHeader.tsx";
 import { WindowControls } from "./ui/WindowControls.tsx";
-import { bindShellShortcuts, useShell } from "./store/useShell.ts";
+import { bindShellShortcuts, useShell, SIDEBAR_MIN } from "./store/useShell.ts";
 import { bindSidePaneShortcuts } from "./store/sidePaneShortcuts.ts";
 import { installNotifications } from "./store/useNotifications.ts";
 import { SidePaneColumn } from "./ui/SidePanePanel.tsx";
@@ -35,7 +35,7 @@ import { cn } from "./ui/cn.ts";
  * 工作台外壳 —— 布局结构对齐 ZCode 的 WorkspaceShellLayout。
  *
  * 照搬的 ZCode 约定：
- *   - 侧栏 200px 起，min 200，max 视口 50%，宽度持久化
+ *   - 侧栏默认 264px 起，min 240（顶部动作行不溢出），max 视口 50%，宽度持久化
  *   - **面板收起即归零**：左栏收起不留窄条，重开的唯一入口是
  *     工作区头部那颗状态感知的开关按钮
  *     —— ZCode 的 DesktopTopOverlay / WorkspaceHeaderActionSection 同款约定
@@ -202,9 +202,10 @@ function SidebarSlot() {
   return (
     <Panel
       panelRef={ref}
-      // 注意：数字会被当成百分比，所以宽度必须写成带单位的字符串
+      // 注意：数字会被当成百分比，所以宽度必须写成带单位的字符串。
+      // minSize 与 store 的 SIDEBAR_MIN 同源 —— 顶部动作行的固定内容宽度是下限
       defaultSize={`${initialWidth}px`}
-      minSize="200px"
+      minSize={`${SIDEBAR_MIN}px`}
       maxSize="50%"
       // ZCode：收起即归零（web 侧为 0，桌面端 4px 是它的窗口内缩需求），不留常驻窄条
       collapsedSize="0px"

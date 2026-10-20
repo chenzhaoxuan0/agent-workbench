@@ -1,7 +1,7 @@
 import { TitleBarClearance } from "./WindowControls.tsx";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { Panel, Separator, type PanelImperativeHandle } from "react-resizable-panels";
-import { LayoutGrid, PanelRightClose, Plus, X, ChevronDown, ChevronRight } from "lucide-react";
+import { LayoutGrid, Plus, X, ChevronDown, ChevronRight } from "lucide-react";
 import { useShell } from "../store/useShell.ts";
 import { useSidePane, SIDE_PANE_MIN } from "../store/useSidePane.ts";
 import { useWorkbench } from "../store/useWorkbench.ts";
@@ -365,14 +365,18 @@ function SidePanePanelBody({
   }, [open, visibleActiveTabId, clearUnread]);
 
   return (
-    <div className="flex h-full min-h-0 flex-col border-l border-line bg-card">
-      {/* tab 条：⌄ 总览（最左）→ 横向滚动的 tab → ＋ 新增 → 收起钮。
-          无可见 tab 时标「功能」，此时内容区就是功能主页。收起钮与左栏顶部开关
+    /* 列底色与左侧栏同源（bg-rail）：此前用 bg-card 比左栏浅一档，两栏并排时
+       右列像是浮起来的；tab 条（本列头部）也因此与工作台头部（bg-rail）同色 */
+    <div className="flex h-full min-h-0 flex-col border-l border-line bg-rail">
+      {/* tab 条：⌄ 总览（最左）→ 横向滚动的 tab → ＋ 新增 → 关闭钮。
+          无可见 tab 时标「功能」，此时内容区就是功能主页。关闭钮与左栏顶部开关
           镜像（右侧栏自己的开关在自己身上）；桌面端无边框窗口下 tab 条是右列顶部
           的窗口拖拽热区，最右让出系统窗口控制按钮条（--wco-w，浏览器为 0）。
+          高度 h-12 与工作台头部 / 左栏头部 / 窗口控制钮条同高 —— 矮一档（旧 h-10）
+          会让右上角三个窗口钮的下缘压进 tab 条、视觉上被压扁。
           role=tablist 放在滚动容器上 —— tab 必须是 tablist 的直接归属后代，
-          外层这行还混着总览/新增/收起按钮，不该算进 tablist */}
-      <div className="titlebar-drag flex h-10 shrink-0 items-center gap-1 border-b border-line pl-1 pr-1">
+          外层这行还混着总览/新增/关闭按钮，不该算进 tablist */}
+      <div className="titlebar-drag flex h-12 shrink-0 items-center gap-1 border-b border-line pl-1 pr-1">
         <SidePaneTabOverview />
         <div
           ref={tabStripRef}
@@ -381,9 +385,30 @@ function SidePanePanelBody({
           className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"
         >
           {visibleTabs.length === 0 && (
-            <span className="flex h-7 shrink-0 select-none items-center gap-1.5 rounded-btn border border-teal/40 bg-teal-tint/60 px-2 text-caption text-ink">
+            /* 功能主页的占位「标签」—— 像普通标签一样带关闭钮（hover 淡入）：
+                用户在功能页想关面板，X 就该长在标签旁边，而不是条尾 */
+            <span className="group/chip flex h-7 shrink-0 select-none items-center gap-1.5 rounded-btn border border-teal/40 bg-teal-tint/60 pl-2 pr-1 text-caption text-ink">
               <LayoutGrid size={11} className="shrink-0 text-teal" />
               功能
+              <span
+                role="button"
+                tabIndex={0}
+                aria-label="关闭右侧面板"
+                title="关闭右侧面板"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  useSidePane.getState().toggleFromHeader();
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.stopPropagation();
+                    useSidePane.getState().toggleFromHeader();
+                  }
+                }}
+                className="rounded p-0.5 text-ash opacity-0 transition hover:bg-line hover:text-ink focus-visible:opacity-100 group-hover/chip:opacity-100"
+              >
+                <X size={11} />
+              </span>
             </span>
           )}
           {visibleTabs.map((tab) => (
@@ -421,15 +446,18 @@ function SidePanePanelBody({
         >
           <Plus size={14} />
         </button>
-        <button
-          type="button"
-          onClick={() => useSidePane.getState().toggleFromHeader()}
-          aria-label="收起右侧面板"
-          title="收起右侧面板（对话列随之展宽；右上浮层钮与侧栏历史入口可重新打开）"
-          className="shrink-0 rounded-btn p-1 text-ash transition hover:bg-line-soft hover:text-ink"
-        >
-          <PanelRightClose size={14} />
-        </button>
+        {/* 条尾关闭钮只对「有标签页」的态服务 —— 功能页的关闭在「功能」标签旁 */}
+        {visibleTabs.length > 0 && (
+          <button
+            type="button"
+            onClick={() => useSidePane.getState().toggleFromHeader()}
+            aria-label="关闭右侧面板"
+            title="关闭右侧面板（对话列随之展宽；右上浮层钮与侧栏历史入口可重新打开）"
+            className="shrink-0 rounded-btn p-1 text-ash transition hover:bg-line-soft hover:text-ink"
+          >
+            <X size={15} />
+          </button>
+        )}
         {/* 本行顶到窗口右缘：no-drag 占位让出窗口控制钮带（--wco-w）。
             必须是 drag 行的行内子元素 —— 兄弟悬浮元素的 no-drag 不参与拖拽区减法 */}
         <TitleBarClearance width="calc(var(--wco-w, 0px) + 4px)" />

@@ -46,6 +46,7 @@ export type SettingsSectionId =
   | "appearance"
   | "models"
   | "history"
+  | "heartbeat"
   | "terminal"
   | "image"
   | "shortcuts"
@@ -83,6 +84,7 @@ export const SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
   { id: "appearance", title: "外观", desc: "预设主题、十组配色、透明度、背景壁纸与表面排版", groupId: "basics", icon: "palette" },
   { id: "models", title: "执行器与模型", desc: "执行器实例、供应商与每个 CLI 的模型清单", groupId: "basics", icon: "brain" },
   { id: "history", title: "历史会话", desc: "会话时间轴过滤、失败记录隐藏与展示偏好", groupId: "basics", icon: "history" },
+  { id: "heartbeat", title: "心跳", desc: "心跳开关、周期、空闲阈值、提议超时与忽略上限 —— 待办自动提议的节拍", groupId: "basics", icon: "alarm" },
   { id: "terminal", title: "终端", desc: "对话页小终端的 Shell 类型（默认 PowerShell 7）与终端页共享的档案", groupId: "basics", icon: "terminal" },
   { id: "shortcuts", title: "快捷键", desc: "全局键位速查", groupId: "basics", icon: "keyboard" },
 
@@ -110,7 +112,12 @@ export const SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
 const WIDTH_KEY = "agent-workbench:sidebar-width-px";
 /** 与设置页左侧导航（w-[264px]）对齐，两栏切换时视觉宽度一致 */
 const SIDEBAR_DEFAULT = 264;
-const SIDEBAR_MIN = 200;
+/**
+ * 最小宽度下限 = 顶部动作行不溢出的宽度：px-2.5 内边距 + 收起钮 + 6 个
+ * 导航图标钮（搜索/自动化/待办/源代码管理/出图/设置）≈ 226px 固定内容。
+ * 旧下限 200px 时这行被压溢出，栏底出现横向滚动条 —— 下限必须盖住头部。
+ */
+const SIDEBAR_MIN = 240;
 const SIDEBAR_MAX_RATIO = 0.5;
 
 /** 对话区过窄时自动收起（对齐 ZCode 的 360 / 480 阈值思路） */
@@ -135,6 +142,37 @@ function readWidth(): number {
 function persistWidth(w: number): void {
   try {
     window.localStorage.setItem(WIDTH_KEY, String(Math.round(w)));
+  } catch {
+    /* ignore */
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 对话列宽：时间线阅读列与输入框共用的最大宽度（对齐 ZCode：composer 与消息列
+// 同容器同宽）。默认 900 ≈ ZCode 有内容时的 max-w-4xl（896px），设置页可调。
+// ---------------------------------------------------------------------------
+
+const CHAT_WIDTH_KEY = "agent-workbench:chat-column-width-px";
+/** 阅读舒适度的下限（再窄一行放不下几个字）与上限（跟整窗等宽就失去列的意义） */
+export const CHAT_WIDTH_MIN = 640;
+export const CHAT_WIDTH_MAX = 1440;
+const CHAT_WIDTH_DEFAULT = 900;
+
+function readChatColumnWidth(): number {
+  if (typeof window === "undefined") return CHAT_WIDTH_DEFAULT;
+  try {
+    const raw = window.localStorage.getItem(CHAT_WIDTH_KEY);
+    const n = raw === null ? NaN : Number(raw);
+    if (!Number.isFinite(n) || n <= 0) return CHAT_WIDTH_DEFAULT;
+    return Math.min(CHAT_WIDTH_MAX, Math.max(CHAT_WIDTH_MIN, Math.round(n)));
+  } catch {
+    return CHAT_WIDTH_DEFAULT;
+  }
+}
+
+function persistChatColumnWidth(w: number): void {
+  try {
+    window.localStorage.setItem(CHAT_WIDTH_KEY, String(Math.round(w)));
   } catch {
     /* ignore */
   }
@@ -186,6 +224,8 @@ function readStatusBarLocked(): boolean {
 
 interface ShellState {
   sidebarWidth: number;
+  /** 对话阅读列最大宽度（时间线与输入框共用，设置页外观区可调） */
+  chatColumnWidth: number;
   sidebarCollapsed: boolean;
   /** 全局底栏（任务栏）高度，px。默认 28（最薄档）；拖上缘调高，双击手柄复位 */
   statusBarHeight: number;
@@ -214,6 +254,7 @@ interface ShellState {
   conversationView: ConversationView;
 
   setSidebarWidth: (w: number) => void;
+  setChatColumnWidth: (w: number) => void;
   /** 底栏高度（px）。拖拽过程传 persist:false 只改内存，落定后默认落盘 */
   setStatusBarHeight: (h: number, opts?: { persist?: boolean }) => void;
   /** 锁定底栏高度（默认 true） */
@@ -237,6 +278,7 @@ interface ShellState {
 
 export const useShell = create<ShellState>((set, get) => ({
   sidebarWidth: readWidth(),
+  chatColumnWidth: readChatColumnWidth(),
   statusBarHeight: readStatusBarHeight(),
   statusBarLocked: readStatusBarLocked(),
   sidebarCollapsed: false,
@@ -266,6 +308,12 @@ export const useShell = create<ShellState>((set, get) => ({
     const clamped = Math.max(SIDEBAR_MIN, Math.round(w));
     set({ sidebarWidth: clamped });
     persistWidth(clamped);
+  },
+
+  setChatColumnWidth: (w) => {
+    const clamped = Math.min(CHAT_WIDTH_MAX, Math.max(CHAT_WIDTH_MIN, Math.round(w)));
+    set({ chatColumnWidth: clamped });
+    persistChatColumnWidth(clamped);
   },
 
   /** 底栏高度：拖拽中连续 set（不落盘，跟手），结束时调用方传 persist 落盘 */

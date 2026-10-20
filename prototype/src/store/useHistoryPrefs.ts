@@ -27,6 +27,8 @@ export interface HistoryPrefs {
    * 缺省按来源：对话页创建（headless）→ 聊天页打开，TUI 创建 → TUI 重现。
    */
   entryOpenMode: Record<string, "chat" | "tui">;
+  /** 用户置顶的历史会话（entry key 列表，cap 50）—— 侧栏子列表里排在最前 */
+  pinnedKeys: string[];
 }
 
 const DEFAULTS: HistoryPrefs = {
@@ -35,10 +37,13 @@ const DEFAULTS: HistoryPrefs = {
   viewedKeys: [],
   lightsSinceTs: 0,
   entryOpenMode: {},
+  pinnedKeys: [],
 };
 
 /** 已读标记容量上限：超出后丢最旧的（FIFO），防止 localStorage 无限膨胀 */
 const VIEWED_CAP = 500;
+/** 置顶容量上限：置顶是稀缺的手动标记，多了「置顶区」就失去意义 */
+const PINNED_CAP = 50;
 
 const STORAGE_KEY = "agent-workbench:history-prefs";
 
@@ -64,6 +69,7 @@ function load(): HistoryPrefs {
               ),
             )
           : {},
+      pinnedKeys: Array.isArray(p.pinnedKeys) ? p.pinnedKeys.filter((k): k is string => typeof k === "string") : [],
     };
   } catch {
     return { ...DEFAULTS, lightsSinceTs: Date.now() };
@@ -89,6 +95,8 @@ export interface HistoryPrefsStore {
   isUnread: (keys: string | readonly string[], finishedAt: number | null) => boolean;
   /** 覆盖某条会话的默认打开方式；传 null 清除覆盖（回落按来源判定） */
   setEntryOpenMode: (key: string, mode: "chat" | "tui" | null) => void;
+  /** 置顶 / 取消置顶一条历史会话（entry key；幂等切换） */
+  togglePinned: (key: string) => void;
 }
 
 export const useHistoryPrefs = create<HistoryPrefsStore>((set, get) => ({
@@ -127,6 +135,17 @@ export const useHistoryPrefs = create<HistoryPrefsStore>((set, get) => ({
       if (mode === null) delete nextModes[key];
       else nextModes[key] = mode;
       const next = { ...state.prefs, entryOpenMode: nextModes };
+      persist(next);
+      return { prefs: next };
+    }),
+  togglePinned: (key) =>
+    set((state) => {
+      if (key === "") return {};
+      const has = state.prefs.pinnedKeys.includes(key);
+      const nextPinned = has
+        ? state.prefs.pinnedKeys.filter((k) => k !== key)
+        : [...state.prefs.pinnedKeys, key].slice(-PINNED_CAP);
+      const next = { ...state.prefs, pinnedKeys: nextPinned };
       persist(next);
       return { prefs: next };
     }),

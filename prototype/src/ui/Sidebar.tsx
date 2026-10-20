@@ -584,13 +584,15 @@ function guardsOf(u: WorkUnit): BotWriteGuards {
 /**
  * 在聊天页打开一条历史会话（ADR 0012 resume-in-chat）。
  * 侧栏子列表直点与右键菜单共用 —— 点击历史行 = 左侧栏的「垂直标签页」切换。
+ * unitId 由调用方传行所属 bot：daemon 的 unit.history 条目从不填 unitId 字段，
+ * 依赖 entry.unitId 会让 canChat 恒 false —— 点击全部落进「无法重现」兜底。
  */
-function openEntryInChat(e: UnitHistoryEntry): void {
-  if (e.sessionId === null || e.unitId === undefined) return;
+function openEntryInChat(e: UnitHistoryEntry, ownerUnitId: string): void {
+  if (e.sessionId === null) return;
   const sid = e.sessionId;
   void useWorkbench
     .getState()
-    .openSession({ sessionId: asSessionId(sid), unitId: asUnitId(e.unitId), runtimeId: e.runtimeId })
+    .openSession({ sessionId: asSessionId(sid), unitId: asUnitId(ownerUnitId), runtimeId: e.runtimeId })
     .then(() => {
       // 门禁拦下 / 会话打不开时 openSession 只推 notice 并落空 —— activeSessionId
       // 不会变。此时不切视图、**不标已读**（绿灯留着，用户还没看到内容）。
@@ -773,6 +775,7 @@ function UnitRow({
   const historyPrefs = useHistoryPrefs((s) => s.prefs);
   const isEntryUnread = useHistoryPrefs((s) => s.isUnread);
   const setEntryOpenMode = useHistoryPrefs((s) => s.setEntryOpenMode);
+  const togglePinned = useHistoryPrefs((s) => s.togglePinned);
   /** 会话实时状态（turn 进行中 = 呼吸灯的事实来源） */
   const sessions = useWorkbench((s) => s.sessions);
   const activeSessionId = useWorkbench((s) => s.activeSessionId);
@@ -798,8 +801,12 @@ function UnitRow({
   const [visibleCount, setVisibleCount] = useState(6);
 
   const { filteredEntries, hiddenFailedCount } = useMemo(() => {
+    // 置顶行排最前（稳定排序：组内保持原时间序）—— 「垂直标签页」的 pin 语义
+    const pinned = new Set(historyPrefs.pinnedKeys);
+    const byPin = (list: readonly UnitHistoryEntry[]): UnitHistoryEntry[] =>
+      [...list].sort((a, b) => Number(pinned.has(b.key)) - Number(pinned.has(a.key)));
     if (!histEntries) return { filteredEntries: null, hiddenFailedCount: 0 };
-    if (!hideFailedInSidebar) return { filteredEntries: histEntries, hiddenFailedCount: 0 };
+    if (!hideFailedInSidebar) return { filteredEntries: byPin(histEntries), hiddenFailedCount: 0 };
     const filtered: UnitHistoryEntry[] = [];
     let hidden = 0;
     for (const e of histEntries) {
@@ -809,8 +816,8 @@ function UnitRow({
         filtered.push(e);
       }
     }
-    return { filteredEntries: filtered, hiddenFailedCount: hidden };
-  }, [histEntries, hideFailedInSidebar]);
+    return { filteredEntries: byPin(filtered), hiddenFailedCount: hidden };
+  }, [histEntries, hideFailedInSidebar, historyPrefs.pinnedKeys]);
 
   useEffect(() => {
     if (!historyOpen) setVisibleCount(6);
@@ -1033,7 +1040,8 @@ function UnitRow({
           )}
           {collapseForkVersions(filteredEntries ?? []).slice(0, visibleCount).map((slot) => {
             const e = slot.entry;
-            const canChat = e.sessionId !== null && e.unitId !== undefined;
+            // unitId 用行所属 bot（daemon 的 history 条目不填 unitId 字段，见 openEntryInChat 注释）
+            const canChat = e.sessionId !== null;
             // TUI 还开着（前端有它的标签）也算「可在 TUI 打开」——点击会直切那个标签
             const hasLiveTab =
               e.terminalId != null && e.terminalId !== "" && terminalInstances.some((i) => i.id === e.terminalId);
@@ -1069,12 +1077,20 @@ function UnitRow({
             const rowActive =
               mainView === "chat" && e.sessionId !== null && String(activeSessionId) === e.sessionId;
             const openDefault = (): void => {
-              if (effective === "chat" && canChat) openEntryInChat(e);
+              if (effective === "chat" && canChat) openEntryInChat(e, String(unit.id));
               else if (effective === "tui" && canTui) openEntryInTui(e, unit);
-              else if (canChat) openEntryInChat(e);
+              else if (canChat) openEntryInChat(e, String(unit.id));
               else if (canTui) openEntryInTui(e, unit);
               else {
-                openHistoryTab(e.key);
+                // 打开历史不再默认弹出右侧栏（面板使用频率低，弹出即打扰）：
+                // 既接不回聊天页也无法在 TUI 重现时只提示；看记录走右键菜单
+                // 「对话详情」—— 显式动作才开面板。切回 chat 让提示可见
+                //（其余分支都落在 chat，本分支不该是唯一「点了没反应」的例外）
+                useShell.getState().setMainView("chat");
+                useWorkbench.getState().pushNotice(
+                  "无法重现这条会话",
+                  "它既接不回聊天页，也无法在 TUI 重现（执行器没留原生会话引用）。需要看记录可用右键菜单的「对话详情」。",
+                );
               }
             };
             return (
@@ -1085,6 +1101,8 @@ function UnitRow({
                 light={light}
                 active={rowActive}
                 mode={{ effective, canChat, canTui }}
+                pinned={historyPrefs.pinnedKeys.includes(e.key)}
+                onTogglePin={() => togglePinned(e.key)}
                 onOpenDefault={openDefault}
                 onToggleMode={() => {
                   const other: "chat" | "tui" = effective === "chat" ? "tui" : "chat";
@@ -1097,6 +1115,11 @@ function UnitRow({
                 onContextMenu={(ev) =>
                   setQuickMenu(
                     quickMenuFromEvent(ev, [
+                      {
+                        label: historyPrefs.pinnedKeys.includes(e.key) ? "取消置顶" : "置顶",
+                        icon: Pin,
+                        onSelect: () => togglePinned(e.key),
+                      },
                       {
                         label: "实时监控此会话",
                         icon: Radio,
@@ -1123,7 +1146,7 @@ function UnitRow({
                         disabled: !canChat,
                         onSelect: () => {
                           if (canChat) setEntryOpenMode(e.key, "chat");
-                          openEntryInChat(e);
+                          openEntryInChat(e, String(unit.id));
                         },
                       },
                       {
@@ -1293,9 +1316,9 @@ function formatHistoryTime(ts: number): string {
 /**
  * 历史子列表的单行 —— 左侧栏的「垂直标签页」条目：
  * 点击 = 按默认方式直达（对话页建的 → 聊天页；TUI 建的 → TUI 重现），
- * 打开方式徽标可一键切换（也是来源标签），右键菜单可换打开方式 / 看详情。
- * 行内：执行器图标 + 状态灯（仅异常/执行/未读时出现）+ 标题 + 分叉徽标 +
- * 打开方式徽标 + 时间（固定最右，对齐）。
+ * 打开方式徽标可一键切换（也是来源标签），右键菜单可换打开方式 / 置顶 / 看详情。
+ * 行内：执行器图标（hover 淡入为置顶钮；已置顶恒显实心 pin）+ 状态灯
+ * （仅异常/执行/未读时出现）+ 标题 + 分叉徽标 + 打开方式徽标 + 时间（固定最右，对齐）。
  */
 function HistoryListRow({
   entry,
@@ -1303,6 +1326,8 @@ function HistoryListRow({
   light,
   active,
   mode,
+  pinned,
+  onTogglePin,
   onOpenDefault,
   onToggleMode,
   onOpenDetail,
@@ -1317,6 +1342,9 @@ function HistoryListRow({
   active: boolean;
   /** 默认打开方式与可行性（chat 需要 sessionId，tui 需要 resumeRef） */
   mode: { effective: "chat" | "tui"; canChat: boolean; canTui: boolean };
+  /** 是否已置顶（置顶行排在子列表最前） */
+  pinned: boolean;
+  onTogglePin: () => void;
   onOpenDefault: () => void;
   onToggleMode: () => void;
   onOpenDetail: () => void;
@@ -1356,15 +1384,48 @@ function HistoryListRow({
         active ? "bg-teal-tint" : "hover:bg-line-soft",
       )}
     >
-      {/* 执行器图标：有官方 logo 显示品牌图片，无则显示 2 字母徽标 */}
-      <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center" title={`执行器：${entry.runtimeId}`}>
-        {iconSrc ? (
-          <img src={iconSrc} alt={entry.runtimeId} className="h-3.5 w-3.5 object-contain" />
-        ) : (
-          <span className="flex h-3 w-3 items-center justify-center rounded-[2px] bg-line-soft text-[8px] font-semibold uppercase text-ash">
-            {bareExec.slice(0, 2)}
-          </span>
-        )}
+      {/* 执行器图标 ↔ 置顶钮同位交叉淡入：平时显示执行器（品牌图片或 2 字母徽标），
+          hover 时淡入 pin（点击置顶）；已置顶恒显实心 pin。行根是 button，
+          pin 用 span 承载（button 套 button 非法） */}
+      <span className="relative flex h-3.5 w-3.5 shrink-0 items-center justify-center">
+        <span
+          title={`执行器：${entry.runtimeId}`}
+          className={cn(
+            "flex h-3.5 w-3.5 items-center justify-center transition-opacity group-hover/hrow:opacity-0",
+            pinned && "opacity-0",
+          )}
+        >
+          {iconSrc ? (
+            <img src={iconSrc} alt={entry.runtimeId} className="h-3.5 w-3.5 object-contain" />
+          ) : (
+            <span className="flex h-3 w-3 items-center justify-center rounded-[2px] bg-line-soft text-[8px] font-semibold uppercase text-ash">
+              {bareExec.slice(0, 2)}
+            </span>
+          )}
+        </span>
+        <span
+          role="button"
+          tabIndex={0}
+          data-no-drag
+          aria-label={pinned ? "取消置顶" : "置顶这条会话"}
+          title={pinned ? "取消置顶" : "置顶：这条会话将固定在子列表最前"}
+          onClick={(ev) => {
+            ev.stopPropagation();
+            onTogglePin();
+          }}
+          onKeyDown={(ev) => {
+            if (ev.key === "Enter" || ev.key === " ") {
+              ev.stopPropagation();
+              onTogglePin();
+            }
+          }}
+          className={cn(
+            "absolute inset-0 flex cursor-pointer items-center justify-center rounded-[2px] transition-opacity",
+            pinned ? "opacity-100" : "opacity-0 group-hover/hrow:opacity-100",
+          )}
+        >
+          <Pin size={10} className={pinned ? "fill-teal text-teal" : "text-graphite"} />
+        </span>
       </span>
       {/* 状态灯：只讲异常与值得注意的事 —— 执行中呼吸、未读完成绿灯、出错红灯、
           仅开着蓝静态；日常已读状态不亮灯（对齐 ZCode deriveTaskLeadingIndicator） */}

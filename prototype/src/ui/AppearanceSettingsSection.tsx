@@ -272,6 +272,9 @@ export function AppearanceSettingsSection() {
   const statusBarLocked = useShellState((s) => s.statusBarLocked);
   const setStatusBarLocked = useShellState((s) => s.setStatusBarLocked);
 
+  const chatColumnWidth = useShellState((s) => s.chatColumnWidth);
+  const setChatColumnWidth = useShellState((s) => s.setChatColumnWidth);
+
   const { mode, resolvedAppearance, activeProfile, art, wallpaper, presetId } = store;
   const followsTheme = activeProfile.transparency === null;
   // 跟随默认的显示值按有无壁纸分档：无壁纸 0%（不透明），有壁纸 30%（否则壁纸被盖住）
@@ -811,6 +814,32 @@ export function AppearanceSettingsSection() {
               ))}
             </div>
             <p className="mt-1.5 text-caption text-ash">作用于侧栏的 bot 头像框。</p>
+          </div>
+          <div className="sm:col-span-2">
+            <p className="mb-1.5 text-caption text-ash">对话列宽</p>
+            <div className="flex items-center gap-3">
+              <input
+                type="range"
+                min={640}
+                max={1440}
+                step={40}
+                value={chatColumnWidth}
+                onChange={(e) => setChatColumnWidth(Number(e.target.value))}
+                className="flex-1 accent-teal"
+                aria-label="对话列宽（像素）"
+              />
+              <span className="tnum w-14 shrink-0 text-right text-caption text-graphite">{chatColumnWidth}px</span>
+              <button
+                type="button"
+                onClick={() => setChatColumnWidth(900)}
+                className="shrink-0 rounded-btn border border-line px-2 py-0.5 text-caption text-graphite hover:bg-surface-hover hover:text-ink"
+              >
+                默认
+              </button>
+            </div>
+            <p className="mt-1.5 text-caption text-ash">
+              时间线阅读列与输入框共用的最大宽度（默认 900 ≈ ZCode）。用户气泡最宽跟列同宽，调宽即变宽。
+            </p>
           </div>
           <SliderField
             label="表面不透明度 opacity"
