@@ -111,20 +111,31 @@ function SidePanePanelSlot({
   // 折叠/展开 + 展开时的持久化宽度应用。**刚挂载的条件节点当帧不能直接调
   // imperative API**：react-resizable-panels 的 Group 还没把这个新 Panel 登记
   // 进布局，立即 resize/expand 会抛 "Layout not found"（侧栏不炸是因为它跟
-  // Group 同帧挂载、带初始布局；本列是点开才挂载）—— 推迟一帧再调。
-  // 收起方向同步调（面板此前必然展开挂载过，布局已登记）。
+  // Group 同帧挂载、带初始布局；本列是点开才挂载）。
+  // 只推迟一帧不够稳：赶不上登记时面板被留在 Group 的自动分配宽度上（可到
+  // maxSize 50% —— 「一打开非常宽」的来源），150ms 后 onResize 还会把错宽
+  // 持久化，之后每次打开都宽。改成有限帧重试：expand/resize 幂等，登记完成
+  // 后剩余帧是空转；挂载守卫挡住重试期的程序性回写。
   useEffect(() => {
     if (!open) {
       ref.current?.collapse();
       return;
     }
-    const id = requestAnimationFrame(() => {
+    let raf = 0;
+    let attempts = 0;
+    const apply = (): void => {
       const p = ref.current;
-      if (!p) return;
-      p.expand();
-      p.resize(`${useSidePane.getState().paneWidth}px`);
-    });
-    return () => cancelAnimationFrame(id);
+      if (p === null) return;
+      try {
+        p.expand();
+        p.resize(`${useSidePane.getState().paneWidth}px`);
+      } catch {
+        /* 布局尚未登记 —— 下一帧再试 */
+      }
+      if (attempts++ < 12) raf = requestAnimationFrame(apply);
+    };
+    raf = requestAnimationFrame(apply);
+    return () => cancelAnimationFrame(raf);
   }, [open]);
 
   return (
@@ -446,18 +457,17 @@ function SidePanePanelBody({
         >
           <Plus size={14} />
         </button>
-        {/* 条尾关闭钮只对「有标签页」的态服务 —— 功能页的关闭在「功能」标签旁 */}
-        {visibleTabs.length > 0 && (
-          <button
-            type="button"
-            onClick={() => useSidePane.getState().toggleFromHeader()}
-            aria-label="关闭右侧面板"
-            title="关闭右侧面板（对话列随之展宽；右上浮层钮与侧栏历史入口可重新打开）"
-            className="shrink-0 rounded-btn p-1 text-ash transition hover:bg-line-soft hover:text-ink"
-          >
-            <X size={15} />
-          </button>
-        )}
+        {/* 条尾关闭钮常驻：功能页有「功能」标签旁的 X，有标签页时有各标签的 X，
+            但「快速开合面板」的固定锚点只在这一处 —— 两种形态都得能一眼找到它 */}
+        <button
+          type="button"
+          onClick={() => useSidePane.getState().toggleFromHeader()}
+          aria-label="关闭右侧面板"
+          title="关闭右侧面板（对话列随之展宽；右上浮层钮与侧栏历史入口可重新打开）"
+          className="shrink-0 rounded-btn p-1 text-ash transition hover:bg-line-soft hover:text-ink"
+        >
+          <X size={15} />
+        </button>
         {/* 本行顶到窗口右缘：no-drag 占位让出窗口控制钮带（--wco-w）。
             必须是 drag 行的行内子元素 —— 兄弟悬浮元素的 no-drag 不参与拖拽区减法 */}
         <TitleBarClearance width="calc(var(--wco-w, 0px) + 4px)" />

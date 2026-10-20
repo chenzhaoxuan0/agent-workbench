@@ -43,10 +43,15 @@ function withoutUnread(unread: Readonly<Record<string, true>>, tabId: string): R
 }
 
 const WIDTH_KEY = "agent-workbench:sidepane-width-px";
-/** 与左栏默认一致（useShell.SIDEBAR_DEFAULT）：两侧面板打开时的视觉重量对称 */
-const SIDE_PANE_DEFAULT = 264;
-/** 面板最窄即默认宽 —— 历史列表在 264px 下仍可读，窄于此宁可收起面板 */
-const SIDE_PANE_MIN = 264;
+/**
+ * 最小宽 = tab 条不打架的下限：条内固定内容（⌄ 总览 22 + ＋ 22 + ✕ 23 + 内边距
+ * 与间距 ≈ 83px）+ 桌面端给系统窗口钮让位的 --wco-w 带（132+4）≈ 219px，再放
+ * 一个完整的「功能」标签（≈76px）≈ 295px。窄于此标签被挤瘪、条尾钮滑进系统
+ * 钮带 —— 264 时代没事是因为当时条上还少一颗按钮。
+ * 最窄即默认宽：面板是按需查看的侧写列，300px 下功能主页与历史列表均可读。
+ */
+const SIDE_PANE_DEFAULT = 300;
+const SIDE_PANE_MIN = 300;
 /** 「最近关闭」上限（ZCode recentClosedSidePaneTabs 同款）：够后悔，不无限堆 */
 const RECENTLY_CLOSED_MAX = 8;
 
@@ -78,9 +83,11 @@ function readWidth(): number {
   try {
     const raw = window.localStorage.getItem(WIDTH_KEY);
     const n = raw === null ? NaN : Number(raw);
-    // 旧默认 520（弹窗时代 720 → 成列时代 520 的遗留）重置为新默认：改默认宽度
-    // 不能只改常量，存量用户盘上存的就是旧默认，读出来永远盖住新值
-    if (!Number.isFinite(n) || n <= 0 || n === 520) {
+    // 旧默认 520（弹窗时代 720 → 成列时代 520 的遗留）与 >480 的值一并重置：
+    // 后者是「晚挂载 resize 赶不上布局登记、面板停在 50% 宽被 onResize 写回」
+    // 的污染值 —— 那种宽从来不是用户拖出来的意图。改默认宽度不能只改常量，
+    // 存量用户盘上存的就是旧值，读出来永远盖住新值
+    if (!Number.isFinite(n) || n <= 0 || n === 520 || n > 480) {
       return SIDE_PANE_DEFAULT;
     }
     return Math.max(SIDE_PANE_MIN, Math.round(n));
