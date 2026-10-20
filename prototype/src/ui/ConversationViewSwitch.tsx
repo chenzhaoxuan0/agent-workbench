@@ -15,6 +15,12 @@ import { cn } from "./cn.ts";
  * 第二（右侧仅剩面板开合钮；面板钮让位后它就是最右），手机顶栏天然在右——
  * 缩放窗口的全过程中它不动，周围元素按溢出阶梯让位，跨版式阈值时位置与
  * 外观都不变。
+ *
+ * 极窄压缩（容器 <560）：标签收起、只剩图标裸钮。桌面头部被压到 ~550 以下时
+ * 这是溢出阶梯的一级（详见 WorkspaceHeader 的阶梯注释）—— 不收的话右区整体
+ * 放不下，切换钮会被挤进右上角窗口控制钮带里重叠。容器查询按最近 @container
+ * 祖先解析（桌面 = 头部，手机顶栏无容器则回落视口），同一宽度同一外观，
+ * 版式阈值跨界不再换样子；aria-label 常驻，图标裸钮语义不丢。
  */
 export function ConversationViewSwitch({ className }: { className?: string }) {
   const conversationView = useShell((s) => s.conversationView);
@@ -37,8 +43,8 @@ export function ConversationViewSwitch({ className }: { className?: string }) {
             : "text-graphite hover:text-ink",
         )}
       >
-        <MessageSquare size={13} />
-        <span>对话</span>
+        <MessageSquare size={13} className="shrink-0" />
+        <span className="hidden @min-[560px]:inline">对话</span>
       </button>
       <button
         onClick={() => setConversationView("terminal")}
@@ -51,8 +57,8 @@ export function ConversationViewSwitch({ className }: { className?: string }) {
             : "text-graphite hover:text-ink",
         )}
       >
-        <SquareTerminal size={13} />
-        <span>终端 TUI</span>
+        <SquareTerminal size={13} className="shrink-0" />
+        <span className="hidden @min-[560px]:inline">终端 TUI</span>
       </button>
     </div>
   );

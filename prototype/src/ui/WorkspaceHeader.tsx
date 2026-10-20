@@ -19,11 +19,14 @@ import { cn } from "./cn.ts";
  * 都要用的操作，常驻头部只会挤占身份与切换的空间。右侧面板的开合钮也不在
  * 这里：展开时在面板 tab 条最右，收起后是右上浮层钮（WorkspaceShell 的
  * SidePaneTopOverlay，与左侧栏折叠浮层镜像）—— 头部只在面板收起时让出
- * pr-12 的对齐带给它。
+ * 3rem 的对齐带给它。
  *
  * 溢出阶梯（@container，宽→窄依次让位）：① 一句话角色（<1100）② 文件夹
- * （<560）③ 名称 + 对话/TUI 永远留守。「切回手机视图」是唯一回手机布局的
- * 出口，出现即常驻。
+ * （<560）③ 手机切换钮短标签 + 切换器标签图标化（<560）④ 折叠到底栏钮
+ * （<480 隐）⑤ 名称硬裁（overflow-hidden 无省略号）⑥ 右区左缘裁切兜底
+ * （min-w-0 + overflow-hidden —— 行尾窗口控制钮让位带 shrink-0 永不被侵占，
+ * 极限压缩时宁可裁左缘也绝不滑进控制钮带）。「切回手机视图」是唯一回手机
+ * 布局的出口，出现即常驻（仅图标化，不消失）。
  */
 export function WorkspaceHeader() {
   const sidebarCollapsed = useShell((s) => s.sidebarCollapsed);
@@ -51,9 +54,10 @@ export function WorkspaceHeader() {
           拖拽区减法才生效（pl-4 + 2rem = 原 pl-12 的几何），见 TitleBarClearance */}
       {sidebarCollapsed && <TitleBarClearance width="2rem" />}
 
-      {/* ---- 左区：单元身份卡片 ---- */}
+      {/* ---- 左区：单元身份卡片。shrink-[999]：负空间几乎全由它先吸收
+          （名称硬裁），右区直到最后才动 —— 优先级阶梯见组件头注释 ---- */}
       {unit ? (
-        <div className="flex min-w-0 items-center gap-2">
+        <div className="flex min-w-0 shrink-[999] items-center gap-2">
           {/* 可点击的单元头衔（点击打开单元设置）。
               名称不压缩、不省略号：空间真不够时硬裁（overflow-hidden，无 "…"）；
               一句话角色徽标最先让位（<1100 隐藏，可见时仍有 280px 上限截断） */}
@@ -87,46 +91,52 @@ export function WorkspaceHeader() {
         <span className="text-body-sm text-ash">未选择单元</span>
       )}
 
-      {/* ---- 右区：手机切换出口 + 会话形态切换 + 面板开合，整块锚定行尾 ---- */}
-
-      {/* 电脑/手机视图切换通道（解决切到电脑模式后无法切回手机视图的问题）。
-          唯一回手机布局的出口：出现即常驻，不参与溢出阶梯 */}
-      <div className="ml-auto flex shrink-0 items-center gap-2">
+      {/* ---- 右区：手机切换出口 + 会话形态切换，整块锚定行尾。
+          min-w-0 + shrink + overflow-hidden：身份卡吸收完仍不够时（极限压缩）
+          本区才收缩并从**左缘**裁切（justify-end 保右缘锚定）—— 行尾的窗口
+          控制钮让位带（shrink-0 spacer）因此永不被挤开，切换钮与最小化/最大
+          化/关闭不可能重叠，两边永远可点 ---- */}
+      <div className="ml-auto flex min-w-0 shrink items-center justify-end gap-2 overflow-hidden">
         {(preference === "desktop" || windowIsMobile) && (
           <button
             onClick={() => setPreference(windowIsMobile ? "auto" : "mobile")}
             aria-label="切回手机视图"
             title="当前处于电脑视图，点击切回手机触控布局"
-            className="flex h-7 items-center gap-1.5 rounded-btn px-2 text-caption font-medium transition text-teal border border-teal/40 bg-teal-tint/40 hover:bg-teal hover:text-white"
+            className="flex h-7 shrink-0 items-center gap-1.5 rounded-btn px-2 text-caption font-medium transition text-teal border border-teal/40 bg-teal-tint/40 hover:bg-teal hover:text-white"
           >
-            <Smartphone size={13} />
-            <span className="hidden xs:inline">切回手机视图</span>
-            <span className="xs:hidden">手机</span>
+            <Smartphone size={13} className="shrink-0" />
+            {/* 标签随容器档收放（阶梯③）：<560 只剩图标 —— 强制桌面模式把窗口
+                压窄时它是右区最大的可让位项 */}
+            <span className="hidden @min-[560px]:inline">切回手机视图</span>
           </button>
         )}
 
         {/* 折叠对话到底栏（任务栏最小化的对位）：有活跃会话才出现。折叠后对话列
             回到空白态可开新对话，被折叠的会话停靠在底栏（运行中则任务转后台
-            跟踪），点底栏条目随时切回 —— 时间线由 openSession 谱系回放重建 */}
+            跟踪），点底栏条目随时切回 —— 时间线由 openSession 谱系回放重建。
+            <480 隐（阶梯④）：极窄时让位给切换器；底栏入口仍可从运行中的对话
+            压缩动画到达，宽度恢复即回 */}
         {activeSessionId !== null && (
           <button
             onClick={() => useTaskbar.getState().minimize()}
             aria-label="折叠对话到底栏"
             title="折叠当前对话到底栏（最小化，任何状态可用）：运行中的任务转后台继续、空闲对话停靠为「已折叠」，对话列回到空白可开新对话；从底栏条目随时点回"
-            className="flex h-7 w-7 items-center justify-center rounded-btn text-graphite transition hover:bg-line-soft hover:text-ink"
+            className="hidden h-7 w-7 shrink-0 items-center justify-center rounded-btn text-graphite transition hover:bg-line-soft hover:text-ink @min-[480px]:flex"
           >
             <PanelBottom size={13} />
           </button>
         )}
 
-        {/* 会话形态切换（结构化对话 | 终端 TUI）—— 最高优先级，任何宽度都在。
-            面板收起时它是头部最右（pr-12 让出的对齐带里是右上浮层的重开钮）；
-            面板展开时右侧是隔壁面板列。缩放全程零位移；手机顶栏同一组件也在
-            右侧，跨版式阈值时位置与外观都不变。挤压全由左侧身份卡按阶梯吸收 */}
+        {/* 会话形态切换（结构化对话 | 终端 TUI）—— 最高优先级，任何宽度都在
+            （<560 标签图标化，阶梯③，见该组件注释）。面板收起时它是头部最右
+            （让位带里是右上浮层的重开钮）；面板展开时右侧是隔壁面板列。挤压
+            全由左侧身份卡按阶梯吸收 */}
         <ConversationViewSwitch />
       </div>
 
-      {/* 面板收起时本列顶到窗口右缘：no-drag 占位让出窗口控制钮带 + 浮层钮对齐带 */}
+      {/* 面板收起时本列顶到窗口右缘：no-drag 占位让出窗口控制钮带 + 浮层钮
+          对齐带。shrink-0 + 前方全部可收缩 = 让位带在任意宽度下都完整保有
+          （右区极限压缩时从自身左缘裁切，绝不越过这里把切换钮压进控制钮带） */}
       {!paneOpen && <TitleBarClearance width="calc(var(--wco-w, 0px) + 3rem)" />}
     </header>
   );
