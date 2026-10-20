@@ -28,7 +28,6 @@ import { SESSION_SOURCE_LABEL } from "../core/units.ts";
 import { useWorkbench, selectActiveUnit } from "../store/useWorkbench.ts";
 import { useAppearance } from "../store/useAppearance.ts";
 import { useShell } from "../store/useShell.ts";
-import { useIsMobile } from "./mobile/useIsMobile.ts";
 import { openInEditor } from "../adapters/daemon/client.ts";
 import { botAvatarStyle } from "./Sidebar.tsx";
 import { MarkdownContent } from "./MarkdownContent.tsx";
@@ -84,7 +83,6 @@ export function Timeline() {
   const sessions = useWorkbench((s) => s.sessions);
   const runtimes = useWorkbench((s) => s.runtimes);
   const chatColumnWidth = useShell((s) => s.chatColumnWidth);
-  const { isMobile } = useIsMobile();
   const scrollRef = useStickToBottom();
 
   // sessionId → 执行器显示名（divider 合成用；Map 每次渲染重建，sessions 规模下可忽略）
@@ -125,32 +123,28 @@ export function Timeline() {
         className={cn(
           // 阅读列：mx-auto 居中 + 可设置的最大宽度（useShell.chatColumnWidth，默认
           // 900 ≈ ZCode 的 max-w-4xl）。输入框（Composer）用同一宽度 —— 两者永远对齐。
-          // 空态的底部留白只在移动端加大：PC 上跟随容器断点变化的 pb 会让居中内容
-          // 随列宽收窄上下跳（开右侧栏就跳一下），那是 bug 不是设计
+          // 空态主角（EmptyState）刻意不在这里渲染：此前它在本滚动区里
+          // min-h-full 居中，居中参考是「输入区之上的剩余空间」，输入区高度随
+          // 列宽变（工具栏换行/解除换行/图标缩档）时主角被推着上下跳 ——
+          // 现由 WorkspaceShell 以绝对定位覆盖层居中（与输入区高度解耦）
           "mx-auto w-full px-4 py-6 @min-[560px]:px-6 @min-[720px]:px-8 @min-[720px]:py-8",
-          items.length === 0 &&
-            cn("flex min-h-full flex-col justify-center pb-10 transition-all duration-200", isMobile && "pb-16"),
         )}
       >
-        {items.length === 0 ? (
-          <EmptyState />
-        ) : (
-          <div className="space-y-4">
-            {renderUnits.map((u) =>
-              u.kind === "item" ? (
-                <TimelineItemRow key={u.key} item={u.item} busy={busy} lastUserTurnId={lastUserTurnId} />
-              ) : (
-                <WorkGroupRow key={u.key} entries={u.entries} running={u.running} busy={busy} lastUserTurnId={lastUserTurnId} />
-              ),
-            )}
-            {busy && (
-              <div className="flex items-center gap-2 text-body-sm text-teal">
-                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-teal" aria-hidden />
-                <span>{unit?.name ?? "bot"} 正在思考与执行…</span>
-              </div>
-            )}
-          </div>
-        )}
+        <div className="space-y-4">
+          {renderUnits.map((u) =>
+            u.kind === "item" ? (
+              <TimelineItemRow key={u.key} item={u.item} busy={busy} lastUserTurnId={lastUserTurnId} />
+            ) : (
+              <WorkGroupRow key={u.key} entries={u.entries} running={u.running} busy={busy} lastUserTurnId={lastUserTurnId} />
+            ),
+          )}
+          {busy && (
+            <div className="flex items-center gap-2 text-body-sm text-teal">
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-teal" aria-hidden />
+              <span>{unit?.name ?? "bot"} 正在思考与执行…</span>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -1341,7 +1335,12 @@ const DECISION_LABEL: Record<string, string> = {
 
 /* ------------------------------------------------------------- 空态 */
 
-function EmptyState() {
+/**
+ * 对话空态主角（头像 + 问候 + 交代任务提示）。由 WorkspaceShell 渲染为对话列
+ * 上的绝对定位覆盖层（固定预留居中，与输入区高度解耦）—— 不再挂在 Timeline
+ * 滚动区里，列宽变化导致的输入区换行/缩档不会再推着它跳。
+ */
+export function EmptyState() {
   const unit = useWorkbench(selectActiveUnit);
   const avatarFrame = useAppearance((s) => s.avatarFrame);
 

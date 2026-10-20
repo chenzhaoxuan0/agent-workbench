@@ -11,7 +11,7 @@ import { DesktopTopOverlay } from "./ui/DesktopTopOverlay.tsx";
 import { SettingsPage } from "./ui/SettingsPage.tsx";
 import { SourceControlPage } from "./ui/SourceControlPage.tsx";
 import { PermissionDialog } from "./ui/PermissionDialog.tsx";
-import { Timeline } from "./ui/Timeline.tsx";
+import { Timeline, EmptyState } from "./ui/Timeline.tsx";
 import { ChatTerminalDock } from "./ui/ChatTerminalDock.tsx";
 import { useWorkbench } from "./store/useWorkbench.ts";
 import { useTerminalStore } from "./store/useTerminalStore.ts";
@@ -265,6 +265,9 @@ function SidePaneTopOverlay() {
 function ConversationSlot() {
   const mainView = useShell((s) => s.mainView);
   const conversationView = useShell((s) => s.conversationView);
+  // 与 Timeline 同源判空（raw timeline 为空 ⇔ 归并后 items 为空 —— 归并只在
+  // 既有事件间插 divider，不会无中生有）
+  const timelineEmpty = useWorkbench((s) => s.timeline.length === 0);
 
   return (
     <Panel minSize="30%" className="min-w-0">
@@ -295,12 +298,24 @@ function ConversationSlot() {
 
           {/* 结构化对话视图（docs/13：默认形态）—— 归一化事件流渲染 */}
           {conversationView === "chat" && (
-            <div className="flex min-h-0 flex-1 flex-col">
+            <div className="relative flex min-h-0 flex-1 flex-col">
               <Timeline />
               <PermissionDialog />
               <Composer />
               {/* 对话页小终端：在输入框下方（ZCode 同款），与 TUI 终端页互相独立 */}
               <ChatTerminalDock />
+              {/* 空态主角：绝对居中于本列（减固定预留 pb-32 ≈ 输入区常态高）。
+                  此前它挂在 Timeline 滚动区里 min-h-full 居中，居中参考是「输入区
+                  之上的剩余空间」—— 列宽收窄时输入区工具栏先换行（变高，主角上移），
+                  随标签按 640/560/480 收纳总宽回落后又解除换行（变矮，主角下移），
+                  图标过 480 容器档再缩一号，主角就被推着跳了两段。固定预留让位置
+                  只跟列高走，与输入区/终端坞的一切高度变化解耦；pointer-events-none
+                  不挡交互（纯展示内容）。 */}
+              {timelineEmpty && (
+                <div className="pointer-events-none absolute inset-0 flex items-center justify-center pb-32">
+                  <EmptyState />
+                </div>
+              )}
             </div>
           )}
 
