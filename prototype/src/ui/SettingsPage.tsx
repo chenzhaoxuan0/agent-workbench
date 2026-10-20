@@ -210,32 +210,12 @@ export function GroupCard({ children }: { children: ReactNode }) {
 }
 
 /**
- * 开关。渠道账号区（ChannelSection 的「流式输出」）也用这个，所以从页面里导出，
- * 而不是让那边再抄一份形状相同的。方向是安全的：SettingsPage 不引用 AddBotDialog，
- * 不会绕成环。disabled：扇出/拉起这类秒级 RPC 进行中锁开关，防并发写竞争。
+ * 开关已抽到独立的 Toggle.tsx（AppearanceSettingsSection 也要用，放本页会让
+ * 它 import SettingsPage 绕成环）。此处 re-export 维持既有导入路径（渠道账号区
+ * 等从本页取的不再改）。
  */
-export function Toggle({ on, onChange, disabled }: { on: boolean; onChange?: (v: boolean) => void; disabled?: boolean }) {
-  return (
-    <button
-      role="switch"
-      aria-checked={on}
-      disabled={disabled}
-      onClick={() => onChange?.(!on)}
-      className={cn(
-        "relative h-5 w-9 shrink-0 rounded-chip transition",
-        on ? "bg-teal" : "bg-line",
-        disabled ? "opacity-40" : undefined,
-      )}
-    >
-      <span
-        className={cn(
-          "absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all",
-          on ? "left-[18px]" : "left-0.5",
-        )}
-      />
-    </button>
-  );
-}
+export { Toggle } from "./Toggle.tsx";
+import { Toggle } from "./Toggle.tsx";
 
 /* ------------------------------------------------------------- 分区内容 */
 

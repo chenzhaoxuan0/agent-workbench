@@ -21,6 +21,7 @@ import {
   PanelBottom,
 } from "lucide-react";
 import { useAppearance } from "../store/useAppearance.ts";
+import { Toggle } from "./Toggle.tsx";
 import { useLayoutStore } from "./mobile/useIsMobile.ts";
 import { useShell as useShellState } from "../store/useShell.ts";
 import {
@@ -70,30 +71,6 @@ function SectionCard({
       </div>
       <div className="p-5">{children}</div>
     </div>
-  );
-}
-
-/** 底栏锁定开关（SettingsPage.Toggle 同款视觉；本文件内联避免与其循环依赖） */
-function StatusBarLockSwitch({ on, onChange }: { on: boolean; onChange: (v: boolean) => void }) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={on}
-      aria-label="锁定底栏高度"
-      onClick={() => onChange(!on)}
-      className={cn(
-        "flex h-5 w-9 shrink-0 items-center rounded-full px-0.5 transition-colors",
-        on ? "bg-teal" : "bg-line-strong",
-      )}
-    >
-      <span
-        className={cn(
-          "block h-4 w-4 rounded-full bg-white transition-all",
-          on ? "translate-x-4" : "translate-x-0",
-        )}
-      />
-    </button>
   );
 }
 
@@ -462,7 +439,7 @@ export function AppearanceSettingsSection() {
                 : "未锁定：拖动底栏上缘可在 28–44px 间调整（拉高显示任务详情行），双击手柄复位最薄档。"}
             </p>
           </div>
-          <StatusBarLockSwitch on={statusBarLocked} onChange={setStatusBarLocked} />
+          <Toggle on={statusBarLocked} onChange={setStatusBarLocked} ariaLabel="锁定底栏高度" />
         </div>
       </SectionCard>
 

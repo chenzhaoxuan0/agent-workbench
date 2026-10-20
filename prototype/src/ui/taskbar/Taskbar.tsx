@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { ListMusic } from "lucide-react";
-import { useTaskbar, type TaskEntry } from "../../store/useTaskbar.ts";
+import { isLiveTask, useTaskbar, type TaskEntry } from "../../store/useTaskbar.ts";
 import { useShell } from "../../store/useShell.ts";
 import { EntryAvatar, TaskChip, TASK_STATUS_META, taskSortWeight } from "./TaskChip.tsx";
 import { cn } from "../cn.ts";
@@ -22,8 +22,8 @@ function sortEntries(entries: readonly TaskEntry[]): TaskEntry[] {
     const wb = taskSortWeight(b.status);
     if (wa !== wb) return wa - wb;
     // 同权重：活任务新的在前（刚切走的最醒目），完成条目近完成在前
-    const ka = a.status === "running" || a.status.startsWith("awaiting") ? a.startedAt : (a.endedAt ?? a.startedAt);
-    const kb = b.status === "running" || b.status.startsWith("awaiting") ? b.startedAt : (b.endedAt ?? b.startedAt);
+    const ka = isLiveTask(a.status) ? a.startedAt : (a.endedAt ?? a.startedAt);
+    const kb = isLiveTask(b.status) ? b.startedAt : (b.endedAt ?? b.startedAt);
     return kb - ka;
   });
 }
@@ -41,7 +41,7 @@ export function Taskbar() {
   }, []);
   // 计时心跳：只在有活任务时走秒（完成条目的时刻文本不需要刷新）
   const [, setTick] = useState(0);
-  const hasRunning = entries.some((e) => e.status === "running" || e.status.startsWith("awaiting"));
+  const hasRunning = entries.some((e) => isLiveTask(e.status));
   useEffect(() => {
     if (!hasRunning) return;
     const t = window.setInterval(() => setTick((v) => v + 1), 1000);
@@ -54,7 +54,7 @@ export function Taskbar() {
   const rest = sorted.slice(VISIBLE_CHIPS);
   const now = Date.now();
   // 溢出区里藏着「等你」的条目时，+N 钮本身也要亮琥珀——不能让待裁决沉底看不见
-  const restUrgent = rest.some((e) => e.status.startsWith("awaiting"));
+  const restUrgent = rest.some((e) => e.status === "awaiting_permission" || e.status === "awaiting_input");
 
   if (sorted.length === 0) return null;
   return (

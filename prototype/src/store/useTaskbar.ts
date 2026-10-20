@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import type { RuntimeEvent } from "../core/events.ts";
-import { asSessionId, asUnitId, type SessionSource } from "../core/units.ts";
+import { asSessionId, asUnitId, type SessionSource, type SessionStatus } from "../core/units.ts";
 import {
   DaemonClient,
   defaultDaemonEndpoint,
@@ -85,7 +85,17 @@ const ENTRY_CAP = 20;
 /** message.delta 摘要的活动行节流间隔（工具调用事件不节流，本就低频） */
 const ACTIVITY_THROTTLE_MS = 500;
 
-const RUNNING_STATUSES: ReadonlySet<TaskbarStatus> = new Set(["running", "awaiting_permission", "awaiting_input"]);
+/**
+ * 「活任务」判据（进行中 / 等待裁决 / 等待输入）—— store 与底栏 UI（Taskbar /
+ * TaskChip）共用的唯一口径，别处不得再手写状态枚举或 startsWith("awaiting")。
+ * 入参收 TaskbarStatus 与台账 SessionStatus 的并集：两个联合互有独占值
+ * （parked / idle），但活态三值同形；类型谓词让调用处能直接收窄。
+ */
+export type LiveTaskStatus = "running" | "awaiting_permission" | "awaiting_input";
+
+export function isLiveTask(status: TaskbarStatus | SessionStatus): status is LiveTaskStatus {
+  return status === "running" || status === "awaiting_permission" || status === "awaiting_input";
+}
 
 /** 事件/台账里的原始状态串 → 底栏状态。live 会话转 idle = 本轮落定，按「完成未读」亮灯 */
 function normalizeStatus(raw: string): TaskbarStatus {
@@ -95,8 +105,9 @@ function normalizeStatus(raw: string): TaskbarStatus {
   return "running";
 }
 
-/** 会话标题：台账 title 优先，缺省用最后一条用户消息（这首歌叫什么——任务是它发起的） */
-function titleFromTimeline(sessionId: string, fallback: string): string {
+/** 会话标题：台账 title 优先，缺省用最后一条用户消息（这首歌叫什么——任务是它发起的）。
+ *  fallback 传 null = 交给 makeTaskEntry 的兜底标题（「bot 名 · 对话」） */
+function titleFromTimeline(sessionId: string, fallback: string | null): string | null {
   const { timeline } = useWorkbench.getState();
   for (let i = timeline.length - 1; i >= 0; i--) {
     const e = timeline[i]!.event;
@@ -113,24 +124,51 @@ function unitOf(unitId: string): { name: string; avatar?: string } {
   return unit !== undefined ? { name: unit.name, avatar: unit.avatar } : { name: "" };
 }
 
-function entryFromRow(row: DaemonSessionRow): TaskEntry {
-  const { name, avatar } = unitOf(row.unitId);
-  const status = normalizeStatus(row.status);
+/** TaskEntry 的公共骨架：unit 名/头像兜底、标题兜底、活动行初值 —— 三处构造
+ *  （台账补种 entryFromRow / session.started / 离开与最小化 buildEntry）共用，
+ *  防三份字面量各自漂移 */
+function makeTaskEntry(input: {
+  sessionId: string;
+  unitId: string;
+  runtimeId: string;
+  startedAt: number;
+  status: TaskbarStatus;
+  /** 传 null / 空白走兜底标题（「bot 名 · 对话」） */
+  title: string | null;
+  endedAt: number | null;
+  unread: boolean;
+}): TaskEntry {
+  const { name, avatar } = unitOf(input.unitId);
   return {
-    sessionId: row.id,
-    unitId: row.unitId,
+    sessionId: input.sessionId,
+    unitId: input.unitId,
     unitName: name !== "" ? name : "未知 bot",
     ...(avatar !== undefined ? { avatar } : {}),
-    runtimeId: row.runtimeId.replace(/^daemon:/, ""),
-    title: row.title && row.title.trim() !== "" ? row.title : `${name !== "" ? name : "会话"} · 对话`,
-    status,
-    startedAt: row.startedAt,
+    runtimeId: input.runtimeId,
+    title: input.title !== null && input.title.trim() !== "" ? input.title : `${name !== "" ? name : "会话"} · 对话`,
+    status: input.status,
+    startedAt: input.startedAt,
     activityText: "",
     lastActivityAt: Date.now(),
-    endedAt: status === "done" || status === "failed" ? Date.now() : null,
-    unread: status === "done" || status === "failed",
+    endedAt: input.endedAt,
+    unread: input.unread,
     kind: "session",
   };
+}
+
+function entryFromRow(row: DaemonSessionRow): TaskEntry {
+  const status = normalizeStatus(row.status);
+  const settled = status === "done" || status === "failed";
+  return makeTaskEntry({
+    sessionId: row.id,
+    unitId: row.unitId,
+    runtimeId: row.runtimeId.replace(/^daemon:/, ""),
+    startedAt: row.startedAt,
+    status,
+    title: row.title ?? null,
+    endedAt: settled ? Date.now() : null,
+    unread: settled,
+  });
 }
 
 export interface TaskbarStore {
@@ -159,8 +197,9 @@ let attached = false;
 const lastTextAt = new Map<string, number>();
 /** 当前「被看着」的会话（mainView/conversationView/activeSessionId 三者的合取） */
 let visibleSession: string | null = null;
-/** minimize() → 离开侦测的交接：标题在时间线清空前取好，跨过同一次 set */
-let minimizeStash: { sid: string; title: string } | null = null;
+/** minimize() → 离开侦测的交接：标题在时间线清空前取好，跨过同一次 set（时间线
+ *  里没有用户消息时为 null，交给 makeTaskEntry 的兜底标题） */
+let minimizeStash: { sid: string; title: string | null } | null = null;
 
 export const useTaskbar = create<TaskbarStore>((set, get) => ({
   entries: [],
@@ -230,7 +269,7 @@ export const useTaskbar = create<TaskbarStore>((set, get) => ({
 
   dismiss: (sessionId) => {
     useHistoryPrefs.getState().markViewed(`session-${sessionId}`);
-    set((s) => ({ entries: s.entries.filter((e) => e.sessionId !== sessionId || RUNNING_STATUSES.has(e.status)) }));
+    set((s) => ({ entries: s.entries.filter((e) => e.sessionId !== sessionId || isLiveTask(e.status)) }));
   },
 }));
 
@@ -254,7 +293,7 @@ async function hydrate(set: SetFn): Promise<void> {
       // live 恒有值（host：live = 进程内 impl 存活）。台账里会留着崩溃/断链的
       // 陈旧行（status 卡在 running 但 live=false）—— 不补种它们：底栏在启动
       // 时刻的语义是「现在真的在跑什么」，陈账失败不是用户此刻要被提醒的事
-      if (RUNNING_STATUSES.has(status) && row.live === true) {
+      if (isLiveTask(status) && row.live === true) {
         const base = prev ?? entryFromRow(row);
         known.set(row.id, {
           ...base,
@@ -267,9 +306,9 @@ async function hydrate(set: SetFn): Promise<void> {
           ...(base.runtimeId === "" && row.runtimeId ? { runtimeId: row.runtimeId.replace(/^daemon:/, "") } : {}),
           endedAt: null,
         });
-      } else if (prev !== undefined && RUNNING_STATUSES.has(prev.status)) {
+      } else if (prev !== undefined && isLiveTask(prev.status)) {
         // 在榜条目落定（正常完成 / 断线期间收尾 / daemon 侧进程没了）→ 补翻转
-        const settled = RUNNING_STATUSES.has(status) && row.live !== true ? "failed" : status;
+        const settled = isLiveTask(status) && row.live !== true ? "failed" : status;
         known.set(row.id, { ...prev, status: settled, endedAt: Date.now(), unread: true });
       }
     }
@@ -317,22 +356,19 @@ function handleEvent(set: SetFn, e: RuntimeEvent): void {
     // 前台正开着的会话不进榜（切走时由离开侦测补位）；无人值守来源直接进榜
     if (source === undefined || !UNATTENDED_SOURCES.has(source)) return;
     if (String(useWorkbench.getState().activeSessionId ?? "") === sid) return;
-    const { name, avatar } = unitOf(String(e.unitId));
-    upsert(set, {
-      sessionId: sid,
-      unitId: String(e.unitId),
-      unitName: name !== "" ? name : "未知 bot",
-      ...(avatar !== undefined ? { avatar } : {}),
-      runtimeId: "",
-      title: `${name !== "" ? name : "会话"} · 对话`,
-      status: "running",
-      startedAt: Date.now(),
-      activityText: "",
-      lastActivityAt: Date.now(),
-      endedAt: null,
-      unread: false,
-      kind: "session",
-    });
+    upsert(
+      set,
+      makeTaskEntry({
+        sessionId: sid,
+        unitId: String(e.unitId),
+        runtimeId: "",
+        startedAt: Date.now(),
+        status: "running",
+        title: null,
+        endedAt: null,
+        unread: false,
+      }),
+    );
     // runtimeId 台账里才有（事件不带）——下一次 hydrate 对账补上
     void hydrate(set);
     return;
@@ -364,7 +400,7 @@ function handleEvent(set: SetFn, e: RuntimeEvent): void {
   if (e.type === "permission.requested" || e.type === "permission.resolved") {
     set((s) => ({
       entries: s.entries.map((x) =>
-        x.sessionId === sid && RUNNING_STATUSES.has(x.status)
+        x.sessionId === sid && isLiveTask(x.status)
           ? { ...x, status: e.type === "permission.requested" ? "awaiting_permission" : "running" }
           : x,
       ),
@@ -413,12 +449,18 @@ function updateActivity(set: SetFn, sessionId: string, text: string): void {
 
 function capEntries(entries: TaskEntry[]): TaskEntry[] {
   if (entries.length <= ENTRY_CAP) return entries;
-  // 淘汰最旧的「已读完成」条目；全都是活任务/未读时不硬裁（用户自己关）
-  for (let i = 0; i < entries.length && entries.length > ENTRY_CAP; i++) {
+  // 从最旧开始淘汰「已读完成」的条目；剩下的全是活任务/未读时**不硬裁** ——
+  // 裁掉运行中条目等于丢失它的跟踪（它还活着），宁可超编由用户自己关。
+  // 僵尸洪峰由收录口径挡：hydrate 只种 live 行、session.started 只收无人值守来源
+  const overflow = entries.length - ENTRY_CAP;
+  const evictable: number[] = [];
+  for (let i = 0; i < entries.length && evictable.length < overflow; i++) {
     const e = entries[i]!;
-    if (!RUNNING_STATUSES.has(e.status) && !e.unread) entries = entries.filter((x) => x !== e);
+    if (!isLiveTask(e.status) && !e.unread) evictable.push(i);
   }
-  return entries.slice(Math.max(0, entries.length - ENTRY_CAP));
+  if (evictable.length === 0) return entries;
+  const drop = new Set(evictable);
+  return entries.filter((_, i) => !drop.has(i));
 }
 
 /* --------------------------------------------------------------- 离开视图侦测 */
@@ -433,27 +475,20 @@ function buildEntry(sid: string, mode: "leave" | "minimize", titleOverride: stri
   const session = wb.sessions.find((x) => String(x.id) === sid);
   if (session === undefined) return null;
   const live = session.status;
-  if (mode === "leave" && live !== "running" && live !== "awaiting_permission" && live !== "awaiting_input") {
+  if (mode === "leave" && !isLiveTask(live)) {
     return null;
   }
-  const status: TaskbarStatus =
-    live === "running" || live === "awaiting_permission" || live === "awaiting_input" ? live : "parked";
-  const { name, avatar } = unitOf(String(session.unitId));
-  return {
+  const status: TaskbarStatus = isLiveTask(live) ? live : "parked";
+  return makeTaskEntry({
     sessionId: sid,
     unitId: String(session.unitId),
-    unitName: name !== "" ? name : "未知 bot",
-    ...(avatar !== undefined ? { avatar } : {}),
     runtimeId: String(session.runtimeId).replace(/^daemon:/, ""),
-    title: titleOverride !== null && titleOverride !== "" ? titleOverride : titleFromTimeline(sid, `${name !== "" ? name : "会话"} · 对话`),
-    status,
     startedAt: session.startedAt,
-    activityText: "",
-    lastActivityAt: Date.now(),
+    status,
+    title: titleOverride !== null && titleOverride !== "" ? titleOverride : titleFromTimeline(sid, null),
     endedAt: null,
     unread: false,
-    kind: "session",
-  };
+  });
 }
 
 /**

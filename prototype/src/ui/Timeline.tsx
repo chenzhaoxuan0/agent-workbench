@@ -836,7 +836,8 @@ function TimelineItemRow({
   lastUserTurnId,
 }: {
   item: GroupedItem;
-  busy: boolean;  lastUserTurnId: string | number | undefined;
+  busy: boolean;
+  lastUserTurnId: string | number | undefined;
 }) {
   switch (item.kind) {
     case "session.start":

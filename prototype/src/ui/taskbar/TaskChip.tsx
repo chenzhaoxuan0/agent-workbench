@@ -1,6 +1,6 @@
 import { X } from "lucide-react";
 import type { TaskEntry, TaskbarStatus } from "../../store/useTaskbar.ts";
-import { useTaskbar } from "../../store/useTaskbar.ts";
+import { isLiveTask, useTaskbar } from "../../store/useTaskbar.ts";
 import { useAppearance } from "../../store/useAppearance.ts";
 import { botAvatarStyle } from "../Sidebar.tsx";
 import { cn } from "../cn.ts";
@@ -77,8 +77,7 @@ export function TaskChip({ entry, now, detail }: { entry: TaskEntry; now: number
   const jumpTo = useTaskbar((s) => s.jumpTo);
   const dismiss = useTaskbar((s) => s.dismiss);
   const meta = TASK_STATUS_META[entry.status];
-  const running =
-    entry.status === "running" || entry.status === "awaiting_permission" || entry.status === "awaiting_input";
+  const running = isLiveTask(entry.status);
   const awaiting = entry.status === "awaiting_permission" || entry.status === "awaiting_input";
   const closable = !running;
   const timeText = running

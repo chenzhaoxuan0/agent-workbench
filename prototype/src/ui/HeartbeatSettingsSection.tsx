@@ -3,6 +3,7 @@ import { HeartPulse } from "lucide-react";
 import { useBacklog } from "../store/useBacklog.ts";
 import { useWorkbench } from "../store/useWorkbench.ts";
 import { ModelSelect } from "./ModelSelect.tsx";
+import { NumField } from "./NumField.tsx";
 import { cn } from "./cn.ts";
 
 /**
@@ -13,52 +14,6 @@ import { cn } from "./cn.ts";
 
 const inputCls =
   "w-full rounded-input border border-line bg-canvas px-2.5 py-1.5 text-body-sm text-ink outline-none focus:border-teal";
-
-function NumField({
-  label,
-  hint,
-  value,
-  min,
-  max,
-  disabled,
-  onSave,
-}: {
-  label: string;
-  hint?: string;
-  value: number;
-  min: number;
-  max: number;
-  disabled?: boolean;
-  onSave: (n: number) => void;
-}) {
-  const [draft, setDraft] = useState(String(value));
-  useEffect(() => setDraft(String(value)), [value]);
-  const commit = (): void => {
-    const n = Number(draft);
-    if (!Number.isFinite(n) || Math.round(n) !== n || n < min || n > max || n === value) {
-      setDraft(String(value));
-      return;
-    }
-    onSave(n);
-  };
-  return (
-    <label className="block space-y-1">
-      <span className="block text-caption text-ash">{label}</span>
-      <input
-        value={draft}
-        disabled={disabled}
-        inputMode="numeric"
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={commit}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-        }}
-        className={inputCls}
-      />
-      {hint && <span className="block text-[10px] leading-relaxed text-ash/80">{hint}</span>}
-    </label>
-  );
-}
 
 export function HeartbeatSettingsSection() {
   const config = useBacklog((s) => s.config);

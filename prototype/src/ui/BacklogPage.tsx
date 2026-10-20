@@ -32,6 +32,7 @@ import { useWorkbench, visibleModelsFor } from "../store/useWorkbench.ts";
 import { ModelSelect } from "./ModelSelect.tsx";
 import { BacklogDialog } from "./BacklogDialog.tsx";
 import { TitleBarClearance } from "./WindowControls.tsx";
+import { NumField } from "./NumField.tsx";
 import { cn } from "./cn.ts";
 
 /**
@@ -545,10 +546,10 @@ function BacklogSettings({ onClose }: { onClose: () => void }): ReactElement {
               </label>
             </h3>
             <div className="grid grid-cols-2 gap-3">
-              <LabeledNum label="心跳周期（分钟）" value={hb.intervalMinutes} min={5} max={1440} onSave={(n) => void save({ heartbeat: { ...hb, intervalMinutes: n } })} />
-              <LabeledNum label="空闲阈值（分钟）" value={hb.idleMinutes} min={1} max={1440} onSave={(n) => void save({ heartbeat: { ...hb, idleMinutes: n } })} />
-              <LabeledNum label="提议超时（分钟）" value={hb.proposalTimeoutMinutes} min={1} max={120} onSave={(n) => void save({ heartbeat: { ...hb, proposalTimeoutMinutes: n } })} />
-              <LabeledNum label="连续忽略上限（次→休眠）" value={hb.maxIgnoreCount} min={1} max={10} onSave={(n) => void save({ heartbeat: { ...hb, maxIgnoreCount: n } })} />
+              <NumField label="心跳周期（分钟）" value={hb.intervalMinutes} min={5} max={1440} inputClassName={inputCls} onSave={(n) => void save({ heartbeat: { ...hb, intervalMinutes: n } })} />
+              <NumField label="空闲阈值（分钟）" value={hb.idleMinutes} min={1} max={1440} inputClassName={inputCls} onSave={(n) => void save({ heartbeat: { ...hb, idleMinutes: n } })} />
+              <NumField label="提议超时（分钟）" value={hb.proposalTimeoutMinutes} min={1} max={120} inputClassName={inputCls} onSave={(n) => void save({ heartbeat: { ...hb, proposalTimeoutMinutes: n } })} />
+              <NumField label="连续忽略上限（次→休眠）" value={hb.maxIgnoreCount} min={1} max={10} inputClassName={inputCls} onSave={(n) => void save({ heartbeat: { ...hb, maxIgnoreCount: n } })} />
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1">
@@ -704,24 +705,3 @@ function BacklogSettings({ onClose }: { onClose: () => void }): ReactElement {
 
 const inputCls =
   "w-full rounded-input border border-transparent bg-rail px-2.5 py-1.5 text-body-sm text-ink outline-none placeholder:text-ash focus:border-teal";
-
-function LabeledNum({ label, value, min, max, onSave }: { label: string; value: number; min: number; max: number; onSave: (n: number) => void }): ReactElement {
-  const [v, setV] = useState(value);
-  return (
-    <div className="space-y-1">
-      <span className="text-caption text-ash">{label}</span>
-      <input
-        type="number"
-        min={min}
-        max={max}
-        value={v}
-        onChange={(e) => setV(Number(e.target.value))}
-        onBlur={() => {
-          const n = Math.min(max, Math.max(min, Math.round(v)));
-          if (n !== value) onSave(n);
-        }}
-        className={inputCls}
-      />
-    </div>
-  );
-}
