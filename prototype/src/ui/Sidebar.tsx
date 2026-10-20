@@ -10,6 +10,7 @@ import {
   ListTodo,
   MessageSquare,
   PanelLeftClose,
+  Pencil,
   Pin,
   Plus,
   Radio,
@@ -23,7 +24,7 @@ import { useGit } from "../store/useGit.ts";
 import { useAppearance } from "../store/useAppearance.ts";
 import type { AvatarFrame } from "../core/appearance.ts";
 import { formatRelative } from "../core/automation.ts";
-import { DaemonClient, defaultDaemonEndpoint, dispatchTerminal, fetchUnitHistory, type UnitHistoryEntry } from "../adapters/daemon/client.ts";
+import { DaemonClient, defaultDaemonEndpoint, dispatchTerminal, fetchUnitHistory, renameHistoryEntry, type UnitHistoryEntry } from "../adapters/daemon/client.ts";
 import {
   asModelId,
   asRuntimeId,
@@ -805,6 +806,8 @@ function UnitRow({
   const [histErr, setHistErr] = useState<string | null>(null);
   /** 历史列表分页：每轮显示 6 条，超过 6 条折叠成「更多」 */
   const [visibleCount, setVisibleCount] = useState(6);
+  /** 行内重命名中的 entry key（右键「重命名」进入，Enter/失焦保存、Esc 取消） */
+  const [renamingKey, setRenamingKey] = useState<string | null>(null);
 
   const { filteredEntries, hiddenFailedCount } = useMemo(() => {
     // 置顶行排最前（稳定排序：组内保持原时间序）—— 「垂直标签页」的 pin 语义
@@ -1117,6 +1120,16 @@ function UnitRow({
                 mode={{ effective, canChat, canTui }}
                 pinned={historyPrefs.pinnedKeys.includes(e.key)}
                 onTogglePin={() => togglePinned(e.key)}
+                renaming={renamingKey === e.key}
+                onRenameCommit={(title) => {
+                  setRenamingKey(null);
+                  // null = Esc 取消，不落盘；空串 = 恢复原名（daemon 侧同义）。
+                  // 保存后走既有刷新广播，子列表 300ms 去抖重拉即见新名
+                  if (title === null) return;
+                  void renameHistoryEntry(e.key, title).then(() => {
+                    window.dispatchEvent(new CustomEvent("awb:history-refresh", { detail: { unitId: String(unit.id) } }));
+                  });
+                }}
                 onOpenDefault={openDefault}
                 onToggleMode={() => {
                   const other: "chat" | "tui" = effective === "chat" ? "tui" : "chat";
@@ -1133,6 +1146,11 @@ function UnitRow({
                         label: historyPrefs.pinnedKeys.includes(e.key) ? "取消置顶" : "置顶",
                         icon: Pin,
                         onSelect: () => togglePinned(e.key),
+                      },
+                      {
+                        label: "重命名",
+                        icon: Pencil,
+                        onSelect: () => setRenamingKey(e.key),
                       },
                       {
                         label: "实时监控此会话",
@@ -1371,6 +1389,8 @@ function HistoryListRow({
   mode,
   pinned,
   onTogglePin,
+  renaming,
+  onRenameCommit,
   onOpenDefault,
   onToggleMode,
   onOpenDetail,
@@ -1388,6 +1408,10 @@ function HistoryListRow({
   /** 是否已置顶（置顶行排在子列表最前） */
   pinned: boolean;
   onTogglePin: () => void;
+  /** 行内重命名态（右键「重命名」进入） */
+  renaming: boolean;
+  /** 保存（含空串 = 恢复原名）或取消（null） */
+  onRenameCommit: (title: string | null) => void;
   onOpenDefault: () => void;
   onToggleMode: () => void;
   onOpenDetail: () => void;
@@ -1413,6 +1437,33 @@ function HistoryListRow({
         : `当前默认：在${modeLabel === "聊天" ? "聊天页" : "TUI"}打开。点击切换为在${otherLabel}打开（右键菜单同款）`;
   const launchTip = entry.launchMode === "terminal" ? " · TUI 创建" : " · 对话页创建";
   const originTag = historyOriginTag(entry);
+
+  // 重命名态：整行换成输入框（行根是 button，输入框不能嵌在 button 里）
+  if (renaming) {
+    return (
+      <div
+        data-no-drag
+        draggable={false}
+        className="flex min-h-[30px] w-full items-center gap-1.5 rounded-btn bg-line-soft px-2 py-1"
+      >
+        <Pencil size={10} className="shrink-0 text-teal" />
+        <input
+          autoFocus
+          defaultValue={entry.title}
+          aria-label="重命名会话"
+          title="Enter 保存 · Esc 取消 · 清空后保存 = 恢复原名"
+          onFocus={(ev) => ev.currentTarget.select()}
+          onKeyDown={(ev) => {
+            if (ev.key === "Enter") onRenameCommit(ev.currentTarget.value.trim());
+            else if (ev.key === "Escape") onRenameCommit(null);
+          }}
+          onBlur={(ev) => onRenameCommit(ev.currentTarget.value.trim())}
+          onMouseDown={(ev) => ev.stopPropagation()}
+          className="min-w-0 flex-1 rounded-btn border border-teal/40 bg-canvas px-1.5 py-0.5 text-[11px] text-ink outline-none"
+        />
+      </div>
+    );
+  }
 
   return (
     <button

@@ -1838,7 +1838,30 @@ registerMethod("unit.history", async (params) => {
   const importedRows = entries.filter((e) => e.source === "imported");
   const merged = [...entries.filter((e) => e.source !== "imported").slice(0, Math.max(0, limit - importedRows.length)), ...importedRows];
   merged.sort((a, b) => b.startedAt - a.startedAt);
+  // 显示名覆盖层（history.rename 写 kv）：不碰源数据 —— 台账标题继续由 daemon
+  // 同步，用户给的「备注名」只盖显示。空串 = 恢复原名。任何 kind 的行都可改
+  //（自动化/待办行改的是这份列表里的显示，不动任务定义本身）
+  const renames = store.kvByPrefix("hist-rename:");
+  if (renames.size > 0) {
+    for (let i = 0; i < merged.length; i++) {
+      const override = renames.get(`hist-rename:${merged[i]!.key}`);
+      if (override !== undefined && override !== "") merged[i] = { ...merged[i]!, title: override.slice(0, 120) };
+    }
+  }
   return { entries: merged };
+});
+
+// ---- 历史行重命名（显示名覆盖层，kv 落盘跨设备一致）---------------------------
+
+registerMethod("history.rename", (params) => {
+  const p = (params ?? {}) as { key?: string; title?: string };
+  if (typeof p.key !== "string" || p.key === "") {
+    throw Object.assign(new Error("key 必填"), { code: "bad_params" });
+  }
+  const title = typeof p.title === "string" ? p.title.trim().slice(0, 120) : "";
+  // 空标题 = 撤销改名，恢复源数据标题（存空串而非删行：kv 没有删除面，空串同义）
+  store.kvSet(`hist-rename:${p.key}`, title);
+  return { key: p.key, title };
 });
 
 // ---- 原生会话历史（history.native.*，docs/13 Phase 1）-------------------------

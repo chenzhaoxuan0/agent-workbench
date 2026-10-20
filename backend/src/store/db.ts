@@ -443,6 +443,16 @@ export class Store {
     return row === undefined ? undefined : String(row["value"]);
   }
 
+  /** 前缀扫描（历史重命名覆盖层一次取全量用；kv 表本身很小） */
+  kvByPrefix(prefix: string): Map<string, string> {
+    const rows = this.db.prepare(`SELECT key, value FROM kv WHERE key LIKE ? ESCAPE '\\'`).all(
+      `${prefix.replace(/[\\%_]/g, (c) => `\\${c}`)}%`,
+    ) as Array<Record<string, unknown>>;
+    const out = new Map<string, string>();
+    for (const r of rows) out.set(String(r["key"]), String(r["value"]));
+    return out;
+  }
+
   // ---- 权限规则表（Phase 4）-------------------------------------------------
 
   addPermissionRule(rule: { runtimeId: string | null; kind: string | null; pattern: string; decision: "allow" | "deny" }): number {

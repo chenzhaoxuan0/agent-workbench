@@ -1481,6 +1481,16 @@ export async function fetchImportableSessions(
   );
 }
 
+/** 历史行重命名（显示名覆盖层，daemon kv 落盘；title 传空 = 恢复原名） */
+export async function renameHistoryEntry(
+  key: string,
+  title: string,
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<void> {
+  const client = DaemonClient.get(endpoint);
+  await client.rpc<{ key: string; title: string }>("history.rename", { key, title }, 15000);
+}
+
 /** 把选中的外部会话导入工作台历史（daemon 落 sessions 表，source = "imported"）；keys = 导入行的 entry key（自动置顶用） */
 export async function importNativeSessions(
   unitId: string,
