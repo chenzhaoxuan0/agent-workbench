@@ -3,8 +3,9 @@
  *
  * 形态照搬 ZCode 的 `packages/ui/src/lib/workspaceSidePane.ts`，按本产品的体量裁剪。
  * 上一版右栏（IDE 式 19-tab）死于「只切状态、没人渲染」，本版只服务真实入口。
- * 现有四类 tab：历史会话（弹窗迁移）、会话实时监控（后台会话事件流跟随）、
- * 计划 / 任务进度（活跃会话的 plan 事件）、变更审查（工作目录改动面）。
+ * 现有五类 tab：历史会话（弹窗迁移）、会话实时监控（后台会话事件流跟随）、
+ * 计划 / 任务进度（活跃会话的 plan 事件）、变更审查（工作目录改动面）、
+ * 通知中心（workspace 级：daemon 事件聚合面，切 bot 不消失）。
  *
  * 抄下来的三条关键设计，都不是样式问题而是行为问题：
  *
@@ -84,7 +85,37 @@ export interface DiffSidePaneTab {
   openedAt: number;
 }
 
-export type SidePaneTab = HistorySidePaneTab | LiveSessionSidePaneTab | PlanSidePaneTab | DiffSidePaneTab;
+/**
+ * 通知中心页（workspace 级，本项目差异化能力 —— ZCode 只有声音/角标，没有
+ * 通知面板）：聚合 daemon 的会话终态 / 权限请求 / 错误 / 系统通知 / 待办信号 /
+ * git 变更节流。数据面在 store/useNotifications.ts；tab 本身是全工作台单例，
+ * 不归属任何 bot（tabScope === "workspace"）。
+ */
+export interface NotificationsSidePaneTab {
+  /** 固定 `notify:workspace` —— 全工作台至多一个通知 tab */
+  id: string;
+  type: "notify";
+  openedAt: number;
+}
+
+export type SidePaneTab = HistorySidePaneTab | LiveSessionSidePaneTab | PlanSidePaneTab | DiffSidePaneTab | NotificationsSidePaneTab;
+
+/**
+ * tab 的作用域。unit 级归属某个 bot（切 bot 隐藏不销毁）；workspace 级属于整个
+ * 工作台（任何 bot 视角下恒可见 —— ZCode 的 git / developer-tools 同款通道）。
+ */
+export type SidePaneTabScope = "unit" | "workspace";
+
+export function tabScope(tab: SidePaneTab): SidePaneTabScope {
+  return tab.type === "notify" ? "workspace" : "unit";
+}
+
+/** unit 级 tab 的窄类型（带 ownerUnitId）—— 类型守卫给 TS 收窄用，语义同 tabScope */
+export type UnitScopedSidePaneTab = Exclude<SidePaneTab, NotificationsSidePaneTab>;
+
+export function isUnitTab(tab: SidePaneTab): tab is UnitScopedSidePaneTab {
+  return tab.type !== "notify";
+}
 
 export interface SidePaneState {
   tabs: SidePaneTab[];
@@ -104,6 +135,8 @@ export const historyTabId = (unitId: UnitId): string => `history:${unitId}`;
 export const liveTabId = (sessionId: string): string => `live:${sessionId}`;
 export const planTabId = (unitId: UnitId): string => `plan:${unitId}`;
 export const diffTabId = (unitId: UnitId): string => `diff:${unitId}`;
+/** workspace 级单例：id 不含任何业务键 */
+export const notifyTabId = "notify:workspace";
 
 // ---------------------------------------------------------------------------
 // 打开 / 关闭 / 激活
@@ -185,6 +218,55 @@ export function openDiffTab(state: SidePaneState, request: OpenUnitTabRequest): 
   return openUnitTab(state, "diff", diffTabId(request.unitId), request);
 }
 
+/** 打开（或复用）通知中心 tab：workspace 级单例，幂等聚焦 */
+export function openNotificationsTab(state: SidePaneState): SidePaneState {
+  const existing = state.tabs.find((tab) => tab.id === notifyTabId);
+  if (existing === undefined) {
+    const tab: NotificationsSidePaneTab = { id: notifyTabId, type: "notify", openedAt: Date.now() };
+    return { tabs: [...state.tabs, tab], activeTabId: notifyTabId };
+  }
+  return activateTab(state, notifyTabId);
+}
+
+/**
+ * 尾插一个 tab 并聚焦（「最近关闭」重开的落点）。同 id 已存在只聚焦不并排 ——
+ * 重开的 tab 可能与还开着的 tab 撞 id（关闭记录去重后理论上不会，防御一手）。
+ */
+export function insertTab(state: SidePaneState, tab: SidePaneTab): SidePaneState {
+  if (state.tabs.some((t) => t.id === tab.id)) return activateTab(state, tab.id);
+  return { tabs: [...state.tabs, tab], activeTabId: tab.id };
+}
+
+/**
+ * 拖拽排序：把 tabId 挪到可见子集的第 toVisibleIndex 位。
+ *
+ * 只重排**当前 scope 可见**的 tab（拖拽发生在可见 tab 条上）；隐藏 tab 留在
+ * 全量数组的原位（它们之间的相对顺序不变）—— 重建手法：按原数组走一遍，
+ * 可见位依次取重排后的可见队列，隐藏位原样保留。scope 缺省 = 全量可见。
+ */
+export function moveTab(
+  state: SidePaneState,
+  tabId: string,
+  toVisibleIndex: number,
+  scopeUnitId?: UnitId | null,
+): SidePaneState {
+  if (!state.tabs.some((tab) => tab.id === tabId) || toVisibleIndex < 0) return state;
+  const visible =
+    scopeUnitId === undefined || scopeUnitId === null
+      ? [...state.tabs]
+      : [...visibleTabsForUnit(state.tabs, scopeUnitId)];
+  const fromIndex = visible.findIndex((tab) => tab.id === tabId);
+  if (fromIndex < 0) return state;
+  const clamped = Math.min(toVisibleIndex, visible.length - 1);
+  if (fromIndex === clamped) return state;
+  const [moved] = visible.splice(fromIndex, 1);
+  visible.splice(clamped, 0, moved!);
+  const visibleIds = new Set(visible.map((tab) => tab.id));
+  let cursor = 0;
+  const tabs = state.tabs.map((tab) => (visibleIds.has(tab.id) ? visible[cursor++]! : tab));
+  return { tabs, activeTabId: state.activeTabId };
+}
+
 function openUnitTab(
   state: SidePaneState,
   type: "plan" | "diff",
@@ -221,8 +303,9 @@ export function closeTab(state: SidePaneState, tabId: string, scopeUnitId?: Unit
   const tabs = state.tabs.filter((tab) => tab.id !== tabId);
   if (tabs.length === 0) return { tabs, activeTabId: "" };
   if (state.activeTabId !== tabId) return { tabs, activeTabId: state.activeTabId };
-  const candidates =
-    scopeUnitId === undefined || scopeUnitId === null ? tabs : visibleTabsForUnit(tabs, scopeUnitId);
+  // scope 口径与 visibleTabsForUnit 一致：undefined = 无 scope 的调用方（全量
+  // 右邻旧语义）；null / 具体 unit = 按该作用域的可见集回落（null只剩workspace级）
+  const candidates = scopeUnitId === undefined ? tabs : visibleTabsForUnit(tabs, scopeUnitId);
   if (candidates.length === 0) return { tabs, activeTabId: "" };
   const candidateIds = new Set(candidates.map((tab) => tab.id));
   // 右邻：新数组里 closingIndex 位起第一个可见 tab；没有（后面全是别人的）则落最后一个可见 tab
@@ -245,10 +328,7 @@ export function closeOtherTabs(
   scopeUnitId?: UnitId | null,
 ): SidePaneState {
   if (!state.tabs.some((tab) => tab.id === keepTabId)) return state;
-  const visible =
-    scopeUnitId === undefined || scopeUnitId === null
-      ? state.tabs
-      : visibleTabsForUnit(state.tabs, scopeUnitId);
+  const visible = scopeUnitId === undefined ? state.tabs : visibleTabsForUnit(state.tabs, scopeUnitId);
   const kill = new Set(visible.filter((tab) => tab.id !== keepTabId).map((tab) => tab.id));
   if (kill.size === 0) return state;
   return { tabs: state.tabs.filter((tab) => !kill.has(tab.id)), activeTabId: keepTabId };
@@ -256,10 +336,7 @@ export function closeOtherTabs(
 
 /** 关闭当前视角的全部可见 tab（其它 bot 的隐藏 tab 保活）；全关后聚焦归空落功能主页 */
 export function closeVisibleTabs(state: SidePaneState, scopeUnitId?: UnitId | null): SidePaneState {
-  const visible =
-    scopeUnitId === undefined || scopeUnitId === null
-      ? state.tabs
-      : visibleTabsForUnit(state.tabs, scopeUnitId);
+  const visible = scopeUnitId === undefined ? state.tabs : visibleTabsForUnit(state.tabs, scopeUnitId);
   if (visible.length === 0) return state;
   const kill = new Set(visible.map((tab) => tab.id));
   const tabs = state.tabs.filter((tab) => !kill.has(tab.id));
@@ -270,13 +347,17 @@ export function closeVisibleTabs(state: SidePaneState, scopeUnitId?: UnitId | nu
 // bot 作用域
 // ---------------------------------------------------------------------------
 
-/** 当前 bot 可见的 tab：会话级 tab 按 ownerUnitId 过滤（workspace 级恒可见，预留） */
+/**
+ * 当前视角可见的 tab：workspace 级恒可见（通知中心等不随 bot 切换），unit 级按
+ * ownerUnitId 过滤。null 作用域（还没激活过任何 bot）只剩 workspace 级 ——
+ * 面板此时本就不占位（sidePaneOccupies），这里只是保持「恒可见」语义自洽。
+ */
 export function visibleTabsForUnit(
   tabs: readonly SidePaneTab[],
   activeUnitId: UnitId | null,
 ): readonly SidePaneTab[] {
-  if (activeUnitId === null) return [];
-  return tabs.filter((tab) => String(tab.ownerUnitId) === String(activeUnitId));
+  if (activeUnitId === null) return tabs.filter((tab) => !isUnitTab(tab));
+  return tabs.filter((tab) => !isUnitTab(tab) || String(tab.ownerUnitId) === String(activeUnitId));
 }
 
 /**
@@ -332,15 +413,16 @@ export function resolveScopeOnUnitChange(
 }
 
 /**
- * bot 注销回收（daemon 侧 bot 定义消失时）：清掉不再有主的 tab。
- * 不做任何「顺手迁移」——被回收 bot 的 tab 没有新的归属，直接删。
+ * bot 注销回收（daemon 侧 bot 定义消失时）：清掉不再有主的 tab。workspace 级
+ * tab 没有主人、也永不失主，跳过回收。不做任何「顺手迁移」—— 被回收 bot 的
+ * tab 没有新的归属，直接删。
  */
 export function releaseUnits(
   state: SidePaneState,
   validUnitIds: readonly UnitId[],
 ): SidePaneState {
   const valid = new Set(validUnitIds.map(String));
-  const tabs = state.tabs.filter((tab) => valid.has(String(tab.ownerUnitId)));
+  const tabs = state.tabs.filter((tab) => !isUnitTab(tab) || valid.has(String(tab.ownerUnitId)));
   if (tabs.length === state.tabs.length) return state;
   if (tabs.some((tab) => tab.id === state.activeTabId)) return { tabs, activeTabId: state.activeTabId };
   return { tabs, activeTabId: "" };

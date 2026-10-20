@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CircleAlert, Loader2, Radio } from "lucide-react";
 import type { RuntimeEvent } from "../core/events.ts";
+import { liveTabId } from "../core/sidePaneTabs.ts";
 import { DaemonClient, defaultDaemonEndpoint } from "../adapters/daemon/client.ts";
+import { useSidePane } from "../store/useSidePane.ts";
 import { executorIconSrc } from "./executorIcon.ts";
 import { cn } from "./cn.ts";
 
@@ -178,6 +180,10 @@ export function LiveSessionPane({
   /** 断线重连 / daemon 换代的重建信号（换代后 seq 空间归零，旧游标会把
    *  后续所有帧判重丢弃 —— 只能整段重放；重连同样全量补洞） */
   const [reloadKey, setReloadKey] = useState(0);
+  /** shown 的最新值：跟随 effect 不依赖 shown（隐藏时数据流仍跟随），闭包里
+   *  读它会过期 —— 未读点判定必须用 ref（bumpUnread 只在该 tab 非激活时打） */
+  const shownRef = useRef(shown);
+  shownRef.current = shown;
   useEffect(() => {
     const client = DaemonClient.get(defaultDaemonEndpoint());
     const u1 = client.onResync(() => setReloadKey((k) => k + 1));
@@ -209,6 +215,9 @@ export function LiveSessionPane({
       .then((items) => {
         if (!alive) return;
         replayInFlight = false;
+        // 回放窗口期的实时帧只进了 stash、没走下面的 bump 分支：面板没看着时，
+        // 这批合并补进来的内容同样该有一次未读点（重连 / 重建补洞时尤其如此）
+        const hadStash = stash.length > 0;
         const bySeq = new Map<number, { seq: number; event: RuntimeEvent }>();
         for (const it of items ?? []) {
           bySeq.set(it.seq, it);
@@ -224,6 +233,7 @@ export function LiveSessionPane({
           next = appendEvent(next, it.event, nextRid);
         }
         setRows(next);
+        if (hadStash && !shownRef.current) useSidePane.getState().bumpUnread(liveTabId(sessionId));
       })
       .catch((err: unknown) => {
         if (!alive) return;
@@ -249,6 +259,9 @@ export function LiveSessionPane({
       // 回放失败后实时帧继续到达：错误态不能把活数据挡在后面
       setError(null);
       setRows((prev) => appendEvent(prev, event, nextRid));
+      // 面板没看着（切走了 / 收起了）→ tab 上打未读点，聚焦时清；alive 挡掉
+      // 卸载与关 tab 之间仍在途的帧（别给已卸载的 tab 打点）
+      if (alive && !shownRef.current) useSidePane.getState().bumpUnread(liveTabId(sessionId));
     });
     return () => {
       alive = false;

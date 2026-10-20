@@ -20,6 +20,8 @@ import { TerminalPanel } from "./ui/TerminalPanel.tsx";
 import { WorkspaceHeader } from "./ui/WorkspaceHeader.tsx";
 import { WindowControls } from "./ui/WindowControls.tsx";
 import { bindShellShortcuts, useShell } from "./store/useShell.ts";
+import { bindSidePaneShortcuts } from "./store/sidePaneShortcuts.ts";
+import { installNotifications } from "./store/useNotifications.ts";
 import { SidePaneColumn } from "./ui/SidePanePanel.tsx";
 import { useSidePane } from "./store/useSidePane.ts";
 import { sidePaneOccupies } from "./core/sidePaneTabs.ts";
@@ -51,7 +53,17 @@ export function WorkspaceShell() {
   const settingsOpen = useShell((s) => s.settingsOpen);
   const activeUnitId = useWorkbench((s) => s.activeUnitId);
   const { isMobile, preference, setPreference } = useIsMobile();
-  useEffect(() => bindShellShortcuts(), []);
+  useEffect(() => {
+    const un1 = bindShellShortcuts();
+    const un2 = bindSidePaneShortcuts();
+    return () => {
+      un1();
+      un2();
+    };
+  }, []);
+  // 通知中心的数据面：订阅 daemon 原始广播（后台会话终态/审批/系统通知/待办/
+  // git 变更）。移动端不渲染右侧栏，但通知照常聚合 —— 桌面回到面板前就有账。
+  useEffect(() => installNotifications(), []);
 
   // 切 bot 联动：右侧面板按当前 bot 过滤可见 tab（隐藏不销毁、记忆恢复聚焦）。
   // 用 effect 而不是订阅回调 —— selectUnit 与 openTab 可能同帧相邻发生

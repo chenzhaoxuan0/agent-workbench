@@ -64,6 +64,8 @@ export interface AutomationRun {
   /** skipped = 错过窗口被跳过（misfire 不补跑）——它没真的跑过，徽章上不能算「运行中」 */
   readonly status: "running" | "completed" | "failed" | "skipped";
   readonly summary?: string;
+  /** headless run 的会话 id（事件账本可回放，一键开监控用）；TUI run 是 autoterm_ 前缀的终端 id */
+  readonly sessionId?: string | null;
 }
 
 export interface Automation {

@@ -1153,6 +1153,7 @@ function mapAutomationRun(r: DaemonAutomationRun): AutomationRun {
       : r.status === "skipped" ? "skipped"
       : "running",
     summary: r.detail ?? undefined,
+    sessionId: r.sessionId,
   };
 }
 

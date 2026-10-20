@@ -315,8 +315,9 @@ export function bindShellShortcuts(): () => void {
       shell.setCommandOpen(true);
       return;
     }
-    // ZCode：toggleSidebar 默认 Cmd/Ctrl+B
-    if (mod && e.key.toLowerCase() === "b") {
+    // ZCode：toggleSidebar 默认 Cmd/Ctrl+B。排他 Alt：Ctrl+Alt+B 是右侧面板的
+    // 开合键（sidePaneShortcuts），不排的话一次按键把左栏和右面板同时翻转
+    if (mod && !e.altKey && e.key.toLowerCase() === "b") {
       e.preventDefault();
       shell.toggleSidebar();
       return;

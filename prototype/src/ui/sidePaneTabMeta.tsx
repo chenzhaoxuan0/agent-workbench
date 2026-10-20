@@ -1,0 +1,174 @@
+import type { ReactElement } from "react";
+import { Bell, FileDiff, History, ListChecks, Radio, type LucideIcon } from "lucide-react";
+import type { SidePaneTab } from "../core/sidePaneTabs.ts";
+import type { UnitId } from "../core/units.ts";
+import { useSidePane } from "../store/useSidePane.ts";
+import { useWorkbench } from "../store/useWorkbench.ts";
+import { HistoryPane } from "./HistoryPane.tsx";
+import { LiveSessionPane } from "./LiveSessionPane.tsx";
+import { PlanPane } from "./PlanPane.tsx";
+import { DiffPane } from "./DiffPane.tsx";
+import { NotificationsPane } from "./NotificationsPane.tsx";
+
+/**
+ * 侧栏 tab 的 UI 注册表 —— 图标 / 标题 / 内容渲染 / 功能主页入口的唯一登记处。
+ *
+ * 契约（类型、id 规则、开关节奏域语义）在 core/sidePaneTabs.ts，保持不碰
+ * React；本文件是「加一种 tab 要改的 UI 面」的收敛点：此前图标、标题、渲染
+ * 分散在 SidePanePanel 的三处 switch，新增类型要改两处文件四处代码，注册表
+ * 化之后一处登记、容器无感。容器仍保留自己的职责（tab 条交互、保活挂载、
+ * 开合），这里只提供「长什么样、叫什么、渲染什么」。
+ */
+
+export interface SidePaneTabRenderCtx {
+  /** 面板可见且本 tab 激活（保活协议的开关） */
+  readonly shown: boolean;
+  readonly closeTab: (tabId: string) => void;
+  /** 关闭回调的稳定包装（memo 组件防击穿用） */
+  readonly onFinished: () => void;
+}
+
+export interface SidePaneTabMetaEntry {
+  readonly type: SidePaneTab["type"];
+  readonly icon: LucideIcon;
+  readonly title: (tab: SidePaneTab) => string;
+  readonly render: (tab: SidePaneTab, ctx: SidePaneTabRenderCtx) => ReactElement | null;
+}
+
+const entries: readonly SidePaneTabMetaEntry[] = [
+  {
+    type: "history",
+    icon: History,
+    title: (tab) => (tab.type === "history" ? `${tab.unitName} · 历史` : ""),
+    render: (tab, ctx) =>
+      tab.type === "history" ? (
+        <HistoryPane
+          unitId={String(tab.ownerUnitId)}
+          unitName={tab.unitName}
+          focusKey={tab.focusKey}
+          isActive={ctx.shown}
+          onFinished={ctx.onFinished}
+        />
+      ) : null,
+  },
+  {
+    type: "live",
+    icon: Radio,
+    title: (tab) => (tab.type === "live" && tab.title !== "" ? tab.title : "会话监控"),
+    render: (tab, ctx) =>
+      tab.type === "live" ? (
+        <LiveSessionPane sessionId={tab.sessionId} runtimeId={tab.runtimeId} title={tab.title} shown={ctx.shown} />
+      ) : null,
+  },
+  {
+    type: "plan",
+    icon: ListChecks,
+    title: (tab) => (tab.type === "plan" ? `${tab.unitName} · 计划` : ""),
+    render: (tab, ctx) => (tab.type === "plan" ? <PlanPane unitId={tab.ownerUnitId} shown={ctx.shown} /> : null),
+  },
+  {
+    type: "diff",
+    icon: FileDiff,
+    title: (tab) => (tab.type === "diff" ? `${tab.unitName} · 变更` : ""),
+    render: (tab, ctx) => (tab.type === "diff" ? <DiffTabBody unitId={tab.ownerUnitId} shown={ctx.shown} /> : null),
+  },  {
+    type: "notify",
+    icon: Bell,
+    title: () => "通知",
+    render: (_tab, ctx) => <NotificationsPane shown={ctx.shown} />,
+  },
+];
+
+export const SIDE_PANE_TAB_META: Readonly<Record<SidePaneTab["type"], SidePaneTabMetaEntry>> = Object.fromEntries(
+  entries.map((e) => [e.type, e]),
+) as Readonly<Record<SidePaneTab["type"], SidePaneTabMetaEntry>>;
+
+/** diff tab 的宿主：rootPath 从 units 现查（bot 改目录后 tab 跟着走），
+ *  bot 被注销时给出空态而不是白屏 */
+function DiffTabBody({ unitId, shown }: { unitId: UnitId; shown: boolean }): ReactElement {
+  const rootPath = useWorkbench((s) => s.units.find((u) => String(u.id) === String(unitId))?.rootPath);
+  if (rootPath === undefined) {
+    return (
+      <div className="flex h-full items-center justify-center p-4 text-center text-caption text-ash">
+        这个 bot 已经不在了（目录或定义被移除），变更审查无从挂载
+      </div>
+    );
+  }
+  return <DiffPane rootPath={rootPath} unitId={unitId} shown={shown} />;
+}
+
+/* --------------------------------------------------------- 功能主页入口清单 */
+
+/** 实时监控的默认目标（SidePaneHome 解析后传入） */
+export interface SidePaneLiveTarget {
+  readonly sessionId: string;
+  readonly runtimeId: string;
+  readonly title: string;
+  readonly running: boolean;
+}
+
+export interface SidePaneHomeEntryDef {
+  readonly key: string;
+  readonly label: string;
+  readonly desc: string;
+  readonly icon: LucideIcon;
+  /** 伴随视角跟 bot（无激活 bot 不渲染）；工作区入口不跟 */
+  readonly group: "companion" | "workspace";
+  /** 监控入口：无目标时禁用（目标解析在 SidePaneHome，这里只消费） */
+  readonly requiresLiveTarget?: boolean;
+  readonly open: (args: {
+    unitId: UnitId | null;
+    unitName: string;
+    liveTarget: SidePaneLiveTarget | null;
+  }) => void;
+}
+
+export const SIDE_PANE_HOME_ENTRIES: readonly SidePaneHomeEntryDef[] = [
+  {
+    key: "live",
+    label: "会话实时监控",
+    desc: "跟随一个在跑（或最近）的后台会话看它正在干什么",
+    icon: Radio,
+    group: "companion",
+    requiresLiveTarget: true,
+    open: ({ unitId, liveTarget }) => {
+      if (unitId === null || liveTarget === null) return;
+      useSidePane.getState().openLiveSession({
+        unitId,
+        sessionId: liveTarget.sessionId,
+        runtimeId: liveTarget.runtimeId,
+        title: liveTarget.title,
+      });
+    },
+  },
+  {
+    key: "plan",
+    label: "计划 / 任务进度",
+    desc: "活跃会话的步骤清单，边干活边看进度",
+    icon: ListChecks,
+    group: "companion",
+    open: ({ unitId, unitName }) => {
+      if (unitId === null) return;
+      useSidePane.getState().openPlan({ unitId, unitName });
+    },
+  },
+  {
+    key: "diff",
+    label: "变更审查",
+    desc: "工作目录的改动与 diff，对话在左、改动在右",
+    icon: FileDiff,
+    group: "companion",
+    open: ({ unitId, unitName }) => {
+      if (unitId === null) return;
+      useSidePane.getState().openDiff({ unitId, unitName });
+    },
+  },
+  {
+    key: "notify",
+    label: "通知中心",
+    desc: "后台会话终态、审批请求、系统通知与仓库变更",
+    icon: Bell,
+    group: "workspace",
+    open: () => useSidePane.getState().openNotifications(),
+  },
+];

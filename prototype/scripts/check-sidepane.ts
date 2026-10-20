@@ -11,21 +11,31 @@
 import {
   activateTab,
   closeTab,
+  closeVisibleTabs,
   diffTabId,
   EMPTY_SIDE_PANE_STATE,
   historyTabId,
+  insertTab,
   liveTabId,
+  moveTab,
+  notifyTabId,
   openDiffTab,
   openHistoryTab,
   openLiveTab,
+  openNotificationsTab,
   openPlanTab,
   planTabId,
   releaseUnits,
   resolveScopeOnUnitChange,
   sidePaneOccupies,
+  tabScope,
   visibleTabsForUnit,
+  type DiffSidePaneTab,
   type HistorySidePaneTab,
   type LiveSessionSidePaneTab,
+  type NotificationsSidePaneTab,
+  type PlanSidePaneTab,
+  type SidePaneState,
 } from "../src/core/sidePaneTabs.ts";
 import { asUnitId } from "../src/core/units.ts";
 
@@ -53,6 +63,10 @@ function hist(unit: string, name = unit): HistorySidePaneTab {
     unitName: name,
     openedAt: 1,
   };
+}
+
+function notifyTab(): NotificationsSidePaneTab {
+  return { id: notifyTabId, type: "notify", openedAt: 1 };
 }
 
 // ---------------------------------------------------------------------------
@@ -232,6 +246,127 @@ function hist(unit: string, name = unit): HistorySidePaneTab {
   // 回归守卫二：零 tab 时点展开，旧口径整列不渲染 —— 又一次死点击。现在落功能主页。
   const expandNoTabs = sidePaneOccupies(A, false, true);
   assert(expandNoTabs, "零 tab 点展开面板必有内容（功能主页）");
+}
+
+// ---------------------------------------------------------------------------
+// workspace 级 scope（通知中心）：恒可见 / 不被回收 / 可作右邻落点
+// ---------------------------------------------------------------------------
+
+{
+  assert(tabScope(notifyTab()) === "workspace", "notify 是 workspace 级 scope");
+  assert(tabScope(hist(String(A))) === "unit", "历史 tab 是 unit 级 scope");
+
+  let s = openNotificationsTab(EMPTY_SIDE_PANE_STATE);
+  assert(s.tabs.length === 1 && s.activeTabId === notifyTabId, "打开通知 tab 并聚焦");
+  const again = openNotificationsTab(s);
+  assert(again.tabs.length === 1 && again.activeTabId === notifyTabId, "通知 tab 单例幂等");
+
+  // 恒可见：任何 bot 视角（含 null 作用域）都看得见 workspace 级 tab
+  s = openHistoryTab(s, { unitId: A, unitName: "甲" });
+  assert(visibleTabsForUnit(s.tabs, A).length === 2, "A 视角可见 A 的 tab + workspace tab");
+  assert(visibleTabsForUnit(s.tabs, B).length === 1, "B 视角仍可见 workspace tab（不随 bot 切换）");
+  assert(visibleTabsForUnit(s.tabs, null).length === 1, "null 作用域只剩 workspace tab");
+
+  // bot 注销回收不碰 workspace tab
+  const rel = releaseUnits({ tabs: [hist(String(A)), notifyTab()], activeTabId: notifyTabId }, []);
+  assert(rel.tabs.length === 1 && rel.tabs[0]!.type === "notify", "注销回收保留 workspace tab");
+
+  // closeTab 右邻可以落到 workspace tab（它在本 scope 可见）
+  let s2 = openHistoryTab(EMPTY_SIDE_PANE_STATE, { unitId: A, unitName: "甲" });
+  s2 = openNotificationsTab(s2);
+  s2 = activateTab(s2, historyTabId(A)); // 激活被关的 tab，才是在测「右邻回落」路径
+  const fellToNotify = closeTab(s2, historyTabId(A), A);
+  assert(fellToNotify.activeTabId === notifyTabId, "关激活 unit tab 可落右邻 workspace tab");
+
+  // resolveScopeOnUnitChange：切到无 unit tab 的 bot 时 workspace tab 兜住聚焦
+  const res = resolveScopeOnUnitChange({ tabs: [hist(String(A)), notifyTab()], activeTabId: "" }, B, {});
+  assert(res.visibleTabs.length === 1 && res.activeTabId === notifyTabId, "切到无 tab 的 bot 落 workspace tab（不掉功能主页）");
+}
+
+// ---------------------------------------------------------------------------
+// insertTab（最近关闭重开的落点）
+// ---------------------------------------------------------------------------
+
+{
+  const s0 = openHistoryTab(EMPTY_SIDE_PANE_STATE, { unitId: A, unitName: "甲" });
+  const s1 = insertTab(s0, hist(String(B)));
+  assert(s1.tabs.length === 2 && s1.activeTabId === historyTabId(B), "尾插新 tab 并聚焦");
+  // 同 id 已存在：只聚焦，不并排
+  const s2 = insertTab(s1, hist(String(A)));
+  assert(s2.tabs.length === 2 && s2.activeTabId === historyTabId(A), "insertTab 撞 id 只聚焦不并排");
+}
+
+// ---------------------------------------------------------------------------
+// moveTab：可见子集内重排，隐藏 tab 原位保序
+// ---------------------------------------------------------------------------
+
+{
+  const C = asUnitId("bot-c");
+  // 全量 [hist:A, hist:B, hist:C]，B 视角下可见的只有 B —— 无从重排，no-op
+  let s = openHistoryTab(EMPTY_SIDE_PANE_STATE, { unitId: A });
+  s = openHistoryTab(s, { unitId: B });
+  s = openHistoryTab(s, { unitId: C });
+  const noop = moveTab(s, historyTabId(B), 0, B);
+  assert(noop === s, "scope 内只有一个可见 tab 时 moveTab 原样返回");
+
+  // A 视角开 [plan, history, diff]（A 的三个），history 从中段拖到末位
+  let a = openHistoryTab(EMPTY_SIDE_PANE_STATE, { unitId: A, unitName: "甲" });
+  a = openPlanTab(a, { unitId: A, unitName: "甲" });
+  a = openDiffTab(a, { unitId: A, unitName: "甲" });
+  // 掺一个 B 的隐藏 tab 在中间，验证「隐藏位原样保留」
+  a = openHistoryTab(a, { unitId: B, unitName: "乙" });
+  a = activateTab(a, diffTabId(A));
+  const moved = moveTab(a, historyTabId(A), 2, A);
+  assert(moved.tabs.length === 4, "moveTab 不增删 tab");
+  const visibleA = visibleTabsForUnit(moved.tabs, A).map((t) => t.type);
+  assert(
+    visibleA.join(",") === "plan,diff,history",
+    `可见子集按目标序重排（plan,diff,history，实得 ${visibleA.join(",")}）`,
+  );
+  assert(moved.activeTabId === diffTabId(A), "moveTab 不动聚焦");
+  // 原位（fromIndex === clamped）返回同一引用
+  const same = moveTab(moved, planTabId(A), 0, A);
+  assert(same === moved, "移到原位返回同一引用");
+  // 越界目标收拢到末位
+  const clampedMove = moveTab(moved, planTabId(A), 99, A);
+  assert(
+    visibleTabsForUnit(clampedMove.tabs, A).map((t) => t.type).join(",") === "diff,history,plan",
+    "越界目标收拢到末位",
+  );
+  // 不存在的 id / 负 index：no-op
+  assert(moveTab(moved, "nope", 0, A) === moved, "moveTab 不存在的 id 原样返回");
+  assert(moveTab(moved, diffTabId(A), -1, A) === moved, "负目标索引原样返回");
+}
+
+// ---------------------------------------------------------------------------
+// moveTab：隐藏 tab 夹在可见 tab 中间（open* 都是尾插，得手工构造排列）
+// ---------------------------------------------------------------------------
+
+{
+  const planA: PlanSidePaneTab = { id: planTabId(A), type: "plan", ownerUnitId: A, unitName: "甲", openedAt: 1 };
+  const diffA: DiffSidePaneTab = { id: diffTabId(A), type: "diff", ownerUnitId: A, unitName: "甲", openedAt: 1 };
+  const hiddenB = hist(String(B));
+  const s: SidePaneState = { tabs: [planA, hiddenB, diffA], activeTabId: planTabId(A) };
+  const moved = moveTab(s, diffTabId(A), 0, A);
+  const ids = moved.tabs.map((t) => t.id);
+  assert(
+    ids.join(",") === `${diffTabId(A)},${historyTabId(B)},${planTabId(A)}`,
+    `隐藏 tab 夹中间：可见位按目标序重排、隐藏位原样保留（实得 ${ids.join(",")}）`,
+  );
+  assert(moved.tabs[1] === hiddenB, "夹在中间的隐藏 tab 对象引用与绝对下标都不变");
+}
+
+// ---------------------------------------------------------------------------
+// close 系的 null 作用域：与 visibleTabsForUnit(null) 同口径 = 只剩 workspace 级
+// ---------------------------------------------------------------------------
+
+{
+  const s: SidePaneState = { tabs: [hist(String(A)), notifyTab()], activeTabId: notifyTabId };
+  const closed = closeVisibleTabs(s, null);
+  assert(closed.tabs.length === 1 && closed.tabs[0]!.type === "history", "null 作用域的「关闭全部」只关 workspace 级 tab");
+  assert(closed.activeTabId === "", "聚焦 tab 被关且作用域内无可落 → 归空（null 作用域下 unit tab 也不可见，不越权拾取）");
+  const full = closeVisibleTabs(s);
+  assert(full.tabs.length === 0, "缺省（undefined）保持全量旧语义");
 }
 
 console.log(`\nsidepane 契约：${pass} 通过，${fail} 失败`);

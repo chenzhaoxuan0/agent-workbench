@@ -10,6 +10,7 @@ import {
   GitBranch,
   ListTodo,
   MessageSquare,
+  Radio,
   RotateCcw,
   Sparkles,
   Terminal,
@@ -27,6 +28,7 @@ import {
   type UnitHistoryEntry,
 } from "../adapters/daemon/client.ts";
 import { useWorkbench } from "../store/useWorkbench.ts";
+import { useSidePane } from "../store/useSidePane.ts";
 import { useHistoryPrefs } from "../store/useHistoryPrefs.ts";
 import { useTerminalStore } from "../store/useTerminalStore.ts";
 import { asSessionId, asUnitId } from "../core/units.ts";
@@ -675,6 +677,38 @@ function HistoryRow({
               >
                 <MessageSquare size={9} />
                 在聊天页继续
+              </span>
+            )}
+            {entry.sessionId !== null && entry.unitId !== undefined && (
+              <span
+                role="button"
+                tabIndex={0}
+                onClick={(ev) => {
+                  ev.stopPropagation();
+                  useSidePane.getState().openLiveSession({
+                    unitId: asUnitId(String(entry.unitId)),
+                    sessionId: entry.sessionId!,
+                    runtimeId: entry.runtimeId,
+                    title: entry.title,
+                  });
+                }}
+                onKeyDown={(ev) => {
+                  if (ev.key !== "Enter" && ev.key !== " ") return;
+                  // Space 不拦默认行为会先滚动列表再触发，按钮语义应吃掉它
+                  ev.preventDefault();
+                  ev.stopPropagation();
+                  useSidePane.getState().openLiveSession({
+                    unitId: asUnitId(String(entry.unitId)),
+                    sessionId: entry.sessionId!,
+                    runtimeId: entry.runtimeId,
+                    title: entry.title,
+                  });
+                }}
+                title="在右侧面板跟随这条会话的事件流：在跑的实时看，已结束的可回放"
+                className="flex shrink-0 cursor-pointer items-center gap-0.5 rounded-chip bg-teal-tint px-1.5 py-px text-[10px] text-teal transition hover:bg-teal hover:text-canvas"
+              >
+                <Radio size={9} />
+                监控
               </span>
             )}
             {resumable && (

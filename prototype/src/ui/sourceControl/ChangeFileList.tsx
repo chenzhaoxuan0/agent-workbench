@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ChevronDown, ChevronRight, Code2, Copy, FolderOpen, Loader2, Minus, Plus } from "lucide-react";
 import type { GitChangeEntry, GitDiffResult } from "../../core/git.ts";
 import { fetchGitDiff, openInEditor } from "../../adapters/daemon/client.ts";
@@ -12,6 +12,9 @@ import { ChangeDiffView } from "./ChangeDiffView.tsx";
  * 提交对话框与源代码管理页的「改动」区共用同一份渲染 —— 两处对「改动长什么样」
  * 必须有同一口径（ADR 0010 的 ③）。diff 是**展开式**而不是右侧预览 pane：
  * 右侧 pane 要重排页面信息架构，展开式先把「看得见」这件事做到。
+ *
+ * 过滤（DiffPane 变更审查的查找入口）：filter 非空时按路径子串过滤，命中的行
+ * 自动展开 diff（把「找到」直接变成「看到」，不用逐个手点）。
  */
 
 export type ChangeSourceId = "staged" | "unstaged";
@@ -48,14 +51,23 @@ export function ChangeFileList(props: {
   onStage?: (paths: readonly string[]) => void;
   onUnstage?: (paths: readonly string[]) => void;
   emptyText: string;
+  /** 路径子串过滤（非空时过滤 + 命中行自动展开 diff） */
+  filter?: string;
 }) {
   const { entries, sourceId } = props;
-  if (entries.length === 0) {
-    return <div className="px-3 py-4 text-center text-caption text-ash">{props.emptyText}</div>;
+  const f = (props.filter ?? "").trim().toLowerCase();
+  const filtering = f !== "";
+  const matched = filtering ? entries.filter((e) => e.path.toLowerCase().includes(f)) : entries;
+  if (matched.length === 0) {
+    return (
+      <div className="px-3 py-4 text-center text-caption text-ash">
+        {filtering ? `没有路径包含「${props.filter?.trim()}」的文件` : props.emptyText}
+      </div>
+    );
   }
   return (
     <div>
-      {entries.map((entry) => (
+      {matched.map((entry) => (
         <ChangeFileRow
           key={`${sourceId}/${entry.path}`}
           rootPath={props.rootPath}
@@ -65,6 +77,7 @@ export function ChangeFileList(props: {
           busy={props.busy}
           onStage={props.onStage}
           onUnstage={props.onUnstage}
+          autoExpand={filtering}
         />
       ))}
     </div>
@@ -79,6 +92,8 @@ function ChangeFileRow(props: {
   busy?: boolean;
   onStage?: (paths: readonly string[]) => void;
   onUnstage?: (paths: readonly string[]) => void;
+  /** 过滤激活时自动展开命中行（false = 普通行为，展开靠手点） */
+  autoExpand?: boolean;
 }) {
   const { entry, sourceId } = props;
   const [open, setOpen] = useState(false);
@@ -119,6 +134,13 @@ function ChangeFileRow(props: {
     if (diff !== null) return; // 展开过一次就缓存，省得来回点反复拉
     await fetchDiff();
   }
+
+  // 过滤命中 → 自动展开一次（用户收起后不再强拉，尊重显式动作）
+  useEffect(() => {
+    if (props.autoExpand !== true || open || !expandable) return;
+    void toggle();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 只在过滤激活沿上触发一次
+  }, [props.autoExpand]);
 
   const Arrow = open ? ChevronDown : ChevronRight;
 

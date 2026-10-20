@@ -8,6 +8,7 @@ import {
   Play,
   Plus,
   History,
+  Radio,
   Trash2,
   AlarmClock,
 } from "lucide-react";
@@ -26,6 +27,8 @@ import {
   type Weekday,
 } from "../core/automation.ts";
 import { useWorkbench } from "../store/useWorkbench.ts";
+import { useSidePane } from "../store/useSidePane.ts";
+import { asUnitId } from "../core/units.ts";
 import { useBacklog } from "../store/useBacklog.ts";
 import { fetchResumableSessions, type ResumableSession } from "../adapters/daemon/client.ts";
 import { AutomationDialog, type AutomationDialogPrefill } from "./AutomationDialog.tsx";
@@ -431,6 +434,48 @@ function AutomationCard({
                   {r.summary !== undefined && (
                     <span className="min-w-0 truncate text-ash" title={r.summary}>
                       {r.summary}
+                    </span>
+                  )}
+                  {/* headless run 有完整事件账本 —— 一键进右侧面板看它干了什么
+                      （在跑实时看，已结束可回放）。TUI run 该列存的是 autoterm_ 前缀的
+                      终端 id（后端同款判据），没有事件流；quota:<runtime> 合成单元
+                      在 units 里查不到，live tab 会变成任何视角都不可见的无主 tab，
+                      两类都不给入口 */}
+                  {r.sessionId != null &&
+                    r.sessionId !== "" &&
+                    !r.sessionId.startsWith("autoterm_") &&
+                    !a.unitId.startsWith("quota:") && (
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => {
+                        // 监控 tab 按 owner 过滤可见：自动化可能属于别的 bot（本页是
+                        // 全局页），不先切过去就是「点了没反应」（Sidebar/通知跳行同款守卫）
+                        const w = useWorkbench.getState();
+                        if (String(w.activeUnitId) !== String(a.unitId)) w.selectUnit(asUnitId(a.unitId));
+                        useSidePane.getState().openLiveSession({
+                          unitId: asUnitId(a.unitId),
+                          sessionId: r.sessionId!,
+                          runtimeId: a.runtimeId,
+                          title: a.name,
+                        });
+                      }}
+                      onKeyDown={(ev) => {
+                        if (ev.key !== "Enter" && ev.key !== " ") return;
+                        const w = useWorkbench.getState();
+                        if (String(w.activeUnitId) !== String(a.unitId)) w.selectUnit(asUnitId(a.unitId));
+                        useSidePane.getState().openLiveSession({
+                          unitId: asUnitId(a.unitId),
+                          sessionId: r.sessionId!,
+                          runtimeId: a.runtimeId,
+                          title: a.name,
+                        });
+                      }}
+                      title="在右侧面板跟随这次运行的事件流（在跑实时看，已结束可回放）"
+                      className="ml-auto flex shrink-0 cursor-pointer items-center gap-0.5 rounded-chip bg-teal-tint px-1.5 py-px text-[10px] text-teal transition hover:bg-teal hover:text-canvas"
+                    >
+                      <Radio size={9} />
+                      监控
                     </span>
                   )}
                 </div>

@@ -1,10 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { CircleDashed, CheckCircle2, Loader2, ListChecks, MinusCircle, PauseCircle } from "lucide-react";
 import type { PlanStep, PlanStepStatus, RuntimeEvent } from "../core/events.ts";
-import { DaemonClient, defaultDaemonEndpoint, fetchUnitHistory, type UnitHistoryEntry } from "../adapters/daemon/client.ts";
-import { useWorkbench } from "../store/useWorkbench.ts";
+import { DaemonClient, defaultDaemonEndpoint } from "../adapters/daemon/client.ts";
 import type { UnitId } from "../core/units.ts";
 import { cn } from "./cn.ts";
+import { useFollowedSessionId } from "./useFollowedSessionId.ts";
 
 /**
  * 计划 / 任务进度页（ZCode plan-detail 的对位）—— 活跃会话计划的本体可视面。
@@ -64,46 +64,6 @@ const STEP_CLS: Record<PlanStepStatus, string> = {
 
 function stepLabel(s: PlanStepStatus): string {
   return s === "in_progress" ? "进行中" : s === "done" ? "完成" : s === "skipped" ? "跳过" : s === "blocked" ? "受阻" : "待办";
-}
-
-/** 解析跟随目标：活跃会话优先（须属于本 bot），否则台账最近一条有 id 的会话 */
-function useFollowedSessionId(unitId: UnitId): { sessionId: string | null; live: boolean } {
-  const activeSessionId = useWorkbench((s) => s.activeSessionId);
-  const activeUnitId = useWorkbench((s) => s.activeUnitId);
-  const sessions = useWorkbench((s) => s.sessions);
-  const [fallback, setFallback] = useState<string | null>(null);
-  /** 每 bot 的台账回退只解析一次：unit 来回切不重复拉，也消掉回退目标在
-   *  「活跃会话 / 台账最新」之间来回翻面造成的整段重放抖动 */
-  const resolvedRef = useRef(new Set<string>());
-
-  const activeBelongsToUnit =
-    activeSessionId !== null && String(activeUnitId) === String(unitId) &&
-    sessions.some((x) => String(x.id) === String(activeSessionId));
-  const target = activeBelongsToUnit ? String(activeSessionId) : fallback;
-
-  useEffect(() => {
-    if (activeBelongsToUnit) return;
-    if (resolvedRef.current.has(String(unitId))) return;
-    let alive = true;
-    // 扫描深度与侧栏历史同口径（100）：台账最新的若干条可能是无 sessionId 的
-    // 旧 TUI 行，带 id 的会话在更深处 —— 扫浅了会误报「没有可跟随的会话」
-    void fetchUnitHistory(unitId, 100)
-      .then((list: readonly UnitHistoryEntry[]) => {
-        if (!alive) return;
-        resolvedRef.current.add(String(unitId));
-        const found = list.find((e) => e.sessionId !== null && e.sessionId !== "");
-        setFallback(found?.sessionId ?? null);
-      })
-      .catch(() => {
-        // 瞬时失败不清空既有目标（清了会把正在显示的计划打成空态且不自愈）
-      });
-    return () => {
-      alive = false;
-    };
-    // activeBelongsToUnit 翻回 false 时沿用缓存，不再重拉
-  }, [unitId, activeBelongsToUnit]);
-
-  return { sessionId: target ?? null, live: activeBelongsToUnit };
 }
 
 export function PlanPane({ unitId, shown }: { unitId: UnitId; shown: boolean }) {

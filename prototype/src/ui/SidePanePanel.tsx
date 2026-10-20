@@ -1,18 +1,22 @@
 import { TitleBarClearance } from "./WindowControls.tsx";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { Panel, Separator, type PanelImperativeHandle } from "react-resizable-panels";
-import { FileDiff, History, LayoutGrid, ListChecks, PanelRightClose, Radio, X } from "lucide-react";
+import { LayoutGrid, PanelRightClose, Plus, X } from "lucide-react";
 import { useShell } from "../store/useShell.ts";
 import { useSidePane, SIDE_PANE_MIN } from "../store/useSidePane.ts";
 import { useWorkbench } from "../store/useWorkbench.ts";
+import { useNotifications } from "../store/useNotifications.ts";
 import { sidePaneOccupies, visibleTabsForUnit, type SidePaneTab } from "../core/sidePaneTabs.ts";
+import type { WorkUnit } from "../core/units.ts";
 import { fetchUnitHistory } from "../adapters/daemon/client.ts";
-import { HistoryPane } from "./HistoryPane.tsx";
-import { LiveSessionPane } from "./LiveSessionPane.tsx";
-import { PlanPane } from "./PlanPane.tsx";
-import { DiffPane } from "./DiffPane.tsx";
+import { SIDE_PANE_HOME_ENTRIES, SIDE_PANE_TAB_META, type SidePaneLiveTarget } from "./sidePaneTabMeta.tsx";
+import { SidePaneTabOverview } from "./SidePaneTabOverview.tsx";
 import { cn } from "./cn.ts";
-import { QuickContextMenu, quickMenuFromEvent, type QuickMenuState } from "./QuickContextMenu.tsx";
+import {
+  QuickContextMenu,
+  type QuickMenuItem,
+  type QuickMenuState,
+} from "./QuickContextMenu.tsx";
 
 /**
  * 右侧标签页面板 —— 工作台第三列（对齐 ZCode 的 AnimatedSidePanePanel，按本产品体量裁剪）。
@@ -24,8 +28,8 @@ import { QuickContextMenu, quickMenuFromEvent, type QuickMenuState } from "./Qui
  *   主对话列被面板硬挤到出横向滚动条；拖宽面板时高频 setBounds 让整窗剧烈
  *   抖动甚至持续变高。对话列内容的压缩改由它自己的容器宽度驱动（见
  *   WorkspaceShell 的 @container 与 Composer 等的容器查询）。
- * - **bot 作用域**：tab 条只画当前 bot 的 tab，但内容区挂载**全量** tab ——
- *   切 bot 隐藏不销毁，A 的展开态/滚动位置在切回时原样恢复（保活）。
+ * - **bot 作用域**：tab 条只画当前 bot 的 tab（workspace 级 tab 恒可见），但内容区
+ *   挂载**全量** tab —— 切 bot 隐藏不销毁，A 的展开态/滚动位置在切回时原样恢复。
  * - **只在 chat 主视图展开**（ZCode：workspaceMainView === "chat" && isSidePaneOpen）：
  *   自动化/出图/待办/源代码管理是全局页，不属于任何 bot，旁边挂当前 bot 的
  *   历史面板是错位的。切走时面板**收起但保持挂载** —— 保活不因换视图丢失；
@@ -35,9 +39,10 @@ import { QuickContextMenu, quickMenuFromEvent, type QuickMenuState } from "./Qui
  *   开合入口与左栏对称：面板展开时收起钮在 tab 条最右（本组件内，镜像左栏顶部的
  *   开关）；收起后的重开走右上浮层钮（WorkspaceShell 的 SidePaneTopOverlay，与
  *   左侧栏折叠浮层互为镜像）以及各业务入口的 openTab（永远展开面板）。
- * - tab 关闭语义见 core/sidePaneTabs.ts（关激活落右邻）。
- *
- * 后续扩展位（tab 类型 ≥ 2 时再做）：tab 拖拽排序、⌄ 总览搜索、最近关闭重开。
+ * - tab 关闭语义见 core/sidePaneTabs.ts（关激活落右邻）。tab 交互三件套：
+ *   手写 pointer 拖拽排序（moveTab 只重排可见子集）、中键关闭、右键三件套；
+ *   ⌄ 总览弹层（搜索 + 最近关闭重开）在 tab 条最左，＋ 新增下拉在 tab 条行尾。
+ *   快捷键（Ctrl+Alt+B / Alt+1..9 / Ctrl+Tab）在 store/sidePaneShortcuts.ts。
  */
 
 /** 工作台 Group 的第三列。收起/切主视图只折叠不卸载（保活），无 tab 可保才卸载。 */
@@ -159,13 +164,49 @@ function SidePanePanelBody({
   const closeTab = useSidePane((s) => s.closeTab);
   const closeOtherTabs = useSidePane((s) => s.closeOtherTabs);
   const closeVisibleTabs = useSidePane((s) => s.closeVisibleTabs);
+  const scopeUnitId = useSidePane((s) => s.scopeUnitId);
+  const units = useWorkbench((s) => s.units);
   const visibleActiveTabId = visibleTabs.some((tab) => tab.id === activeTabId) ? activeTabId : "";
+  const current = units.find((u) => String(u.id) === String(scopeUnitId));
+
+  // 实时监控的默认目标（功能主页与 ＋ 菜单共用一份解析）：在跑的会话优先，
+  // 否则最近一条有 id 的会话（回放也成立）。只在面板展开时拉 —— 收起期间
+  // tab 条被裁剪、两个消费方都不可达，白拉；换 bot 先清旧值 —— 面板跨 scope
+  // 常驻，不清会拿着上个 bot 的会话标题冒充本 bot 的目标
+  const currentUnitId = current?.id;
+  const [liveTarget, setLiveTarget] = useState<SidePaneLiveTarget | null>(null);
+  useEffect(() => {
+    setLiveTarget(null);
+    if (currentUnitId === undefined || !open) return;
+    let alive = true;
+    void fetchUnitHistory(currentUnitId, 30)
+      .then((list) => {
+        if (!alive) return;
+        const withId = list.filter((e) => e.sessionId !== null && e.sessionId !== "");
+        const running = withId.find((e) => e.status === "running");
+        const pick = running ?? withId[0];
+        setLiveTarget(
+          pick !== undefined && pick.sessionId !== null
+            ? { sessionId: pick.sessionId, runtimeId: pick.runtimeId, title: pick.title, running: pick.status === "running" }
+            : null,
+        );
+      })
+      .catch(() => {
+        if (alive) setLiveTarget(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [currentUnitId, open]);
+
   // tab 右键三件套（ZCode SidePaneTabTrigger 同款）：关闭 / 关闭其它 / 关闭全部
   const [tabMenu, setTabMenu] = useState<QuickMenuState | null>(null);
   const openTabMenu = useCallback(
     (e: React.MouseEvent, tabId: string) => {
-      setTabMenu(
-        quickMenuFromEvent(e, [
+      setTabMenu({
+        x: e.clientX,
+        y: e.clientY,
+        items: [
           { label: "关闭", icon: X, onSelect: () => closeTab(tabId) },
           {
             label: "关闭其它",
@@ -179,87 +220,207 @@ function SidePanePanelBody({
             disabled: visibleTabs.length === 0,
             onSelect: () => closeVisibleTabs(),
           },
-        ]),
-      );
+        ],
+      });
+      e.preventDefault();
     },
     [closeTab, closeOtherTabs, closeVisibleTabs, visibleTabs],
   );
 
+  // ＋ 新增下拉：分组「会话类（跟 bot）/ 工作区类」，条目与功能主页同源。
+  // toggle 语义：菜单开着时点 ＋ 是「关闭」—— 但 QuickContextMenu 的外部
+  // mousedown 关闭先于 click 到达，闭包里的 addMenu 已不可信，用刚关闭的
+  // 时间戳压制 150ms 内的重开（QuickMenu 自身选中项后关闭也走同一路径）
+  const [addMenu, setAddMenu] = useState<QuickMenuState | null>(null);
+  const addMenuClosedAtRef = useRef(0);
+  useEffect(() => {
+    // 面板收起时菜单一并关（portal 弹层不会被列裁剪，留着就是悬浮孤儿）
+    if (!open) setAddMenu(null);
+  }, [open]);
+  const openAddMenu = useCallback(
+    (e: React.MouseEvent<HTMLButtonElement>) => {
+      if (Date.now() - addMenuClosedAtRef.current < 150) return;
+      const r = e.currentTarget.getBoundingClientRect();
+      const items: QuickMenuItem[] = [];
+      if (current !== undefined) {
+        const unit = { unitId: current.id, unitName: current.name };
+        items.push(
+          {
+            label: "历史会话",
+            icon: SIDE_PANE_TAB_META.history.icon,
+            onSelect: () => useSidePane.getState().openTab(unit),
+          },
+          {
+            label: "会话实时监控",
+            icon: SIDE_PANE_TAB_META.live.icon,
+            disabled: liveTarget === null,
+            onSelect: () => {
+              if (liveTarget === null) return;
+              useSidePane.getState().openLiveSession({ ...unit, ...liveTarget });
+            },
+          },
+          {
+            label: "计划 / 任务进度",
+            icon: SIDE_PANE_TAB_META.plan.icon,
+            onSelect: () => useSidePane.getState().openPlan(unit),
+          },
+          {
+            label: "变更审查",
+            icon: SIDE_PANE_TAB_META.diff.icon,
+            onSelect: () => useSidePane.getState().openDiff(unit),
+          },
+          { separator: true },
+        );
+      }
+      items.push({
+        label: "通知中心",
+        icon: SIDE_PANE_TAB_META.notify.icon,
+        onSelect: () => useSidePane.getState().openNotifications(),
+      });
+      setAddMenu({ x: r.left, y: r.bottom + 4, items });
+    },
+    [current, liveTarget],
+  );
+
+  /* ---- 手写 pointer 拖拽排序（零依赖）：4px 阈值区分点击；拖动中按 tab 中点
+     命中实时换位（moveTab 只重排可见子集，隐藏 tab 原位保序） ---- */
+  const tabStripRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef<{ tabId: string; moved: boolean; startX: number } | null>(null);
+  /** 拖拽刚结束的标记（带 tabId）：pointerup 先于 click 到达，压制**同一条**
+   *  tab 上拖拽尾部的误激活 —— 记 tabId 是因为全局时间戳会把 200ms 内对另一
+   *  条 tab 的正常点击也吞掉 */
+  const dragJustEndedRef = useRef<{ tabId: string; at: number } | null>(null);
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  useEffect(() => {
+    const onMove = (ev: PointerEvent): void => {
+      const st = dragRef.current;
+      if (st === null) return;
+      if (ev.buttons === 0) {
+        // titlebar-drag 热区（chip 间隙 / 条尾空白）会吞掉那里的 pointerup ——
+        // 收不到 onUp 时靠这里自愈：没按键还能收到 move，说明拖拽早已结束
+        dragJustEndedRef.current = { tabId: st.tabId, at: Date.now() };
+        dragRef.current = null;
+        setDraggingId(null);
+        return;
+      }
+      if (!st.moved) {
+        if (Math.abs(ev.clientX - st.startX) < 4) return;
+        st.moved = true;
+        setDraggingId(st.tabId);
+      }
+      const strip = tabStripRef.current;
+      if (strip === null) return;
+      const chips = Array.from(strip.querySelectorAll<HTMLElement>('[role="tab"][data-tab-id]'));
+      if (chips.length === 0) return;
+      let target = chips.length - 1;
+      for (let i = 0; i < chips.length; i++) {
+        const rect = chips[i]!.getBoundingClientRect();
+        if (ev.clientX < rect.left + rect.width / 2) {
+          target = i;
+          break;
+        }
+      }
+      const from = chips.findIndex((c) => c.dataset.tabId === st.tabId);
+      if (from < 0) return;
+      // 命中测试是 insert-before 语义（指针落在第 target 个 chip 中点左侧），
+      // moveTab 的参数是「移动后的最终下标」—— 右向拖（from < target）时被
+      // 越过的 chip 会在移除后前移一位，换算 -1 才不超前；左向两者同义
+      const drop = target > from ? target - 1 : target;
+      if (from !== drop) useSidePane.getState().moveTab(st.tabId, drop);
+    };
+    const onUp = (): void => {
+      const st = dragRef.current;
+      if (st !== null && st.moved) dragJustEndedRef.current = { tabId: st.tabId, at: Date.now() };
+      dragRef.current = null;
+      setDraggingId(null);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
+  }, []);
+
+  // 方向键漫游（ARIA tablist 的 roving 惯例）：←/→ 聚焦并激活相邻 tab
+  const focusNeighborTab = useCallback((fromTabId: string, dir: 1 | -1): void => {
+    const strip = tabStripRef.current;
+    if (strip === null) return;
+    const chips = Array.from(strip.querySelectorAll<HTMLElement>('[role="tab"][data-tab-id]'));
+    const idx = chips.findIndex((c) => c.dataset.tabId === fromTabId);
+    if (idx < 0) return;
+    const next = chips[(idx + dir + chips.length) % chips.length];
+    if (next === undefined || next.dataset.tabId === undefined) return;
+    next.focus();
+    useSidePane.getState().activateTab(next.dataset.tabId);
+  }, []);
+
+  // clear-on-shown：面板可见且聚焦某 tab = 用户正在看它，未读点熄灭 —— 覆盖
+  // 「收起期间积累、展开不走 activateTab」的路径（activateTab 自身的清点也归一到这）
+  const clearUnread = useSidePane((s) => s.clearUnread);
+  useEffect(() => {
+    if (open && visibleActiveTabId !== "") clearUnread(visibleActiveTabId);
+  }, [open, visibleActiveTabId, clearUnread]);
+
   return (
     <div className="flex h-full min-h-0 flex-col border-l border-line bg-card">
-      {/* tab 条：横向滚动；激活 tab 高亮，hover 出关闭 ×。无可见 tab 时标「功能」，
-          此时内容区就是功能主页。最右是收起钮 —— 与左栏顶部开关镜像（右侧栏自己
-          的开关在自己身上，不在主对话页；收起后重开走右上浮层钮）。
-          桌面端无边框窗口：tab 条是右列顶部的窗口拖拽热区；最右让出系统窗口
-          控制按钮条（--wco-w，浏览器为 0），收起钮不被其压住 */}
-      <div
-        role="tablist"
-        aria-label="右侧面板标签页"
-        className="titlebar-drag flex h-10 shrink-0 items-center gap-1 border-b border-line pl-2 pr-1"
-      >
-        <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
+      {/* tab 条：⌄ 总览（最左）→ 横向滚动的 tab → ＋ 新增 → 收起钮。
+          无可见 tab 时标「功能」，此时内容区就是功能主页。收起钮与左栏顶部开关
+          镜像（右侧栏自己的开关在自己身上）；桌面端无边框窗口下 tab 条是右列顶部
+          的窗口拖拽热区，最右让出系统窗口控制按钮条（--wco-w，浏览器为 0）。
+          role=tablist 放在滚动容器上 —— tab 必须是 tablist 的直接归属后代，
+          外层这行还混着总览/新增/收起按钮，不该算进 tablist */}
+      <div className="titlebar-drag flex h-10 shrink-0 items-center gap-1 border-b border-line pl-1 pr-1">
+        <SidePaneTabOverview />
+        <div
+          ref={tabStripRef}
+          role="tablist"
+          aria-label="右侧面板标签页"
+          className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"
+        >
           {visibleTabs.length === 0 && (
             <span className="flex h-7 shrink-0 select-none items-center gap-1.5 rounded-btn border border-teal/40 bg-teal-tint/60 px-2 text-caption text-ink">
               <LayoutGrid size={11} className="shrink-0 text-teal" />
               功能
             </span>
           )}
-          {visibleTabs.map((tab) => {
-            const active = tab.id === visibleActiveTabId;
-            return (
-              <div
-                key={tab.id}
-                role="tab"
-                aria-selected={active}
-                tabIndex={0}
-                onClick={() => activateTab(tab.id)}
-                onContextMenu={(e) => openTabMenu(e, tab.id)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") activateTab(tab.id);
-                }}
-                className={cn(
-                  "group flex h-7 shrink-0 cursor-pointer select-none items-center gap-1.5 rounded-btn border px-2 text-caption transition",
-                  active
-                    ? "border-teal/40 bg-teal-tint/60 text-ink"
-                    : "border-transparent text-graphite hover:bg-line-soft hover:text-ink",
-                )}
-              >
-                {tab.type === "history" && (
-                  <History size={11} className={active ? "shrink-0 text-teal" : "shrink-0 text-ash"} />
-                )}
-                {tab.type === "live" && (
-                  <Radio size={11} className={cn("shrink-0", active ? "text-teal" : "text-ash", active && "animate-pulse")} />
-                )}
-                {tab.type === "plan" && (
-                  <ListChecks size={11} className={active ? "shrink-0 text-teal" : "shrink-0 text-ash"} />
-                )}
-                {tab.type === "diff" && (
-                  <FileDiff size={11} className={active ? "shrink-0 text-teal" : "shrink-0 text-ash"} />
-                )}
-                <span className="max-w-44 truncate">{sidePaneTabTitle(tab)}</span>
-                {/* 行根承担 tab 切换，关闭用 span 实现（button 套 button 非法） */}
-                <span
-                  role="button"
-                  tabIndex={0}
-                  aria-label={`关闭 ${sidePaneTabTitle(tab)}`}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    closeTab(tab.id);
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.stopPropagation();
-                      closeTab(tab.id);
-                    }
-                  }}
-                  className="rounded p-0.5 text-ash opacity-0 transition hover:bg-line hover:text-ink focus-visible:opacity-100 group-hover:opacity-100"
-                >
-                  <X size={11} />
-                </span>
-              </div>
-            );
-          })}
+          {visibleTabs.map((tab) => (
+            <SidePaneTabChip
+              key={tab.id}
+              tab={tab}
+              active={tab.id === visibleActiveTabId}
+              dragging={draggingId === tab.id}
+              onPointerDown={(e) => {
+                if (e.button !== 0) return;
+                dragRef.current = { tabId: tab.id, moved: false, startX: e.clientX };
+              }}
+              onActivate={() => {
+                const d = dragJustEndedRef.current;
+                if (d !== null && d.tabId === tab.id && Date.now() - d.at < 200) return;
+                activateTab(tab.id);
+              }}
+              onAuxClose={(e) => {
+                if (e.button !== 1) return;
+                e.preventDefault();
+                closeTab(tab.id);
+              }}
+              onArrow={(dir) => focusNeighborTab(tab.id, dir)}
+              onContextMenu={(e) => openTabMenu(e, tab.id)}
+              onClose={() => closeTab(tab.id)}
+            />
+          ))}
         </div>
+        <button
+          type="button"
+          onClick={openAddMenu}
+          aria-label="新增标签页"
+          title="选择要在面板中打开的功能"
+          className="shrink-0 rounded-btn p-1 text-ash transition hover:bg-line-soft hover:text-ink"
+        >
+          <Plus size={14} />
+        </button>
         <button
           type="button"
           onClick={() => useSidePane.getState().toggleFromHeader()}
@@ -279,9 +440,17 @@ function SidePanePanelBody({
           状态徽标（工作中 / 后台守护）已迁左侧栏底部，移动端远控已迁设置页
           remoteControl 分区 —— 面板底部不再有状态条 */}
       <QuickContextMenu menu={tabMenu} onClose={() => setTabMenu(null)} />
+      <QuickContextMenu
+        menu={addMenu}
+        onClose={() => {
+          addMenuClosedAtRef.current = Date.now();
+          setAddMenu(null);
+        }}
+      />
       <div className="relative min-h-0 flex-1">
-        {visibleActiveTabId === "" && <SidePaneHome />}
-        {tabs.map((tab) => {
+        {visibleActiveTabId === "" && (
+          <SidePaneHome current={current ?? null} liveTarget={liveTarget} units={units} />
+        )}        {tabs.map((tab) => {
           const shown = open && tab.id === visibleActiveTabId;
           return (
             <div
@@ -294,6 +463,96 @@ function SidePanePanelBody({
           );
         })}
       </div>
+    </div>
+  );
+}
+
+/** tab 条上的单个标签：图标 / 标题 / 未读点（live 事件 / 通知中心新通知）自订阅 */
+function SidePaneTabChip({
+  tab,
+  active,
+  dragging,
+  onPointerDown,
+  onActivate,
+  onAuxClose,
+  onArrow,
+  onContextMenu,
+  onClose,
+}: {
+  tab: SidePaneTab;
+  active: boolean;
+  dragging: boolean;
+  onPointerDown: (e: React.PointerEvent) => void;
+  onActivate: () => void;
+  onAuxClose: (e: React.MouseEvent) => void;
+  onArrow: (dir: 1 | -1) => void;
+  onContextMenu: (e: React.MouseEvent) => void;
+  onClose: () => void;
+}): ReactElement {
+  const liveUnread = useSidePane((s) => s.unreadTabIds[tab.id] === true);
+  const notifyUnread = useNotifications((s) => (tab.type === "notify" ? s.items.some((n) => !n.read) : false));
+  const unread = liveUnread || notifyUnread;
+  const meta = SIDE_PANE_TAB_META[tab.type];
+  const Icon = meta.icon;
+  return (
+    <div
+      role="tab"
+      aria-selected={active}
+      tabIndex={0}
+      data-tab-id={tab.id}
+      onPointerDown={onPointerDown}
+      // 中键的自动滚动图钉在 mousedown 默认行为里，auxclick 拦不住 —— 这里拦
+      onMouseDown={(e) => {
+        if (e.button === 1) e.preventDefault();
+      }}
+      onClick={onActivate}
+      onAuxClick={onAuxClose}
+      onContextMenu={onContextMenu}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") onActivate();
+        else if (e.key === "ArrowLeft") {
+          e.preventDefault();
+          onArrow(-1);
+        } else if (e.key === "ArrowRight") {
+          e.preventDefault();
+          onArrow(1);
+        }
+      }}
+      className={cn(
+        "group flex h-7 shrink-0 cursor-pointer select-none items-center gap-1.5 rounded-btn border px-2 text-caption transition",
+        active
+          ? "border-teal/40 bg-teal-tint/60 text-ink"
+          : "border-transparent text-graphite hover:bg-line-soft hover:text-ink",
+        dragging && "cursor-grabbing opacity-70 ring-1 ring-teal/50",
+      )}
+    >
+      <Icon
+        size={11}
+        className={cn("shrink-0", active ? "text-teal" : "text-ash", active && tab.type === "live" && "animate-pulse")}
+      />
+      <span className="max-w-44 truncate">{meta.title(tab)}</span>
+      {unread && !active && (
+        <span role="img" aria-label="有未读" className="h-1.5 w-1.5 shrink-0 rounded-full bg-teal" />
+      )}
+      {/* 行根承担 tab 切换，关闭用 span 实现（button 套 button 非法） */}
+      <span
+        role="button"
+        tabIndex={0}
+        aria-label={`关闭 ${meta.title(tab)}`}
+        onClick={(e) => {
+          e.stopPropagation();
+          onClose();
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.stopPropagation();
+            onClose();
+          }
+        }}
+        className="rounded p-0.5 text-ash opacity-0 transition hover:bg-line hover:text-ink focus-visible:opacity-100 group-hover:opacity-100"
+      >
+        <X size={11} />
+      </span>
     </div>
   );
 }
@@ -315,112 +574,45 @@ const SidePaneTabContent = memo(function SidePaneTabContent({
 }) {
   // 稳定引用：否则 memo 挡不住 —— 每次父渲染生成的新箭头函数都会击穿比较
   const onFinished = useCallback(() => closeTab(tab.id), [closeTab, tab.id]);
-  if (tab.type === "history") {
-    return (
-      <HistoryPane
-        unitId={String(tab.ownerUnitId)}
-        unitName={tab.unitName}
-        focusKey={tab.focusKey}
-        isActive={shown}
-        onFinished={onFinished}
-      />
-    );
-  }
-  if (tab.type === "live") {
-    return <LiveSessionPane sessionId={tab.sessionId} runtimeId={tab.runtimeId} title={tab.title} shown={shown} />;
-  }
-  if (tab.type === "plan") {
-    return <PlanPane unitId={tab.ownerUnitId} shown={shown} />;
-  }
-  return <DiffTabContent unitId={tab.ownerUnitId} shown={shown} />;
+  return SIDE_PANE_TAB_META[tab.type].render(tab, { shown, closeTab, onFinished });
 });
-
-/** diff tab 的宿主：rootPath 从 units 现查（bot 改目录后 tab 跟着走），
- *  bot 被注销时给出空态而不是白屏 */
-function DiffTabContent({ unitId, shown }: { unitId: SidePaneTab["ownerUnitId"]; shown: boolean }): ReactElement {
-  const rootPath = useWorkbench((s) => s.units.find((u) => String(u.id) === String(unitId))?.rootPath);
-  if (rootPath === undefined) {
-    return (
-      <div className="flex h-full items-center justify-center p-4 text-center text-caption text-ash">
-        这个 bot 已经不在了（目录或定义被移除），变更审查无从挂载
-      </div>
-    );
-  }
-  return <DiffPane rootPath={rootPath} shown={shown} />;
-}
-
-function sidePaneTabTitle(tab: SidePaneTab): string {
-  switch (tab.type) {
-    case "history":
-      return `${tab.unitName} · 历史`;
-    case "live":
-      return tab.title !== "" ? tab.title : "会话监控";
-    case "plan":
-      return `${tab.unitName} · 计划`;
-    case "diff":
-      return `${tab.unitName} · 变更`;
-  }
-}
 
 /* ------------------------------------------------------------- 功能主页 */
 
 /**
  * 面板功能主页 —— 展开时若无可见 tab（或聚焦缺失），面板直接列出当前可点的功能
- * 入口，点选后才把对应内容以 tab 形式打开。四类入口：
- * - 各单元的历史会话（自动化任务、待办、心跳与手动会话的时间轴）；
- * - 会话实时监控：跟随一个在跑（或最近）的后台会话看它正在干什么；
- * - 计划 / 任务进度：活跃会话的步骤清单（plan-detail 对位）；
- * - 变更审查：工作目录改动面（git 对位，对话在左、改动在右）。
+ * 入口，点选后才把对应内容以 tab 形式打开。入口清单消费 sidePaneTabMeta 的
+ * SIDE_PANE_HOME_ENTRIES（与 ＋ 新增下拉同源）；「其他单元 · 历史」与当前 bot
+ * 的历史大卡保持独立渲染。
  */
-function SidePaneHome(): ReactElement {
-  const units = useWorkbench((s) => s.units);
-  const scopeUnitId = useSidePane((s) => s.scopeUnitId);
-  const [liveTarget, setLiveTarget] = useState<{ sessionId: string; runtimeId: string; title: string; running: boolean } | null>(null);
-  const current = units.find((u) => String(u.id) === String(scopeUnitId));
-  const others = units.filter((u) => String(u.id) !== String(scopeUnitId));
-
-  // 实时监控的默认目标：在跑的会话优先，否则最近一条有 id 的会话（回放也成立）。
-  // 换 bot 先清旧值 —— 主页跨 scope 常驻，不清会拿着上个 bot 的会话标题冒充
-  // 本 bot 的目标（点击还会开出一个 owner 错位的监控 tab）
-  const currentUnitId = current?.id;
-  useEffect(() => {
-    setLiveTarget(null);
-    if (currentUnitId === undefined) return;
-    let alive = true;
-    void fetchUnitHistory(currentUnitId, 30)
-      .then((list) => {
-        if (!alive) return;
-        const withId = list.filter((e) => e.sessionId !== null && e.sessionId !== "");
-        const running = withId.find((e) => e.status === "running");
-        const pick = running ?? withId[0];
-        setLiveTarget(
-          pick !== undefined && pick.sessionId !== null
-            ? { sessionId: pick.sessionId, runtimeId: pick.runtimeId, title: pick.title, running: pick.status === "running" }
-            : null,
-        );
-      })
-      .catch(() => {
-        if (alive) setLiveTarget(null);
-      });
-    return () => {
-      alive = false;
-    };
-  }, [currentUnitId]);
+function SidePaneHome({
+  current,
+  liveTarget,
+  units,
+}: {
+  current: WorkUnit | null;
+  liveTarget: SidePaneLiveTarget | null;
+  units: readonly WorkUnit[];
+}): ReactElement {
+  const others = units.filter((u) => String(u.id) !== String(current?.id));
+  const companion = SIDE_PANE_HOME_ENTRIES.filter((e) => e.group === "companion");
+  const workspace = SIDE_PANE_HOME_ENTRIES.filter((e) => e.group === "workspace");
 
   return (
     <div className="h-full min-h-0 overflow-y-auto p-3">
       <p className="text-body-sm font-medium text-ink">面板功能</p>
       <p className="mt-0.5 text-[10px] text-ash">点选要打开的功能，它将以标签页入驻本面板</p>
 
-      {current !== undefined && (
+      {current !== null && (
         <button
           type="button"
-          onClick={() =>
-            useSidePane.getState().openTab({ unitId: current.id, unitName: current.name })
-          }
+          onClick={() => useSidePane.getState().openTab({ unitId: current.id, unitName: current.name })}
           className="mt-3 flex w-full cursor-pointer items-start gap-2.5 rounded-card border border-line bg-canvas p-3 text-left transition hover:border-teal-edge hover:bg-teal-tint/40"
         >
-          <History size={16} className="mt-0.5 shrink-0 text-teal" />
+          {(() => {
+            const Icon = SIDE_PANE_TAB_META.history.icon;
+            return <Icon size={16} className="mt-0.5 shrink-0 text-teal" />;
+          })()}
           <span className="min-w-0">
             <span className="block text-body-sm font-medium text-ink">历史会话</span>
             <span className="mt-0.5 block text-caption text-graphite">
@@ -430,63 +622,80 @@ function SidePaneHome(): ReactElement {
         </button>
       )}
 
-      {/* 伴随视角：监控 / 计划 / 变更（ZCode bash-output / plan-detail / git 的对位） */}
-      {current !== undefined && (
+      {/* 伴随视角（ZCode bash-output / plan-detail / git 的对位）：跟 bot，入口清单与 ＋ 菜单同源 */}
+      {current !== null && (
         <>
           <p className="mt-4 text-[10px] font-medium tracking-wide text-ash">伴随视角</p>
           <div className="mt-1.5 space-y-1">
-            <button
-              type="button"
-              disabled={liveTarget === null}
-              onClick={() => {
-                if (liveTarget === null) return;
-                useSidePane.getState().openLiveSession({
-                  unitId: current.id,
-                  sessionId: liveTarget.sessionId,
-                  runtimeId: liveTarget.runtimeId,
-                  title: liveTarget.title,
-                });
-              }}
-              className="flex w-full cursor-pointer items-center gap-2 rounded-btn px-2 py-2 text-left transition hover:bg-line-soft disabled:cursor-default disabled:opacity-50"
-              title={liveTarget === null ? "还没有可监控的会话" : `跟随会话 ${liveTarget.sessionId} 的事件流`}
-            >
-              <Radio size={13} className={cn("shrink-0", liveTarget?.running ? "animate-pulse text-teal" : "text-ash")} />
-              <span className="min-w-0 flex-1">
-                <span className="block text-caption text-graphite">会话实时监控</span>
-                <span className="mt-0.5 block truncate text-[10px] text-ash">
-                  {liveTarget === null
-                    ? "还没有可监控的会话"
-                    : liveTarget.running
-                      ? `正在跑：${liveTarget.title}`
-                      : `最近：${liveTarget.title}（回放）`}
-                </span>
-              </span>
-            </button>
-            <button
-              type="button"
-              onClick={() => useSidePane.getState().openPlan({ unitId: current.id, unitName: current.name })}
-              className="flex w-full cursor-pointer items-center gap-2 rounded-btn px-2 py-2 text-left transition hover:bg-line-soft"
-            >
-              <ListChecks size={13} className="shrink-0 text-ash" />
-              <span className="min-w-0 flex-1">
-                <span className="block text-caption text-graphite">计划 / 任务进度</span>
-                <span className="mt-0.5 block text-[10px] text-ash">活跃会话的步骤清单，边干活边看进度</span>
-              </span>
-            </button>
-            <button
-              type="button"
-              onClick={() => useSidePane.getState().openDiff({ unitId: current.id, unitName: current.name })}
-              className="flex w-full cursor-pointer items-center gap-2 rounded-btn px-2 py-2 text-left transition hover:bg-line-soft"
-            >
-              <FileDiff size={13} className="shrink-0 text-ash" />
-              <span className="min-w-0 flex-1">
-                <span className="block text-caption text-graphite">变更审查</span>
-                <span className="mt-0.5 block text-[10px] text-ash">工作目录的改动与 diff，对话在左、改动在右</span>
-              </span>
-            </button>
+            {companion.map((entry) => {
+              const Icon = entry.icon;
+              const disabled = entry.requiresLiveTarget === true && liveTarget === null;
+              return (
+                <button
+                  key={entry.key}
+                  type="button"
+                  disabled={disabled}
+                  onClick={() => entry.open({ unitId: current.id, unitName: current.name, liveTarget })}
+                  className="flex w-full cursor-pointer items-center gap-2 rounded-btn px-2 py-2 text-left transition hover:bg-line-soft disabled:cursor-default disabled:opacity-50"
+                  title={
+                    entry.requiresLiveTarget === true && liveTarget === null
+                      ? "还没有可监控的会话"
+                      : entry.requiresLiveTarget === true
+                        ? `跟随会话 ${liveTarget!.sessionId} 的事件流`
+                        : undefined
+                  }
+                >
+                  <Icon
+                    size={13}
+                    className={cn(
+                      "shrink-0",
+                      entry.key === "live"
+                        ? liveTarget?.running
+                          ? "animate-pulse text-teal"
+                          : "text-ash"
+                        : "text-ash",
+                    )}
+                  />
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-caption text-graphite">{entry.label}</span>
+                    <span className="mt-0.5 block truncate text-[10px] text-ash">
+                      {entry.key === "live"
+                        ? liveTarget === null
+                          ? "还没有可监控的会话"
+                          : liveTarget.running
+                            ? `正在跑：${liveTarget.title}`
+                            : `最近：${liveTarget.title}（回放）`
+                        : entry.desc}
+                    </span>
+                  </span>
+                </button>
+              );
+            })}
           </div>
         </>
       )}
+
+      {/* 工作区级入口（不跟 bot，任何视角常驻） */}
+      <p className="mt-4 text-[10px] font-medium tracking-wide text-ash">工作区</p>
+      <div className="mt-1.5 space-y-1">
+        {workspace.map((entry) => {
+          const Icon = entry.icon;
+          return (
+            <button
+              key={entry.key}
+              type="button"
+              onClick={() => entry.open({ unitId: current?.id ?? null, unitName: current?.name ?? "", liveTarget })}
+              className="flex w-full cursor-pointer items-center gap-2 rounded-btn px-2 py-2 text-left transition hover:bg-line-soft"
+            >
+              <Icon size={13} className="shrink-0 text-ash" />
+              <span className="min-w-0 flex-1">
+                <span className="block text-caption text-graphite">{entry.label}</span>
+                <span className="mt-0.5 block truncate text-[10px] text-ash">{entry.desc}</span>
+              </span>
+            </button>
+          );
+        })}
+      </div>
 
       {others.length > 0 && (
         <>
@@ -503,7 +712,10 @@ function SidePaneHome(): ReactElement {
                 }}
                 className="flex w-full cursor-pointer items-center gap-2 rounded-btn px-2 py-1.5 text-left text-caption text-graphite transition hover:bg-line-soft hover:text-ink"
               >
-                <History size={12} className="shrink-0 text-ash" />
+                {(() => {
+                  const Icon = SIDE_PANE_TAB_META.history.icon;
+                  return <Icon size={12} className="shrink-0 text-ash" />;
+                })()}
                 <span className="min-w-0 truncate">{u.name} 的历史</span>
               </button>
             ))}
@@ -516,7 +728,7 @@ function SidePaneHome(): ReactElement {
       )}
 
       <p className="mt-4 border-t border-line-soft pt-2 text-[10px] leading-relaxed text-ash">
-        更多功能将陆续以标签页形式入驻本面板。
+        Ctrl+Alt+B 开合面板 · Alt+1-9 切换标签 · ⌄ 总览搜索与重开最近关闭
       </p>
     </div>
   );
