@@ -962,6 +962,28 @@ export class Store {
     return Number(result.lastInsertRowid);
   }
 
+  /** 最近一条挂着该原生引用的终端运行行（「回到同一会话不增行」的定位查询） */
+  latestTerminalRunByResume(runtimeId: string, resumeRef: string): { id: number } | undefined {
+    const row = this.db
+      .prepare(`SELECT id FROM terminal_runs WHERE runtime_id = ? AND resume_ref = ? ORDER BY id DESC LIMIT 1`)
+      .get(runtimeId, resumeRef) as { id: unknown } | undefined;
+    return row === undefined ? undefined : { id: Number(row.id) };
+  }
+
+  /**
+   * 重挂：同一场原生会话再次打开时，把既有运行行指向新终端并复位为 running ——
+   * 「回到它」是一次继续，不是一条新记录（用户在历史里点同一行 N 次，列表里
+   * 不该多出 N 条「手动 交互式会话」）。exit 帧按 terminal_id 结算照常命中。
+   */
+  reattachTerminalRun(id: number, terminalId: string): void {
+    this.db
+      .prepare(
+        `UPDATE terminal_runs SET terminal_id = ?, status = 'running', started_at = ?, finished_at = NULL, detail = NULL
+         WHERE id = ?`,
+      )
+      .run(terminalId, Date.now(), id);
+  }
+
   /** 更新终端运行的标题或恢复引用（捕获到首条消息时实时写回） */
   setTerminalRunTitle(terminalId: string, title: string, resumeRef?: string | null): void {
     if (resumeRef) {

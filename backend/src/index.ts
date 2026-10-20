@@ -1146,8 +1146,14 @@ registerMethod("terminal.dispatch", (params) => {
   const resumeRef = typeof p.resumeRef === "string" && p.resumeRef !== "" ? p.resumeRef : null;
   return (async () => {
     const terminalId = await launchExecutorTerminal({ runtimeId, unitId, rootPath, args });
-    const runId = store.startTerminalRun({ terminalId, unitId, unitName, runtimeId, resumeRef });
-    log.info("terminal dispatched manually", { terminalId, runId, unitId, runtimeId, args });
+    // 同一场原生会话的再次打开是「继续」不是「新记录」：重挂既有行（点同一行
+    // N 次不该多出 N 条手动会话）；全新会话才 INSERT
+    const existing = resumeRef !== null ? store.latestTerminalRunByResume(runtimeId, resumeRef) : undefined;
+    const runId =
+      existing !== undefined
+        ? (store.reattachTerminalRun(existing.id, terminalId), existing.id)
+        : store.startTerminalRun({ terminalId, unitId, unitName, runtimeId, resumeRef });
+    log.info("terminal dispatched manually", { terminalId, runId, unitId, runtimeId, args, reattached: existing !== undefined });
     return { terminalId, runId };
   })();
 });

@@ -292,6 +292,8 @@ export function HistoryPane({
       rootPath: u.rootPath,
       runtimeId: s.executorId,
       args,
+      // 带原生引用落库：同会话再开走「重挂」不增行（见 terminal.dispatch）
+      resumeRef: s.sessionId,
     })
       .then(() => {
         const wb = useWorkbench.getState();

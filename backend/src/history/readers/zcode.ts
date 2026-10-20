@@ -58,8 +58,10 @@ function scanAll(limit: number): ZcodeScan[] {
 /**
  * sqlite 兜底源（~/.zcode/cli/db/db.sqlite 的 session 表）：CLI 近期会话在这里，
  * v2/sessions 的 JSON 只有落盘存档（实测本机 JSON 全是 claude-import 旧档）。
- * 排除已删（time_deleted）与内部 subagent 会话（sess_subagent_*，TUI 恢复用不上
- * 且会污染时间窗匹配）。正文不在此库，read() 对 sqlite-only 会话自然落 null。
+ * 只收 `sess_...` 的行 —— TUI 的 --resume 只认这个格式（--help 实测）；
+ * `session_*`（app-server/host 面的会话，如工作台自己的 host 流）与
+ * `sess_subagent_*`（内部子代理）传给 --resume 会静默开新会话，不收。
+ * 正文不在此库，read() 对 sqlite-only 会话自然落 null。
  */
 function scanSqlite(limit: number, exclude: ReadonlySet<string>): ZcodeScan[] {
   const dbPath = path.join(homeDir(), ".zcode", "cli", "db", "db.sqlite");
@@ -70,7 +72,7 @@ function scanSqlite(limit: number, exclude: ReadonlySet<string>): ZcodeScan[] {
     const rows = db
       .prepare(
         `SELECT id, directory, path, title, time_created, time_updated FROM session
-         WHERE time_deleted IS NULL AND id NOT LIKE 'sess_subagent_%'
+         WHERE time_deleted IS NULL AND id LIKE 'sess_%' AND id NOT LIKE 'sess_subagent_%'
          ORDER BY time_created DESC LIMIT ?`,
       )
       .all(limit) as unknown[];
