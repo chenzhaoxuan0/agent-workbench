@@ -1451,7 +1451,7 @@ export async function fetchNativeSessionDetail(
  * args 透传给 CLI（历史会话恢复用，如 zcode 的 --resume <sessionId>）。
  */
 export async function dispatchTerminal(
-  input: { unitId: string; unitName: string; rootPath: string; runtimeId: string; args?: string[] },
+  input: { unitId: string; unitName: string; rootPath: string; runtimeId: string; args?: string[]; resumeRef?: string | null },
   endpoint: string = defaultDaemonEndpoint(),
 ): Promise<{ terminalId: string; runId: number }> {
   const client = DaemonClient.get(endpoint);

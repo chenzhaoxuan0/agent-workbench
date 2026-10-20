@@ -175,6 +175,8 @@ export function HistoryPane({
       rootPath: u.rootPath,
       runtimeId: e.runtimeId,
       args,
+      // 带着原生引用派发 —— daemon 落库后这条新运行重启也能继续「回到它」
+      resumeRef: e.resumeRef,
     })
       .then(() => {
         const wb = useWorkbench.getState();

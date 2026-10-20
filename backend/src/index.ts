@@ -5,7 +5,7 @@
  * Phase 1 在这里注册 session.* 方法并把 RuntimeEvent 接进 broadcastEvent。
  */
 
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { timingSafeEqual } from "node:crypto";
@@ -13,7 +13,6 @@ import type { IncomingMessage } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { exec, spawn } from "node:child_process";
 import { loadConfig } from "./config.ts";
 import { healthPayload, isLocalOrigin, isLoopbackAddr, startHttp, type HttpRoute } from "./httpd.ts";
@@ -60,7 +59,8 @@ import { createComputerControl } from "./computerctl/server.ts";
 import { COMPUTER_MCP_PATH, controlActions, registerAcpEntriesProvider, setControlContext } from "./ctrl/store.ts";
 import { TerminalManager } from "./terminal/terminals.ts";
 import { Store } from "./store/db.ts";
-import { listNativeSessions, readNativeSession } from "./history/index.ts";
+import { listNativeSessions, readNativeSession, readerOf, type NativeSessionSummary } from "./history/index.ts";
+import { samePath } from "./history/util.ts";
 import { AutomationScheduler } from "./automation/scheduler.ts";
 import { QuotaResumeWatcher } from "./automation/quotaResume.ts";
 import { QuotaProbe } from "./backlog/probe.ts";
@@ -1126,7 +1126,7 @@ registerMethod("terminal.create", (params) => {
  * 标签带「派发」徽章）。不带 prompt，人在 TUI 里自己敲。
  */
 registerMethod("terminal.dispatch", (params) => {
-  const p = (params ?? {}) as { unitId?: string; unitName?: string; rootPath?: string; runtimeId?: string; args?: unknown };
+  const p = (params ?? {}) as { unitId?: string; unitName?: string; rootPath?: string; runtimeId?: string; args?: unknown; resumeRef?: unknown };
   if (typeof p.unitId !== "string" || p.unitId === "" || typeof p.rootPath !== "string" || p.rootPath === "" ||
       typeof p.runtimeId !== "string" || p.runtimeId === "") {
     throw Object.assign(new Error("unitId, rootPath, runtimeId are required"), { code: "bad_params" });
@@ -1140,9 +1140,12 @@ registerMethod("terminal.dispatch", (params) => {
   const rootPath = p.rootPath;
   const runtimeId = p.runtimeId.replace(/^daemon:/, "");
   const args = Array.isArray(p.args) ? (p.args as string[]) : undefined;
+  // 带 --resume/--session 派发时把原生会话引用一并落库：重启后这条运行仍可
+  // 「回到它」——否则每次重启后的重开都产生一条没有 ref 的新行，链就断了
+  const resumeRef = typeof p.resumeRef === "string" && p.resumeRef !== "" ? p.resumeRef : null;
   return (async () => {
     const terminalId = await launchExecutorTerminal({ runtimeId, unitId, rootPath, args });
-    const runId = store.startTerminalRun({ terminalId, unitId, unitName, runtimeId });
+    const runId = store.startTerminalRun({ terminalId, unitId, unitName, runtimeId, resumeRef });
     log.info("terminal dispatched manually", { terminalId, runId, unitId, runtimeId, args });
     return { terminalId, runId };
   })();
@@ -1562,103 +1565,83 @@ interface UnitHistoryEntry {
 /**
  * 尝试从各 CLI 原生存储中回溯历史交互式会话的标题与恢复引用（mcode、zcode、claude 等）
  */
-/** unit.history 里已尝试过 resume 回溯的 terminal_run 行 id（每进程一次，防轮询反复开 sqlite / 读 history.jsonl） */
-const terminalResumeAttempted = new Set<number>();
+/**
+ * unit.history 里 terminal 行 resume 回溯的节流台账：
+ * - 已结算行每进程只试一次（结算后原生存储不再变化，重试无意义）；
+ * - running 行原生 id 可能还没刷出来，允许重试但**全局节流**（≥10s/行）——
+ *   此前 running 行每次调用都重扫原生存储，侧栏子列表 30s × 历史面板 20s 的
+ *   多路轮询会把它放大成事件循环上的同步读风暴（reader 内部是同步 fs），
+ *   unit.history 15s 超时的偶发红字就是这么来的。
+ */
+const terminalResumeAttempted = new Set<string>();
+const terminalResumeRunningAt = new Map<number, number>();
+const TERMINAL_RESUME_RETRY_MS = 10_000;
 
-function resolveNativeTerminalSession(
+/**
+ * 原生会话列表的短 TTL 缓存（执行器|工作区 → 列表）：同一 bot 的多行回溯、
+ * 多路轮询、terminal/automation/backlog 三类终端行共享一次扫描。
+ */
+const nativeListCache = new Map<string, { at: number; rows: readonly NativeSessionSummary[] }>();
+const nativeListInFlight = new Map<string, Promise<readonly NativeSessionSummary[]>>();
+const NATIVE_LIST_TTL_MS = 30_000;
+
+function cachedNativeList(executorId: string, rootPath: string | null): Promise<readonly NativeSessionSummary[]> {
+  const key = `${executorId}|${rootPath ?? ""}`;
+  const hit = nativeListCache.get(key);
+  if (hit !== undefined && Date.now() - hit.at < NATIVE_LIST_TTL_MS) return Promise.resolve(hit.rows);
+  const flying = nativeListInFlight.get(key);
+  if (flying !== undefined) return flying;
+  const reader = readerOf(executorId);
+  const p = (reader !== null ? reader.list(rootPath, 200) : Promise.resolve([]))
+    .catch(() => [] as readonly NativeSessionSummary[])
+    .then((rows) => {
+      nativeListCache.set(key, { at: Date.now(), rows });
+      nativeListInFlight.delete(key);
+      return rows;
+    });
+  nativeListInFlight.set(key, p);
+  return p;
+}
+
+/**
+ * TUI 运行的原生会话回溯：按「时间窗 ±30s + 工作目录吻合优先」在原生存储里找
+ * 这场运行对应的 CLI 会话，取其 id 当 resumeRef。
+ * 复用 history/ 的 9 家 reader（pi/claude/codex/grok/mcode/kimi/dsh/zcode/hermes）
+ * —— 此前手写的同步版只盖 3 家，且 claude 整份 readFileSync history.jsonl、
+ * mcode 前置通配 LIKE 全表扫。注意 reader 内部仍是同步 fs：靠上面的 TTL 缓存 +
+ * 行级节流钉住扫描频率，本函数自身只做内存匹配。
+ * title 为空也返回 ref（旧版「title 空就连 session_id 一起丢」是个洞）。
+ */
+async function resolveNativeTerminalSession(
   runtimeId: string,
   rootPath: string,
   startedAt: number,
   endedAt: number | null,
-): { title: string; resumeRef: string | null } | null {
+): Promise<{ title: string; resumeRef: string | null } | null> {
   const bareRuntime = runtimeId.replace(/^daemon:/, "").replace(/:yolo$/, "");
-  const home = os.homedir();
+  if (readerOf(bareRuntime) === null) return null;
   const minTime = startedAt - 30_000;
   const maxTime = (endedAt ?? Date.now()) + 30_000;
-
-  if (bareRuntime === "mcode") {
-    try {
-      const dbPath = path.join(home, ".minimax", "v2", "sqlite", "runtime-state.sqlite");
-      if (existsSync(dbPath)) {
-        const db = new DatabaseSync(dbPath, { open: true, readOnly: true });
-        try {
-          const base = rootPath ? path.basename(rootPath) : "";
-          const pattern = base !== "" ? `%${base}%` : "%";
-          const row = db
-            .prepare(
-              `SELECT session_id, title, created_at_ms FROM local_runtime_sessions
-               WHERE workspace_dir LIKE ? AND created_at_ms >= ? AND created_at_ms <= ?
-               ORDER BY created_at_ms ASC LIMIT 1`,
-            )
-            .get(pattern, minTime, maxTime) as Record<string, unknown> | undefined;
-          if (row && typeof row["title"] === "string" && row["title"].trim() !== "") {
-            return {
-              title: String(row["title"]).trim(),
-              resumeRef: row["session_id"] ? String(row["session_id"]) : null,
-            };
-          }
-        } finally {
-          db.close();
-        }
-      }
-    } catch {
-      // 容错
+  const rows = await cachedNativeList(bareRuntime, rootPath !== "" ? rootPath : null);
+  let best: NativeSessionSummary | null = null;
+  let bestPathMatch = false;
+  for (const s of rows) {
+    if (s.sessionId === "" || s.startedAt < minTime || s.startedAt > maxTime) continue;
+    const pathMatch = rootPath !== "" && s.rootPath !== null && samePath(s.rootPath, rootPath);
+    // 会话带明确工作目录且与运行目录不符 → 同窗内别的项目会话，排除；
+    // 目录未知（null）的保留为弱候选，靠时间窗与优先级兜底
+    if (!pathMatch && s.rootPath !== null && rootPath !== "") continue;
+    if (
+      best === null ||
+      (pathMatch && !bestPathMatch) ||
+      (pathMatch === bestPathMatch && Math.abs(s.startedAt - startedAt) < Math.abs(best.startedAt - startedAt))
+    ) {
+      best = s;
+      bestPathMatch = pathMatch;
     }
   }
-
-  if (bareRuntime === "zcode") {
-    try {
-      const dbPath = path.join(home, ".zcode", "cli", "db", "db.sqlite");
-      if (existsSync(dbPath)) {
-        const db = new DatabaseSync(dbPath, { open: true, readOnly: true });
-        try {
-          const row = db
-            .prepare(
-              `SELECT id, title, time_created FROM session
-               WHERE time_created >= ? AND time_created <= ?
-               ORDER BY time_created ASC LIMIT 1`,
-            )
-            .get(minTime, maxTime) as Record<string, unknown> | undefined;
-          if (row && typeof row["title"] === "string" && row["title"].trim() !== "") {
-            return {
-              title: String(row["title"]).trim(),
-              resumeRef: row["id"] ? String(row["id"]) : null,
-            };
-          }
-        } finally {
-          db.close();
-        }
-      }
-    } catch {
-      // 容错
-    }
-  }
-
-  if (bareRuntime === "claude") {
-    try {
-      const histPath = path.join(home, ".claude", "history.jsonl");
-      if (existsSync(histPath)) {
-        const content = readFileSync(histPath, "utf8");
-        const lines = content.split(/\r?\n/).filter(Boolean).slice(-100);
-        for (const line of lines) {
-          try {
-            const data = JSON.parse(line) as Record<string, unknown>;
-            const ts = Number(data["timestamp"]);
-            if (ts >= minTime && ts <= maxTime && typeof data["display"] === "string" && data["display"].trim() !== "") {
-              return {
-                title: String(data["display"]).trim(),
-                resumeRef: data["sessionId"] ? String(data["sessionId"]) : null,
-              };
-            }
-          } catch {}
-        }
-      }
-    } catch {
-      // 容错
-    }
-  }
-
-  return null;
+  if (best === null) return null;
+  return { title: best.title.trim(), resumeRef: best.sessionId };
 }
 
 registerMethod("unit.history", async (params) => {
@@ -1678,9 +1661,17 @@ registerMethod("unit.history", async (params) => {
   for (const a of store.listAutomations()) {
     if (targetUnitId !== null && a.unitId !== targetUnitId) continue;
     const uName = botMap.get(a.unitId)?.name ?? a.unitId;
+    const autoRootPath = (botMap.get(a.unitId)?.rootPath ? String(botMap.get(a.unitId)?.rootPath) : "") || defaultBotRootPath;
     for (const r of store.listAutomationRuns(a.id, limit)) {
       const isTerminal = r.sessionId !== null && r.sessionId.startsWith("autoterm_");
       const launchMode: "terminal" | "headless" = isTerminal ? "terminal" : (r.sessionId !== null ? "headless" : a.launchMode);
+      // terminal 模式的自动化行同样回溯原生 ref（automation_runs 没有 resume_ref
+      // 列，不落库 —— 每调用按 TTL 缓存现匹配，命中的成本只是内存过滤）
+      let terminalResumeRef: string | null = null;
+      if (isTerminal && r.sessionId !== null) {
+        const resolved = await resolveNativeTerminalSession(a.runtimeId, autoRootPath, r.startedAt, r.finishedAt);
+        terminalResumeRef = resolved?.resumeRef ?? null;
+      }
       entries.push({
         key: `automation-${r.id}`,
         kind: "automation",
@@ -1698,7 +1689,7 @@ registerMethod("unit.history", async (params) => {
         sessionId: !isTerminal ? r.sessionId : null,
         resumeRef: !isTerminal && r.sessionId !== null
           ? (store.getSession(r.sessionId)?.cliRef ?? null)
-          : null,
+          : terminalResumeRef,
         terminalId: isTerminal ? r.sessionId : null,
       });
     }
@@ -1707,9 +1698,16 @@ registerMethod("unit.history", async (params) => {
   for (const item of store.listBacklogItems()) {
     if (targetUnitId !== null && item.unitId !== targetUnitId) continue;
     const uName = botMap.get(item.unitId)?.name ?? item.unitName ?? item.unitId;
+    const blRootPath = (botMap.get(item.unitId)?.rootPath ? String(botMap.get(item.unitId)?.rootPath) : "") || defaultBotRootPath;
     for (const r of store.listBacklogRuns(item.id, limit)) {
       const isTerminal = r.sessionId !== null && r.sessionId.startsWith("autoterm_");
       if (r.sessionId !== null && !isTerminal) claimedSessionIds.add(r.sessionId);
+      // terminal 模式的待办行同 automation：TTL 缓存现匹配原生 ref（不落库）
+      let terminalResumeRef: string | null = null;
+      if (isTerminal && r.sessionId !== null) {
+        const resolved = await resolveNativeTerminalSession(r.runtimeId, blRootPath, r.startedAt, r.finishedAt);
+        terminalResumeRef = resolved?.resumeRef ?? null;
+      }
       entries.push({
         key: `backlog-${r.id}`,
         kind: "backlog",
@@ -1725,28 +1723,38 @@ registerMethod("unit.history", async (params) => {
         endedAt: r.finishedAt,
         detail: r.detail,
         sessionId: r.sessionId !== null && !isTerminal ? r.sessionId : null,
-        resumeRef: r.sessionId !== null && !isTerminal ? (store.getSession(r.sessionId)?.cliRef ?? null) : null,
+        resumeRef: r.sessionId !== null && !isTerminal ? (store.getSession(r.sessionId)?.cliRef ?? null) : terminalResumeRef,
         terminalId: isTerminal ? r.sessionId : null,
       });
     }
   }
 
+  if (terminalResumeRunningAt.size > 500) terminalResumeRunningAt.clear();
+
   for (const r of store.listTerminalRuns(targetUnitId ?? undefined, limit)) {
     let title = r.title;
     let resumeRef = r.resumeRef;
     const botRootPath = (botMap.get(r.unitId)?.rootPath ? String(botMap.get(r.unitId)?.rootPath) : "") || defaultBotRootPath;
-    // resume_ref 缺失就从原生存储回溯 —— 原先只在标题为空时才回溯，而派发终端
-    // 常有 title 帧先落库，resume_ref 从此补不上：侧栏 TUI 行点了只能落详情弹窗。
-    // 每行每进程只试一次（running 的除外——原生会话 id 可能还没刷出来，允许重试），
-    // 避免展开子列表 + 30s 轮询反复开 sqlite / 读整份 history.jsonl。
-    if (!resumeRef && (r.status === "running" || !terminalResumeAttempted.has(r.id))) {
-      if (r.status !== "running") terminalResumeAttempted.add(r.id);
-      const resolved = resolveNativeTerminalSession(r.runtimeId, botRootPath, r.startedAt, r.finishedAt);
-      if (resolved) {
-        if (!title || title === "" || title === "交互式会话") title = resolved.title;
-        if (resolved.resumeRef) {
-          resumeRef = resolved.resumeRef;
-          store.updateTerminalRunResume(r.id, title ?? "交互式会话", resumeRef);
+    // resume_ref 缺失就从原生存储回溯 —— 实时捕获（dispatch 带 ref 落库）是
+    // 第一顺位，这里是兜底。结算行每进程只试一次；running 行全局节流 ≥10s/行
+    // （原生 id 可能还没刷出来，允许重试，但不能让多路轮询变成同步读风暴）。
+    // 回溯本身走 history reader + TTL 缓存，见 resolveNativeTerminalSession 注释。
+    if (!resumeRef) {
+      const now = Date.now();
+      const mayAttempt =
+        r.status === "running"
+          ? now - (terminalResumeRunningAt.get(r.id) ?? 0) >= TERMINAL_RESUME_RETRY_MS
+          : !terminalResumeAttempted.has(`manual-${r.id}`);
+      if (mayAttempt) {
+        if (r.status === "running") terminalResumeRunningAt.set(r.id, now);
+        else terminalResumeAttempted.add(`manual-${r.id}`);
+        const resolved = await resolveNativeTerminalSession(r.runtimeId, botRootPath, r.startedAt, r.finishedAt);
+        if (resolved !== null) {
+          if ((!title || title === "" || title === "交互式会话") && resolved.title !== "") title = resolved.title;
+          if (resolved.resumeRef !== null) {
+            resumeRef = resolved.resumeRef;
+            store.updateTerminalRunResume(r.id, title ?? "交互式会话", resumeRef);
+          }
         }
       }
     }

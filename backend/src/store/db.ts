@@ -944,13 +944,13 @@ export class Store {
 
   // ---- 手动派发终端（terminal.dispatch → unit.history 的 manual 条目）----------
 
-  startTerminalRun(a: { terminalId: string; unitId: string; unitName: string; runtimeId: string; title?: string | null }): number {
+  startTerminalRun(a: { terminalId: string; unitId: string; unitName: string; runtimeId: string; title?: string | null; resumeRef?: string | null }): number {
     const result = this.db
       .prepare(
-        `INSERT INTO terminal_runs (terminal_id, unit_id, unit_name, runtime_id, status, started_at, title)
-         VALUES (?, ?, ?, ?, 'running', ?, ?)`,
+        `INSERT INTO terminal_runs (terminal_id, unit_id, unit_name, runtime_id, status, started_at, title, resume_ref)
+         VALUES (?, ?, ?, ?, 'running', ?, ?, ?)`,
       )
-      .run(a.terminalId, a.unitId, a.unitName, a.runtimeId, Date.now(), a.title ?? null);
+      .run(a.terminalId, a.unitId, a.unitName, a.runtimeId, Date.now(), a.title ?? null, a.resumeRef ?? null);
     return Number(result.lastInsertRowid);
   }
 
