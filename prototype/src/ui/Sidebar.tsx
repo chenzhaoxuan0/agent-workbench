@@ -947,6 +947,7 @@ function UnitRow({
                     },
                   ]
                 : []),
+              { label: "历史详情", icon: History, onSelect: openHistoryTab },
               { label: "设置", icon: Settings, onSelect: onOpenSettings },
               { label: "新建 TUI 会话", icon: SquareTerminal, onSelect: () => openNewTuiForUnit(unit) },
               { label: "新建会话", icon: Plus, onSelect: () => openNewChatForUnit(unit) },
@@ -1243,43 +1244,8 @@ function UnitRow({
               }}
               className="flex w-full cursor-pointer items-center justify-between rounded-btn px-1.5 py-1 text-left text-[10px] text-ash transition hover:bg-line-soft hover:text-graphite"
             >
-              <span>更多（展开后 {Math.min(6, filteredEntries.length - visibleCount)} 条…）</span>
+              <span>更多</span>
               <span className="text-[9px] text-ash/70">剩余 {filteredEntries.length - visibleCount} 条</span>
-            </button>
-          )}
-          {filteredEntries !== null && filteredEntries.length > 0 && hiddenFailedCount > 0 && (
-            <div className="flex items-center justify-between px-1.5 py-0.5 text-[9px] text-ash/60">
-              <span>已根据设置隐藏 {hiddenFailedCount} 条失败记录</span>
-            </div>
-          )}
-          {filteredEntries !== null && hiddenArchivedCount > 0 && (
-            <div className="flex items-center justify-between px-1.5 py-0.5 text-[9px] text-ash/60">
-              <span>已归档 {hiddenArchivedCount} 个任务</span>
-              <button
-                type="button"
-                data-no-drag
-                onClick={(e) => {
-                  e.stopPropagation();
-                  useShell.getState().openSettings("archivedTasks");
-                }}
-                className="text-teal hover:underline cursor-pointer"
-              >
-                查看抽屉 →
-              </button>
-            </div>
-          )}
-          {filteredEntries !== null && filteredEntries.length > 6 && filteredEntries.length <= visibleCount && (
-            <button
-              type="button"
-              data-no-drag
-              draggable={false}
-              onClick={(e) => {
-                e.stopPropagation();
-                openHistoryTab();
-              }}
-              className="w-full cursor-pointer rounded-btn px-1.5 py-1 text-left text-[10px] text-ash hover:bg-line-soft hover:text-graphite"
-            >
-              查看完整历史对话详情 →
             </button>
           )}
         </div>
@@ -1322,6 +1288,20 @@ function UnitRow({
             size={12}
             className={cn(isResident && "fill-teal text-teal rotate-45")}
           />
+        </button>
+        <button
+          type="button"
+          draggable={false}
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            openHistoryTab();
+          }}
+          aria-label={`${unit.name} 完整历史对话详情`}
+          title="查看完整历史对话详情"
+          className="cursor-pointer rounded-btn p-1 text-ash hover:bg-line-soft hover:text-ink active:scale-90 transition"
+        >
+          <History size={12} />
         </button>
         <button
           type="button"
@@ -1527,7 +1507,13 @@ function HistoryListRow({
         active ? "bg-teal-tint" : "hover:bg-line-soft",
       )}
     >
-      {/* 执行器图标 ↔ 置顶钮同位交叉淡入：平时显示执行器（品牌图片或 2 字母徽标），
+      {/* 1. 状态灯槽：位于每个会话的最前面（最左边），先于执行器图标。
+          正常情况下空出形成子列表退格效果，仅亮灯时（未读绿灯/执行中呼吸/出错红灯）才显示。 */}
+      <span className="flex h-3.5 w-2.5 shrink-0 items-center justify-center" aria-hidden>
+        {dotCls !== null ? <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", dotCls)} /> : null}
+      </span>
+
+      {/* 2. 执行器图标 ↔ 置顶钮同位交叉淡入：平时显示执行器（品牌图片或 2 字母徽标），
           hover 时淡入 pin（点击置顶）；已置顶恒显实心 pin。行根是 button，
           pin 用 span 承载（button 套 button 非法） */}
       <span className="relative flex h-3.5 w-3.5 shrink-0 items-center justify-center">
@@ -1570,59 +1556,60 @@ function HistoryListRow({
           <Pin size={10} className={pinned ? "fill-teal text-teal" : "text-graphite"} />
         </span>
       </span>
-      {/* 状态灯：只讲异常与值得注意的事 —— 执行中呼吸、未读完成绿灯、出错红灯、
-          仅开着蓝静态；日常已读状态不亮灯（对齐 ZCode deriveTaskLeadingIndicator） */}
-      {dotCls !== null && <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", dotCls)} />}
-      {/* 来源标签：这条会话怎么来的（定时/待办/手动/渠道）；工作台普通对话不带
-          标签 —— 默认形态不占位，带标签的都是「值得说明来历」的 */}
-      {originTag !== null && (
-        <span
-          className={cn("shrink-0 rounded-full px-1 py-px text-[9px] font-medium", originTag.cls)}
-          title={originTag.tip}
-        >
-          {originTag.label}
-        </span>
-      )}
+
+      {/* 3. 标题：正常情况下直接跟在执行器后面，横向独占剩余所有空间，保证最完整展示 */}
       <span className="min-w-0 flex-1 truncate text-[11px] text-graphite">{entry.title}</span>
-      {(versionCount !== undefined && versionCount > 1) || entry.forkKind === "branch" || entry.forkKind === "revision" ? (
+
+      {/* 4. 悬停元信息标签组（手动/定时/待办来源、分叉血缘、打开方式切换）：
+          正常情况下隐藏不挤压标题空间，鼠标移上去时才在靠后位置展示 */}
+      <span className="hidden shrink-0 items-center gap-1 group-hover/hrow:flex">
+        {originTag !== null && (
+          <span
+            className={cn("shrink-0 rounded-full px-1 py-px text-[9px] font-medium", originTag.cls)}
+            title={originTag.tip}
+          >
+            {originTag.label}
+          </span>
+        )}
+        {((versionCount !== undefined && versionCount > 1) || entry.forkKind === "branch" || entry.forkKind === "revision") && (
+          <span
+            className="flex shrink-0 items-center gap-0.5 rounded-full bg-teal-tint px-1 py-px text-[9px] text-teal"
+            title={
+              versionCount !== undefined && versionCount > 1
+                ? `同一轮的 ${versionCount} 个重发版本（历史弹窗里可展开导航）`
+                : "这段是从更早的对话分叉出来的"
+            }
+          >
+            <GitBranch size={8} />
+            {versionCount !== undefined && versionCount > 1 ? `×${versionCount}` : "分叉"}
+          </span>
+        )}
         <span
-          className="flex shrink-0 items-center gap-0.5 rounded-full bg-teal-tint px-1 py-px text-[9px] text-teal"
-          title={
-            versionCount !== undefined && versionCount > 1
-              ? `同一轮的 ${versionCount} 个重发版本（历史弹窗里可展开导航）`
-              : "这段是从更早的对话分叉出来的"
-          }
-        >
-          <GitBranch size={8} />
-          {versionCount !== undefined && versionCount > 1 ? `×${versionCount}` : "分叉"}
-        </span>
-      ) : null}
-      {/* 打开方式徽标 = 来源标签 + 快速切换按钮（点击在 聊天页/TUI 之间换默认打开方式） */}
-      <span
-        role={canToggle ? "button" : undefined}
-        tabIndex={canToggle ? 0 : undefined}
-        data-no-drag
-        onClick={(ev) => {
-          if (!canToggle) return;
-          ev.stopPropagation();
-          onToggleMode();
-        }}
-        onKeyDown={(ev) => {
-          if (!canToggle) return;
-          if (ev.key === "Enter" || ev.key === " ") {
+          role={canToggle ? "button" : undefined}
+          tabIndex={canToggle ? 0 : undefined}
+          data-no-drag
+          onClick={(ev) => {
+            if (!canToggle) return;
             ev.stopPropagation();
             onToggleMode();
-          }
-        }}
-        title={modeTip}
-        className={cn(
-          "flex shrink-0 items-center gap-0.5 rounded-full px-1 py-px text-[9px] font-medium",
-          mode.effective === "chat" ? "bg-teal-tint text-teal" : "bg-violet-500/15 text-violet-500",
-          canToggle ? "cursor-pointer transition hover:opacity-75" : "cursor-default opacity-80",
-        )}
-      >
-        {mode.effective === "chat" ? <MessageSquare size={8} /> : <SquareTerminal size={8} />}
-        {modeLabel}
+          }}
+          onKeyDown={(ev) => {
+            if (!canToggle) return;
+            if (ev.key === "Enter" || ev.key === " ") {
+              ev.stopPropagation();
+              onToggleMode();
+            }
+          }}
+          title={modeTip}
+          className={cn(
+            "flex shrink-0 items-center gap-0.5 rounded-full px-1 py-px text-[9px] font-medium",
+            mode.effective === "chat" ? "bg-teal-tint text-teal" : "bg-violet-500/15 text-violet-500",
+            canToggle ? "cursor-pointer transition hover:opacity-75" : "cursor-default opacity-80",
+          )}
+        >
+          {mode.effective === "chat" ? <MessageSquare size={8} /> : <SquareTerminal size={8} />}
+          {modeLabel}
+        </span>
       </span>
       {/* 会话时间 ↔ 归档钮同位交叉淡入：
           平时固定 22px 紧凑宽度显示相对时间（居中对齐、等宽数字保证整个子列表整齐划一，不挤占标题），
