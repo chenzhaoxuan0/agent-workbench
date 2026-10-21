@@ -1,48 +1,174 @@
 import { useState } from "react";
-import { Check, Radio, RotateCcw } from "lucide-react";
+import { Check, HelpCircle, Info, Radio, RotateCcw } from "lucide-react";
 import { useBacklog } from "../store/useBacklog.ts";
 import { useWorkState, WORK_PHASE_DESCRIPTIONS } from "../store/useWorkState.ts";
 import { cn } from "./cn.ts";
 
 /**
- * 状态徽标（工作中 / 后台守护）—— 落点：全局底栏（GlobalStatusBar）。
- * 迁移史：工作区头部（挤占高频操作）→ 右侧栏底条（太深）→ 左侧栏底部
- * （264px 栏宽装不下 288px 弹层，溢出出横向滚动条）→ 全局底栏：全局状态
- * 住全局层，弹层有整个窗口的宽度可用，与三列布局解耦。移动端远控同批
- * 迁往设置页 remoteControl 分区。
+ * 状态徽标与说明 —— 落点：全局底栏（GlobalStatusBar）。
+ *
+ * 遵循用户界面清晰原则：
+ * 1. 所有的状态灯光只保留在「左侧栏历史会话列表」的最前方，用于反映单个会话的运行/通知状态；
+ * 2. 底栏最左侧第 1 位提供「会话指示灯说明」弹层，详述每种灯光含义与右键控制方式；
+ * 3. 底栏的「工作状态」与「后台守护」彻底去灯化，采用纯文字展示，避免不同区域的灯光产生概念混淆。
  *
  * popoverUp：栖在底栏时详情层朝上开（默认朝下，供其他位置复用）。
  * align：底栏内容居左，左锚定（"left"）避免弹层向左出窗。
  */
 
-/**
- * 弹层锚定：垂直（popoverUp：栖在栏底时朝上开）+ 水平（align：栖在窗口左缘
- * 的左栏里必须左锚定——右锚定会把 288px 的弹层往左推出窗口外；右栏/头部
- * 场景保持默认右锚定）。
- */
 function popoverAnchorCls(up: boolean, align: "left" | "right"): string {
   const vertical = up ? "bottom-full mb-1.5" : "top-full mt-1.5";
   const horizontal = align === "left" ? "left-0" : "right-0";
   return `absolute ${vertical} ${horizontal} z-40`;
 }
 
-const PHASE_DOT_CLS: Record<string, string> = {
-  busy: "bg-line-strong",
-  idle: "bg-gain",
-  beating: "bg-teal animate-pulse",
-  awaiting_confirm: "bg-amber-500 animate-pulse",
-  executing: "bg-blue-500 animate-pulse",
-  awaiting_review: "bg-violet-500",
-};
+/**
+ * 底栏最左侧第 1 位：会话列表指示灯说明徽标与图例弹层
+ */
+export function SessionLightLegendBadge({
+  popoverUp = false,
+  align = "left",
+}: {
+  popoverUp?: boolean;
+  align?: "left" | "right";
+}) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        aria-label="查看会话列表指示灯说明"
+        title="会话列表指示灯说明：了解蓝灯呼吸、绿灯、浅蓝灯、红灯的含义与控制方式"
+        className="flex h-6 cursor-pointer items-center gap-1.5 rounded-btn px-2 text-caption text-graphite transition hover:bg-line-soft hover:text-ink"
+      >
+        <HelpCircle size={12} className="text-ash" />
+        <span>会话灯说明</span>
+      </button>
+
+      {open && (
+        <>
+          <span className="fixed inset-0 z-30" onClick={() => setOpen(false)} aria-hidden />
+          <div
+            className={cn(
+              popoverAnchorCls(popoverUp, align),
+              "w-88 rounded-card border border-line bg-canvas p-3.5 text-caption leading-relaxed shadow-subtle",
+            )}
+          >
+            <div className="flex items-center justify-between border-b border-line-soft pb-2 text-body-sm font-medium text-ink">
+              <span className="flex items-center gap-1.5">
+                <HelpCircle size={14} className="text-teal" />
+                会话列表状态灯说明
+              </span>
+              <span className="rounded bg-line-soft px-1.5 py-0.5 text-[10px] font-normal text-ash">
+                左侧栏独占
+              </span>
+            </div>
+
+            <p className="mt-2 text-[11px] text-graphite">
+              为避免全局灯光混淆，工作台指示灯<b>仅在左侧栏会话标题最左侧</b>出现，用于提示任务状态与结果：
+            </p>
+
+            <div className="mt-3 space-y-2.5">
+              {/* 蓝灯呼吸 */}
+              <div className="flex items-start gap-2.5">
+                <span className="mt-1 h-2.5 w-2.5 shrink-0 rounded-full bg-blue-500 animate-pulse" />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-medium text-ink">任务执行中</span>
+                    <span className="rounded bg-blue-50 px-1 py-0.2 text-[10px] text-blue-600 dark:bg-blue-950 dark:text-blue-300">
+                      蓝灯呼吸
+                    </span>
+                  </div>
+                  <p className="mt-0.5 text-[11px] leading-snug text-ash">
+                    终端 CLI 正在运行/思考输出中，或后台自动化/待办任务正在执行。
+                  </p>
+                </div>
+              </div>
+
+              {/* 绿灯常亮 */}
+              <div className="flex items-start gap-2.5">
+                <span className="mt-1 h-2.5 w-2.5 shrink-0 rounded-full bg-gain" />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-medium text-ink">新结果未读</span>
+                    <span className="rounded bg-emerald-50 px-1 py-0.2 text-[10px] text-emerald-600 dark:bg-emerald-950 dark:text-emerald-300">
+                      绿灯常亮
+                    </span>
+                  </div>
+                  <p className="mt-0.5 text-[11px] leading-snug text-ash">
+                    任务已完成且有新产出，点击进入该会话查看后将自动消灯。
+                  </p>
+                </div>
+              </div>
+
+              {/* 浅蓝常亮 */}
+              <div className="flex items-start gap-2.5">
+                <span className="mt-1 h-2.5 w-2.5 shrink-0 rounded-full bg-blue-500/70" />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-medium text-ink">空闲在线</span>
+                    <span className="rounded bg-sky-50 px-1 py-0.2 text-[10px] text-sky-600 dark:bg-sky-950 dark:text-sky-300">
+                      浅蓝静态
+                    </span>
+                  </div>
+                  <p className="mt-0.5 text-[11px] leading-snug text-ash">
+                    交互式会话仍挂在后台就绪，可随时切换并继续交互。
+                  </p>
+                </div>
+              </div>
+
+              {/* 红灯常亮 */}
+              <div className="flex items-start gap-2.5">
+                <span className="mt-1 h-2.5 w-2.5 shrink-0 rounded-full bg-loss" />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-medium text-ink">执行失败 / 异常</span>
+                    <span className="rounded bg-rose-50 px-1 py-0.2 text-[10px] text-rose-600 dark:bg-rose-950 dark:text-rose-300">
+                      红灯常亮
+                    </span>
+                  </div>
+                  <p className="mt-0.5 text-[11px] leading-snug text-ash">
+                    任务执行出错或非正常退出，可进入会话或右键详情查看报错。
+                  </p>
+                </div>
+              </div>
+
+              {/* 无灯退格 */}
+              <div className="flex items-start gap-2.5">
+                <span className="mt-1 h-2.5 w-2.5 shrink-0 rounded-full border border-dashed border-line-strong bg-transparent" />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-medium text-ink">已查看历史</span>
+                    <span className="text-[10px] text-ash">不显灯（退格占位）</span>
+                  </div>
+                  <p className="mt-0.5 text-[11px] leading-snug text-ash">
+                    已读且已结束的正常会话，空出灯位保持列表整齐且不打扰视觉。
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* 用户完全控制权提示卡片 */}
+            <div className="mt-3 rounded-card border border-line-soft bg-line-soft/40 p-2 text-[11px] leading-relaxed text-graphite">
+              <p className="flex items-center gap-1 font-medium text-ink">
+                <Info size={12} className="text-teal" />
+                用户自主控制权：
+              </p>
+              <p className="mt-0.5 text-ash">
+                若任何会话灯未自动关闭或你想自定义状态，只需<b>右键点击该会话</b>，即可选择「取消此会话状态灯」、「标为已读/未读」或「恢复系统自动灯」。
+              </p>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
 
 /**
- * 全局工作状态点（共识 Q18）：工作中/空闲/心跳中/待确认/执行中/待验收。
- * 点开看三件事：
- * - 判定依据（为什么忙/为什么闲）、心跳信息；
- * - **全部状态清单**：每个状态会发生什么（忙碌=待办不自动执行、空闲=心跳提议…），
- *   治「状态是个黑盒」；
- * - **手动指定**：点任一状态把它定为当前状态（显示层覆盖；「工作中」同时打开
- *   后端强制忙碌=真实免打扰门禁），「跟随系统」恢复自动判定。
+ * 全局工作状态（纯文字展示，无状态灯）
+ * 点开看判定依据、心跳信息，并可手动指定或恢复跟随系统。
  */
 export function WorkPhaseBadge({ popoverUp = false, align = "right" }: { popoverUp?: boolean; align?: "left" | "right" }) {
   const [open, setOpen] = useState(false);
@@ -55,17 +181,17 @@ export function WorkPhaseBadge({ popoverUp = false, align = "right" }: { popover
   const manual = useWorkState((s) => s.manual);
   const setManual = useWorkState((s) => s.setManual);
 
-  const autoPhase = phase !== null ? (phase in PHASE_DOT_CLS ? phase : "busy") : null;
-  // 展示优先级：后端强制忙碌（别的入口开的门禁，如实呈现）> 手动指定 > 自动判定 > 未连接
+  const autoPhase = phase !== null ? phase : "busy";
+  // 展示优先级：后端强制忙碌 > 手动指定 > 自动判定 > 未连接
   const shown = forceBusy ? "busy" : (manual ?? autoPhase);
-  const m =
+  const label =
     forceBusy
-      ? { cls: "bg-amber-500", label: "强制忙碌" }
+      ? "强制忙碌"
       : shown !== null
-        ? { cls: PHASE_DOT_CLS[shown]!, label: WORK_PHASE_DESCRIPTIONS.find((d) => d.phase === shown)?.label ?? "工作中" }
-        : { cls: "bg-line", label: "连接中" };
+        ? WORK_PHASE_DESCRIPTIONS.find((d) => d.phase === shown)?.label ?? "工作中"
+        : "连接中";
 
-  /** 手动指定一个状态：「工作中」顺带开真实门禁（forceBusy），其余纯显示覆盖 */
+  /** 手动指定一个状态 */
   const applyManual = (p: (typeof WORK_PHASE_DESCRIPTIONS)[number]["phase"]): void => {
     setManual(p);
     if (p === "busy" && !forceBusy) void setForceBusy(true);
@@ -80,21 +206,19 @@ export function WorkPhaseBadge({ popoverUp = false, align = "right" }: { popover
     <div className="relative">
       <button
         onClick={() => setOpen((o) => !o)}
-        aria-label={`工作状态：${m.label}，点击查看详情与全部状态`}
-        title={forceBusy ? "工作状态：强制忙碌（心跳免打扰模式生效中）" : `工作状态：${m.label}${manual !== null && !forceBusy ? "（手动指定，点击可改回跟随系统）" : ""}`}
+        aria-label={`工作状态：${label}，点击查看详情与全部状态`}
+        title={forceBusy ? "工作状态：强制忙碌（免打扰模式生效中）" : `工作状态：${label}${manual !== null && !forceBusy ? "（手动指定，点击可改回跟随系统）" : ""}`}
         className={cn(
-          "flex h-6 items-center gap-1.5 rounded-btn px-2 transition hover:bg-line-soft",
+          "flex h-6 cursor-pointer items-center rounded-btn px-2 text-caption transition hover:bg-line-soft",
           (forceBusy || manual === "busy") && "bg-amber-500/10 hover:bg-amber-500/20",
         )}
       >
-        <span className={cn("h-2 w-2 rounded-full", m.cls)} />
         <span
           className={cn(
-            "text-caption",
-            forceBusy || manual === "busy" ? "font-medium text-amber-700" : "text-graphite",
+            forceBusy || manual === "busy" ? "font-medium text-amber-700 dark:text-amber-400" : "text-graphite",
           )}
         >
-          {m.label}
+          {label}
         </span>
       </button>
 
@@ -102,9 +226,8 @@ export function WorkPhaseBadge({ popoverUp = false, align = "right" }: { popover
         <>
           <span className="fixed inset-0 z-30" onClick={() => setOpen(false)} aria-hidden />
           <div className={cn(popoverAnchorCls(popoverUp, align), "w-80 rounded-card border border-line bg-canvas p-3 shadow-subtle text-caption leading-relaxed")}>
-            <div className="flex items-center gap-1.5 border-b border-line-soft pb-1.5 text-body-sm font-medium text-ink">
-              <span className={cn("h-2 w-2 rounded-full", m.cls)} />
-              {forceBusy ? "强制忙碌（免打扰模式）" : m.label}
+            <div className="border-b border-line-soft pb-1.5 text-body-sm font-medium text-ink">
+              {forceBusy ? "强制忙碌（免打扰模式）" : `当前状态：${label}`}
             </div>
             <div className="mt-2 space-y-1.5 text-graphite">
               {reason !== null && manual === null && <p>{reason}</p>}
@@ -117,7 +240,7 @@ export function WorkPhaseBadge({ popoverUp = false, align = "right" }: { popover
               {lastOutcome !== null && <p className="text-ash">上次心跳：{lastOutcome}</p>}
             </div>
 
-            {/* 全部状态清单：每个状态会发生什么 + 点击手动指定。勾选 = 当前生效态 */}
+            {/* 全部状态清单（纯文字列表，无小彩灯，避免与会话灯混淆） */}
             <div className="mt-2.5 border-t border-line-soft pt-2">
               <p className="mb-1 text-[10px] font-medium tracking-wide text-ash">全部工作状态（点击指定为当前状态）</p>
               <div className="space-y-0.5">
@@ -129,18 +252,17 @@ export function WorkPhaseBadge({ popoverUp = false, align = "right" }: { popover
                       onClick={() => applyManual(d.phase)}
                       title={`把当前状态指定为「${d.label}」`}
                       className={cn(
-                        "flex w-full cursor-pointer items-start gap-2 rounded-btn px-1.5 py-1 text-left transition hover:bg-line-soft",
+                        "flex w-full cursor-pointer items-start justify-between rounded-btn px-2 py-1.5 text-left transition hover:bg-line-soft",
                         active && "bg-teal-tint/60",
                       )}
                     >
-                      <span className={cn("mt-1.5 h-2 w-2 shrink-0 rounded-full", PHASE_DOT_CLS[d.phase])} />
-                      <span className="min-w-0 flex-1">
-                        <span className={cn("flex items-center gap-1 text-caption", active ? "font-medium text-ink" : "text-graphite")}>
+                      <div className="min-w-0 flex-1">
+                        <span className={cn("block text-caption", active ? "font-medium text-ink" : "text-graphite")}>
                           {d.label}
-                          {active && <Check size={10} className="text-teal" aria-label="当前状态" />}
                         </span>
                         <span className="mt-0.5 block text-[10px] leading-relaxed text-ash">{d.desc}</span>
-                      </span>
+                      </div>
+                      {active && <Check size={12} className="mt-0.5 shrink-0 text-teal" aria-label="当前状态" />}
                     </button>
                   );
                 })}
@@ -152,7 +274,7 @@ export function WorkPhaseBadge({ popoverUp = false, align = "right" }: { popover
                   "mt-1.5 flex w-full items-center justify-center gap-1 rounded-btn px-2 py-1.5 text-caption transition",
                   manual === null && !forceBusy
                     ? "cursor-default text-ash/60"
-                    : "bg-line-soft text-graphite hover:text-ink",
+                    : "bg-line-soft text-graphite hover:text-ink cursor-pointer",
                 )}
               >
                 <RotateCcw size={10} />
@@ -162,7 +284,6 @@ export function WorkPhaseBadge({ popoverUp = false, align = "right" }: { popover
 
             <p className="mt-2 border-t border-line-soft pt-1.5 text-[10px] text-ash">
               指定「工作中」= 强制忙碌（免打扰）：心跳不再提议、待办不自动执行；其余状态仅改变状态显示，判定继续。
-              空闲心跳提议启动待办时，任何启动都要经你确认。
             </p>
           </div>
         </>
@@ -172,8 +293,8 @@ export function WorkPhaseBadge({ popoverUp = false, align = "right" }: { popover
 }
 
 /**
- * 后台守护指示 —— 不是工作状态，是「你不在时工作台仍在值班」的能力在线灯。
- * 绿点恒亮（能力常驻），点开用人话讲清它到底在替你做什么。
+ * 后台守护指示（纯文字展示，无绿灯）
+ * 点开用人话讲清后台守护在无人值守时替你做什么。
  */
 export function BackgroundGuardianBadge({ popoverUp = false, align = "right" }: { popoverUp?: boolean; align?: "right" | "left" }) {
   const [open, setOpen] = useState(false);
@@ -182,24 +303,23 @@ export function BackgroundGuardianBadge({ popoverUp = false, align = "right" }: 
     <div className="relative">
       <button
         onClick={() => setOpen((o) => !o)}
-        aria-label="后台守护：飞书 / Telegram 指令、定时任务、记忆蒸馏在无人值守时照常运行，点击了解详情"
-        title="后台守护 —— 你不在电脑前时工作台仍在值班（点击了解它在做什么）"
-        className="group flex h-6 items-center gap-1.5 rounded-btn px-1.5 text-caption text-graphite transition hover:bg-line-soft hover:text-ink"
+        aria-label="后台守护在线：飞书 / Telegram 指令、定时任务、记忆蒸馏在无人值守时照常运行，点击了解详情"
+        title="后台守护在线 —— 你不在电脑前时工作台仍在值班（点击了解它在做什么）"
+        className="group flex h-6 cursor-pointer items-center gap-1.5 rounded-btn px-2 text-caption text-graphite transition hover:bg-line-soft hover:text-ink"
       >
         <Radio size={12} className="text-ash transition group-hover:text-ink" />
-        <span className="h-1.5 w-1.5 rounded-full bg-gain" />
+        <span>后台守护在线</span>
       </button>
 
       {open && (
         <>
           <span className="fixed inset-0 z-30" onClick={() => setOpen(false)} aria-hidden />
           <div className={cn(popoverAnchorCls(popoverUp, align), "w-76 rounded-card border border-line bg-canvas p-3 shadow-subtle text-caption leading-relaxed")}>
-            <div className="flex items-center gap-1.5 text-body-sm font-medium text-ink pb-1.5 border-b border-line-soft">
-              <span className="h-2 w-2 rounded-full bg-emerald-500" />
-              <span>后台守护在线 —— 你不在时，工作台替你值班</span>
+            <div className="text-body-sm font-medium text-ink pb-1.5 border-b border-line-soft">
+              后台守护在线 —— 你不在时，工作台替你值班
             </div>
             <p className="mt-2 text-graphite">
-              这盏绿灯表示：即使你关掉前台、离开电脑，下面这些事仍会照常发生并留下记录 ——
+              后台守护持续运行：即使你关掉前台、离开电脑，下面这些任务仍会照常进行并保留完整记录 ——
             </p>
             <div className="mt-1.5 space-y-1.5 text-graphite">
               <p className="flex items-start gap-1.5">

@@ -1,5 +1,5 @@
 import { useCallback, useRef } from "react";
-import { BackgroundGuardianBadge, WorkPhaseBadge } from "./StatusIndicators.tsx";
+import { BackgroundGuardianBadge, SessionLightLegendBadge, WorkPhaseBadge } from "./StatusIndicators.tsx";
 import { Taskbar } from "./taskbar/Taskbar.tsx";
 import { STATUSBAR_MIN, useShell } from "../store/useShell.ts";
 import { useSidePane } from "../store/useSidePane.ts";
@@ -15,7 +15,10 @@ import { cn } from "./cn.ts";
  * useShell.statusBarHeight。
  *
  * 分区镜像上方三列（宽度同源、拖拽跟手）：
- * - 左下角（侧栏正下方）：工作状态 / 后台守护徽标 —— 原住民原位；
+ * - 左下角（侧栏正下方）：
+ *   1. 会话指示灯说明（底栏第 1 位入口，详述会话灯含义与右键操作）
+ *   2. 工作状态（纯文字展示）
+ *   3. 后台守护在线（纯文字展示）
  * - 中段（主对话列正下方）：任务栏折叠区（「正在播放」chips）；
  * - 右段（右侧面板正下方）：留空对齐。
  * 侧栏收起时左下角由徽标自然占住（min-width: fit-content）—— 角是徽标的，
@@ -84,13 +87,15 @@ export function GlobalStatusBar() {
         />
       )}
 
-      {/* 左下角：原状态徽标。宽度跟随侧栏（min-width 兜住徽标自然宽度，
-          侧栏收得比徽标还窄 / 收起时角仍是徽标的） */}
+      {/* 左下角：最左侧第 1 位展示会话灯说明，随后是工作状态和后台守护（纯文字，无彩灯） */}
       <div
-        className="flex shrink-0 items-center gap-3 px-3"
+        className="flex shrink-0 items-center gap-1.5 px-2.5"
         style={{ width: leftZone, minWidth: "fit-content" }}
       >
+        <SessionLightLegendBadge popoverUp align="left" />
+        <span className="h-3 w-px bg-line/60" />
         <WorkPhaseBadge popoverUp align="left" />
+        <span className="h-3 w-px bg-line/60" />
         <BackgroundGuardianBadge popoverUp align="left" />
       </div>
       {/* 折叠区：主对话列正下方（Taskbar 常驻挂载——空栏也要在，

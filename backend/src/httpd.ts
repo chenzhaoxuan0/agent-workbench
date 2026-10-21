@@ -204,10 +204,24 @@ export function startHttp(
   });
 
   return new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(config.port, config.host, () => {
-      const addr = server.address() as AddressInfo;
-      resolve({ server, port: addr.port });
-    });
+    let retries = 0;
+    const maxRetries = process.env.NODE_ENV !== "production" ? 3 : 0;
+    const tryListen = () => {
+      const onError = (err: NodeJS.ErrnoException) => {
+        if (err.code === "EADDRINUSE" && retries < maxRetries) {
+          retries++;
+          setTimeout(tryListen, 300);
+          return;
+        }
+        reject(err);
+      };
+      server.once("error", onError);
+      server.listen(config.port, config.host, () => {
+        server.removeListener("error", onError);
+        const addr = server.address() as AddressInfo;
+        resolve({ server, port: addr.port });
+      });
+    };
+    tryListen();
   });
 }

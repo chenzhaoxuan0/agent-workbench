@@ -3,7 +3,11 @@ import {
   AlarmClock,
   Archive,
   ArchiveRestore,
+  Check,
+  CheckCircle2,
   ChevronLeft,
+  CircleDot,
+  EyeOff,
   FolderGit2,
   FolderPlus,
   GitBranch,
@@ -16,6 +20,7 @@ import {
   Pin,
   Plus,
   Radio,
+  RotateCcw,
   Search,
   Settings,
   SquareTerminal,
@@ -716,7 +721,12 @@ function deriveHistoryLight(
   entry: UnitHistoryEntry,
   sessionStatusById: ReadonlyMap<string, string>,
   unread: boolean,
+  lightOverride?: HistoryLight | null,
 ): HistoryLight {
+  // 用户手动覆盖（消灯、标绿灯、设为完成等）具有最高优先级
+  if (lightOverride !== undefined && lightOverride !== null) {
+    return lightOverride;
+  }
   if (entry.status === "failed") return "failed";
   if (unread && entry.endedAt !== null) return "unread";
   // 已明确结束的会话绝不亮蓝灯
@@ -1119,6 +1129,9 @@ function UnitRow({
                         : canTui
                           ? "tui"
                           : originMode;
+            const lightOverride =
+              historyPrefs.lightOverrides[e.key] ??
+              (e.sessionId !== null ? historyPrefs.lightOverrides[`session-${e.sessionId}`] : undefined);
             const light = deriveHistoryLight(
               e,
               sessionStatusById,
@@ -1127,6 +1140,7 @@ function UnitRow({
                 e.sessionId !== null ? [e.key, `session-${e.sessionId}`] : [e.key],
                 e.endedAt,
               ),
+              lightOverride,
             );
             const rowActive =
               mainView === "chat" && e.sessionId !== null && String(activeSessionId) === e.sessionId;
@@ -1237,6 +1251,75 @@ function UnitRow({
                         icon: isEntryArchived ? ArchiveRestore : Archive,
                         onSelect: () => useHistoryPrefs.getState().toggleArchived(e),
                       },
+                      { separator: true },
+                      ...(light !== "none"
+                        ? [
+                            {
+                              label: "取消此会话状态灯（消灯）",
+                              icon: EyeOff,
+                              onSelect: () => {
+                                const hp = useHistoryPrefs.getState();
+                                hp.clearLight(e.key);
+                                if (e.sessionId !== null) {
+                                  hp.clearLight(`session-${e.sessionId}`);
+                                  hp.markViewed([e.key, `session-${e.sessionId}`]);
+                                } else {
+                                  hp.markViewed([e.key]);
+                                }
+                              },
+                            },
+                          ]
+                        : []),
+                      ...(light === "unread"
+                        ? [
+                            {
+                              label: "标为已读（消除绿灯）",
+                              icon: CheckCircle2,
+                              onSelect: () => {
+                                const hp = useHistoryPrefs.getState();
+                                hp.markViewed(e.sessionId !== null ? [e.key, `session-${e.sessionId}`] : [e.key]);
+                                hp.setLightOverride(e.key, "none");
+                                if (e.sessionId !== null) hp.setLightOverride(`session-${e.sessionId}`, "none");
+                              },
+                            },
+                          ]
+                        : [
+                            {
+                              label: "标为未读（显示绿灯）",
+                              icon: CircleDot,
+                              onSelect: () => {
+                                const hp = useHistoryPrefs.getState();
+                                hp.setLightOverride(e.key, "unread");
+                                if (e.sessionId !== null) hp.setLightOverride(`session-${e.sessionId}`, "unread");
+                              },
+                            },
+                          ]),
+                      ...(light === "executing" || light === "alive" || light === "failed"
+                        ? [
+                            {
+                              label: "标为已完成（消除蓝/红灯）",
+                              icon: Check,
+                              onSelect: () => {
+                                const hp = useHistoryPrefs.getState();
+                                hp.clearLight(e.key);
+                                if (e.sessionId !== null) hp.clearLight(`session-${e.sessionId}`);
+                              },
+                            },
+                          ]
+                        : []),
+                      ...(lightOverride !== undefined && lightOverride !== null
+                        ? [
+                            {
+                              label: "恢复系统自动灯",
+                              icon: RotateCcw,
+                              onSelect: () => {
+                                const hp = useHistoryPrefs.getState();
+                                hp.setLightOverride(e.key, null);
+                                if (e.sessionId !== null) hp.setLightOverride(`session-${e.sessionId}`, null);
+                              },
+                            },
+                          ]
+                        : []),
                       { separator: true },
                       {
                         label: "对话详情",

@@ -42,6 +42,11 @@ export interface HistoryPrefs {
   autoArchiveEnabled: boolean;
   /** 自动归档保留时长天数（默认 7，选项 3/7/14/30，对齐 ZCode taskAutoArchiveOlderThanDays） */
   autoArchiveOlderThanDays: number;
+  /**
+   * 用户手动覆盖的会话状态灯（entry key -> 状态值）。
+   * 允许用户强制消灯（"none"）或手动标为绿灯（"unread"）/蓝灯/红灯，赋予用户对灯的完全控制权。
+   */
+  lightOverrides: Record<string, "none" | "unread" | "alive" | "executing" | "failed">;
 }
 
 export const AUTO_ARCHIVE_DAY_OPTIONS = [3, 7, 14, 30] as const;
@@ -57,6 +62,7 @@ const DEFAULTS: HistoryPrefs = {
   archivedEntries: {},
   autoArchiveEnabled: false,
   autoArchiveOlderThanDays: 7,
+  lightOverrides: {},
 };
 
 /** 已读标记容量上限：超出后丢最旧的（FIFO），防止 localStorage 无限膨胀 */
@@ -102,6 +108,10 @@ function load(): HistoryPrefs {
         typeof p.autoArchiveOlderThanDays === "number" && p.autoArchiveOlderThanDays > 0
           ? p.autoArchiveOlderThanDays
           : DEFAULTS.autoArchiveOlderThanDays,
+      lightOverrides:
+        p.lightOverrides !== null && typeof p.lightOverrides === "object"
+          ? (p.lightOverrides as Record<string, "none" | "unread" | "alive" | "executing" | "failed">)
+          : {},
     };
   } catch {
     return { ...DEFAULTS, lightsSinceTs: Date.now() };
@@ -140,6 +150,10 @@ export interface HistoryPrefsStore {
   togglePinned: (key: string) => void;
   /** 批量置顶（导入会话用） */
   pinKeys: (keys: string[]) => void;
+  /** 用户手动覆盖会话灯状态：传 "none" 彻底消灯，传 null 恢复系统自动判定 */
+  setLightOverride: (key: string, light: "none" | "unread" | "alive" | "executing" | "failed" | null) => void;
+  /** 彻底清除某条会话的灯（消灯且标记已读） */
+  clearLight: (key: string) => void;
   /** 归档一条任务/会话：移入抽屉，不再显示在左侧栏占用空间 */
   archiveEntry: (entry: UnitHistoryEntry) => void;
   /** 取消归档任务（恢复显示在左侧栏） */
@@ -170,6 +184,23 @@ export const useHistoryPrefs = create<HistoryPrefsStore>((set, get) => ({
   resetDefaults: () => {
     persist({ ...DEFAULTS, lightsSinceTs: get().prefs.lightsSinceTs || Date.now() });
     set((state) => ({ prefs: { ...DEFAULTS, lightsSinceTs: state.prefs.lightsSinceTs || Date.now() } }));
+  },
+  setLightOverride: (key, light) => {
+    set((state) => {
+      const nextMap = { ...state.prefs.lightOverrides };
+      if (light === null) {
+        delete nextMap[key];
+      } else {
+        nextMap[key] = light;
+      }
+      const next = { ...state.prefs, lightOverrides: nextMap };
+      persist(next);
+      return { prefs: next };
+    });
+  },
+  clearLight: (key) => {
+    get().setLightOverride(key, "none");
+    get().markViewed(key);
   },
   markViewed: (keys) => {
     const incoming = Array.isArray(keys) ? [...keys] : [keys];
