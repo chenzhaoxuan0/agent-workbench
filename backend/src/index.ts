@@ -1805,6 +1805,26 @@ registerMethod("unit.history", async (params) => {
         }
       }
     }
+    let sessionStatus = s.status;
+    let endedAt = s.endedAt;
+    // 运行时一致性对账（防孤儿呼吸灯）：
+    // 若数据库标记为 running 或 awaiting_*，但 host 内存中根本没有 live 实例在跑（impl === null）：
+    if (sessionStatus === "running" || sessionStatus.startsWith("awaiting_")) {
+      const isLive = host.isLive(asSessionId(s.id));
+      if (!isLive) {
+        if (!s.cliRef) {
+          // 根本没有执行器引用可接回：这是异常中断的死会话，收口为 failed
+          sessionStatus = "failed";
+          endedAt = endedAt ?? s.startedAt;
+          store.setSessionStatus(s.id, "failed", endedAt, s.stats);
+        } else {
+          // 有 cliRef 但当前未在运行，置为可接回等待态 idle，不向前端冒充 running 呼吸灯
+          sessionStatus = "idle";
+          store.setSessionStatus(s.id, "idle", endedAt ?? null, s.stats);
+        }
+      }
+    }
+
     entries.push({
       key: `session-${s.id}`,
       kind: "session",
@@ -1814,10 +1834,10 @@ registerMethod("unit.history", async (params) => {
       subtitle: null,
       runtimeId: s.runtimeId,
       launchMode: imported ? "terminal" : "headless",
-      status: s.status,
+      status: sessionStatus,
       trigger: null,
       startedAt: s.startedAt,
-      endedAt: s.endedAt,
+      endedAt,
       detail: null,
       sessionId: imported ? null : s.id,
       resumeRef: s.cliRef,

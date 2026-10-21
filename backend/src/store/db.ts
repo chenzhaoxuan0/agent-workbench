@@ -340,6 +340,14 @@ export class Store {
     } catch {
       // 忽略历史自愈异常
     }
+    // 历史会话自愈：没有 cli_ref（无法 resume）却处于未终态（running/awaiting_*）的残留僵尸行收口为 failed
+    try {
+      this.db.exec(
+        `UPDATE sessions SET status = 'failed', ended_at = COALESCE(ended_at, started_at) WHERE (status = 'running' OR status LIKE 'awaiting_%') AND cli_ref IS NULL`,
+      );
+    } catch {
+      // 忽略历史自愈异常
+    }
     log.info("store opened", { db: path.join(homeDir, "state.db") });
   }
 

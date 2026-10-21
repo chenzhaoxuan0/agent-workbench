@@ -897,6 +897,17 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
       get().pushNotice("打不开这个会话", "daemon 台账里没有它，或执行器已不可用。", { level: "warn" });
       return;
     }
+    if (historyOnly) {
+      session = {
+        ...session,
+        status: session.status === "running" ? "failed" : session.status,
+        live: false,
+        resumable: false,
+      };
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("awb:history-refresh", { detail: { unitId: input.unitId } }));
+      }
+    }
 
     // ③ 谱系聚合回放（review P1 + ADR 0013 树化）：目标段沿 fork_of_session 上溯
     // 得到 fork 祖先链（链上每段按其子段记录的 fork_at_seq 截断），兄弟分支排除；

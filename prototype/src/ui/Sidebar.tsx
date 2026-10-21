@@ -719,16 +719,34 @@ function deriveHistoryLight(
 ): HistoryLight {
   if (entry.status === "failed") return "failed";
   if (unread && entry.endedAt !== null) return "unread";
+  // 已明确结束的会话绝不亮蓝灯
+  if (entry.endedAt !== null) return "none";
+
   if (entry.status === "running") {
-    // 前端 store 里该会话的实时状态优先（turn 进行中才是「执行任务」）；
-    // store 没有它（自动化在后台跑 / 刚刷新）按台账 launchMode 判断
+    // 前端 store 里该会话的实时状态优先（turn 进行中才是「执行任务」）
     const storeStatus = entry.sessionId !== null ? sessionStatusById.get(entry.sessionId) : undefined;
-    const executing =
-      storeStatus === "running" ||
-      storeStatus === "awaiting_permission" ||
-      storeStatus === "awaiting_input" ||
-      (storeStatus === undefined && entry.launchMode === "headless");
-    return executing ? "executing" : "alive";
+    if (storeStatus !== undefined) {
+      if (storeStatus === "running" || storeStatus === "awaiting_permission" || storeStatus === "awaiting_input") {
+        return "executing";
+      }
+      if (storeStatus === "idle") return "alive";
+      if (storeStatus === "failed") return "failed";
+      return "none";
+    }
+
+    // store 尚未加载该会话时：
+    // 只有后台自动化的正在运行（kind 为 automation/backlog）且在合理时间内（启动 < 24h）才判定为执行中呼吸灯
+    const isRecent = Date.now() - entry.startedAt < 24 * 3600_000;
+    if ((entry.kind === "automation" || entry.kind === "backlog") && isRecent) {
+      return "executing";
+    }
+
+    // 交互式会话且未在 store 中打开时：若是近期条目且非已结束，最多作为存活中的进程（静态蓝灯，不呼吸）；
+    // 超过 24h 且前端没有活跃句柄的历史会话，不显示呼吸灯，避免幽灵灯骚扰
+    if (isRecent) {
+      return "alive";
+    }
+    return "none";
   }
   return "none";
 }

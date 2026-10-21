@@ -410,6 +410,19 @@ export class RuntimeHost {
       if (this.sessions.has(row.id as SessionId)) continue;
       const adapter = this.adapters.get(row.runtimeId);
       if (adapter === undefined) continue;
+      let status = row.status as SessionStatus;
+      let endedAt = row.endedAt ?? undefined;
+      // 启动自愈：从盘加载的会话在当前进程内没有任何活着的 impl（impl 为 null）
+      // 1. 如果没有 cliRef，说明根本无法接回，异常中断的会话收口为 failed
+      if (row.cliRef === null && (status === "running" || status === "awaiting_permission" || status === "awaiting_input")) {
+        status = "failed";
+        endedAt = endedAt ?? row.startedAt;
+        this.store.setSessionStatus(row.id, "failed", endedAt, { ...row.stats });
+      } else if (status === "running" || status === "awaiting_permission" || status === "awaiting_input") {
+        // 2. 有 cliRef，但当前进程并没有在跑它：不可伪装成 running，置为挂起待恢复的 idle 态
+        status = "idle";
+        this.store.setSessionStatus(row.id, "idle", endedAt ?? null, { ...row.stats });
+      }
       this.sessions.set(row.id as SessionId, {
         id: row.id as SessionId,
         unitId: row.unitId as UnitId,
@@ -421,9 +434,9 @@ export class RuntimeHost {
         // 老行可能没写 rootPath（列后加的）：空串 = 未知，删树防拆判定自然不命中
         rootPath: row.rootPath ?? "",
         title: row.title,
-        status: row.status as SessionStatus,
+        status,
         startedAt: row.startedAt,
-        endedAt: row.endedAt ?? undefined,
+        endedAt,
         // 从盘装载的死会话：来源与模型没落 state.db（老会话更是连字段都没有），
         // 只能按「工作台起的」处理。徽标显示成「工作台」而不是空——空会让人以为
         // 这个字段没实现。同理 interactive 按缺省 false：resume 后不自动放行，
@@ -938,6 +951,16 @@ export class RuntimeHost {
     return [...this.sessions.values()]
       .map((h) => this.toSession(h))
       .sort((a, b) => b.startedAt - a.startedAt);
+  }
+
+  getSession(sessionId: SessionId): Session | undefined {
+    const h = this.sessions.get(sessionId);
+    return h ? this.toSession(h) : undefined;
+  }
+
+  isLive(sessionId: SessionId): boolean {
+    const h = this.sessions.get(sessionId);
+    return h !== undefined && h.impl !== null;
   }
 
   sessionMessages(sessionId: SessionId): Array<{ at: number; role: string; text: string }> {
@@ -1538,9 +1561,21 @@ export class RuntimeHost {
     if (h.impl !== null) return this.toSession(h); // 活着的不用 resume
     const row = this.store.getSession(sessionId);
     if (row === undefined) throw adapterError("unknown_session", `session not in store: ${sessionId}`);
-    if (row.cliRef === null) throw adapterError("no_cli_ref", `session ${sessionId} has no executor reference to resume`);
+    if (row.cliRef === null) {
+      h.status = "failed";
+      h.endedAt = h.endedAt ?? Date.now();
+      this.store.setSessionStatus(sessionId, "failed", h.endedAt, { ...h.stats });
+      throw adapterError("no_cli_ref", `session ${sessionId} has no executor reference to resume`);
+    }
     const sink = this.makeSink(h);
-    h.impl = h.adapter.reattach(sessionId, row.cliRef, row.rootPath ?? "", sink);
+    try {
+      h.impl = h.adapter.reattach(sessionId, row.cliRef, row.rootPath ?? "", sink);
+    } catch (err: unknown) {
+      h.status = "failed";
+      h.endedAt = h.endedAt ?? Date.now();
+      this.store.setSessionStatus(sessionId, "failed", h.endedAt, { ...h.stats });
+      throw err;
+    }
     h.status = "idle";
     this.store.setSessionStatus(sessionId, "idle", h.endedAt ?? null, { ...h.stats });
     log.info("session resumed", { sessionId, runtimeId: h.runtimeId, cliRef: row.cliRef });
