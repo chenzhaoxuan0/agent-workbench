@@ -131,23 +131,68 @@ mkdirSync(config.homeDir, { recursive: true });
 //
 // 所以：先探端口，探不通立刻带着**可执行的**提示退出，一个副作用都不留。
 
+async function attemptFreePort(port: number): Promise<boolean> {
+  try {
+    const { execSync } = await import("node:child_process");
+    if (process.platform === "win32") {
+      const out = execSync("netstat -ano -p tcp", { encoding: "utf8" });
+      let freed = false;
+      for (const line of out.split(/\r?\n/)) {
+        if (line.includes(`:${port}`) && line.includes("LISTENING")) {
+          const parts = line.trim().split(/\s+/);
+          const pid = parts[parts.length - 1];
+          if (pid && pid !== "0" && Number(pid) !== process.pid) {
+            execSync(`taskkill /F /PID ${pid} /T`, { stdio: "ignore" });
+            freed = true;
+          }
+        }
+      }
+      return freed;
+    } else {
+      const out = execSync(`lsof -ti :${port}`, { encoding: "utf8" });
+      const pids = out.trim().split(/\s+/).filter(Boolean);
+      let freed = false;
+      for (const pid of pids) {
+        if (Number(pid) !== process.pid) {
+          process.kill(Number(pid), "SIGKILL");
+          freed = true;
+        }
+      }
+      return freed;
+    }
+  } catch {
+    return false;
+  }
+}
+
 async function preflightPort(port: number, host: string): Promise<void> {
   const { createServer } = await import("node:net");
-  await new Promise<void>((resolve, reject) => {
-    const srv = createServer();
-    srv.once("error", (err: NodeJS.ErrnoException) => {
-      const hint =
-        err.code === "EACCES"
-          ? "端口被系统保留了。Windows 的 Hyper-V / WSL 会留一整段动态端口，" +
-            "用 `netsh interface ipv4 show excludedportrange protocol=tcp` 就能看到。\n" +
-            `换一个不在保留段里的端口：后端 AGENT_WORKBENCH_PORT=<新端口>，前端 VITE_AGENT_WORKBENCH_PORT=<同一个>。`
-          : err.code === "EADDRINUSE"
-            ? "端口已被占用（可能已经有一个 daemon 在跑）。换个端口，或先停掉那个。"
-            : "换个端口试试。";
-      reject(Object.assign(new Error(`daemon 端口 ${host}:${port} 不可用 —— ${err.message}\n${hint}`), { code: "port_unavailable" }));
-    });
-    srv.once("listening", () => srv.close(() => resolve()));
-    srv.listen(port, host);
+  return new Promise<void>((resolve, reject) => {
+    const tryListen = (isRetry = false) => {
+      const srv = createServer();
+      srv.once("error", async (err: NodeJS.ErrnoException) => {
+        if (err.code === "EADDRINUSE" && !isRetry && process.env.NODE_ENV !== "production") {
+          const freed = await attemptFreePort(port);
+          if (freed) {
+            console.log(`[daemon] 检测到端口 ${port} 被残留孤儿进程占用，已自动回收并重新接管...`);
+            await new Promise((r) => setTimeout(r, 200));
+            return tryListen(true);
+          }
+        }
+        const hint =
+          err.code === "EACCES"
+            ? "端口被系统保留了。Windows 的 Hyper-V / WSL 会留一整段动态端口，" +
+              "用 `netsh interface ipv4 show excludedportrange protocol=tcp` 就能看到。\n" +
+              `换一个不在保留段里的端口：后端 AGENT_WORKBENCH_PORT=<新端口>，前端 VITE_AGENT_WORKBENCH_PORT=<同一个>。`
+            : err.code === "EADDRINUSE"
+              ? "端口已被占用（可能已经有一个 daemon 在跑）。换个端口，或先停掉那个。"
+              : "换个端口试试。";
+        reject(Object.assign(new Error(`daemon 端口 ${host}:${port} 不可用 —— ${err.message}\n${hint}`), { code: "port_unavailable" }));
+      });
+      srv.once("listening", () => srv.close(() => resolve()));
+      srv.listen(port, host);
+    };
+    tryListen();
   });
 }
 

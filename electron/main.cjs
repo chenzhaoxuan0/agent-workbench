@@ -241,9 +241,13 @@ function createWindow() {
   mainWindow.on("maximize", () => sendMaximized(true));
   mainWindow.on("unmaximize", () => sendMaximized(false));
 
-  // 关窗 = 藏进托盘（见顶部 quitting 注释）。首次藏的时候用系统气泡说一声，
-  // 不然用户以为程序没了 —— 这正是托盘要解决的「后台不可见」问题本身
+  // 关窗 = 藏进托盘（见顶部 quitting 注释）。开发模式下关窗直接退出，避免孤儿进程占用端口。
   mainWindow.on("close", (event) => {
+    if (process.env.NODE_ENV === "development") {
+      quitting = true;
+      app.quit();
+      return;
+    }
     if (quitting || !tray) return;
     event.preventDefault();
     mainWindow.hide();
