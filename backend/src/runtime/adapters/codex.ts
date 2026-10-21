@@ -36,8 +36,12 @@ import {
   type ExecutorAdapter,
   type ExecutorModelInfo,
   type ModelSyncOutcome,
+  type NativeModelConfig,
   type StartRequest,
 } from "./types.ts";
+import { readCodexModelDefaults, writeCodexModelDefaults } from "./model-defaults.ts";
+import { readCodexModelCatalog, writeCodexModelCatalog } from "./codex-catalog.ts";
+import type { ModelCatalogInfo, ModelCatalogWriteRow } from "./types.ts";
 import { builtinCommandsFor } from "./builtin-catalogs.ts";
 import { discoverCodexSkillsAndAgents, mergeCommandEntries } from "./discovery.ts";
 import type {
@@ -376,6 +380,24 @@ export class CodexAdapter implements ExecutorAdapter {
     }
     // 命令跑通了但没给出可用条目 —— 也是「没刷到」，不能谎报 live
     return { models: this._models, source: "static", reason: "codex debug models 未返回可用条目", elapsedMs: Date.now() - t0 };
+  }
+
+  /** 原生模型默认值 —— config.toml 顶层 model_* 键（cc-switch 同款字段集） */
+  readModelDefaults(): NativeModelConfig {
+    return readCodexModelDefaults();
+  }
+
+  writeModelDefaults(values: Readonly<Record<string, string>>): NativeModelConfig {
+    return writeCodexModelDefaults(values);
+  }
+
+  /** 模型目录 —— model-catalogs 文件的清单级编辑（增删/显示名/窗口/档位/可见性） */
+  async readModelCatalog(): Promise<ModelCatalogInfo> {
+    return readCodexModelCatalog();
+  }
+
+  async writeModelCatalog(rows: readonly ModelCatalogWriteRow[]): Promise<ModelCatalogInfo> {
+    return writeCodexModelCatalog(rows);
   }
 
   readonly capabilities: RuntimeCapabilities = {

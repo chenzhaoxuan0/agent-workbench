@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   AlertCircle,
   Check,
@@ -7,20 +7,39 @@ import {
   Copy,
   Download,
   ExternalLink,
+  Eye,
+  EyeOff,
+  FileText,
+  FolderOpen,
+  Image as ImageIcon,
   Info,
   KeyRound,
   Pencil,
+  Plus,
   RefreshCw,
   Sparkles,
   SlidersHorizontal,
   Terminal,
+  Trash2,
   Zap,
 } from "lucide-react";
 import { prefsOf, resolveVisibleModels } from "../core/modelPrefs.ts";
 import { useWorkbench } from "../store/useWorkbench.ts";
 import { useTerminalStore } from "../store/useTerminalStore.ts";
 import { useShell } from "../store/useShell.ts";
-import { DaemonClient, defaultDaemonEndpoint } from "../adapters/daemon/client.ts";
+import { DaemonClient, defaultDaemonEndpoint, readModelDefaults, writeModelDefaults, type DaemonExecutorInfo, type ModelSyncReport, type NativeModelConfig } from "../adapters/daemon/client.ts";
+import {
+  readModelCatalog,
+  writeModelCatalog,
+  readModelProviders,
+  writeModelProviders,
+  type ModelCatalogInfo,
+  type ModelCatalogWriteRow,
+  type NativeProvidersInfo,
+  type ProviderWriteRow,
+} from "../adapters/daemon/client.ts";
+import { runtimeRegistry } from "../core/registry.ts";
+import { asModelId } from "../core/units.ts";
 import { executorIconSrc } from "./executorIcon.ts";
 import { ProviderModelPanel } from "./ModelSettings.tsx";
 import { cn } from "./cn.ts";
@@ -41,6 +60,9 @@ interface CliGuide {
   configPath?: string;
   tips: string;
 }
+
+/** 本应用会话内是否已经自动探测过一轮（见 ProviderInstancesPanel 挂载 effect） */
+let autoProbedThisSession = false;
 
 const CLI_GUIDES: Record<string, CliGuide> = {
   codex: {
@@ -438,12 +460,14 @@ export function ProviderInstancesPanel() {
     await syncModelsAll();
   };
 
-  // 打开设置页自动探测一轮：否则上次会话的探测结果（或从未探测）会一直挂着
-  // 「已离线」，让人误以为执行器坏了。ref 防重：StrictMode 双挂载只探一次。
-  const autoProbedRef = useRef(false);
+  // 打开设置页自动探测一轮 —— 但**每个应用会话只一次**（模块级标记，不是 ref：
+  // ref 随组件卸载归零，从会话页选择器「打开模型设置」进出设置页一趟就重探一趟，
+  // 每趟都要等各 CLI 冷启动，纯浪费）。首次之后的刷新由两个按钮显式触发。
+  // 启动时 useWorkbench 模块级那次探测与本标记互不冲突：那次面向「daemon 起晚了的
+  // 注册竞态」，这里面向「用户进设置页想看现状」，都只在各自轨道上跑一次。
   useEffect(() => {
-    if (autoProbedRef.current) return;
-    autoProbedRef.current = true;
+    if (autoProbedThisSession) return;
+    autoProbedThisSession = true;
     setChecking(true);
     void refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -675,6 +699,9 @@ export function ProviderInstancesPanel() {
             isDefault={activeId === selected.id}
             onSetDefault={() => selectRuntime(selected.id)}
           />
+          <NativeModelDefaultsCard runtimeId={selected.id} />
+          <ModelCatalogCard runtimeId={selected.id} />
+          <ModelProvidersCard runtimeId={selected.id} />
         </div>
       </div>
     </div>
@@ -1010,4 +1037,770 @@ function InstanceEditor({
       </section>
     </div>
   );
+}
+
+/* --------------------------------------------------- 原生模型默认值（真写入） */
+
+/**
+ * 把「设置页改模型参数」落成真改动 —— 写进 CLI 自己的配置文件（cc-switch 思路）：
+ * claude 写 ~/.claude/settings.json 的 env 模型映射与窗口键，codex 写
+ * ~/.codex/config.toml 顶层 model_* 键。daemon 侧字段级补丁 + 原子写，
+ * 用户的 hooks / permissions / MCP 等其余配置一律不动。
+ *
+ * 保存后的闭环：daemon 顺带刷一次该执行器的模型清单并带回全新清单 ——
+ * claude 的清单就住在 settings.json 里（syncModels 读同一份），界面立刻反映；
+ * 这里就地把它灌进注册表（与 useWorkbench.syncModelsAll 同一套归一逻辑，
+ * 但只动这一家，不做全量刷新 —— 全量要等所有 CLI 冷启动，正是要省的那笔）。
+ */
+function NativeModelDefaultsCard({ runtimeId }: { runtimeId: string }) {
+  const bare = runtimeId.replace(/^daemon:/, "");
+  const [cfg, setCfg] = useState<NativeModelConfig | null>(null);
+  const [unsupported, setUnsupported] = useState<string | null>(null);
+  const [loadErr, setLoadErr] = useState<string | null>(null);
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState(false);
+  const [saveErr, setSaveErr] = useState<string | null>(null);
+  const [savedAt, setSavedAt] = useState<number | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    setCfg(null);
+    setUnsupported(null);
+    setLoadErr(null);
+    setSaveErr(null);
+    setSavedAt(null);
+    setDrafts({});
+    readModelDefaults(bare)
+      .then((res) => {
+        if (!alive) return;
+        if ("reason" in res) {
+          setUnsupported(res.reason);
+          return;
+        }
+        setCfg(res);
+        setDrafts(Object.fromEntries(res.fields.map((f) => [f.key, f.value])));
+      })
+      .catch((err: unknown) => {
+        if (alive) setLoadErr(err instanceof Error ? err.message : String(err));
+      });
+    return () => {
+      alive = false;
+    };
+  }, [bare]);
+
+  const dirty = cfg !== null && cfg.fields.some((f) => (drafts[f.key] ?? "") !== f.value);
+
+  const save = async () => {
+    if (cfg === null || !dirty || saving) return;
+    setSaving(true);
+    setSaveErr(null);
+    try {
+      const res = await writeModelDefaults(bare, drafts);
+      setCfg(res.config);
+      setDrafts(Object.fromEntries(res.config.fields.map((f) => [f.key, f.value])));
+      setSavedAt(Date.now());
+      applyDaemonAdapterToRegistry(res.adapters, bare, res.report);
+    } catch (err: unknown) {
+      setSaveErr(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (unsupported !== null) {
+    return (
+      <section className="rounded-card border border-line-soft bg-card/60 px-4 py-3">
+        <p className="text-caption text-ash">
+          <SlidersHorizontal size={11} className="mr-1 inline align-[-1px]" />
+          {unsupported}
+        </p>
+      </section>
+    );
+  }
+  if (loadErr !== null) {
+    return (
+      <section className="rounded-card border border-amber-500/30 bg-amber-500/5 px-4 py-3">
+        <p className="text-caption text-amber-600">模型默认值读取失败：{loadErr}</p>
+      </section>
+    );
+  }
+  if (cfg === null) {
+    return (
+      <section className="rounded-card border border-line-soft bg-card/60 px-4 py-3">
+        <p className="text-caption text-ash">正在读取原生模型默认配置…</p>
+      </section>
+    );
+  }
+
+  return (
+    <section className="rounded-card border border-line bg-card p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0">
+          <h3 className="flex items-center gap-1.5 text-body-sm font-medium text-ink">
+            <SlidersHorizontal size={13} className="text-teal" />
+            原生模型默认值 · 写入 CLI 自己的配置
+          </h3>
+          <p className="mt-0.5 text-caption text-ash">{cfg.note}</p>
+          <ConfigPathBar path={cfg.configPath} />
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          {savedAt !== null && !dirty && <span className="text-caption text-teal">已写入 · {formatAgo(savedAt)}</span>}
+          <button
+            onClick={() => void save()}
+            disabled={!dirty || saving}
+            className="flex items-center gap-1.5 rounded-btn bg-ink px-2.5 py-1.5 text-caption font-medium text-canvas transition hover:opacity-90 active:scale-95 disabled:opacity-40"
+          >
+            <Check size={12} />
+            {saving ? "写入中…" : "保存并写入配置"}
+          </button>
+        </div>
+      </div>
+
+      <div className="mt-3 grid grid-cols-1 gap-x-4 gap-y-2.5 sm:grid-cols-2">
+        {cfg.fields.map((f) => (
+          <label key={f.key} className="block min-w-0">
+            <span className="text-caption font-medium text-graphite">{f.label}</span>
+            {f.kind === "enum" ? (
+              <select
+                value={drafts[f.key] ?? ""}
+                onChange={(e) => {
+                  setDrafts((d) => ({ ...d, [f.key]: e.target.value }));
+                  setSavedAt(null);
+                }}
+                className="mt-0.5 w-full rounded-input border border-line bg-rail px-2 py-1 text-caption text-ink outline-none focus:border-teal"
+              >
+                <option value="">（未设置 · 跟随 CLI 默认）</option>
+                {(f.options ?? []).map((o) => (
+                  <option key={o} value={o}>
+                    {o}
+                  </option>
+                ))}
+                {/* 配置里有但不在声明档位里的值：照实列出可保留，否则一保存就被悄悄改掉 */}
+                {f.value !== "" && !(f.options ?? []).includes(f.value) && (
+                  <option value={f.value}>{f.value}（配置现状）</option>
+                )}
+              </select>
+            ) : (
+              <input
+                value={drafts[f.key] ?? ""}
+                onChange={(e) => {
+                  setDrafts((d) => ({ ...d, [f.key]: e.target.value }));
+                  setSavedAt(null);
+                }}
+                list={(f.suggestions ?? []).length > 0 ? `awb-model-suggest-${bare}-${f.key}` : undefined}
+                inputMode={f.kind === "number" ? "numeric" : "text"}
+                placeholder={f.placeholder ?? (f.kind === "number" ? "token 数，留空 = 用默认" : "留空 = 用默认")}
+                spellCheck={false}
+                className={cn(
+                  "mt-0.5 w-full rounded-input border bg-rail px-2 py-1 text-caption text-ink outline-none placeholder:text-ash focus:border-teal",
+                  saveErr !== null ? "border-loss" : "border-line",
+                )}
+              />
+            )}
+            {(f.suggestions ?? []).length > 0 && (
+              <datalist id={`awb-model-suggest-${bare}-${f.key}`}>
+                {f.suggestions!.map((s) => (
+                  <option key={s} value={s} />
+                ))}
+              </datalist>
+            )}
+            {f.hint && <span className="mt-0.5 block text-[10px] leading-snug text-ash">{f.hint}</span>}
+          </label>
+        ))}
+      </div>
+
+      {saveErr !== null && (
+        <p className="mt-2 flex items-start gap-1.5 text-caption text-loss">
+          <AlertCircle size={12} className="mt-0.5 shrink-0" />
+          {saveErr}
+        </p>
+      )}
+      <p className="mt-2 text-[10px] leading-snug text-ash">
+        清空一个字段 = 删掉对应的键（回到 CLI 自己的默认）；写的是字段级补丁，配置文件里你手写的其余内容不会被改动。
+      </p>
+    </section>
+  );
+}
+
+/** 打开配置文件的通道：Electron 桌面端可开文件本身；文件夹统一走 daemon 的 open-folder */
+async function openConfigTarget(path: string, what: "file" | "folder"): Promise<void> {
+  const electronShell = (window as unknown as { electronAPI?: { shell?: { openPath?: (p: string) => Promise<unknown> } } }).electronAPI?.shell;
+  if (what === "file" && electronShell?.openPath) {
+    await electronShell.openPath(path);
+    return;
+  }
+  const folder = what === "folder" ? path : path.replace(/[\\/][^\\/]+$/, "");
+  try {
+    const base = defaultDaemonEndpoint().replace(/\/ws$/, "");
+    const boot = await fetch(`${base}/bootstrap`);
+    const token = ((await boot.json()) as { token?: string }).token ?? "";
+    await fetch(`${base}/api/workspaces/open-folder`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-awb-token": token },
+      body: JSON.stringify({ path: folder }),
+    });
+  } catch {
+    /* daemon 不可达时静默（按钮无害失败） */
+  }
+}
+
+/** 配置路径行 + 打开文件 / 打开文件夹按钮（各卡片共用） */
+function ConfigPathBar({ path }: { path: string }) {
+  return (
+    <p className="mt-0.5 flex min-w-0 items-center gap-1.5">
+      <span className="min-w-0 truncate font-mono text-[10px] text-ash/80" title={path}>
+        {path}
+      </span>
+      <button
+        type="button"
+        onClick={() => void openConfigTarget(path, "file")}
+        title="用系统默认程序打开这份配置文件（浏览器模式下不可用）"
+        className="flex shrink-0 items-center gap-0.5 rounded px-1 py-px text-[10px] text-teal hover:bg-line-soft"
+      >
+        <FileText size={10} />
+        打开文件
+      </button>
+      <button
+        type="button"
+        onClick={() => void openConfigTarget(path, "folder")}
+        title="在文件管理器中打开所在文件夹"
+        className="flex shrink-0 items-center gap-0.5 rounded px-1 py-px text-[10px] text-teal hover:bg-line-soft"
+      >
+        <FolderOpen size={10} />
+        打开文件夹
+      </button>
+    </p>
+  );
+}
+
+/* ----------------------------------------------------- 供应商配置（累加式面） */
+
+/** 供应商编辑行（本地草稿） */
+interface ProviderDraftRow {
+  key: number;
+  origKey?: string;
+  keyId: string;
+  name: string;
+  baseUrl: string;
+  apiKey: string;
+  api: string;
+  models: string;
+}
+
+let providerDraftSeq = 0;
+
+/**
+ * 供应商与模型编辑器（pi / opencode 一类「多家共存」的原生配置面，cc-switch 累加式同款）：
+ * 每行一个供应商（标识 / 名称 / baseURL / API Key / 协议或包名 / 模型 id 清单），
+ * 保存写进 CLI 自己的配置文件并顺带刷模型清单 —— 新加的模型立刻出现在选择器里。
+ * 没有本地供应商面的执行器（kimi / agy / zcode 一类，清单在服务侧）整卡不渲染。
+ */
+function ModelProvidersCard({ runtimeId }: { runtimeId: string }) {
+  const bare = runtimeId.replace(/^daemon:/, "");
+  const [info, setInfo] = useState<NativeProvidersInfo | null>(null);
+  const [hidden, setHidden] = useState(false);
+  const [rows, setRows] = useState<ProviderDraftRow[]>([]);
+  const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saveErr, setSaveErr] = useState<string | null>(null);
+  const [savedAt, setSavedAt] = useState<number | null>(null);
+
+  const toDrafts = (
+    providers: readonly { key: string; name: string; baseUrl: string; apiKey: string; api: string; models: readonly string[] }[],
+  ) =>
+    providers.map((e) => ({
+      key: ++providerDraftSeq,
+      origKey: e.key,
+      keyId: e.key,
+      name: e.name,
+      baseUrl: e.baseUrl,
+      apiKey: e.apiKey,
+      api: e.api,
+      models: e.models.join(", "),
+    }));
+
+  useEffect(() => {
+    let alive = true;
+    setHidden(false);
+    setInfo(null);
+    setSaveErr(null);
+    setSavedAt(null);
+    setDirty(false);
+    setRows([]);
+    readModelProviders(bare)
+      .then((res) => {
+        if (!alive) return;
+        if ("reason" in res) {
+          setHidden(true);
+          return;
+        }
+        setInfo(res);
+        setRows(toDrafts(res.providers));
+      })
+      .catch(() => {
+        if (alive) setHidden(true);
+      });
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bare]);
+
+  const patchRow = (key: number, patch: Partial<ProviderDraftRow>) => {
+    setRows((rs) => rs.map((r) => (r.key === key ? { ...r, ...patch } : r)));
+    setDirty(true);
+    setSavedAt(null);
+  };
+
+  const save = async () => {
+    if (info === null || !dirty || saving) return;
+    setSaving(true);
+    setSaveErr(null);
+    try {
+      const out: ProviderWriteRow[] = rows.map((r) => ({
+        origKey: r.origKey,
+        key: r.keyId.trim(),
+        name: r.name.trim(),
+        baseUrl: r.baseUrl.trim(),
+        apiKey: r.apiKey.trim(),
+        api: r.api.trim(),
+        models: r.models.split(/[,，]/).map((s) => s.trim()).filter((s) => s !== ""),
+      }));
+      if (out.some((r) => r.key === "")) throw new Error("供应商标识（key）不能为空");
+      const dup = out.map((r) => r.key).find((k, i, a) => a.indexOf(k) !== i);
+      if (dup !== undefined) throw new Error(`供应商标识重复：${dup}`);
+      const res = await writeModelProviders(bare, out);
+      setInfo(res.providers);
+      setRows(toDrafts(res.providers.providers));
+      setDirty(false);
+      setSavedAt(Date.now());
+      applyDaemonAdapterToRegistry(res.adapters, bare, res.report);
+    } catch (err: unknown) {
+      setSaveErr(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (hidden) return null;
+  if (info === null) {
+    return (
+      <section className="rounded-card border border-line-soft bg-card/60 px-4 py-3">
+        <p className="text-caption text-ash">正在读取供应商配置…</p>
+      </section>
+    );
+  }
+
+  return (
+    <section className="rounded-card border border-line bg-card p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0">
+          <h3 className="flex items-center gap-1.5 text-body-sm font-medium text-ink">
+            <Zap size={13} className="text-teal" />
+            供应商与模型 · 写入 CLI 自己的配置
+          </h3>
+          <p className="mt-0.5 text-caption text-ash">{info.note}</p>
+          <ConfigPathBar path={info.configPath} />
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          {savedAt !== null && !dirty && <span className="text-caption text-teal">已写入 · {formatAgo(savedAt)}</span>}
+          <button
+            onClick={() => {
+              setRows((rs) => [...rs, { key: ++providerDraftSeq, keyId: "", name: "", baseUrl: "", apiKey: "", api: "", models: "" }]);
+              setDirty(true);
+              setSavedAt(null);
+            }}
+            className="flex items-center gap-1 rounded-btn border border-line px-2 py-1 text-caption font-medium text-graphite hover:bg-line-soft hover:text-ink"
+          >
+            <Plus size={11} />
+            添加供应商
+          </button>
+          <button
+            onClick={() => void save()}
+            disabled={!dirty || saving}
+            className="flex items-center gap-1.5 rounded-btn bg-ink px-2.5 py-1.5 text-caption font-medium text-canvas transition hover:opacity-90 active:scale-95 disabled:opacity-40"
+          >
+            <Check size={12} />
+            {saving ? "写入中…" : "保存供应商"}
+          </button>
+        </div>
+      </div>
+
+      {info.managedByExternal !== undefined && (
+        <p className="mt-2 flex items-start gap-1.5 rounded-btn border border-amber-500/30 bg-amber-500/5 px-2.5 py-1.5 text-caption text-amber-600">
+          <AlertCircle size={12} className="mt-0.5 shrink-0" />
+          {info.managedByExternal}：这份文件暂不能在界面内编辑，可点上方「打开文件」直接手改。
+        </p>
+      )}
+
+      <div className="mt-3 space-y-1.5">
+        {rows.map((r) => (
+          <div key={r.key} className="grid grid-cols-1 gap-1.5 rounded-btn border border-line-soft px-2 py-2 sm:grid-cols-[110px_minmax(0,0.8fr)_minmax(0,1.3fr)_minmax(0,1fr)_minmax(0,1.1fr)]">
+            <input value={r.keyId} onChange={(e) => patchRow(r.key, { keyId: e.target.value })} placeholder="标识 *" aria-label="供应商标识" spellCheck={false} className="min-w-0 rounded-input border border-line bg-rail px-2 py-1 font-mono text-caption text-ink outline-none placeholder:font-sans placeholder:text-ash focus:border-teal" />
+            <input value={r.name} onChange={(e) => patchRow(r.key, { name: e.target.value })} placeholder="名称" aria-label="供应商名称" className="min-w-0 rounded-input border border-line bg-rail px-2 py-1 text-caption text-ink outline-none placeholder:text-ash focus:border-teal" />
+            <input value={r.baseUrl} onChange={(e) => patchRow(r.key, { baseUrl: e.target.value })} placeholder="baseURL https://…/v1" aria-label="baseURL" spellCheck={false} className="min-w-0 rounded-input border border-line bg-rail px-2 py-1 font-mono text-caption text-ink outline-none placeholder:font-sans placeholder:text-ash focus:border-teal" />
+            <input value={r.apiKey} onChange={(e) => patchRow(r.key, { apiKey: e.target.value })} placeholder="API Key" aria-label="API Key" spellCheck={false} className="min-w-0 rounded-input border border-line bg-rail px-2 py-1 font-mono text-caption text-ink outline-none placeholder:font-sans placeholder:text-ash focus:border-teal" />
+            <input value={r.api} onChange={(e) => patchRow(r.key, { api: e.target.value })} placeholder="协议/包名（空=默认）" aria-label="协议或包名" spellCheck={false} className="min-w-0 rounded-input border border-line bg-rail px-2 py-1 font-mono text-caption text-ink outline-none placeholder:font-sans placeholder:text-ash focus:border-teal" />
+            <div className="col-span-1 flex items-center gap-1.5 sm:col-span-5">
+              <input
+                value={r.models}
+                onChange={(e) => patchRow(r.key, { models: e.target.value })}
+                placeholder="模型 id 清单（逗号分隔）—— 选择器里「标识/模型」的后半段"
+                aria-label="模型清单"
+                spellCheck={false}
+                className="min-w-0 flex-1 rounded-input border border-line bg-rail px-2 py-1 font-mono text-caption text-ink outline-none placeholder:font-sans placeholder:text-ash focus:border-teal"
+              />
+              <button
+                onClick={() => {
+                  setRows((rs) => rs.filter((x) => x.key !== r.key));
+                  setDirty(true);
+                  setSavedAt(null);
+                }}
+                aria-label={`删除供应商 ${r.name || r.keyId}`}
+                title="删除这个供应商（其余供应商不受影响）"
+                className="shrink-0 rounded p-1 text-ash hover:bg-line hover:text-loss"
+              >
+                <Trash2 size={12} />
+              </button>
+            </div>
+          </div>
+        ))}
+        {rows.length === 0 && (
+          <p className="px-1 py-2 text-caption text-ash">还没有本地供应商 —— 「添加供应商」接一个网关，模型清单里填它的模型 id，保存即出现在选择器。</p>
+        )}
+      </div>
+
+      {saveErr !== null && (
+        <p className="mt-2 flex items-start gap-1.5 text-caption text-loss">
+          <AlertCircle size={12} className="mt-0.5 shrink-0" />
+          {saveErr}
+        </p>
+      )}
+      <p className="mt-2 text-[10px] leading-snug text-ash">
+        条目里未列出的字段（headers / compat 一类）保存时原样保留；整表提交，删掉的供应商会从配置中移除。
+      </p>
+    </section>
+  );
+}
+
+/* ----------------------------------------------------- 模型目录（清单级编辑） */
+
+/** 目录编辑行（本地草稿）：origSlug 有值 = 编辑现有条目，缺省 = 新增 */
+interface CatalogDraftRow {
+  key: number;
+  origSlug?: string;
+  slug: string;
+  name: string;
+  ctx: string;
+  efforts: string;
+  visibility: string;
+  multimodal: boolean;
+}
+
+let catalogDraftSeq = 0;
+
+/**
+ * 执行器模型目录编辑器 —— cc-switch 的模型目录功能同款：增删模型、改显示名 /
+ * 上下文窗口 / 推理档位 / 可见性，写进 CLI 自己的目录文件（codex 的
+ * model-catalogs/*.json，经 config.toml 的 model_catalog_json 挂载）。
+ *
+ * 整表提交语义：表里没出现的旧条目视为**删除**（内置同名模型回落 codex 自带）；
+ * 保存后 daemon 顺带跑一次模型同步，选择器与设置页立刻反映新目录。
+ * 没有目录面的执行器（claude / ACP 系）不渲染本卡 —— 目录是 codex 一类
+ * 「目录文件」执行器的编辑面，别家显示一行「不支持」徒增噪音。
+ */
+function ModelCatalogCard({ runtimeId }: { runtimeId: string }) {
+  const bare = runtimeId.replace(/^daemon:/, "");
+  const [info, setInfo] = useState<ModelCatalogInfo | null>(null);
+  const [hidden, setHidden] = useState(true); // unsupported 时不渲染整卡
+  const [loadErr, setLoadErr] = useState<string | null>(null);
+  const [rows, setRows] = useState<CatalogDraftRow[]>([]);
+  const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saveErr, setSaveErr] = useState<string | null>(null);
+  const [savedAt, setSavedAt] = useState<number | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    setHidden(false);
+    setInfo(null);
+    setLoadErr(null);
+    setSaveErr(null);
+    setSavedAt(null);
+    setDirty(false);
+    setRows([]);
+    readModelCatalog(bare)
+      .then((res) => {
+        if (!alive) return;
+        if ("reason" in res) {
+          setHidden(true); // 没有目录面的执行器：整卡不渲染
+          return;
+        }
+        setInfo(res);
+        setRows(
+          res.entries.map((e) => ({
+            key: ++catalogDraftSeq,
+            origSlug: e.slug,
+            slug: e.slug,
+            name: e.display_name,
+            ctx: e.context_window !== undefined ? String(e.context_window) : "",
+            efforts: (e.supported_reasoning_levels ?? []).join(", "),
+            visibility: e.visibility,
+            multimodal: e.multimodal === true,
+          })),
+        );
+      })
+      .catch((err: unknown) => {
+        if (alive) setLoadErr(err instanceof Error ? err.message : String(err));
+      });
+    return () => {
+      alive = false;
+    };
+  }, [bare]);
+
+  const patchRow = (key: number, patch: Partial<CatalogDraftRow>) => {
+    setRows((rs) => rs.map((r) => (r.key === key ? { ...r, ...patch } : r)));
+    setDirty(true);
+    setSavedAt(null);
+  };
+
+  const addRow = () => {
+    setRows((rs) => [...rs, { key: ++catalogDraftSeq, slug: "", name: "", ctx: "", efforts: "", visibility: "list", multimodal: false }]);
+    setDirty(true);
+    setSavedAt(null);
+  };
+
+  const save = async () => {
+    if (info === null || !dirty || saving) return;
+    setSaving(true);
+    setSaveErr(null);
+    try {
+      const out: ModelCatalogWriteRow[] = [];
+      for (const r of rows) {
+        const ctxTrim = r.ctx.trim();
+        if (ctxTrim !== "" && !/^\d+$/.test(ctxTrim)) {
+          throw new Error(`${r.slug || "新条目"} 的窗口需为正整数 token 数（留空 = 不声明）`);
+        }
+        const efforts = r.efforts.split(/[,，]/).map((s) => s.trim()).filter((s) => s !== "");
+        out.push({
+          origSlug: r.origSlug,
+          slug: r.slug.trim(),
+          display_name: r.name.trim(),
+          context_window: ctxTrim === "" ? undefined : Number(ctxTrim),
+          supported_reasoning_levels: efforts.length > 0 ? efforts : undefined,
+          visibility: r.visibility === "hide" ? "hide" : "list",
+          multimodal: r.multimodal,
+        });
+      }
+      const res = await writeModelCatalog(bare, out);
+      setInfo(res.catalog);
+      setRows(
+        res.catalog.entries.map((e) => ({
+          key: ++catalogDraftSeq,
+          origSlug: e.slug,
+          slug: e.slug,
+          name: e.display_name,
+          ctx: e.context_window !== undefined ? String(e.context_window) : "",
+          efforts: (e.supported_reasoning_levels ?? []).join(", "),
+          visibility: e.visibility,
+          multimodal: e.multimodal === true,
+        })),
+      );
+      setDirty(false);
+      setSavedAt(Date.now());
+      applyDaemonAdapterToRegistry(res.adapters, bare, res.report);
+    } catch (err: unknown) {
+      setSaveErr(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (hidden) return null;
+  if (loadErr !== null) {
+    return (
+      <section className="rounded-card border border-amber-500/30 bg-amber-500/5 px-4 py-3">
+        <p className="text-caption text-amber-600">模型目录读取失败：{loadErr}</p>
+      </section>
+    );
+  }
+  if (info === null) {
+    return (
+      <section className="rounded-card border border-line-soft bg-card/60 px-4 py-3">
+        <p className="text-caption text-ash">正在读取模型目录…</p>
+      </section>
+    );
+  }
+
+  const hiddenCount = rows.filter((r) => r.visibility === "hide").length;
+
+  return (
+    <section className="rounded-card border border-line bg-card p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0">
+          <h3 className="flex items-center gap-1.5 text-body-sm font-medium text-ink">
+            <Sparkles size={13} className="text-teal" />
+            模型目录 · 增删与编辑（写入 CLI 目录文件）
+          </h3>
+          <p className="mt-0.5 text-caption text-ash">{info.note}</p>
+          {info.activePath !== null ? (
+            <ConfigPathBar path={info.activePath} />
+          ) : (
+            <p className="mt-0.5 font-mono text-[10px] text-ash/80">（未配置 —— 保存后创建工作台目录）</p>
+          )}
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          {savedAt !== null && !dirty && <span className="text-caption text-teal">已写入 · {formatAgo(savedAt)}</span>}
+          <button onClick={addRow} className="flex items-center gap-1 rounded-btn border border-line px-2 py-1 text-caption font-medium text-graphite hover:bg-line-soft hover:text-ink">
+            <Plus size={11} />
+            添加模型
+          </button>
+          <button
+            onClick={() => void save()}
+            disabled={!dirty || saving}
+            className="flex items-center gap-1.5 rounded-btn bg-ink px-2.5 py-1.5 text-caption font-medium text-canvas transition hover:opacity-90 active:scale-95 disabled:opacity-40"
+          >
+            <Check size={12} />
+            {saving ? "写入中…" : "保存目录"}
+          </button>
+        </div>
+      </div>
+
+      {info.managedByExternal !== undefined && (
+        <p className="mt-2 flex items-start gap-1.5 rounded-btn border border-amber-500/30 bg-amber-500/5 px-2.5 py-1.5 text-caption text-amber-600">
+          <AlertCircle size={12} className="mt-0.5 shrink-0" />
+          这份目录文件由 {info.managedByExternal} 生成 —— 保存直接生效；但在 {info.managedByExternal} 里切换供应商会重新生成它，这里的编辑会被覆盖。
+        </p>
+      )}
+
+      <div className="mt-3 space-y-1">
+        {/* 表头（与行内输入同栅格） */}
+        <div className="hidden sm:grid grid-cols-[minmax(0,1.3fr)_minmax(0,1.1fr)_84px_minmax(0,1.2fr)_auto] items-center gap-1.5 px-1 text-[10px] font-medium text-ash">
+          <span>模型 slug（实际模型 id）</span>
+          <span>显示名</span>
+          <span>窗口 token</span>
+          <span>推理档位（逗号分隔，留空 = 不声明）</span>
+          <span className="w-[68px] text-center">可见 / 视觉</span>
+        </div>
+        {rows.map((r) => {
+          const isHidden = r.visibility === "hide";
+          return (
+            <div
+              key={r.key}
+              className={cn(
+                "grid grid-cols-2 items-center gap-1.5 rounded-btn px-1 py-1 sm:grid-cols-[minmax(0,1.3fr)_minmax(0,1.1fr)_84px_minmax(0,1.2fr)_auto]",
+                isHidden && "opacity-60",
+              )}
+            >
+              <input
+                value={r.slug}
+                onChange={(e) => patchRow(r.key, { slug: e.target.value })}
+                placeholder="模型 id *"
+                aria-label="模型 slug"
+                spellCheck={false}
+                className="min-w-0 rounded-input border border-line bg-rail px-2 py-1 font-mono text-caption text-ink outline-none placeholder:font-sans placeholder:text-ash focus:border-teal"
+              />
+              <input
+                value={r.name}
+                onChange={(e) => patchRow(r.key, { name: e.target.value })}
+                placeholder="显示名（空 = 用 slug）"
+                aria-label="显示名"
+                className="min-w-0 rounded-input border border-line bg-rail px-2 py-1 text-caption text-ink outline-none placeholder:text-ash focus:border-teal"
+              />
+              <input
+                value={r.ctx}
+                onChange={(e) => patchRow(r.key, { ctx: e.target.value })}
+                inputMode="numeric"
+                placeholder="272000"
+                aria-label="上下文窗口"
+                className="min-w-0 rounded-input border border-line bg-rail px-2 py-1 font-mono text-caption text-ink outline-none placeholder:text-ash focus:border-teal"
+              />
+              <input
+                value={r.efforts}
+                onChange={(e) => patchRow(r.key, { efforts: e.target.value })}
+                placeholder="low, medium, high"
+                aria-label="推理档位"
+                spellCheck={false}
+                className="min-w-0 rounded-input border border-line bg-rail px-2 py-1 text-caption text-ink outline-none placeholder:text-ash focus:border-teal"
+              />
+              <div className="col-span-2 flex items-center justify-end gap-0.5 sm:col-span-1">
+                <button
+                  onClick={() => patchRow(r.key, { visibility: isHidden ? "list" : "hide" })}
+                  aria-label={isHidden ? `恢复显示 ${r.name || r.slug}` : `隐藏 ${r.name || r.slug}`}
+                  title={isHidden ? "隐藏中 —— 点击恢复到选择面" : "从选择面隐藏（不是删除）"}
+                  className={cn("rounded p-1", isHidden ? "text-amber-600" : "text-ash hover:bg-line hover:text-ink")}
+                >
+                  {isHidden ? <EyeOff size={12} /> : <Eye size={12} />}
+                </button>
+                <button
+                  onClick={() => patchRow(r.key, { multimodal: !r.multimodal })}
+                  aria-label={r.multimodal ? "多模态" : "仅文本"}
+                  title={r.multimodal ? "声明支持图片输入（input_modalities 含 image）" : "仅文本 —— 点击声明支持图片"}
+                  className={cn("rounded p-1", r.multimodal ? "text-teal" : "text-ash/60 hover:bg-line hover:text-ink")}
+                >
+                  <ImageIcon size={12} />
+                </button>
+                <button
+                  onClick={() => {
+                    setRows((rs) => rs.filter((x) => x.key !== r.key));
+                    setDirty(true);
+                    setSavedAt(null);
+                  }}
+                  aria-label={`删除 ${r.name || r.slug}`}
+                  title="从目录删除（codex 内置同名模型会回到自带清单）"
+                  className="rounded p-1 text-ash hover:bg-line hover:text-loss"
+                >
+                  <Trash2 size={12} />
+                </button>
+              </div>
+            </div>
+          );
+        })}
+        {rows.length === 0 && (
+          <p className="px-1 py-2 text-caption text-ash">
+            目录是空的 —— 「添加模型」加一条，或这份清单本来就不在这份目录里。
+          </p>
+        )}
+      </div>
+
+      {saveErr !== null && (
+        <p className="mt-2 flex items-start gap-1.5 text-caption text-loss">
+          <AlertCircle size={12} className="mt-0.5 shrink-0" />
+          {saveErr}
+        </p>
+      )}
+      <p className="mt-2 text-[10px] leading-snug text-ash">
+        整表提交：删掉的条目即从目录移除{hiddenCount > 0 ? `；已隐藏 ${hiddenCount} 条（隐藏 ≠ 删除，随时点眼睛恢复）` : ""}。条目里未列出的其余字段（描述 / 优先级…）保存时原样保留。
+      </p>
+    </section>
+  );
+}
+
+/**
+ * 把 daemon 带回的**单家**执行器清单灌进注册表（保存模型默认值后的就地刷新）。
+ * 与 useWorkbench.syncModelsAll 是同一套归一逻辑（裸 id → 品牌化 ModelId、
+ * cachedAt 语义），但只动这一家 —— 全量刷新要等所有 CLI 冷启动，这里等不起。
+ * 顺带把该家的同步报告并进 store.modelSync（别家条目保留，避免标签退化成「兜底」）。
+ */
+function applyDaemonAdapterToRegistry(
+  adapters: readonly DaemonExecutorInfo[],
+  bare: string,
+  report: readonly ModelSyncReport[],
+): void {
+  const fresh = adapters.find((a) => a.id === bare);
+  const entryId = `daemon:${bare}`;
+  const entry = runtimeRegistry.get(entryId as never);
+  if (fresh !== undefined && entry !== undefined) {
+    const raw = fresh.models.map((m) => ({ ...m, id: asModelId(m.id) }));
+    runtimeRegistry.updateModels(
+      entryId as never,
+      raw,
+      fresh.modelsDiscoverable !== false,
+      fresh.modelsCachedAt ?? undefined,
+    );
+  }
+  const prior = useWorkbench.getState().modelSync;
+  const merged = prior === null ? [] : prior.report.filter((r) => r.runtimeId !== bare);
+  for (const r of report) merged.push({ ...r });
+  useWorkbench.setState({ modelSync: { at: Date.now(), report: merged } });
 }

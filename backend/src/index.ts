@@ -2865,6 +2865,77 @@ registerMethod("adapter.models", async (params) => {
   const report = await host.syncModels(runtimeId);
   return { report, adapters: await host.listAdapters(false) };
 });
+
+/**
+ * 执行器原生模型默认值（设置页「写入 CLI 自己的配置」分区）—— cc-switch 同思路：
+ * 字段级补丁进 CLI 的配置文件（claude settings.json / codex config.toml），
+ * 其余用户配置一律不动。get 不抛 unsupported —— 「没有可写面」是正常态。
+ */
+registerMethod("adapter.modeldefaults.get", (params) => {
+  const { runtimeId } = (params ?? {}) as { runtimeId?: string };
+  if (typeof runtimeId !== "string") throw Object.assign(new Error("runtimeId is required"), { code: "bad_params" });
+  return host.readModelDefaults(runtimeId);
+});
+
+/**
+ * 写模型默认值并**顺带刷一次该执行器的模型清单**：claude 的清单就住在
+ * settings.json 里（syncModels 读同一份文件），写完不刷的话界面还是旧世界，
+ * 「保存了却没生效」的观感正是这次要消灭的。codex 刷的是 debug models，
+ * 与配置无关，刷一下也无害（只读命令）。
+ */
+registerMethod("adapter.modeldefaults.set", async (params) => {
+  const p = (params ?? {}) as { runtimeId?: string; values?: Record<string, string> };
+  if (typeof p.runtimeId !== "string") throw Object.assign(new Error("runtimeId is required"), { code: "bad_params" });
+  if (typeof p.values !== "object" || p.values === null) {
+    throw Object.assign(new Error("values is required"), { code: "bad_params" });
+  }
+  const config = host.writeModelDefaults(p.runtimeId, p.values);
+  const report = await host.syncModels(p.runtimeId);
+  return { config, report: [...report], adapters: await host.listAdapters(false) };
+});
+
+/**
+ * 执行器模型目录 —— 清单级编辑面（cc-switch 的模型目录编辑同款）：增删模型、
+ * 改显示名/窗口/推理档位/可见性，写进 CLI 自己的目录文件（codex model-catalogs）。
+ * set 写完顺带刷该执行器模型清单：codex debug models 起的是新进程，读的就是刚写的目录。
+ */
+registerMethod("adapter.modelcatalog.get", (params) => {
+  const { runtimeId } = (params ?? {}) as { runtimeId?: string };
+  if (typeof runtimeId !== "string") throw Object.assign(new Error("runtimeId is required"), { code: "bad_params" });
+  return host.readModelCatalog(runtimeId);
+});
+
+registerMethod("adapter.modelcatalog.set", async (params) => {
+  const p = (params ?? {}) as {
+    runtimeId?: string;
+    rows?: Array<Record<string, unknown>>;
+  };
+  if (typeof p.runtimeId !== "string") throw Object.assign(new Error("runtimeId is required"), { code: "bad_params" });
+  if (!Array.isArray(p.rows)) throw Object.assign(new Error("rows is required"), { code: "bad_params" });
+  const catalog = await host.writeModelCatalog(p.runtimeId, p.rows as never);
+  const report = await host.syncModels(p.runtimeId);
+  return { catalog, report: [...report], adapters: await host.listAdapters(false) };
+});
+
+/**
+ * 供应商级配置（pi / opencode 的累加式面）：get 不抛 unsupported（正常态）；
+ * set 写完顺带刷该执行器模型清单 —— pi --list-models / opencode serve /model
+ * 读的都是刚写的文件，界面立刻反映。
+ */
+registerMethod("adapter.providers.get", (params) => {
+  const { runtimeId } = (params ?? {}) as { runtimeId?: string };
+  if (typeof runtimeId !== "string") throw Object.assign(new Error("runtimeId is required"), { code: "bad_params" });
+  return host.readModelProviders(runtimeId);
+});
+
+registerMethod("adapter.providers.set", async (params) => {
+  const p = (params ?? {}) as { runtimeId?: string; rows?: Array<Record<string, unknown>> };
+  if (typeof p.runtimeId !== "string") throw Object.assign(new Error("runtimeId is required"), { code: "bad_params" });
+  if (!Array.isArray(p.rows)) throw Object.assign(new Error("rows is required"), { code: "bad_params" });
+  const providers = host.writeModelProviders(p.runtimeId, p.rows as never);
+  const report = await host.syncModels(p.runtimeId);
+  return { providers, report: [...report], adapters: await host.listAdapters(false) };
+});
 registerMethod("adapter.commands", (params) => {
   const p = (params ?? {}) as { runtimeId?: string; rootPath?: string };
   if (typeof p.runtimeId !== "string" || typeof p.rootPath !== "string") {

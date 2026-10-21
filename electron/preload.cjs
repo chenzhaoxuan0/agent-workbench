@@ -10,6 +10,14 @@ contextBridge.exposeInMainWorld("electronAPI", {
    */
   pickDirectory: (opts) => ipcRenderer.invoke("dialog:pick-directory", opts),
   /**
+   * 用系统默认程序打开文件 / 在资源管理器中显示（设置页「打开文件」按钮）。
+   * 纯浏览器访问时整块 electronAPI 不存在，前端回落 daemon 的 open-folder。
+   */
+  shell: {
+    openPath: (path) => ipcRenderer.invoke("shell:open-path", path),
+    showItemInFolder: (path) => ipcRenderer.invoke("shell:show-item-in-folder", path),
+  },
+  /**
    * 前端自绘窗口控制按钮（WindowControls.tsx）的通道。
    * 纯浏览器访问时整块 electronAPI 不存在，组件自行隐藏。
    */

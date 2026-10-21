@@ -32,8 +32,11 @@ import {
   type ExecutorAdapter,
   type ExecutorModelInfo,
   type ModelSyncOutcome,
+  type NativeProvidersInfo,
+  type ProviderWriteRow,
   type StartRequest,
 } from "./types.ts";
+import { readPiProviders, writePiProviders } from "./provider-config.ts";
 import { builtinCommandsFor } from "./builtin-catalogs.ts";
 import { discoverPiSkillsAndAgents, mergeCommandEntries } from "./discovery.ts";
 import type { NativeCommandInfo } from "../../contract.ts";
@@ -259,6 +262,15 @@ export class PiAdapter implements ExecutorAdapter {
     const merged = mergeCommandEntries(builtins, discovered.commands, discovered.skills, discovered.agents);
     this.commandCache.set(rootPath, { commands: merged, at: Date.now() });
     return merged;
+  }
+
+  /** 供应商配置 —— ~/.pi/agent/models.json 的 providers 段（cc-switch 累加式同款） */
+  readModelProviders(): NativeProvidersInfo {
+    return readPiProviders();
+  }
+
+  writeModelProviders(rows: readonly ProviderWriteRow[]): NativeProvidersInfo {
+    return writePiProviders(rows);
   }
 
   async probe(): Promise<ProbeResult> {

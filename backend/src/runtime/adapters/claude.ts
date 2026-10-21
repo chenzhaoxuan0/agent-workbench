@@ -28,8 +28,10 @@ import {
   type ExecutorAdapter,
   type ExecutorModelInfo,
   type ModelSyncOutcome,
+  type NativeModelConfig,
   type StartRequest,
 } from "./types.ts";
+import { readClaudeModelDefaults, writeClaudeModelDefaults } from "./model-defaults.ts";
 import type {
   ModelId,
   NativeCommandInfo,
@@ -392,6 +394,18 @@ export class ClaudeAdapter implements ExecutorAdapter {
       log.debug("claude 模型同步失败，用静态清单", { error: reason });
       return { models: this._models, source: "static", reason, elapsedMs: Date.now() - t0 };
     }
+  }
+
+  /**
+   * 原生模型默认值 —— settings.json 的 env 键。读源就是 syncModels 那份文件：
+   * 写完由 host 立刻调一次 syncModels，模型清单马上反映新默认（闭环可验）。
+   */
+  readModelDefaults(): NativeModelConfig {
+    return readClaudeModelDefaults();
+  }
+
+  writeModelDefaults(values: Readonly<Record<string, string>>): NativeModelConfig {
+    return writeClaudeModelDefaults(values);
   }
 
   readonly capabilities: RuntimeCapabilities = {

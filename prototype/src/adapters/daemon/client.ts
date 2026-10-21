@@ -459,6 +459,170 @@ export async function fetchExecutorCommands(
   return client.rpc<readonly NativeCommandInfo[]>("adapter.commands", { runtimeId, rootPath }, 30000);
 }
 
+// ---- 执行器原生模型默认值（设置页「写入 CLI 自己的配置」，cc-switch 同思路）----
+
+/** 一个可写字段：key 是提交用的稳定 id；value 空串 = 未设置（提交空串 = 删键） */
+export interface NativeModelField {
+  readonly key: string;
+  readonly label: string;
+  readonly kind: "text" | "number" | "enum";
+  readonly options?: readonly string[];
+  readonly value: string;
+  readonly placeholder?: string;
+  readonly hint?: string;
+  /** 候选建议（daemon 注入的执行器当前模型清单）—— 输入框渲染成可选项 */
+  readonly suggestions?: readonly string[];
+}
+
+export interface NativeModelConfig {
+  readonly configPath: string;
+  readonly note: string;
+  readonly fields: readonly NativeModelField[];
+}
+
+export type NativeModelConfigResult = { supported: false; reason: string } | NativeModelConfig;
+
+/**
+ * 读执行器原生配置里的模型默认值。没有可写面的执行器返回 `{ supported: false }`
+ * 而不是抛 —— 界面对它显示「参数随会话下发」的提示即可。裸 id 口径同上。
+ */
+export async function readModelDefaults(
+  runtimeId: string,
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<NativeModelConfigResult> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<NativeModelConfigResult>("adapter.modeldefaults.get", { runtimeId }, 15000);
+}
+
+/**
+ * 写模型默认值（字段级补丁进 CLI 配置文件）。daemon 写完会顺带刷一次该执行器的
+ * 模型清单并带回全新清单 —— claude 的清单就住在 settings.json 里，界面立刻反映。
+ */
+export async function writeModelDefaults(
+  runtimeId: string,
+  values: Readonly<Record<string, string>>,
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<{
+  readonly config: NativeModelConfig;
+  readonly report: readonly ModelSyncReport[];
+  readonly adapters: readonly DaemonExecutorInfo[];
+}> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<{ config: NativeModelConfig; report: ModelSyncReport[]; adapters: DaemonExecutorInfo[] }>(
+    "adapter.modeldefaults.set",
+    { runtimeId, values: { ...values } },
+    // set 顺带 syncModels：codex debug models 正常 1-8s，留足预算
+    60000,
+  );
+}
+
+// ---- 供应商级配置（pi / opencode 的累加式面）---------------------------------------
+
+export interface ProviderEntry {
+  readonly key: string;
+  readonly name: string;
+  readonly baseUrl: string;
+  readonly apiKey: string;
+  /** pi = api 协议；opencode = npm 包名 */
+  readonly api: string;
+  readonly models: readonly string[];
+}
+
+export interface ProviderWriteRow extends ProviderEntry {
+  readonly origKey?: string;
+}
+
+export interface NativeProvidersInfo {
+  readonly configPath: string;
+  readonly note: string;
+  readonly providers: readonly ProviderEntry[];
+  readonly managedByExternal?: string;
+}
+
+export type ProvidersResult = { supported: false; reason: string } | NativeProvidersInfo;
+
+export async function readModelProviders(
+  runtimeId: string,
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<ProvidersResult> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<ProvidersResult>("adapter.providers.get", { runtimeId }, 15000);
+}
+
+export async function writeModelProviders(
+  runtimeId: string,
+  rows: readonly ProviderWriteRow[],
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<{
+  readonly providers: NativeProvidersInfo;
+  readonly report: readonly ModelSyncReport[];
+  readonly adapters: readonly DaemonExecutorInfo[];
+}> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<{ providers: NativeProvidersInfo; report: ModelSyncReport[]; adapters: DaemonExecutorInfo[] }>(
+    "adapter.providers.set",
+    { runtimeId, rows: rows.map((r) => ({ ...r })) },
+    60000,
+  );
+}
+
+// ---- 执行器模型目录（codex model-catalogs 一类的清单级编辑）------------------------
+
+/** 目录条目：slug 是模型身份；visibility "list"=可选 / "hide"=不出现在选择面 */
+export interface ModelCatalogEntry {
+  readonly slug: string;
+  readonly display_name: string;
+  readonly context_window?: number;
+  readonly supported_reasoning_levels?: readonly string[];
+  readonly default_reasoning_level?: string;
+  readonly visibility: string;
+  readonly multimodal?: boolean;
+}
+
+/** 提交行：origSlug 缺省 = 新增；有值 = 对该条目的就地编辑（含改名） */
+export interface ModelCatalogWriteRow extends ModelCatalogEntry {
+  readonly origSlug?: string;
+}
+
+export interface ModelCatalogInfo {
+  /** 当前生效的目录文件；null = 未配置（entries 是生效清单的种子，保存即接管） */
+  readonly activePath: string | null;
+  readonly note: string;
+  readonly entries: readonly ModelCatalogEntry[];
+  /** 目录文件归别家工具管（如 cc-switch）—— 编辑可能被对方重生成覆盖 */
+  readonly managedByExternal?: string;
+}
+
+export type ModelCatalogResult = { supported: false; reason: string } | ModelCatalogInfo;
+
+/** 读执行器模型目录。没有目录面的执行器返回 supported:false（正常态，不抛） */
+export async function readModelCatalog(
+  runtimeId: string,
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<ModelCatalogResult> {
+  const client = DaemonClient.get(endpoint);
+  // 未配置目录时 daemon 会跑一次 codex debug models 做种子，给足预算
+  return client.rpc<ModelCatalogResult>("adapter.modelcatalog.get", { runtimeId }, 30000);
+}
+
+/** 写目录（整表提交）。daemon 顺带刷该执行器模型清单并带回全新清单 */
+export async function writeModelCatalog(
+  runtimeId: string,
+  rows: readonly ModelCatalogWriteRow[],
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<{
+  readonly catalog: ModelCatalogInfo;
+  readonly report: readonly ModelSyncReport[];
+  readonly adapters: readonly DaemonExecutorInfo[];
+}> {
+  const client = DaemonClient.get(endpoint);
+  return client.rpc<{ catalog: ModelCatalogInfo; report: ModelSyncReport[]; adapters: DaemonExecutorInfo[] }>(
+    "adapter.modelcatalog.set",
+    { runtimeId, rows: rows.map((r) => ({ ...r })) },
+    60000,
+  );
+}
+
 /**
  * 拉工作区路径建议（输入 @ 提及的菜单数据源，交互对齐 ZCode file-mention）。
  *

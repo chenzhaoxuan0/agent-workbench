@@ -48,8 +48,10 @@ import {
   type ExecutorAdapter,
   type ExecutorModelInfo,
   type ModelSyncOutcome,
+  type NativeModelConfig,
   type StartRequest,
 } from "./types.ts";
+import { readHermesModelDefaults, writeHermesModelDefaults } from "./model-defaults.ts";
 import { builtinCommandsFor } from "./builtin-catalogs.ts";
 import { discoverGenericToolSkillsAndAgents, mergeCommandEntries } from "./discovery.ts";
 import type { NativeCommandInfo } from "../../contract.ts";
@@ -450,6 +452,15 @@ export class HermesAdapter implements ExecutorAdapter {
       log.debug("hermes 模型同步失败，用静态清单", { error: reason });
       return { models: this._models, source: "static", reason, elapsedMs: Date.now() - t0 };
     }
+  }
+
+  /** 原生模型默认值 —— config.yaml 顶层 model: 段（cc-switch 切换时同款落点） */
+  readModelDefaults(): NativeModelConfig {
+    return readHermesModelDefaults();
+  }
+
+  writeModelDefaults(values: Readonly<Record<string, string>>): NativeModelConfig {
+    return writeHermesModelDefaults(values);
   }
 
   private async resumeSession(state: HermesSession): Promise<void> {

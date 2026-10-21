@@ -36,8 +36,10 @@ import {
   type ExecutorAdapter,
   type ExecutorModelInfo,
   type ModelSyncOutcome,
+  type NativeModelConfig,
   type StartRequest,
 } from "./types.ts";
+import { readMcodeModelDefaults, writeMcodeModelDefaults } from "./model-defaults.ts";
 import { builtinCommandsFor } from "./builtin-catalogs.ts";
 import { discoverGenericToolSkillsAndAgents, mergeCommandEntries } from "./discovery.ts";
 import type { NativeCommandInfo } from "../../contract.ts";
@@ -365,6 +367,15 @@ export class McodeAdapter implements ExecutorAdapter {
       log.debug("mcode 模型同步失败，用静态清单", { error: reason });
       return { models: this._models, source: "static", reason, elapsedMs: Date.now() - t0 };
     }
+  }
+
+  /** 原生模型默认值 —— config.yaml 顶层 defaultModel / defaultLightModel（cc-switch 同款：只动这两个键） */
+  readModelDefaults(): NativeModelConfig {
+    return readMcodeModelDefaults();
+  }
+
+  writeModelDefaults(values: Readonly<Record<string, string>>): NativeModelConfig {
+    return writeMcodeModelDefaults(values);
   }
 
   /** 把工作台 ModelId 还原成 ACP 的 configOption value（没同步过就返回 null） */

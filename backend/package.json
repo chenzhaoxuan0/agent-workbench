@@ -32,6 +32,7 @@
     "smoke:memory6": "tsx scripts/smoke-memory6.ts",
     "smoke:memory7": "tsx scripts/smoke-memory7.ts",
     "smoke:models": "tsx scripts/smoke-model-sync.ts",
+    "smoke:modeldefaults": "tsx scripts/smoke-model-defaults.ts",
     "smoke:opencode": "tsx scripts/smoke-opencode.ts",
     "smoke:phase1": "tsx scripts/smoke-phase1.ts",
     "smoke:phase10": "tsx scripts/smoke-phase10.ts",

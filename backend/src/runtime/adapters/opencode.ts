@@ -38,8 +38,13 @@ import {
   type ExecutorAdapter,
   type ExecutorModelInfo,
   type ModelSyncOutcome,
+  type NativeModelConfig,
+  type NativeProvidersInfo,
+  type ProviderWriteRow,
   type StartRequest,
 } from "./types.ts";
+import { readOpencodeModelDefaults, writeOpencodeModelDefaults } from "./model-defaults.ts";
+import { readOpencodeProviders, writeOpencodeProviders } from "./provider-config.ts";
 import type {
   ModelId,
   NativeCommandInfo,
@@ -290,6 +295,15 @@ export class OpencodeAdapter implements ExecutorAdapter {
     return { models: this._models, source: "static", reason: serveReason ?? "models --verbose 输出未匹配到条目", elapsedMs: Date.now() - t0 };
   }
 
+  /** 原生模型默认值 —— opencode.jsonc（优先）/ opencode.json 顶层 model / small_model 键 */
+  readModelDefaults(): NativeModelConfig {
+    return readOpencodeModelDefaults();
+  }
+
+  writeModelDefaults(values: Readonly<Record<string, string>>): NativeModelConfig {
+    return writeOpencodeModelDefaults(values);
+  }
+
   readonly capabilities: RuntimeCapabilities = {
     resumeSession: true, // 会话按项目落盘全局可寻址：GET /session 找回 + prompt_async 续聊
     fileDiff: true, // session.diff 事件（turn 级 diff 列表）
@@ -304,6 +318,15 @@ export class OpencodeAdapter implements ExecutorAdapter {
     streaming: "realtime", // message.part.delta 真 token 流
     steering: "turn-end", // busy 期间入队、idle 后发（host 侧 pendingSends 语义）
   };
+
+  /** 供应商配置 —— opencode.json(c) 的 provider（V1）/providers（V2）段 */
+  readModelProviders(): NativeProvidersInfo {
+    return readOpencodeProviders();
+  }
+
+  writeModelProviders(rows: readonly ProviderWriteRow[]): NativeProvidersInfo {
+    return writeOpencodeProviders(rows);
+  }
 
   async probe(): Promise<ProbeResult> {
     const t0 = Date.now();

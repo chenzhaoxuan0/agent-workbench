@@ -11,7 +11,17 @@
  *    cli_ref 存执行器原生引用 —— resumeSession 靠它跨重启续命。
  */
 
-import type { AdapterSession, ExecutorAdapter, ExecutorModelInfo, StartRequest } from "./adapters/types.ts";
+import type {
+  AdapterSession,
+  ExecutorAdapter,
+  ExecutorModelInfo,
+  ModelCatalogInfo,
+  ModelCatalogWriteRow,
+  NativeModelConfig,
+  NativeProvidersInfo,
+  ProviderWriteRow,
+  StartRequest,
+} from "./adapters/types.ts";
 import { adapterError } from "./adapters/types.ts";
 import type {
   ModelId,
@@ -746,6 +756,82 @@ export class RuntimeHost {
     // 而探测按钮的耗时被模型拉长，用户点一下等半天还不知道在等什么。
     // 两个职责各自独立，模型刷新走 adapter.models。
     return adapter.probe();
+  }
+
+  /**
+   * 读执行器原生配置里的模型默认值。没实现该能力的执行器返回 unsupported
+   * 而不是抛 —— 「这家没有可写面」是正常态（ACP 系参数随会话下发），界面要照实显示。
+   */
+  readModelDefaults(runtimeId: string): { supported: false; reason: string } | NativeModelConfig {
+    const adapter = this.getAdapter(runtimeId);
+    if (typeof adapter.readModelDefaults !== "function") {
+      return {
+        supported: false,
+        reason: `${adapter.displayName} 没有文件级的模型默认配置面 —— 模型参数随每轮会话下发（选择器里的档位即是）`,
+      };
+    }
+    const config = adapter.readModelDefaults();
+    // 默认模型类字段附上「该执行器当前模型清单」作建议 —— UI 渲染成可选项，
+    // 选而不是手打（手打错一个字母，mcode 会起不来、codex 会静默回落）
+    const suggestions = adapter.models.map((m) => String(m.id));
+    if (suggestions.length > 0) {
+      return {
+        ...config,
+        fields: config.fields.map((f) =>
+          f.kind === "text" && /model/i.test(f.key) ? { ...f, suggestions } : f,
+        ),
+      };
+    }
+    return config;
+  }
+
+  /** 写模型默认值；写完不自动刷模型清单，由 RPC 层决定（claude 要刷、codex 可不刷） */
+  writeModelDefaults(runtimeId: string, values: Readonly<Record<string, string>>): NativeModelConfig {
+    const adapter = this.getAdapter(runtimeId);
+    if (typeof adapter.writeModelDefaults !== "function") {
+      throw adapterError("unsupported", `${adapter.displayName} 不支持写入模型默认值`);
+    }
+    return adapter.writeModelDefaults(values);
+  }
+
+  /** 读执行器模型目录。没实现/没有目录都是正常态：返回 unsupported 由界面如实显示 */
+  async readModelCatalog(runtimeId: string): Promise<{ supported: false; reason: string } | ModelCatalogInfo> {
+    const adapter = this.getAdapter(runtimeId);
+    if (typeof adapter.readModelCatalog !== "function") {
+      return {
+        supported: false,
+        reason: `${adapter.displayName} 没有可编辑的模型目录面 —— 它的模型清单来自 CLI/订阅实时声明`,
+      };
+    }
+    return adapter.readModelCatalog();
+  }
+
+  /** 供应商级配置（pi / opencode 一类累加式面）。没有该能力的执行器返回 unsupported */
+  readModelProviders(runtimeId: string): { supported: false; reason: string } | NativeProvidersInfo {
+    const adapter = this.getAdapter(runtimeId);
+    if (typeof adapter.readModelProviders !== "function") {
+      return {
+        supported: false,
+        reason: `${adapter.displayName} 没有本地供应商配置面 —— 它的模型清单由账号/订阅在服务侧声明`,
+      };
+    }
+    return adapter.readModelProviders();
+  }
+
+  writeModelProviders(runtimeId: string, rows: readonly ProviderWriteRow[]): NativeProvidersInfo {
+    const adapter = this.getAdapter(runtimeId);
+    if (typeof adapter.writeModelProviders !== "function") {
+      throw adapterError("unsupported", `${adapter.displayName} 不支持供应商配置编辑`);
+    }
+    return adapter.writeModelProviders(rows);
+  }
+
+  async writeModelCatalog(runtimeId: string, rows: readonly ModelCatalogWriteRow[]): Promise<ModelCatalogInfo> {
+    const adapter = this.getAdapter(runtimeId);
+    if (typeof adapter.writeModelCatalog !== "function") {
+      throw adapterError("unsupported", `${adapter.displayName} 不支持模型目录编辑`);
+    }
+    return adapter.writeModelCatalog(rows);
   }
 
   /**

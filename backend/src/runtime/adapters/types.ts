@@ -78,6 +78,96 @@ export interface StartRequest {
   readonly contextLength?: string;
 }
 
+/**
+ * 执行器原生模型默认值 —— 写进 CLI 自己的配置文件的那几个键（cc-switch 同思路）。
+ *
+ * 只描述「字段级补丁」：一条字段 = 一个稳定 key（UI 提交用）+ 当前值（空串 = 未设置，
+ * 提交空串 = 删键回到 CLI 自己的默认）。整份文件的其余键（hooks / permissions /
+ * MCP / 用户手写的任何东西）一律不碰 —— 这是字段清单而不是文件模板的原因。
+ */
+export interface NativeModelField {
+  readonly key: string;
+  readonly label: string;
+  readonly kind: "text" | "number" | "enum";
+  /** kind = enum 时的可选项（思考强度一类） */
+  readonly options?: readonly string[];
+  /** 当前生效值；空串 = 该键未设置 */
+  readonly value: string;
+  readonly placeholder?: string;
+  readonly hint?: string;
+  /** 候选建议（host 侧注入的执行器当前模型清单）—— UI 渲染成可选项，选而不手打 */
+  readonly suggestions?: readonly string[];
+}
+
+export interface NativeModelConfig {
+  /** 写入的目标文件（UI 展示「改的是哪份配置」用） */
+  readonly configPath: string;
+  /** 生效口径说明（哪些场景会用到这些默认值） */
+  readonly note: string;
+  readonly fields: readonly NativeModelField[];
+}
+
+/**
+ * 执行器模型目录的一条可编辑条目（codex 的 model-catalogs 一类）。
+ *
+ * 目录是「清单级」编辑面：增删模型、改显示名/窗口/推理档位/可见性，
+ * 整体生效于 CLI 的模型选择面（TUI 的 /model 与工作台选择器都吃它）。
+ */
+export interface ModelCatalogEntry {
+  readonly slug: string;
+  readonly display_name: string;
+  /** 上下文窗口（token）。undefined = 该条目不声明（跟随 CLI 默认） */
+  readonly context_window?: number;
+  /** 推理档位（effort id 列表） */
+  readonly supported_reasoning_levels?: readonly string[];
+  readonly default_reasoning_level?: string;
+  /** "list" = 可选；"hide" = 不出现在选择面（codex 的合法变体：list/hide/none）。其他值原样透传 */
+  readonly visibility: string;
+  /** 支持图片输入（codex 的 input_modalities 含 image） */
+  readonly multimodal?: boolean;
+}
+
+/** 提交行：origSlug 缺省 = 新增条目；有值 = 对该条目的就地编辑（含改名） */
+export interface ModelCatalogWriteRow extends ModelCatalogEntry {
+  readonly origSlug?: string;
+}
+
+export interface ModelCatalogInfo {
+  /** 当前生效的目录文件；null = 未配置目录（entries 是「当前生效清单」的种子，保存即接管） */
+  readonly activePath: string | null;
+  readonly note: string;
+  readonly entries: readonly ModelCatalogEntry[];
+  /** 目录文件是别的工具管的（如 cc-switch）—— 提示用户编辑可能被对方重生成 */
+  readonly managedByExternal?: string;
+}
+
+// ---- 供应商级配置（pi / opencode 一类「多家共存」的累加式面）------------------------
+
+/** 一个供应商条目：baseUrl/apiKey/api + 模型 id 清单 */
+export interface ProviderEntry {
+  /** 供应商键（配置里的 id，也是模型 id 的前缀） */
+  readonly key: string;
+  readonly name: string;
+  readonly baseUrl: string;
+  readonly apiKey: string;
+  /** pi = api 协议（openai-completions 等）；opencode = npm 包名（@ai-sdk/openai-compatible） */
+  readonly api: string;
+  readonly models: readonly string[];
+}
+
+/** 提交行：origKey 缺省 = 新增；models 为该供应商的完整模型 id 清单（表外即删除） */
+export interface ProviderWriteRow extends ProviderEntry {
+  readonly origKey?: string;
+}
+
+export interface NativeProvidersInfo {
+  readonly configPath: string;
+  readonly note: string;
+  readonly providers: readonly ProviderEntry[];
+  /** 文件暂不可编辑时的说明（如 JSONC 含注释） */
+  readonly managedByExternal?: string;
+}
+
 export type AdapterSink = (event: RuntimeEvent) => void;
 
 export interface AdapterSession {
@@ -136,6 +226,33 @@ export interface ExecutorAdapter {
    * - 没有原生命令面的执行器不实现此方法，UI 菜单只显示工作台本地命令。
    */
   listCommands?(rootPath: string): Promise<readonly NativeCommandInfo[]>;
+  /**
+   * 读/写该执行器**原生配置文件里的模型默认值**（可选能力，cc-switch 同思路）。
+   *
+   * - 只有存在稳定文件级模型默认面的 CLI 才实现（claude 的 settings.json env、
+   *   codex 的 config.toml 顶层键）；ACP 系执行器的模型参数走会话内 configOption
+   *   逐轮下发，没有可写的持久面，不实现 —— 界面对未实现者显示「随会话下发」。
+   * - write 的 values 以字段 key 为准，空串 = 删键；返回写后重读的完整配置。
+   * - 实现方必须字段级补丁 + 原子写（临时文件 rename），绝不整份覆盖用户配置。
+   */
+  readModelDefaults?(): NativeModelConfig;
+  writeModelDefaults?(values: Readonly<Record<string, string>>): NativeModelConfig;
+  /**
+   * 读/写执行器的**模型目录**（可选能力，cc-switch 同思路）：清单级编辑面 ——
+   * 增删模型、改显示名/上下文窗口/推理档位/可见性，写进 CLI 自己的目录文件
+   * （codex 的 model-catalogs/*.json，经 config.toml 的 model_catalog_json 挂载）。
+   * 未配置目录时 read 返回当前生效清单作种子（保存即创建并接管）；
+   * 目录文件归别家工具管（cc-switch）时如实上报 managedByExternal。
+   */
+  readModelCatalog?(): Promise<ModelCatalogInfo>;
+  writeModelCatalog?(rows: readonly ModelCatalogWriteRow[]): Promise<ModelCatalogInfo>;
+  /**
+   * 读/写执行器的**供应商配置**（可选能力）：多家供应商共存的累加式面 ——
+   * pi 的 models.json providers、opencode 的 provider(s) 段。条目级 patch，
+   * 未暴露字段（headers/compat 一类）随行保留；保存后由 host 顺带刷模型清单。
+   */
+  readModelProviders?(): NativeProvidersInfo;
+  writeModelProviders?(rows: readonly ProviderWriteRow[]): NativeProvidersInfo;
   /**
    * 使 listCommands 的适配器内部缓存全部失效（可选能力）。
    * 技能停用/恢复后 host 会调用它 —— 只清 host 侧落盘缓存不够：适配器自己

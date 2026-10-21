@@ -87,6 +87,16 @@ ipcMain.on("zoom-wheel", (_event, deltaY) => {
  * 渲染层的 FolderPickerField 在桌面端优先走这里；纯浏览器访问没有本通道，
  * 回落到组件内置的目录浏览器。返回 null = 用户取消。
  */
+ipcMain.handle("shell:open-path", async (_event, path) => {
+  // 设置页「打开文件」：系统默认程序打开配置文件。空/非字符串静默拒绝
+  if (typeof path !== "string" || path.trim() === "") return "";
+  return await shell.openPath(path);
+});
+ipcMain.handle("shell:show-item-in-folder", (_event, path) => {
+  if (typeof path !== "string" || path.trim() === "") return;
+  shell.showItemInFolder(path);
+});
+
 ipcMain.handle("dialog:pick-directory", (_event, opts) => {
   if (!mainWindow || mainWindow.isDestroyed()) return null;
   const o = opts !== null && typeof opts === "object" ? opts : {};
