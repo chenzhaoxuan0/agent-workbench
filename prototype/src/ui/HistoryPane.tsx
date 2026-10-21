@@ -127,7 +127,8 @@ const RESUME_ARGS: Record<string, (ref: string) => string[]> = {
 /** 可恢复判定（侧栏子列表与历史面板共用） */
 export function resumeArgsFor(runtimeId: string, resumeRef: string | null): string[] | null {
   if (resumeRef === null) return null;
-  const build = RESUME_ARGS[runtimeId];
+  const bare = runtimeId.replace(/^daemon:/, "").replace(/:yolo$/, "").toLowerCase();
+  const build = RESUME_ARGS[bare] ?? RESUME_ARGS[runtimeId];
   return build === undefined ? null : build(resumeRef);
 }
 

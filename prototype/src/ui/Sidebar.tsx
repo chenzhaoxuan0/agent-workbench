@@ -602,18 +602,16 @@ function guardsOf(u: WorkUnit): BotWriteGuards {
 function openEntryInChat(e: UnitHistoryEntry, ownerUnitId: string): void {
   if (e.sessionId === null) return;
   const sid = e.sessionId;
+  // 只要用户点开该会话，立即标为已读消除绿灯
+  useHistoryPrefs.getState().markViewed([e.key, `session-${sid}`]);
   void useWorkbench
     .getState()
     .openSession({ sessionId: asSessionId(sid), unitId: asUnitId(ownerUnitId), runtimeId: e.runtimeId })
     .then(() => {
-      // 门禁拦下 / 会话打不开时 openSession 只推 notice 并落空 —— activeSessionId
-      // 不会变。此时不切视图、**不标已读**（绿灯留着，用户还没看到内容）。
       if (String(useWorkbench.getState().activeSessionId) !== sid) return;
       const sh = useShell.getState();
       sh.setMainView("chat");
       sh.setConversationView("chat");
-      // 打开即已读：绿灯熄灭（entry key 与 session key 都标，自动化行与 session 行共享已读态）
-      useHistoryPrefs.getState().markViewed([e.key, `session-${sid}`]);
     });
 }
 
@@ -1145,19 +1143,22 @@ function UnitRow({
             const rowActive =
               mainView === "chat" && e.sessionId !== null && String(activeSessionId) === e.sessionId;
             const openDefault = (): void => {
+              // 1. 符合直觉：只要点击该会话，立即消除未读绿灯（标为已查看）
+              useHistoryPrefs
+                .getState()
+                .markViewed(e.sessionId !== null ? [e.key, `session-${e.sessionId}`] : [e.key]);
+
               if (effective === "chat" && canChat) openEntryInChat(e, String(unit.id));
               else if (effective === "tui" && canTui) openEntryInTui(e, unit);
               else if (canChat) openEntryInChat(e, String(unit.id));
               else if (canTui) openEntryInTui(e, unit);
               else {
-                // 打开历史不再默认弹出右侧栏（面板使用频率低，弹出即打扰）：
-                // 既接不回聊天页也无法在 TUI 重现时只提示；看记录走右键菜单
-                // 「对话详情」—— 显式动作才开面板。切回 chat 让提示可见
-                //（其余分支都落在 chat，本分支不该是唯一「点了没反应」的例外）
-                useShell.getState().setMainView("chat");
+                // 2. 既无活跃进程也无法 resume：这是一条已归档的历史终端记录，
+                // 直接帮用户展开右侧栏的「历史对话详情」查看记录与产物，而不是弹窗拒绝
+                openHistoryTab(e.key);
                 useWorkbench.getState().pushNotice(
-                  "无法重现这条会话",
-                  "它既接不回聊天页，也无法在 TUI 重现（执行器没留原生会话引用）。需要看记录可用右键菜单的「对话详情」。",
+                  "已打开历史记录详情",
+                  "该会话属于已归档的历史终端记录（执行器未保留原生会话句柄），已为你展开对话详情查看运行记录与产物。",
                 );
               }
             };
