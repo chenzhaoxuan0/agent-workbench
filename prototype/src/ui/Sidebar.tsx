@@ -1654,33 +1654,45 @@ function HistoryListRow({
         {mode.effective === "chat" ? <MessageSquare size={8} /> : <SquareTerminal size={8} />}
         {modeLabel}
       </span>
-      <span className="shrink-0 text-[9px] text-ash/70">{formatHistoryTime(entry.startedAt)}</span>
-      {/* 悬停快捷归档钮 */}
-      {onToggleArchive && (
+      {/* 会话时间 ↔ 归档钮同位交叉淡入：
+          平时固定宽度显示相对时间（右对齐、等宽数字保证整个子列表整齐划一），
+          hover 时时间淡出、归档按钮淡入在同一位置，极致省下左侧栏横向空间 */}
+      <span className="relative flex h-4 w-8 shrink-0 items-center justify-end">
         <span
-          role="button"
-          tabIndex={0}
-          data-no-drag
-          aria-label={archived ? "取消归档" : "归档任务"}
-          title={archived ? "取消归档：恢复至左侧栏" : "归档任务：移入已完成抽屉，不在左侧栏占用空间"}
-          onClick={(ev) => {
-            ev.stopPropagation();
-            onToggleArchive();
-          }}
-          onKeyDown={(ev) => {
-            if (ev.key === "Enter" || ev.key === " ") {
-              ev.stopPropagation();
-              onToggleArchive();
-            }
-          }}
           className={cn(
-            "flex h-3.5 w-3.5 shrink-0 cursor-pointer items-center justify-center rounded-[2px] transition hover:text-teal",
-            archived ? "text-teal opacity-100" : "text-ash opacity-0 group-hover/hrow:opacity-100",
+            "w-full text-right font-mono text-[9px] tnum text-ash/70 transition-opacity truncate",
+            "group-hover/hrow:opacity-0",
+            archived && "opacity-0",
           )}
         >
-          {archived ? <ArchiveRestore size={9} /> : <Archive size={9} />}
+          {formatHistoryTime(entry.startedAt)}
         </span>
-      )}
+        {onToggleArchive && (
+          <span
+            role="button"
+            tabIndex={0}
+            data-no-drag
+            aria-label={archived ? "取消归档" : "归档任务"}
+            title={archived ? "取消归档：恢复至左侧栏" : "归档任务：移入已完成抽屉，不在左侧栏占用空间"}
+            onClick={(ev) => {
+              ev.stopPropagation();
+              onToggleArchive();
+            }}
+            onKeyDown={(ev) => {
+              if (ev.key === "Enter" || ev.key === " ") {
+                ev.stopPropagation();
+                onToggleArchive();
+              }
+            }}
+            className={cn(
+              "absolute inset-0 flex cursor-pointer items-center justify-end rounded-[2px] transition-opacity",
+              archived ? "opacity-100 text-teal" : "opacity-0 text-ash group-hover/hrow:opacity-100 hover:text-teal",
+            )}
+          >
+            {archived ? <ArchiveRestore size={11} /> : <Archive size={11} />}
+          </span>
+        )}
+      </span>
     </button>
   );
 }
