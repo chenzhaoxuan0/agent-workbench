@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactElement } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import {
   AlarmClock,
   Archive,
@@ -321,7 +321,12 @@ export function HistoryPane({
   const displayedEntries = useMemo(() => {
     if (!entries) return null;
     if (!hideFailedInDialog) return entries;
-    return entries.filter((e) => e.status !== "failed" || e.key === focusKey);
+    return entries.filter(
+      (e) =>
+        e.status !== "failed" ||
+        e.key === focusKey ||
+        (e.sessionId !== null && `session-${e.sessionId}` === focusKey),
+    );
   }, [entries, hideFailedInDialog, focusKey]);
 
   /** 可删行：session 类（含导入）且非活会话 —— 运行中的 daemon 会拒绝 forget */
@@ -483,25 +488,35 @@ export function HistoryPane({
               </button>
             </div>
           )}
-          {displayedEntries !== null && collapseForkVersions(displayedEntries).map((slot) => (
-            <HistoryRow
-              key={slot.entry.key}
-              unitId={unitId}
-              entry={slot.entry}
-              family={slot.family}
-              expanded={expanded === slot.entry.key}
-              onToggle={() => setExpanded(expanded === slot.entry.key ? null : slot.entry.key)}
-              resumable={resumable(slot.entry)}
-              resumeBusy={resumeBusy === slot.entry.key}
-              onResume={() => handleResume(slot.entry)}
-              onOpenInChat={slot.entry.sessionId !== null ? () => handleOpenInChat(slot.entry) : undefined}
-              onOpenFamilyMember={(m) => handleOpenInChat(m)}
-              organizing={organizing}
-              pickable={pickableOf(slot.entry)}
-              picked={picked.has(slot.entry.key)}
-              onTogglePick={() => togglePick(slot.entry.key)}
-            />
-          ))}
+          {displayedEntries !== null &&
+            collapseForkVersions(displayedEntries).map((slot) => {
+              const isFocused = Boolean(
+                focusKey &&
+                  (slot.entry.key === focusKey ||
+                    (slot.entry.sessionId !== null && `session-${slot.entry.sessionId}` === focusKey) ||
+                    (slot.family && slot.family.some((f) => f.key === focusKey))),
+              );
+              return (
+                <HistoryRow
+                  key={slot.entry.key}
+                  unitId={unitId}
+                  entry={slot.entry}
+                  family={slot.family}
+                  isFocused={isFocused}
+                  expanded={expanded === slot.entry.key || isFocused}
+                  onToggle={() => setExpanded(expanded === slot.entry.key ? null : slot.entry.key)}
+                  resumable={resumable(slot.entry)}
+                  resumeBusy={resumeBusy === slot.entry.key}
+                  onResume={() => handleResume(slot.entry)}
+                  onOpenInChat={slot.entry.sessionId !== null ? () => handleOpenInChat(slot.entry) : undefined}
+                  onOpenFamilyMember={(m) => handleOpenInChat(m)}
+                  organizing={organizing}
+                  pickable={pickableOf(slot.entry)}
+                  picked={picked.has(slot.entry.key)}
+                  onTogglePick={() => togglePick(slot.entry.key)}
+                />
+              );
+            })}
         </div>
       )}
 
@@ -695,6 +710,7 @@ function HistoryRow({
   unitId,
   entry,
   family,
+  isFocused = false,
   expanded,
   onToggle,
   resumable,
@@ -712,6 +728,8 @@ function HistoryRow({
   entry: UnitHistoryEntry;
   /** 同锚点的 revision 家族（旧 → 新，含 entry；ADR 0013 P2 版本折叠） */
   family?: readonly UnitHistoryEntry[];
+  /** 是否为刚刚在侧边栏点击选中的条目（高亮并滚动定位） */
+  isFocused?: boolean;
   expanded: boolean;
   onToggle: () => void;
   resumable: boolean;
@@ -728,6 +746,16 @@ function HistoryRow({
   picked: boolean;
   onTogglePick: () => void;
 }): ReactElement {
+  const rowRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (isFocused && rowRef.current) {
+      const timer = setTimeout(() => {
+        rowRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+      }, 80);
+      return () => clearTimeout(timer);
+    }
+  }, [isFocused]);
+
   const kind = KIND_META[entry.kind];
   const st = useMemo(() => statusMeta(entry.status), [entry.status]);
   const dur = formatDuration(entry);
@@ -747,7 +775,14 @@ function HistoryRow({
   const isArchived = useHistoryPrefs((s) => s.isArchived(entry.key, entry.sessionId));
 
   return (
-    <div className={cn("border-b border-line-soft last:border-b-0", picked && "bg-loss/5")}>
+    <div
+      ref={rowRef}
+      className={cn(
+        "border-b border-line-soft last:border-b-0 transition-all duration-300",
+        picked && "bg-loss/5",
+        isFocused && "bg-teal-tint/50 border-l-4 border-l-teal pl-1.5 ring-1 ring-teal/30 shadow-xs",
+      )}
+    >
       <button
         onClick={organizing ? (pickable ? onTogglePick : undefined) : expandable ? onToggle : undefined}
         className={cn(
@@ -825,6 +860,11 @@ function HistoryRow({
         <span className="min-w-0 flex-1">
           <span className="flex items-center gap-2">
             <span className="min-w-0 flex-1 truncate text-body-sm text-ink">{entry.title}</span>
+            {isFocused && (
+              <span className="shrink-0 rounded bg-teal px-1.5 py-0.5 text-[10px] font-medium text-canvas shadow-xs">
+                当前定位
+              </span>
+            )}
             <SIcon size={12} className={cn("shrink-0", st.cls)} />
             <span className={cn("shrink-0 text-caption", st.cls)}>{st.label}</span>
             {dur !== null && <span className="shrink-0 text-caption text-ash">{dur}</span>}
