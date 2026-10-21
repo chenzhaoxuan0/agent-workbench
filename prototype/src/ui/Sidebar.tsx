@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState, type ReactElement } from "react";
 import {
   AlarmClock,
+  Archive,
+  ArchiveRestore,
   ChevronLeft,
   FolderGit2,
   FolderPlus,
@@ -17,6 +19,7 @@ import {
   Search,
   Settings,
   SquareTerminal,
+  X,
 } from "lucide-react";
 import { useWorkbench, type ViewMode, type BotWriteGuards } from "../store/useWorkbench.ts";
 import { useShell } from "../store/useShell.ts";
@@ -129,6 +132,9 @@ export function Sidebar() {
   };
   const addUnit = useWorkbench((s) => s.addUnit);
   const mainView = useShell((s) => s.mainView);
+  /** 归档抽屉展开态（对齐 ZCode showArchivedTasks） */
+  const [showArchivedDrawer, setShowArchivedDrawer] = useState(false);
+  const archivedKeys = useHistoryPrefs((s) => s.prefs.archivedKeys);
 
   /** 普通节拖拽排序：store 持有（单元切换器弹层共享同一份顺序，两侧同序） */
   const unitOrder = useWorkbench((s) => s.unitOrder);
@@ -288,6 +294,28 @@ export function Sidebar() {
           <span className="tnum hidden text-caption text-ash @min-[240px]:inline">({visibleUnits.length})</span>
         </div>
         <div className="flex shrink-0 items-center gap-1">
+          {/* 归档抽屉开关按钮（对齐 ZCode 的 toggleArchivedTasks） */}
+          <button
+            type="button"
+            onClick={() => setShowArchivedDrawer((v) => !v)}
+            aria-pressed={showArchivedDrawer}
+            title={showArchivedDrawer ? "关闭归档抽屉" : `归档抽屉${archivedKeys.length > 0 ? ` · 已有 ${archivedKeys.length} 个任务` : ""}`}
+            className={cn(
+              "flex items-center gap-1 rounded-btn px-1.5 py-0.5 text-caption transition cursor-pointer",
+              showArchivedDrawer
+                ? "bg-teal-tint text-teal font-medium"
+                : "text-graphite hover:bg-line-soft hover:text-ink",
+            )}
+          >
+            {showArchivedDrawer ? <X size={11} /> : <Archive size={11} />}
+            <span>{showArchivedDrawer ? "关闭" : "归档"}</span>
+            {archivedKeys.length > 0 && !showArchivedDrawer && (
+              <span className="rounded-full bg-teal/20 px-1 py-0.2 text-[9px] font-medium text-teal">
+                {archivedKeys.length}
+              </span>
+            )}
+          </button>
+
           <button
             onClick={() => useShell.getState().openAddBot()}
             aria-label="新建 bot"
@@ -301,6 +329,10 @@ export function Sidebar() {
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-4">
+        {showArchivedDrawer ? (
+          <ArchivedSidebarDrawerSection onClose={() => setShowArchivedDrawer(false)} />
+        ) : (
+          <>
         {/* 空态引导卡 */}
         {allUnits.length === 0 && (
           <button
@@ -478,6 +510,8 @@ export function Sidebar() {
             );
           })}
         </section>
+          </>
+        )}
       </div>
 
       {/* bot 对话框（AGENTS.md 岗位说明书）—— 新建 / 编辑共用一个组件。
@@ -809,24 +843,29 @@ function UnitRow({
   /** 行内重命名中的 entry key（右键「重命名」进入，Enter/失焦保存、Esc 取消） */
   const [renamingKey, setRenamingKey] = useState<string | null>(null);
 
-  const { filteredEntries, hiddenFailedCount } = useMemo(() => {
+  const { filteredEntries, hiddenFailedCount, hiddenArchivedCount } = useMemo(() => {
     // 置顶行排最前（稳定排序：组内保持原时间序）—— 「垂直标签页」的 pin 语义
     const pinned = new Set(historyPrefs.pinnedKeys);
     const byPin = (list: readonly UnitHistoryEntry[]): UnitHistoryEntry[] =>
       [...list].sort((a, b) => Number(pinned.has(b.key)) - Number(pinned.has(a.key)));
-    if (!histEntries) return { filteredEntries: null, hiddenFailedCount: 0 };
-    if (!hideFailedInSidebar) return { filteredEntries: byPin(histEntries), hiddenFailedCount: 0 };
+    if (!histEntries) return { filteredEntries: null, hiddenFailedCount: 0, hiddenArchivedCount: 0 };
+    const archivedSet = new Set(historyPrefs.archivedKeys);
     const filtered: UnitHistoryEntry[] = [];
     let hidden = 0;
+    let archived = 0;
     for (const e of histEntries) {
-      if (e.status === "failed") {
-        hidden++;
-      } else {
-        filtered.push(e);
+      if (archivedSet.has(e.key) || (e.sessionId && archivedSet.has(`session-${e.sessionId}`))) {
+        archived++;
+        continue;
       }
+      if (hideFailedInSidebar && e.status === "failed") {
+        hidden++;
+        continue;
+      }
+      filtered.push(e);
     }
-    return { filteredEntries: byPin(filtered), hiddenFailedCount: hidden };
-  }, [histEntries, hideFailedInSidebar, historyPrefs.pinnedKeys]);
+    return { filteredEntries: byPin(filtered), hiddenFailedCount: hidden, hiddenArchivedCount: archived };
+  }, [histEntries, hideFailedInSidebar, historyPrefs.pinnedKeys, historyPrefs.archivedKeys]);
 
   useEffect(() => {
     if (!historyOpen) setVisibleCount(6);
@@ -1048,11 +1087,19 @@ function UnitRow({
               draggable={false}
               onClick={(e) => {
                 e.stopPropagation();
-                openHistoryTab();
+                if (hiddenArchivedCount > 0) {
+                  useShell.getState().openSettings("archivedTasks");
+                } else {
+                  openHistoryTab();
+                }
               }}
               className="w-full cursor-pointer rounded-btn px-1.5 py-1 text-left text-[10px] text-ash hover:bg-line-soft hover:text-graphite"
             >
-              已隐藏 {hiddenFailedCount} 条失败会话（点击打开详情）
+              {hiddenArchivedCount > 0 && hiddenFailedCount > 0
+                ? `已归档 ${hiddenArchivedCount} 条、隐藏 ${hiddenFailedCount} 条失败（点击查看详情）`
+                : hiddenArchivedCount > 0
+                  ? `已归档 ${hiddenArchivedCount} 条任务（点击在设置抽屉中查看）`
+                  : `已隐藏 ${hiddenFailedCount} 条失败会话（点击打开详情）`}
             </button>
           )}
           {collapseForkVersions(filteredEntries ?? []).slice(0, visibleCount).map((slot) => {
@@ -1110,6 +1157,9 @@ function UnitRow({
                 );
               }
             };
+            const isEntryArchived =
+              historyPrefs.archivedKeys.includes(e.key) ||
+              (e.sessionId !== null && historyPrefs.archivedKeys.includes(`session-${e.sessionId}`));
             return (
               <HistoryListRow
                 key={e.key}
@@ -1120,6 +1170,8 @@ function UnitRow({
                 mode={{ effective, canChat, canTui }}
                 pinned={historyPrefs.pinnedKeys.includes(e.key)}
                 onTogglePin={() => togglePinned(e.key)}
+                archived={isEntryArchived}
+                onToggleArchive={() => useHistoryPrefs.getState().toggleArchived(e)}
                 renaming={renamingKey === e.key}
                 onRenameCommit={(title) => {
                   setRenamingKey(null);
@@ -1190,6 +1242,11 @@ function UnitRow({
                           openEntryInTui(e, unit);
                         },
                       },
+                      {
+                        label: isEntryArchived ? "取消归档" : "归档任务",
+                        icon: isEntryArchived ? ArchiveRestore : Archive,
+                        onSelect: () => useHistoryPrefs.getState().toggleArchived(e),
+                      },
                       { separator: true },
                       {
                         label: "对话详情",
@@ -1222,6 +1279,22 @@ function UnitRow({
           {filteredEntries !== null && filteredEntries.length > 0 && hiddenFailedCount > 0 && (
             <div className="flex items-center justify-between px-1.5 py-0.5 text-[9px] text-ash/60">
               <span>已根据设置隐藏 {hiddenFailedCount} 条失败记录</span>
+            </div>
+          )}
+          {filteredEntries !== null && hiddenArchivedCount > 0 && (
+            <div className="flex items-center justify-between px-1.5 py-0.5 text-[9px] text-ash/60">
+              <span>已归档 {hiddenArchivedCount} 个任务</span>
+              <button
+                type="button"
+                data-no-drag
+                onClick={(e) => {
+                  e.stopPropagation();
+                  useShell.getState().openSettings("archivedTasks");
+                }}
+                className="text-teal hover:underline cursor-pointer"
+              >
+                查看抽屉 →
+              </button>
             </div>
           )}
           {filteredEntries !== null && filteredEntries.length > 6 && filteredEntries.length <= visibleCount && (
@@ -1389,6 +1462,8 @@ function HistoryListRow({
   mode,
   pinned,
   onTogglePin,
+  archived,
+  onToggleArchive,
   renaming,
   onRenameCommit,
   onOpenDefault,
@@ -1408,6 +1483,9 @@ function HistoryListRow({
   /** 是否已置顶（置顶行排在子列表最前） */
   pinned: boolean;
   onTogglePin: () => void;
+  /** 是否已归档 */
+  archived?: boolean;
+  onToggleArchive?: () => void;
   /** 行内重命名态（右键「重命名」进入） */
   renaming: boolean;
   /** 保存（含空串 = 恢复原名）或取消（null） */
@@ -1577,7 +1655,205 @@ function HistoryListRow({
         {modeLabel}
       </span>
       <span className="shrink-0 text-[9px] text-ash/70">{formatHistoryTime(entry.startedAt)}</span>
+      {/* 悬停快捷归档钮 */}
+      {onToggleArchive && (
+        <span
+          role="button"
+          tabIndex={0}
+          data-no-drag
+          aria-label={archived ? "取消归档" : "归档任务"}
+          title={archived ? "取消归档：恢复至左侧栏" : "归档任务：移入已完成抽屉，不在左侧栏占用空间"}
+          onClick={(ev) => {
+            ev.stopPropagation();
+            onToggleArchive();
+          }}
+          onKeyDown={(ev) => {
+            if (ev.key === "Enter" || ev.key === " ") {
+              ev.stopPropagation();
+              onToggleArchive();
+            }
+          }}
+          className={cn(
+            "flex h-3.5 w-3.5 shrink-0 cursor-pointer items-center justify-center rounded-[2px] transition hover:text-teal",
+            archived ? "text-teal opacity-100" : "text-ash opacity-0 group-hover/hrow:opacity-100",
+          )}
+        >
+          {archived ? <ArchiveRestore size={9} /> : <Archive size={9} />}
+        </span>
+      )}
     </button>
+  );
+}
+
+/**
+ * 侧边栏内联归档抽屉（对齐 ZCode 的 WorkspaceArchivedTasksFlatSection）。
+ * 点击侧栏标题栏「归档」图标即可展开，展示所有已被放进抽屉的历史任务。
+ */
+function ArchivedSidebarDrawerSection({ onClose }: { onClose: () => void }): ReactElement {
+  const archivedKeys = useHistoryPrefs((s) => s.prefs.archivedKeys);
+  const archivedEntries = useHistoryPrefs((s) => s.prefs.archivedEntries);
+  const unarchiveKey = useHistoryPrefs((s) => s.unarchiveKey);
+  const units = useWorkbench((s) => s.units);
+  const activeSessionId = useWorkbench((s) => s.activeSessionId);
+  const mainView = useShell((s) => s.mainView);
+  const [filterQuery, setFilterQuery] = useState("");
+
+  const list = useMemo(() => {
+    const res: UnitHistoryEntry[] = [];
+    const unitMap = new Map(units.map((u) => [u.id, u]));
+    for (const k of archivedKeys) {
+      const entry = archivedEntries[k];
+      if (entry) {
+        const u = entry.unitId ? unitMap.get(entry.unitId as any) : undefined;
+        res.push({
+          ...entry,
+          unitName: entry.unitName || u?.name || entry.unitId || "未知 Bot",
+        });
+      } else {
+        res.push({
+          key: k,
+          kind: "session",
+          title: `已归档任务 (${k})`,
+          subtitle: null,
+          runtimeId: "unknown",
+          launchMode: "headless",
+          status: "done",
+          trigger: null,
+          startedAt: 0,
+          endedAt: null,
+          detail: null,
+          sessionId: k.startsWith("session-") ? k.replace(/^session-/, "") : k,
+          resumeRef: null,
+        });
+      }
+    }
+    return res.sort((a, b) => (b.endedAt || b.startedAt) - (a.endedAt || a.startedAt));
+  }, [archivedKeys, archivedEntries, units]);
+
+  const filtered = useMemo(() => {
+    const q = filterQuery.trim().toLowerCase();
+    if (!q) return list;
+    return list.filter(
+      (e) =>
+        e.title.toLowerCase().includes(q) ||
+        (e.unitName && e.unitName.toLowerCase().includes(q)) ||
+        (e.subtitle && e.subtitle.toLowerCase().includes(q)),
+    );
+  }, [list, filterQuery]);
+
+  return (
+    <div className="space-y-2 py-1">
+      {/* 抽屉头部 */}
+      <div className="flex items-center justify-between px-1 py-1">
+        <div className="flex items-center gap-1.5">
+          <Archive size={13} className="text-teal" />
+          <span className="text-caption font-medium text-ink">已归档任务</span>
+          <span className="rounded-full bg-teal-tint px-1.5 py-0.2 text-[9px] font-medium text-teal">
+            {list.length}
+          </span>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="关闭归档抽屉"
+          title="关闭归档抽屉"
+          className="flex h-5 w-5 items-center justify-center rounded-btn text-ash hover:bg-line-soft hover:text-ink cursor-pointer"
+        >
+          <X size={12} />
+        </button>
+      </div>
+
+      {/* 搜索框 */}
+      {list.length > 4 && (
+        <div className="relative px-0.5">
+          <Search size={11} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-ash" />
+          <input
+            type="text"
+            value={filterQuery}
+            onChange={(e) => setFilterQuery(e.target.value)}
+            placeholder="搜索已归档任务..."
+            className="h-6 w-full rounded-btn border border-line bg-canvas pl-6 pr-2 text-[10px] text-ink placeholder:text-ash/60 focus:border-teal/60 focus:outline-none"
+          />
+        </div>
+      )}
+
+      {/* 列表区 */}
+      {list.length === 0 ? (
+        <div className="rounded-btn border border-dashed border-line p-4 text-center">
+          <Archive size={16} className="mx-auto mb-1 text-ash" />
+          <p className="text-[11px] font-medium text-graphite">暂无已归档任务</p>
+          <p className="mt-1 text-[10px] leading-relaxed text-ash">
+            在任务行上右键选择「归档任务」或点击悬浮归档按钮，任务将移入此抽屉。
+          </p>
+        </div>
+      ) : filtered.length === 0 ? (
+        <p className="py-4 text-center text-[10px] text-ash">未找到匹配的归档任务</p>
+      ) : (
+        <div className="space-y-1">
+          {filtered.map((e) => {
+            const canChat = e.sessionId !== null;
+            const canTui = resumeArgsFor(e.runtimeId, e.resumeRef) !== null;
+            const rowActive =
+              mainView === "chat" && e.sessionId !== null && String(activeSessionId) === e.sessionId;
+            return (
+              <div
+                key={e.key}
+                className={cn(
+                  "group/arow flex items-center justify-between gap-1.5 rounded-btn px-2 py-1.5 transition text-left cursor-pointer",
+                  rowActive ? "bg-teal-tint" : "hover:bg-line-soft",
+                )}
+                onClick={() => {
+                  if (canChat) {
+                    openEntryInChat(e, e.unitId || (units[0]?.id ?? ""));
+                  } else if (canTui) {
+                    const u = units.find((x) => x.id === e.unitId) ?? units[0];
+                    if (u) openEntryInTui(e, u);
+                  }
+                }}
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1">
+                    <span className="shrink-0 rounded-[2px] bg-line-soft px-1 py-0.2 text-[8px] font-medium text-ash">
+                      {e.unitName}
+                    </span>
+                    <span className="truncate text-[11px] text-ink">{e.title}</span>
+                  </div>
+                  <div className="mt-0.5 flex items-center gap-1 text-[9px] text-ash/70">
+                    <span>{formatRelative(e.startedAt)}</span>
+                  </div>
+                </div>
+
+                {/* 取消归档按钮 */}
+                <button
+                  type="button"
+                  data-no-drag
+                  onClick={(ev) => {
+                    ev.stopPropagation();
+                    unarchiveKey(e.key);
+                  }}
+                  title="取消归档：恢复到左侧栏列表"
+                  className="flex h-5 items-center gap-0.5 rounded-btn px-1.5 text-[9px] font-medium text-ash hover:bg-teal-tint hover:text-teal cursor-pointer shrink-0"
+                >
+                  <ArchiveRestore size={10} />
+                  <span>恢复</span>
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* 前往设置页的完整列表链接 */}
+      <div className="pt-1 text-center">
+        <button
+          type="button"
+          onClick={() => useShell.getState().openSettings("archivedTasks")}
+          className="text-[10px] text-teal hover:underline cursor-pointer"
+        >
+          在设置页中打开完整列表 →
+        </button>
+      </div>
+    </div>
   );
 }
 

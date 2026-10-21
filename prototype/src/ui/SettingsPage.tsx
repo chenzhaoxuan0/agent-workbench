@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import {
   AlarmClock,
+  Archive,
   ChevronLeft,
   Anchor,
   Brain,
@@ -44,6 +45,7 @@ import { ImageSettingsSection } from "./ImageSettingsSection.tsx";
 import { AppearanceSettingsSection } from "./AppearanceSettingsSection.tsx";
 import { HeartbeatSettingsSection } from "./HeartbeatSettingsSection.tsx";
 import { ImportSessionsSection } from "./ImportSessionsSection.tsx";
+import { ArchivedTasksSettingsSection } from "./ArchivedTasksSettingsSection.tsx";
 import { useHistoryPrefs } from "../store/useHistoryPrefs.ts";
 import { useChatTerminal } from "../store/useChatTerminal.ts";
 import { SUPPORTED_TERMINAL_PROFILES } from "../store/useTerminalStore.ts";
@@ -63,6 +65,7 @@ const ICONS: Record<string, typeof Settings2> = {
   shield: Shield,
   chart: ChartBar,
   history: History,
+  archive: Archive,
   layers: Layers,
   plug: Plug,
   terminal: SquareTerminal,
@@ -284,6 +287,8 @@ function SectionBody({ section }: { section: SettingsSectionDef }) {  switch (se
           </section>
         </div>
       );
+    case "archivedTasks":
+      return <ArchivedTasksSettingsSection />;
     case "heartbeat":
       return <HeartbeatSettingsSection />;
     case "terminal":
@@ -749,6 +754,23 @@ function HistorySettingsSection() {
               on={prefs.hideFailedInDialog}
               onChange={(v) => setPrefs({ hideFailedInDialog: v })}
             />
+          }
+        />
+        <SettingsRow
+          label="已归档任务抽屉"
+          description="把完成或不常用的任务放进抽屉里，保留全部历史但不在左侧栏占用空间。"
+          control={
+            <button
+              type="button"
+              onClick={() => useShell.getState().openSettings("archivedTasks")}
+              className="flex items-center gap-1.5 rounded-btn bg-teal-tint px-2.5 py-1 text-caption font-medium text-teal transition hover:bg-teal/15 cursor-pointer"
+            >
+              <Archive size={12} />
+              <span>查看归档抽屉</span>
+              <span className="rounded-full bg-teal/20 px-1.5 py-0.2 text-[10px] text-teal">
+                {prefs.archivedKeys.length}
+              </span>
+            </button>
           }
         />
       </GroupCard>

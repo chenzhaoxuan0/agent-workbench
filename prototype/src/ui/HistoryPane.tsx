@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState, type ReactElement } from "react";
 import {
   AlarmClock,
+  Archive,
+  ArchiveRestore,
   Check,
   ChevronDown,
   ChevronRight,
@@ -741,6 +743,8 @@ function HistoryRow({
           ? "重发"
           : null;
 
+  const isArchived = useHistoryPrefs((s) => s.isArchived(entry.key, entry.sessionId));
+
   return (
     <div className={cn("border-b border-line-soft last:border-b-0", picked && "bg-loss/5")}>
       <button
@@ -902,6 +906,31 @@ function HistoryRow({
                 {resumeBusy ? "恢复中" : "TUI 恢复"}
               </span>
             )}
+            {/* 归档 / 取消归档按钮 */}
+            <span
+              role="button"
+              tabIndex={0}
+              onClick={(ev) => {
+                ev.stopPropagation();
+                useHistoryPrefs.getState().toggleArchived(entry);
+              }}
+              onKeyDown={(ev) => {
+                if (ev.key === "Enter" || ev.key === " ") {
+                  ev.stopPropagation();
+                  useHistoryPrefs.getState().toggleArchived(entry);
+                }
+              }}
+              title={isArchived ? "取消归档：恢复至左侧栏显示" : "归档任务：移入已完成抽屉，不在左侧栏占用空间"}
+              className={cn(
+                "flex shrink-0 cursor-pointer items-center gap-0.5 rounded-chip px-1.5 py-px text-[10px] transition",
+                isArchived
+                  ? "bg-teal-tint text-teal font-medium hover:bg-teal hover:text-canvas"
+                  : "bg-line-soft text-ash hover:bg-teal-tint hover:text-teal",
+              )}
+            >
+              {isArchived ? <ArchiveRestore size={9} /> : <Archive size={9} />}
+              {isArchived ? "已归档" : "归档"}
+            </span>
             {expandable && (expanded ? <ChevronDown size={13} className="shrink-0 text-ash" /> : <ChevronRight size={13} className="shrink-0 text-ash" />)}
           </span>
           <span className="mt-0.5 flex items-center gap-2 text-caption">

@@ -1,10 +1,15 @@
 import { create } from "zustand";
+import type { UnitHistoryEntry } from "../adapters/daemon/client.ts";
 
 /**
  * 历史会话展示偏好。
  *
  * 失败会话（status === "failed"，红点）由于无法交互且无法重现，
  * 默认在侧边栏和详情弹窗中隐藏，保留随时重新开启的能力。
+ *
+ * 归档会话（archivedKeys）：将已完成的任务放进抽屉里，
+ * 内容和历史全部保留，仅从左侧栏隐藏以释放空间；
+ * 可在设置页面或侧栏归档抽屉中随时查看与取消归档。
  */
 
 export interface HistoryPrefs {
@@ -29,6 +34,10 @@ export interface HistoryPrefs {
   entryOpenMode: Record<string, "chat" | "tui">;
   /** 用户置顶的历史会话（entry key 列表，cap 50）—— 侧栏子列表里排在最前 */
   pinnedKeys: string[];
+  /** 用户手动归档的历史任务（entry key 列表）—— 移入已完成抽屉，不在左侧栏占用空间 */
+  archivedKeys: string[];
+  /** 已归档任务的元数据快照缓存（key -> UnitHistoryEntry），用于抽屉与设置页直出 */
+  archivedEntries: Record<string, UnitHistoryEntry>;
 }
 
 const DEFAULTS: HistoryPrefs = {
@@ -38,12 +47,16 @@ const DEFAULTS: HistoryPrefs = {
   lightsSinceTs: 0,
   entryOpenMode: {},
   pinnedKeys: [],
+  archivedKeys: [],
+  archivedEntries: {},
 };
 
 /** 已读标记容量上限：超出后丢最旧的（FIFO），防止 localStorage 无限膨胀 */
 const VIEWED_CAP = 500;
 /** 置顶容量上限：置顶是稀缺的手动标记，多了「置顶区」就失去意义 */
 const PINNED_CAP = 50;
+/** 归档容量上限：防止极端情况下无限制堆积 */
+const ARCHIVED_CAP = 1000;
 
 const STORAGE_KEY = "agent-workbench:history-prefs";
 
@@ -70,6 +83,11 @@ function load(): HistoryPrefs {
             )
           : {},
       pinnedKeys: Array.isArray(p.pinnedKeys) ? p.pinnedKeys.filter((k): k is string => typeof k === "string") : [],
+      archivedKeys: Array.isArray(p.archivedKeys) ? p.archivedKeys.filter((k): k is string => typeof k === "string") : [],
+      archivedEntries:
+        p.archivedEntries !== null && typeof p.archivedEntries === "object"
+          ? (p.archivedEntries as Record<string, UnitHistoryEntry>)
+          : {},
     };
   } catch {
     return { ...DEFAULTS, lightsSinceTs: Date.now() };
@@ -82,6 +100,15 @@ function persist(prefs: HistoryPrefs): void {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(prefs));
   } catch {
     // 忽略 localStorage 写入异常
+  }
+}
+
+function notifyHistoryRefresh(unitId?: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.dispatchEvent(new CustomEvent("awb:history-refresh", { detail: { unitId } }));
+  } catch {
+    // 忽略事件派发异常
   }
 }
 
@@ -99,6 +126,18 @@ export interface HistoryPrefsStore {
   togglePinned: (key: string) => void;
   /** 批量置顶（导入会话用） */
   pinKeys: (keys: string[]) => void;
+  /** 归档一条任务/会话：移入抽屉，不再显示在左侧栏占用空间 */
+  archiveEntry: (entry: UnitHistoryEntry) => void;
+  /** 取消归档任务（恢复显示在左侧栏） */
+  unarchiveKey: (key: string) => void;
+  /** 切换归档态 */
+  toggleArchived: (entry: UnitHistoryEntry) => void;
+  /** 检查任务是否处于归档状态 */
+  isArchived: (key: string, sessionId?: string | null) => boolean;
+  /** 全部取消归档（一键还原抽屉内的所有任务） */
+  unarchiveAll: () => void;
+  /** 更新/同步已归档任务的最新快照（从 daemon 轮询拉取时丰富字段） */
+  updateArchivedEntries: (entries: readonly UnitHistoryEntry[]) => void;
 }
 
 export const useHistoryPrefs = create<HistoryPrefsStore>((set, get) => ({
@@ -160,4 +199,75 @@ export const useHistoryPrefs = create<HistoryPrefsStore>((set, get) => ({
       persist(next);
       return { prefs: next };
     }),
+  archiveEntry: (entry) => {
+    set((state) => {
+      if (!entry.key) return {};
+      const key = entry.key;
+      const has = state.prefs.archivedKeys.includes(key);
+      const nextKeys = has ? state.prefs.archivedKeys : [...state.prefs.archivedKeys, key].slice(-ARCHIVED_CAP);
+      const nextEntries = { ...state.prefs.archivedEntries, [key]: entry };
+      const next = { ...state.prefs, archivedKeys: nextKeys, archivedEntries: nextEntries };
+      persist(next);
+      notifyHistoryRefresh(entry.unitId);
+      return { prefs: next };
+    });
+  },
+  unarchiveKey: (key) => {
+    set((state) => {
+      if (!key) return {};
+      const targetUnitId = state.prefs.archivedEntries[key]?.unitId;
+      const nextKeys = state.prefs.archivedKeys.filter((k) => k !== key && k !== `session-${key}`);
+      const nextEntries = { ...state.prefs.archivedEntries };
+      delete nextEntries[key];
+      if (key.startsWith("session-")) {
+        delete nextEntries[key.replace(/^session-/, "")];
+      }
+      const next = { ...state.prefs, archivedKeys: nextKeys, archivedEntries: nextEntries };
+      persist(next);
+      notifyHistoryRefresh(targetUnitId);
+      return { prefs: next };
+    });
+  },
+  toggleArchived: (entry) => {
+    const isArch = get().isArchived(entry.key, entry.sessionId);
+    if (isArch) {
+      get().unarchiveKey(entry.key);
+    } else {
+      get().archiveEntry(entry);
+    }
+  },
+  isArchived: (key, sessionId) => {
+    const p = get().prefs;
+    if (p.archivedKeys.includes(key)) return true;
+    if (sessionId && (p.archivedKeys.includes(sessionId) || p.archivedKeys.includes(`session-${sessionId}`))) {
+      return true;
+    }
+    return false;
+  },
+  unarchiveAll: () => {
+    set((state) => {
+      const next = { ...state.prefs, archivedKeys: [], archivedEntries: {} };
+      persist(next);
+      notifyHistoryRefresh();
+      return { prefs: next };
+    });
+  },
+  updateArchivedEntries: (entries) => {
+    set((state) => {
+      const archivedSet = new Set(state.prefs.archivedKeys);
+      let changed = false;
+      const nextEntries = { ...state.prefs.archivedEntries };
+      for (const e of entries) {
+        if (archivedSet.has(e.key) || (e.sessionId && archivedSet.has(`session-${e.sessionId}`))) {
+          nextEntries[e.key] = e;
+          changed = true;
+        }
+      }
+      if (!changed) return {};
+      const next = { ...state.prefs, archivedEntries: nextEntries };
+      persist(next);
+      return { prefs: next };
+    });
+  },
 }));
+
