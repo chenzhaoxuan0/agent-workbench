@@ -141,11 +141,14 @@ export function SettingsPage() {
         </div>
       </nav>
 
-      {/* 内容列 */}
-      <div className="min-w-0 flex-1 overflow-y-auto">
+      {/* 内容列。头部**必须**在滚动容器之外（flex 列：固定 48px 头 + 下方
+          flex-1 滚动）：之前头是 scroller 里的 sticky 行，滚动条轨道跟着
+          scroller 顶到窗口最上缘，从设置页 HEAD 上面穿出去、压住右上角的
+          最小化/关闭钮 —— 顶栏那一带必须是标题栏，不能有内容层的东西 */}
+      <div className="flex h-full min-w-0 flex-1 flex-col">
         {/* 面包屑头，对齐 ZCode 的 SettingsHeaderBreadcrumb —— 只呈现路径，
             返回动作在左导航列顶部。h-12 与内容列顶带同高 */}
-        <div className="sticky top-0 z-10 border-b border-line bg-rail/95 backdrop-blur">
+        <div className="shrink-0 border-b border-line bg-rail">
           <div className={cn(FRAME_HEAD, "titlebar-drag flex h-12 items-center gap-2")}>
             <span className="text-body-sm text-ink">设置</span>
             <span className="text-line">/</span>
@@ -155,13 +158,15 @@ export function SettingsPage() {
           </div>
         </div>
 
-        <div className={FRAME}>
-          <header className="mb-6">
-            <h1 className="text-body-lg font-medium text-ink">{current.title}</h1>
-            <p className="mt-0.5 text-body-sm text-graphite">{current.desc}</p>
-          </header>
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <div className={FRAME}>
+            <header className="mb-6">
+              <h1 className="text-body-lg font-medium text-ink">{current.title}</h1>
+              <p className="mt-0.5 text-body-sm text-graphite">{current.desc}</p>
+            </header>
 
-          <SectionBody section={current} />
+            <SectionBody section={current} />
+          </div>
         </div>
       </div>
     </div>

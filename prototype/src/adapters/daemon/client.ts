@@ -51,6 +51,10 @@ export interface DaemonModelInfo {
   readonly maxOutput?: number;
   readonly reasoningLevels?: readonly string[];
   readonly defaultReasoningLevel?: string;
+  /** CLI 声明的可选上下文长度档（≥2 档时选择器出滑动条；value 原样透传） */
+  readonly contextLengths?: readonly { readonly value: string; readonly label: string }[];
+  /** 探测那一刻执行器正生效的上下文档 value */
+  readonly defaultContextLength?: string;
   readonly multimodal?: boolean;
   readonly inputPerMTok?: number;
   readonly outputPerMTok?: number;

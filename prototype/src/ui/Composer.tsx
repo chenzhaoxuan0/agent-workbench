@@ -14,11 +14,10 @@ import { nativeCommandsFor, useNativeCommands } from "../store/useNativeCommands
 import { fetchWorkspacePaths } from "../adapters/daemon/client.ts";
 import type { NativeCommandInfo } from "../core/adapter.ts";
 import { isProjectUnit } from "../core/units.ts";
-import { RuntimePicker } from "./RuntimePicker.tsx";
 import { BranchPicker } from "./BranchPicker.tsx";
 import { GitActionTrigger } from "./GitActionTrigger.tsx";
 import { UnitSwitcher } from "./UnitSwitcher.tsx";
-import { ReasoningEffortPicker } from "./LoopParamsPicker.tsx";
+import { RunConfigPicker } from "./RuntimePicker.tsx";
 import { PermissionModePicker } from "./PermissionModePicker.tsx";
 import { SlashCommandMenu, filterNativeCommands } from "./SlashCommandMenu.tsx";
 import { AttachmentsBar } from "./AttachmentsBar.tsx";
@@ -47,7 +46,7 @@ import { cn } from "./cn.ts";
  * - 核心文本输入框 (自动高度)
  * - 底部工具栏：
  *   - 左侧：[+] 扩展菜单（斜杠指令/附件/技能） + 运行模式形式（计划模式/变更确认/自主模式/完全访问）
- *   - 右侧：执行器与模型（单图标） + 推理思考力度（单图标） + 发送/停止按钮
+ *   - 右侧：执行器/模型/思考强度（合并单钮，滑动条调档） + 发送/停止按钮
  */
 export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
   const { isMobile } = useIsMobile();
@@ -629,10 +628,10 @@ export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
           )}
 
           {/* 底部工具栏。压缩优先级（均为容器查询，跟对话列实际宽度）：
-              文字标签先于一切让位且按次序收——完全访问（<640 隐）→ 推理强度
-              （<560 隐）→ 执行器模型名（<480 隐，最后收，此时只剩图标）；
-              图标钮不缩，列再窄到连图标行都放不下时 flex-wrap 兜底换行（右组
-              ml-auto 保持右对齐），而不是溢出出滚动条 */}
+              文字标签先于一切让位且按次序收——完全访问（<640 隐）→ 执行器模型名
+              （<480 隐，最后收，此时只剩图标）；图标钮不缩，列再窄到连图标行都
+              放不下时 flex-wrap 兜底换行（右组 ml-auto 保持右对齐），而不是溢出
+              出滚动条 */}
           <div className="mt-2 flex flex-wrap items-center justify-between gap-1.5">
             {/* 左侧操作：[+] 扩展菜单（附件/斜杠指令/@引用） + 模式形式 (plan / accept edits / ask / bypass) */}
             <div className="flex items-center gap-1 @min-[480px]:gap-1.5 shrink-0">
@@ -738,12 +737,11 @@ export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
               <ChatTerminalToggleButton />
             </div>
 
-            {/* 右侧操作：上下文容量/额度徽标 + 执行器与模型（单图标） + 推理力度（单图标） + 发送/停止按钮。
+            {/* 右侧操作：上下文容量/额度徽标 + 执行器/模型/思考强度（合并单钮） + 发送/停止按钮。
                 ml-auto：与左侧组同排放不下而换行时，独占一行也保持右对齐 */}
             <div className="ml-auto flex items-center gap-1 @min-[480px]:gap-1.5 shrink-0">
               <ContextUsageBadge />
-              <RuntimePicker compact={isMobile} align="right" />
-              <ReasoningEffortPicker compact={isMobile} align="right" />
+              <RunConfigPicker compact={isMobile} align="right" />
 
               {busy ? (
                 <button

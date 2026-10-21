@@ -153,7 +153,9 @@ export function QuickContextMenu({
       style={{ left: pos?.x ?? menu.x, top: pos?.y ?? menu.y }}
       onContextMenu={(e) => e.preventDefault()}
       onMouseLeave={() => setActiveIndex(null)}
-      className="fixed z-[90] min-w-[160px] rounded-btn border border-line bg-card py-1 shadow-2xl"
+      /* titlebar-no-drag：挂在 .titlebar-drag 行内时（WorkspaceHeader 的窗口操作
+          菜单），浮层自身的空白/内边距不能被系统的标题栏拖拽吞掉 */
+      className="titlebar-no-drag fixed z-[90] min-w-[160px] rounded-btn border border-line bg-card py-1 shadow-2xl"
     >
       {menu.items.map((item, i) =>
         item.separator === true ? (

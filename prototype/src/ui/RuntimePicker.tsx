@@ -1,17 +1,23 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Check, ChevronDown, Search, Star, X } from "lucide-react";
+import { Check, ChevronDown, Search, Sparkles, Star, X } from "lucide-react";
 import { formatContext, formatPrice, type ModelSpec } from "../core/models.ts";
 import { prefsOf, resolveVisibleModels } from "../core/modelPrefs.ts";
 import type { RuntimeEntry } from "../core/registry.ts";
+import type { LoopParamsState } from "../store/useWorkbench.ts";
 import { useShell } from "../store/useShell.ts";
 import { modelSpecFor, runtimeSwitchBlocked, selectVisibleModels, useWorkbench, visibleModelsFor, isHiddenByUser } from "../store/useWorkbench.ts";
 import { cn } from "./cn.ts";
 import { RuntimeIcon } from "./RuntimeIcon.tsx";
+import { StopSlider } from "./StopSlider.tsx";
 
 /**
- * 执行器 + 模型选择器 —— 形态对齐 T3code 的 ProviderModelPicker：
- * 「左 rail 竖排执行器图标（★ 收藏视图在最上）+ 右侧搜索 + 模型列表」双栏弹层。
+ * 执行器 + 模型 + 思考强度 —— 一颗按钮（原 RuntimePicker 与 ReasoningEffortPicker
+ * 合并；两颗按钮各占一个图标位太冗余，而且调的都是同一件事「下一轮怎么跑」）。
+ *
+ * 形态对齐 T3code 的 ProviderModelPicker：
+ * 「左 rail 竖排执行器图标（★ 收藏视图在最上）+ 右侧搜索 + 模型列表」双栏弹层，
+ * 尾部追加两根档位滑动条（思考强度 / 上下文长度，codex 同款观感，见 StopSlider）。
  *
  * 与 T3code 同构的几点：
  *  - rail 选中项右缘有指示条；★ 视图聚合**全部执行器**的收藏模型，
@@ -20,9 +26,25 @@ import { RuntimeIcon } from "./RuntimeIcon.tsx";
  *  - 底部「打开模型设置」入口直达设置页对应分区；
  *  - 收藏的排前面（resolveVisibleModels 的 groupFavorites）。
  *
- * 保留本项目差异：执行器是六家 CLI（T3 是 provider 实例），每家清单由
- * 适配器声明；价格 / 上下文窗口是我们目录里的事实数据，保留在行上。
+ * 本项目差异：
+ *  - **点 rail 即切执行器**（旧版必须再点一个模型才生效，用户选完执行器直接
+ *    开聊的期望会落空）：selectRuntime 自带「沿用该执行器上次选的模型，
+ *    不合法则落默认模型」，所以单击图标 = 执行器 + 模型一次到位；
+ *  - 思考强度 / 上下文长度是每执行器记忆的 loop 参数（localStorage 持久化），
+ *    上下文档位只在该模型声明了 ≥2 档时出现（mcode 的 512K/1M 一类）。
  */
+
+export const REASONING_LEVELS: readonly { id: string; label: string; desc: string }[] = [
+  { id: "", label: "默认", desc: "跟随当前执行器与模型原生配置" },
+  { id: "low", label: "低 (low)", desc: "响应最快，适合直接指令与简单编辑" },
+  { id: "medium", label: "中 (medium)", desc: "标准思考深度，平衡速度与准确性" },
+  { id: "high", label: "高 (high)", desc: "较深思考，适合复杂逻辑与多步骤推理" },
+  { id: "xhigh", label: "超高 (xhigh)", desc: "高阶思考深度，适合攻坚系统级难题" },
+  { id: "max", label: "极深 (max)", desc: "最深推理，耗时较长，适合攻坚疑难问题" },
+  { id: "ultra", label: "极限 (ultra)", desc: "顶级思考与自动任务委派，适合极限推理" },
+];
+
+const EMPTY_LOOP: LoopParamsState = {};
 
 type Rail = "favorites" | string;
 
@@ -34,9 +56,8 @@ interface PickerRow {
 /**
  * 执行器 + 模型面板 —— 只渲染双栏弹层内容，不带触发器。
  *
- * 抽出来给 RunConfigMenu 的 ⋯ 面板复用：composer 里它可以是绝对定位的下拉，
- * 也可以就地展开成手风琴段。**同一份 rail / 搜索 / 键盘导航逻辑**，
- * 不做第二套实现。
+ * composer 里它可以是绝对定位的下拉，也可以就地展开成手风琴段 / 手机抽屉
+ * （fillHeight）。**同一份 rail / 搜索 / 键盘导航 / 滑动条逻辑**，不做第二套实现。
  */
 export function RuntimePanel({ onDone, fillHeight = false }: { onDone?: () => void; fillHeight?: boolean }) {
   const runtimes = useWorkbench((s) => s.runtimes);
@@ -85,6 +106,16 @@ export function RuntimePanel({ onDone, fillHeight = false }: { onDone?: () => vo
 
   useEffect(() => setCursor(0), [q, rail]);
 
+  /**
+   * 点 rail 即切执行器（详见组件头注释）：selectRuntime 内部会沿用该执行器
+   * 上次选的模型（不合法则落默认模型）。门禁拒绝（对话在等回答）时只浏览不切换。
+   */
+  const pickRail = (r: RuntimeEntry) => {
+    setRail(r.id);
+    const s = useWorkbench.getState();
+    if (r.id !== s.activeRuntimeId) s.selectRuntime(r.id);
+  };
+
   const pick = (row: PickerRow) => {
     const s = useWorkbench.getState();
     if (row.runtime.state.status === "not_installed") return;
@@ -92,6 +123,12 @@ export function RuntimePanel({ onDone, fillHeight = false }: { onDone?: () => vo
     // 的 runtimeModels（ADR 0012 的 idle-only 切换门禁）
     if (row.runtime.id !== s.activeRuntimeId && !s.selectRuntime(row.runtime.id)) return;
     s.selectModel(row.spec.id);
+    // 换模型时校验已选上下文档：新模型没有这一档就回落默认 —— 否则会把
+    // A 模型的档值原样发给 B（CLI 收到未知 value 要么报错要么静默忽略）
+    const cur = s.loopParams[row.runtime.id]?.contextLength;
+    if (cur !== undefined && !(row.spec.contextLengths ?? []).some((o) => o.value === cur)) {
+      s.setLoopParam(row.runtime.id, { contextLength: undefined });
+    }
     onDone?.();
   };
 
@@ -105,15 +142,16 @@ export function RuntimePanel({ onDone, fillHeight = false }: { onDone?: () => vo
 
   // 面板高度跟随执行器数量：rail 每行恒定 36px + 4px 间距（★ 行 + 分隔线 + 上下 padding ≈ 66px 常量）。
   // 执行器变多时整体长高，而不是把 rail 行挤扁；超过视口可用高度（留出 header/composer）后封顶，
-  // 此时 rail 内部滚动兜底。下限保持原 346px，执行器少时观感不变。
+  // 此时 rail 内部滚动兜底。下限 470px：尾部两根滑动条（思考强度 + 上下文长度）比旧版
+  // 单行 footer 高约 120px，下限太矮会把模型列表压成一条缝。
   const railNatural = 40 * enabledRuntimes.length + 66;
   const maxPanelH = typeof window === "undefined" ? 640 : window.innerHeight - 240;
-  const panelH = Math.max(346, Math.min(railNatural, maxPanelH));
+  const panelH = Math.max(470, Math.min(railNatural, maxPanelH));
 
   return (
     <div
       role="dialog"
-      aria-label="选择执行器与模型"
+      aria-label="选择执行器、模型与思考强度"
       onKeyDown={(e) => {
         if (e.key === "ArrowDown") {
           e.preventDefault();
@@ -134,7 +172,8 @@ export function RuntimePanel({ onDone, fillHeight = false }: { onDone?: () => vo
       )}
     >
       {/* 左 rail：★ 收藏视图 + 执行器图标（T3 的 ModelPickerSidebar）；行高恒定，超高时内部滚动。
-          宽 48px = 36px 按钮 + 8px 竖向滚动条刚好放满，横向绝不出现滚动条 */}
+          宽 48px = 36px 按钮 + 8px 竖向滚动条刚好放满，横向绝不出现滚动条。
+          点击即切执行器（pickRail）：不用再点模型，图标按下那刻执行器+模型就位 */}
       <div className="flex w-12 shrink-0 flex-col items-center gap-1 overflow-y-auto overscroll-contain touch-pan-y border-r border-line-soft bg-rail py-2 h-full">
         <RailButton selected={rail === "favorites"} title="收藏的模型" onClick={() => setRail("favorites")}>
           <Star size={16} className={cn(rail === "favorites" && "fill-current")} />
@@ -145,15 +184,15 @@ export function RuntimePanel({ onDone, fillHeight = false }: { onDone?: () => vo
             key={r.id}
             selected={rail === r.id}
             dimmed={r.state.status === "not_installed"}
-            title={`${r.presentation.displayName}${r.testOnly ? " · 测试夹具（假执行器）" : ""} · 可选 ${visibleModelsFor(useWorkbench.getState(), r.id).length} 个模型`}
-            onClick={() => setRail(r.id)}
+            title={`${r.presentation.displayName}${r.testOnly ? " · 测试夹具（假执行器）" : ""} · 点击即切换（模型自动沿用/落默认） · 可选 ${visibleModelsFor(useWorkbench.getState(), r.id).length} 个模型`}
+            onClick={() => pickRail(r)}
           >
             <RuntimeIcon runtime={r} size={20} />
           </RailButton>
         ))}
       </div>
 
-      {/* 右区：搜索 + 模型列表 + 设置入口 */}
+      {/* 右区：搜索 + 模型列表 + 滑动条（思考强度/上下文长度）+ 设置入口 */}
       <div className="flex min-w-0 flex-1 flex-col h-full">
         <div className="px-2 pt-2">
           <div className="flex h-7 items-center gap-1.5 border-b border-line-soft px-1 pb-1.5 transition-colors focus-within:border-teal">
@@ -194,6 +233,8 @@ export function RuntimePanel({ onDone, fillHeight = false }: { onDone?: () => vo
           )}
         </div>
 
+        <LoopSlidersSection />
+
         <div className="shrink-0 border-t border-line-soft px-2.5 py-2">
           <SwitchHintCopy />
           <button
@@ -211,9 +252,151 @@ export function RuntimePanel({ onDone, fillHeight = false }: { onDone?: () => vo
   );
 }
 
-export function RuntimePicker({
+/**
+ * 思考强度 / 上下文长度 —— 「默认」独立圆点 + 右侧档位滑动条（codex 同款观感）。
+ *
+ * 「默认」（跟随当前执行器与模型原生配置）**不是最低档**：它是最左侧一枚独立
+ * 圆点按钮，与右侧可滑动的真实档位之间有分隔线隔开；默认激活时滑动条无填充、
+ * 圆钮半透明（muted）—— 不做这层区分，最左档会被误读成「低档位」。点圆点回到
+ * 默认，拖动/点右侧滑动条任一位置即选中该档。两根都写进每执行器各记一份的
+ * loopParams（localStorage 持久化）。
+ *
+ * 思考强度恒显；上下文长度只在当前模型声明了 ≥2 档时出现（mcode 的 512K/1M
+ * 一类 —— 档位来自 CLI 自己的 configOption 声明，本地目录不做猜测）。
+ */
+function LoopSlidersSection() {
+  const activeRuntimeId = useWorkbench((s) => s.activeRuntimeId);
+  const activeRuntime = useWorkbench((s) => s.runtimes.find((r) => r.id === s.activeRuntimeId));
+  const activeModelId = useWorkbench((s) => s.runtimeModels[s.activeRuntimeId] ?? activeRuntime?.defaultModel);
+  const activeModel = activeRuntime?.models.find((m) => m.id === activeModelId);
+  const loop = useWorkbench((s) => s.loopParams[s.activeRuntimeId] ?? EMPTY_LOOP);
+  const setLoopParam = useWorkbench((s) => s.setLoopParam);
+
+  // 模型声明了特定档位就按它收窄，否则展示通用档（不含「默认」—— 它是左侧独立圆点）
+  const supported = activeModel?.reasoningLevels;
+  const effortStops = useMemo(() => {
+    if (supported && supported.length > 0) {
+      return supported.map((id) => {
+        const known = REASONING_LEVELS.find((r) => r.id === id);
+        return known ?? { id, label: id, desc: `模型原生支持档位 (${id})` };
+      });
+    }
+    return REASONING_LEVELS.slice(1);
+  }, [supported]);
+  const curEffort = loop.reasoningLevel ?? "";
+  const effortIdx = effortStops.findIndex((s) => s.id === curEffort);
+  const effortDefault = effortIdx < 0;
+  const effortStop = effortDefault
+    ? { label: "默认", desc: "跟随当前执行器与模型原生配置" }
+    : (effortStops[effortIdx] ?? effortStops[0]!);
+
+  const ctxOptions = activeModel?.contextLengths ?? [];
+  const ctxStops = useMemo(
+    () => ctxOptions.map((o) => ({ id: o.value, label: o.label })),
+    [ctxOptions],
+  );
+  const curCtx = loop.contextLength ?? "";
+  const ctxIdx = ctxStops.findIndex((s) => s.id === curCtx);
+  const ctxDefault = ctxIdx < 0;
+
+  /** 默认档圆点（两种旋钮共用）：激活时 teal 实心，未激活是描边空点 */
+  const defaultDot = (
+    isDefault: boolean,
+    title: string,
+    onReset: () => void,
+    label: string,
+  ) => (
+    <button
+      type="button"
+      onClick={onReset}
+      aria-pressed={isDefault}
+      aria-label={`${label}：默认`}
+      title={title}
+      className={cn(
+        "flex h-5 w-5 shrink-0 items-center justify-center rounded-full border transition",
+        isDefault
+          ? "border-teal bg-teal text-white shadow-xs"
+          : "border-line bg-canvas hover:border-graphite",
+      )}
+    >
+      {isDefault && <Check size={11} strokeWidth={3} />}
+    </button>
+  );
+
+  return (
+    <div className="shrink-0 border-t border-line-soft px-3.5 py-2.5">
+      {/* 思考强度：默认圆点 | 分隔 | 档位滑动条 */}
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-caption font-semibold text-ink">思考强度</span>
+        <span className="min-w-0 truncate text-caption font-medium text-teal" aria-live="polite">
+          {effortStop.label}
+        </span>
+      </div>
+      <div className="mt-1 flex items-center gap-2">
+        {defaultDot(
+          effortDefault,
+          "默认 —— 跟随当前执行器与模型的原生配置",
+          () => setLoopParam(activeRuntimeId, { reasoningLevel: undefined }),
+          "思考强度",
+        )}
+        <span className="h-3.5 w-px shrink-0 bg-line" aria-hidden />
+        <StopSlider
+          stops={effortStops}
+          valueIndex={Math.max(0, effortIdx)}
+          onChange={(i) =>
+            setLoopParam(activeRuntimeId, {
+              reasoningLevel: effortStops[i]?.id ?? undefined,
+            })
+          }
+          ariaLabel="思考强度档位"
+          className="min-w-0 flex-1"
+          muted={effortDefault}
+        />
+      </div>
+      <p className="mt-0.5 text-[10px] leading-snug text-ash">{effortStop.desc}</p>
+
+      {/* 上下文长度（模型声明了 ≥2 档才有 —— 单档没有可选择的余地） */}
+      {ctxOptions.length >= 2 && (
+        <div className="mt-2.5">
+          <div className="flex items-baseline justify-between gap-2">
+            <span className="text-caption font-semibold text-ink">上下文长度</span>
+            <span className="min-w-0 truncate text-caption font-medium text-teal" aria-live="polite">
+              {ctxDefault ? "默认" : (ctxStops[ctxIdx]?.label ?? "默认")}
+            </span>
+          </div>
+          <div className="mt-1 flex items-center gap-2">
+            {defaultDot(
+              ctxDefault,
+              "默认 —— 用执行器会话当前的上下文窗口",
+              () => setLoopParam(activeRuntimeId, { contextLength: undefined }),
+              "上下文长度",
+            )}
+            <span className="h-3.5 w-px shrink-0 bg-line" aria-hidden />
+            <StopSlider
+              stops={ctxStops}
+              valueIndex={Math.max(0, ctxIdx)}
+              onChange={(i) =>
+                setLoopParam(activeRuntimeId, {
+                  contextLength: ctxStops[i]?.id ?? undefined,
+                })
+              }
+              ariaLabel="上下文长度档位"
+              className="min-w-0 flex-1"
+              muted={ctxDefault}
+            />
+          </div>
+          <p className="mt-0.5 text-[10px] leading-snug text-ash">
+            {activeModel!.displayName} 可选的上下文窗口档位，随下一轮会话生效
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function RunConfigPicker({
   compact = false,
-  align = "left",
+  align = "right",
 }: {
   compact?: boolean;
   align?: "left" | "right";
@@ -221,6 +404,7 @@ export function RuntimePicker({
   const activeId = useWorkbench((s) => s.activeRuntimeId);
   const activeModels = useWorkbench(selectVisibleModels(activeId));
   const runtimes = useWorkbench((s) => s.runtimes);
+  const loop = useWorkbench((s) => s.loopParams[s.activeRuntimeId]);
 
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -257,20 +441,36 @@ export function RuntimePicker({
   const modelStale = modelMissing && !hiddenNow;
   const label = active ? (activeModel?.displayName ?? "未选模型") : "执行器";
 
+  // 思考强度 / 上下文档的触发钮指示：有自定义值时火花转 teal 并带短标签，
+  // 默认态只留一枚灰火花（不占额外宽度 —— 两颗按钮合一后省下的就是这些）
+  const effort = loop?.reasoningLevel;
+  const effortKnown = effort !== undefined && effort !== "" ? REASONING_LEVELS.find((r) => r.id === effort) : undefined;
+  const effortShort = effort
+    ? (effortKnown?.label ?? effort).split(/\s/)[0]
+    : undefined;
+  const ctxValue = loop?.contextLength;
+  const ctxLabel = ctxValue
+    ? ((activeModel?.contextLengths ?? []).find((o) => o.value === ctxValue)?.label ?? ctxValue)
+    : undefined;
+  const tuned = Boolean(effort || ctxValue);
+
+  const tooltip =
+    (active
+      ? `${active.presentation.displayName}${active.testOnly ? " · 测试夹具" : ""} · ${label}` +
+        (modelStale ? "\n⚠ 该模型已不在可选清单里（多半是下线了），发送时会回落到该执行器的第一个可用模型（时间线会标注「已回落」）" : "") +
+        (modelHidden ? "\n🔒 该模型已被你手动隐藏，发送时会改用当前列表的第一个模型；到设置里取消隐藏可继续用它" : "") +
+        `\n${active.presentation.tagline}`
+      : "选择执行器与模型") +
+    `\n思考强度：${effortKnown?.label ?? (effort || "默认（跟随执行器原生配置）")}` +
+    (ctxLabel !== undefined ? `\n上下文长度：${ctxLabel}` : "");
+
   return (
     <div ref={ref} className="relative shrink-0">
       <button
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
         aria-haspopup="dialog"
-        title={
-          active
-            ? `${active.presentation.displayName}${active.testOnly ? " · 测试夹具" : ""} · ${label}` +
-              (modelStale ? "\n⚠ 该模型已不在可选清单里（多半是下线了），发送时会回落到该执行器的第一个可用模型（时间线会标注「已回落」）" : "") +
-              (modelHidden ? "\n🔒 该模型已被你手动隐藏，发送时会改用当前列表的第一个模型；到设置里取消隐藏可继续用它" : "") +
-              `\n${active.presentation.tagline}`
-            : "选择执行器与模型"
-        }
+        title={tooltip}
         className={cn(
           "flex items-center justify-center rounded-lg transition",
           "h-7 @min-[480px]:h-8 px-1.5 @min-[480px]:px-2 gap-1 @min-[480px]:gap-1.5 text-xs @min-[480px]:text-body-sm",
@@ -303,6 +503,17 @@ export function RuntimePicker({
             </span>
           </>
         )}
+        {/* 思考强度指示（原第二颗按钮的信息并进来）：默认=灰火花，自定义=teal 火花+短档名 */}
+        <Sparkles
+          size={12}
+          aria-hidden
+          className={cn("shrink-0", tuned ? "fill-teal/25 text-teal" : "text-ash/70")}
+        />
+        {tuned && (
+          <span className="hidden @min-[560px]:inline max-w-[64px] truncate text-[11px] font-medium text-teal">
+            {[effortShort, ctxLabel].filter(Boolean).join("·")}
+          </span>
+        )}
         <ChevronDown size={11} className="hidden @min-[480px]:inline shrink-0 text-ash" />
       </button>
 
@@ -316,7 +527,7 @@ export function RuntimePicker({
               }}
             >
               <div
-                style={{ height: "78dvh", maxHeight: "85dvh" }}
+                style={{ height: "82dvh", maxHeight: "90dvh" }}
                 className="mx-auto w-full max-w-[500px] flex flex-col overflow-hidden rounded-t-3xl border-t border-line bg-canvas shadow-2xl animate-in slide-in-from-bottom-6 duration-250"
               >
                 {/* 顶部拉手条 (指示可滑动抽屉) */}
@@ -326,9 +537,9 @@ export function RuntimePicker({
 
                 {/* 抽屉头部 */}
                 <div className="flex items-center justify-between border-b border-line px-4 py-2.5 bg-card/70 shrink-0">
-                  <div className="flex items-center gap-2">
+                  <div className="flex min-w-0 items-center gap-2">
                     {active && <RuntimeIcon runtime={active} size={16} className="rounded-[3px]" />}
-                    <span className="text-body-sm font-semibold text-ink">选择执行器与模型</span>
+                    <span className="text-body-sm font-semibold text-ink shrink-0">执行器与模型</span>
                     {activeModel && (
                       <span className="rounded-full bg-teal-tint px-2 py-0.5 text-[11px] font-medium text-teal truncate max-w-[140px]">
                         {activeModel.displayName}
@@ -345,7 +556,7 @@ export function RuntimePicker({
                   </button>
                 </div>
 
-                {/* 抽屉主体：高度撑满 78dvh，列表上下自由滚动 */}
+                {/* 抽屉主体：高度撑满，列表上下自由滚动；滑动条钉在列表与 footer 之间 */}
                 <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
                   <RuntimePanel onDone={() => setOpen(false)} fillHeight />
                 </div>
@@ -358,7 +569,7 @@ export function RuntimePicker({
             className={cn(
               // max-w 用容器查询单位（cqw）：面板/侧栏挤窄对话列时弹层跟着收，
               // 不再按 100vw 摆阔溢出
-              "absolute bottom-full z-40 mb-1.5 w-[360px] max-w-[calc(100cqw-16px)] shadow-subtle",
+              "absolute bottom-full z-40 mb-1.5 w-[400px] max-w-[calc(100cqw-16px)] shadow-subtle",
               align === "right" ? "right-0" : "left-0",
             )}
           >

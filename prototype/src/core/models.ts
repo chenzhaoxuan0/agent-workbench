@@ -25,6 +25,16 @@ export type ModelVendor = "anthropic" | "openai" | "deepseek" | "glm" | "mock" |
 /** 档位。决定菜单排序，也决定它在列表里的位置（先按档位再按价格）。 */
 export type ModelTier = "frontier" | "balanced" | "fast";
 
+/**
+ * 可选上下文长度的一档 —— 面向「CLI 自己声明可选窗口」的执行器
+ * （mcode 的 M3.1 Flash 可切 512K / 1M）。value 是执行器侧的原始值字符串
+ * （原样透传回 set_config_option，绝不本地换算），label 是给人看的档名。
+ */
+export interface ContextLengthOption {
+  readonly value: string;
+  readonly label: string;
+}
+
 export interface ModelSpec {
   readonly id: ModelId;
   /** 给人看的名字 */
@@ -45,6 +55,13 @@ export interface ModelSpec {
   readonly reasoningLevels?: readonly string[];
   /** 默认推理档位 */
   readonly defaultReasoningLevel?: string;
+  /**
+   * 可选上下文长度档位（≥2 档时界面才出滑动条）。只收执行器自己声明过的档，
+   * 本地目录**不做猜测** —— 猜出来的 value 发回去会被 CLI 静默丢弃。
+   */
+  readonly contextLengths?: readonly ContextLengthOption[];
+  /** 执行器当前生效的上下文档（探测那一刻的 currentValue） */
+  readonly defaultContextLength?: string;
   /**
    * 是否**只能**处理图像。
    *
@@ -647,6 +664,8 @@ export function scaffoldModel(
     readonly maxOutput?: number;
     readonly reasoningLevels?: readonly string[];
     readonly defaultReasoningLevel?: string;
+    readonly contextLengths?: readonly ContextLengthOption[];
+    readonly defaultContextLength?: string;
     readonly multimodal?: boolean;
     readonly inputPerMTok?: number;
     readonly outputPerMTok?: number;
@@ -666,6 +685,8 @@ export function scaffoldModel(
     maxOutput: overrides?.maxOutput,
     reasoningLevels: overrides?.reasoningLevels,
     defaultReasoningLevel: overrides?.defaultReasoningLevel,
+    contextLengths: overrides?.contextLengths,
+    defaultContextLength: overrides?.defaultContextLength,
     note: hasDynamicCtx
       ? `由本机 Agent CLI 动态对齐（上下文 ${formatContext(overrides!.contextWindow!)}）`
       : "执行器报上来的真实模型，本地模型元数据目录没有它的价格与窗口资料",

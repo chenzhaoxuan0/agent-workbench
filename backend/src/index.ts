@@ -2955,6 +2955,7 @@ registerMethod("session.start", (params) => {
     runtimeId?: string; unitId?: string; unitName?: string; rootPath?: string;
     prompt?: string; model?: string; mode?: "plan" | "build" | "edit" | "yolo";
     reasoningLevel?: string;
+    contextLength?: string;
     conversationId?: string;
     handoff?: { fromSessionId?: string };
     fork?: { ofSessionId?: string; anchorMessageId?: string; kind?: string };
@@ -3016,6 +3017,7 @@ registerMethod("session.start", (params) => {
     model: typeof p.model === "string" ? asModelId(p.model) : null,
     mode: p.mode,
     reasoningLevel: p.reasoningLevel,
+    contextLength: typeof p.contextLength === "string" && p.contextLength !== "" ? p.contextLength : undefined,
     conversationId: typeof p.conversationId === "string" && p.conversationId !== "" ? p.conversationId : undefined,
     handoff:
       p.handoff !== null && typeof p.handoff === "object" && typeof p.handoff.fromSessionId === "string" && p.handoff.fromSessionId !== ""
@@ -3036,11 +3038,14 @@ registerMethod("session.start", (params) => {
   });
 });
 registerMethod("session.send", (params) => {
-  const p = (params ?? {}) as { sessionId?: string; text?: string; reasoningLevel?: string };
+  const p = (params ?? {}) as { sessionId?: string; text?: string; reasoningLevel?: string; contextLength?: string };
   if (typeof p.sessionId !== "string" || typeof p.text !== "string") {
     throw Object.assign(new Error("sessionId and text are required"), { code: "bad_params" });
   }
-  return host.sendMessage(asSessionId(p.sessionId), p.text, { reasoningLevel: p.reasoningLevel });
+  return host.sendMessage(asSessionId(p.sessionId), p.text, {
+    reasoningLevel: p.reasoningLevel,
+    contextLength: typeof p.contextLength === "string" && p.contextLength !== "" ? p.contextLength : undefined,
+  });
 });
 registerMethod("session.cancel", (params) => {
   const { sessionId } = (params ?? {}) as { sessionId?: string };

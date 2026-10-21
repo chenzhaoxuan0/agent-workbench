@@ -135,9 +135,11 @@ export function AutomationsPage() {
   }, [resumableSessions]);
 
   return (
-    <div className="h-full min-h-0 overflow-y-auto">
+    /* 头在滚动容器之外（固定 48px + 下方 flex-1 滚动）：sticky-in-scroller 的
+       旧结构会让滚动条轨道顶到窗口最上缘，从 HEAD 上面穿出去压住窗口控制钮 */
+    <div className="flex h-full min-h-0 flex-col">
       {/* 面包屑顶带 —— 统一在侧边栏返回工作台 */}
-      <div className="sticky top-0 z-10 border-b border-line bg-canvas">
+      <div className="shrink-0 border-b border-line bg-canvas">
         <div className="titlebar-drag mx-auto flex h-12 max-w-4xl items-center gap-2 px-8">
           <span className="text-body-sm font-medium text-ink">自动化</span>
           <span className="rounded-chip bg-teal-tint px-1.5 py-0.5 text-[10px] text-teal">定时巡航与自动化触发</span>
@@ -145,6 +147,7 @@ export function AutomationsPage() {
           <TitleBarClearance width="var(--wco-w, 0px)" push />
         </div>
       </div>
+      <div className="min-h-0 flex-1 overflow-y-auto">
       <div className="mx-auto max-w-4xl px-8 pb-12">
 
         <header className="mb-5 flex items-start justify-between gap-4">
@@ -258,6 +261,7 @@ export function AutomationsPage() {
           onClose={() => setDialog(null)}
         />
       )}
+      </div>
     </div>
   );
 }

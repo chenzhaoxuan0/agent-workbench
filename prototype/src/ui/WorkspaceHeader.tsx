@@ -8,7 +8,7 @@ import { sidePaneOccupies } from "../core/sidePaneTabs.ts";
 import { listEditors, openInEditor, type DaemonEditorInfo } from "../adapters/daemon/client.ts";
 import { useIsMobile } from "./mobile/useIsMobile.ts";
 import { ConversationViewSwitch } from "./ConversationViewSwitch.tsx";
-import { TitleBarClearance } from "./WindowControls.tsx";
+import { TitleBarClearance, onTitleBarContextMenu } from "./WindowControls.tsx";
 import { cn } from "./cn.ts";
 
 /**
@@ -43,6 +43,7 @@ export function WorkspaceHeader() {
 
   return (
     <header
+      onContextMenu={onTitleBarContextMenu}
       className={cn(
         "titlebar-drag @container flex h-12 shrink-0 items-center gap-2 border-b border-line/60 bg-rail transition-[padding] duration-300",
         "pl-4",

@@ -150,6 +150,11 @@ export interface LoopParams {
   readonly mode: "plan" | "build" | "edit" | "yolo";
   /** 推理力度（zcode: max/high/…；codex: minimal~high，max 映射为 high） */
   readonly reasoningLevel?: string;
+  /**
+   * 上下文长度档（执行器侧原始 value，原样透传）：仅「CLI 自己声明了可选窗口档」
+   * 的执行器有效（mcode 的 512K/1M 一类）；不支持的执行器忽略并记日志。
+   */
+  readonly contextLength?: string;
 }
 
 export interface MemoryInjectionOptions {
@@ -313,6 +318,8 @@ export interface RawExecutorModel {
   readonly maxOutput?: number;
   readonly reasoningLevels?: readonly string[];
   readonly defaultReasoningLevel?: string;
+  readonly contextLengths?: readonly import("./models.ts").ContextLengthOption[];
+  readonly defaultContextLength?: string;
   readonly multimodal?: boolean;
   readonly inputPerMTok?: number;
   readonly outputPerMTok?: number;

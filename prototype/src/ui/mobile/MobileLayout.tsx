@@ -9,6 +9,7 @@ import { TerminalPanel } from "../TerminalPanel.tsx";
 import { ProposalBanner } from "../ProposalBanner.tsx";
 import { SettingsPage } from "../SettingsPage.tsx";
 import { ConversationViewSwitch } from "../ConversationViewSwitch.tsx";
+import { onTitleBarContextMenu } from "../WindowControls.tsx";
 import { MobileConfirmationGate } from "./MobileConfirmationGate.tsx";
 import { MobileVirtualKeyBar } from "./MobileVirtualKeyBar.tsx";
 import { MobileDrawer } from "./MobileDrawer.tsx";
@@ -31,8 +32,14 @@ export function MobileLayout({
 
   return (
     <div className="relative flex h-[100dvh] max-h-[100dvh] w-full flex-col overflow-hidden bg-canvas text-ink select-none">
-      {/* 1. 移动端顶栏 —— 与 PC 顶栏统一使用 bg-rail 与 border-line/60 主题色阶 */}
-      <header className="flex h-12 shrink-0 items-center justify-between border-b border-line/60 bg-rail px-3 text-ink z-30 select-none">
+      {/* 1. 移动端顶栏 —— 与 PC 顶栏统一使用 bg-rail 与 border-line/60 主题色阶。
+          titlebar-drag：手机布局下右上角三钮已隐藏，这一行是无边框窗口唯一的
+          拖拽热区（缺了它窗口就移动不了）；行内按钮由全局选择器自动回退
+          no-drag。右键弹原生系统菜单（最小化/最大化/关闭，纯浏览器无操作） */}
+      <header
+        onContextMenu={onTitleBarContextMenu}
+        className="titlebar-drag flex h-12 shrink-0 items-center justify-between border-b border-line/60 bg-rail px-3 text-ink z-30 select-none"
+      >
         {/* 左侧：抽屉菜单按钮 + Agent 名字 */}
         <div className="flex min-w-0 items-center gap-2">
           <button

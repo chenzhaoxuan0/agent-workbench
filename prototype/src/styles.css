@@ -20,6 +20,12 @@
 html:not(.aw-desktop) {
   --wco-w: 0px;
 }
+/* 手机布局（WorkspaceShell 的 isMobile 分支）：右上角三钮整体隐藏（与头部
+   会话形态切换重叠、点不到），右键头部走窗口操作菜单。此时所有让位带跟着
+   归零，移动端设置页等仍引用 --wco-w 的行不再留 132px 空白。 */
+html.aw-wco-hidden {
+  --wco-w: 0px;
+}
 
 .titlebar-drag {
   -webkit-app-region: drag;
@@ -353,4 +359,67 @@ textarea {
 }
 .no-scrollbar::-webkit-scrollbar {
   display: none;
+}
+
+/* ==========================================================================
+   思考强度 / 上下文长度滑动条（codex 同款观感：胶囊轨道 + 档位圆点 + 白圆钮）
+   本体是原生 <input type="range">（触屏/键盘/无障碍免费），这里只换皮：
+   轨道底色由组件内联 linear-gradient 按「已选档位比例」刷（accent → rest），
+   档位圆点是轨道后面一层 pointer-events-none 的绝对定位小点。
+   ========================================================================== */
+.aw-range {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 14px;
+  border-radius: 9999px;
+  outline: none;
+  cursor: pointer;
+}
+/* 显式轨道：不写的话 webkit 的 thumb 相对轨道顶对齐而非居中 */
+.aw-range::-webkit-slider-runnable-track {
+  height: 14px;
+  border-radius: 9999px;
+  background: transparent;
+}
+.aw-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 22px;
+  height: 22px;
+  margin-top: -4px; /* (14 - 22) / 2：相对 14px 轨道垂直居中 */
+  border-radius: 50%;
+  border: none;
+  background: #ffffff;
+  box-shadow: 0 1px 4px rgb(0 0 0 / 0.35);
+  cursor: grab;
+}
+.aw-range::-webkit-slider-thumb:active {
+  cursor: grabbing;
+}
+.aw-range::-moz-range-track {
+  height: 14px;
+  border-radius: 9999px;
+  background: transparent;
+}
+.aw-range::-moz-range-thumb {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: none;
+  background: #ffffff;
+  box-shadow: 0 1px 4px rgb(0 0 0 / 0.35);
+  cursor: grab;
+}
+.aw-range:focus-visible {
+  outline: 2px solid var(--color-teal);
+  outline-offset: 3px;
+}
+/* 未激活态（用户还在「默认」档）：圆钮半透明 —— 轨道无填充由组件内联控制 */
+.aw-range-muted::-webkit-slider-thumb {
+  opacity: 0.45;
+  cursor: pointer;
+}
+.aw-range-muted::-moz-range-thumb {
+  opacity: 0.45;
+  cursor: pointer;
 }

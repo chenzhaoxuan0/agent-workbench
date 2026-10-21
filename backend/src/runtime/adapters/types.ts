@@ -31,6 +31,10 @@ export interface ExecutorModelInfo {
   readonly reasoningLevels?: readonly string[];
   /** 默认推理档位 */
   readonly defaultReasoningLevel?: string;
+  /** CLI 声明的可选上下文长度档（value 原样透传回 set_config_option，绝不本地换算） */
+  readonly contextLengths?: readonly { readonly value: string; readonly label: string }[];
+  /** 探测那一刻执行器正生效的上下文档 value */
+  readonly defaultContextLength?: string;
   /** 是否支持多模态输入（图片/附件） */
   readonly multimodal?: boolean;
   /** 输入价格（美元/百万 token） */
@@ -70,6 +74,8 @@ export interface StartRequest {
   readonly mode?: "plan" | "build" | "edit" | "yolo";
   /** 推理力度（zcode → model.options.reasoningLevel；codex → model_reasoning_effort） */
   readonly reasoningLevel?: string;
+  /** 上下文长度档（执行器侧原始 value）：仅声明了可选档的执行器应用，其余忽略 */
+  readonly contextLength?: string;
 }
 
 export type AdapterSink = (event: RuntimeEvent) => void;
@@ -78,9 +84,9 @@ export interface AdapterSession {
   readonly id: SessionId;
   /**
    * 再发一轮（多轮会话由适配器自己决定怎么续：同会话追加或 --resume）。
-   * loop = 本轮的参数覆盖（推理力度 / 采样），不改变会话级配置。
+   * loop = 本轮的参数覆盖（推理力度 / 上下文长度 / 采样），不改变会话级配置。
    */
-  send(text: string, loop?: { readonly reasoningLevel?: string }): Promise<void>;
+  send(text: string, loop?: { readonly reasoningLevel?: string; readonly contextLength?: string }): Promise<void>;
   cancel(): Promise<void>;
   resolvePermission(requestId: string, decision: "allow" | "deny" | "always"): Promise<void>;
   /**

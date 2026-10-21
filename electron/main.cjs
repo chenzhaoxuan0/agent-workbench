@@ -122,6 +122,55 @@ ipcMain.handle("window:is-maximized", () => {
   return Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isMaximized());
 });
 
+/**
+ * 标题栏右键 = Windows 系统菜单同款的原生菜单（还原/最大化/最小化/关闭）。
+ *
+ * 为什么是原生菜单而不是 DOM 浮层：无边框窗口没有系统标题栏，右键顶栏弹
+ * 系统同款菜单是 Windows 的基本预期；原生 Menu 由系统绘制、带 Alt+F4 加速键
+ * 显示，观感与Explorer 桌面右键一致。移动布局下右上角自绘三钮隐藏，这是
+ * 主操作入口。移动/大小两项依赖 Win32 的 SC_MOVE/SC_SIZE 循环，Electron 无法
+ * 触发，省略 —— 移动由 titlebar-drag 拖拽热区覆盖。
+ *
+ * popup() 不传 x/y 时默认弹在当前鼠标位置（Chromium 侧已把事件给到光标处）。
+ */
+ipcMain.on("window:system-menu", () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const maximized = mainWindow.isMaximized();
+  Menu.buildFromTemplate([
+    {
+      label: "还原(&R)",
+      enabled: maximized,
+      click: () => {
+        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.unmaximize();
+      },
+    },
+    {
+      label: "最大化(&X)",
+      enabled: !maximized,
+      click: () => {
+        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.maximize();
+      },
+    },
+    { type: "separator" },
+    {
+      label: "最小化(&N)",
+      click: () => {
+        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.minimize();
+      },
+    },
+    { type: "separator" },
+    {
+      label: "关闭(&C)",
+      // 只显示 Alt+F4 字样不抢注：系统本来就处理 Alt+F4，注册反而可能截获
+      accelerator: "Alt+F4",
+      registerAccelerator: false,
+      click: () => {
+        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.close();
+      },
+    },
+  ]).popup({ window: mainWindow });
+});
+
 /** 从托盘 / 菜单把主窗口带回来（销毁过则重建） */
 function showMainWindow() {
   if (!mainWindow || mainWindow.isDestroyed()) {

@@ -172,7 +172,7 @@ interface HostSession {
    * T3 steer 语义：turn 进行中到达的消息在此排队，轮落定后自动发出。
    * id 是队列管理（删除/立刻发送/快照）的寻址键。
    */
-  readonly pendingSends: Array<{ id: string; text: string; loop?: { readonly reasoningLevel?: string } }>;
+  readonly pendingSends: Array<{ id: string; text: string; loop?: SendLoopParams }>;
   /** 队列 id 发号器（会话内单调） */
   queueSeq: number;
   /**
@@ -191,6 +191,12 @@ interface HostSession {
   cancelRequested: boolean;
   /** 会话事件环（上限 500，带 seq 与 at），eval 断言与前端重放共用 */
   readonly events: Array<{ seq: number; at: number; event: RuntimeEvent }>;
+}
+
+/** 本轮 loop 参数覆盖（推理力度 / 上下文长度档）；不改变会话级配置 */
+export interface SendLoopParams {
+  readonly reasoningLevel?: string;
+  readonly contextLength?: string;
 }
 
 export interface StartSessionInput {
@@ -224,6 +230,8 @@ export interface StartSessionInput {
   };
   readonly mode?: StartRequest["mode"];
   readonly reasoningLevel?: string;
+  /** 上下文长度档（执行器侧原始 value）：仅声明了可选档的执行器应用，其余忽略 */
+  readonly contextLength?: string;
   /**
    * 会话工作树（源代码管理面板「在此工作树启动会话」）：不存在则按 branch
    * 创建，存在则幂等复用。命中后会话全程的 rootPath（执行器 cwd、记忆注入、
@@ -1015,6 +1023,7 @@ export class RuntimeHost {
         model: effective,
         mode: input.mode,
         reasoningLevel: input.reasoningLevel,
+        contextLength: input.contextLength,
       },
       (event) => sinkRef?.(event),
     );
@@ -1401,7 +1410,7 @@ export class RuntimeHost {
   sendMessage(
     sessionId: SessionId,
     text: string,
-    loop?: { readonly reasoningLevel?: string },
+    loop?: SendLoopParams,
   ): void {
     const h = this.sessions.get(sessionId);
     if (h === undefined) throw adapterError("unknown_session", `no such session: ${sessionId}`);
@@ -1428,7 +1437,7 @@ export class RuntimeHost {
   }
 
   /** 入队（发号 + steer.queued 通知 + 权威快照）。调用方负责 flush/暂停语义 */
-  private enqueueSend(h: HostSession, text: string, loop?: { readonly reasoningLevel?: string }): void {
+  private enqueueSend(h: HostSession, text: string, loop?: SendLoopParams): void {
     const id = `q${++h.queueSeq}`;
     h.pendingSends.push({ id, text, loop });
     // 轮进行中入队是常态，但暂停队列续排也走这里 —— 日志不预设「turn in flight」
@@ -1504,7 +1513,7 @@ export class RuntimeHost {
   private dispatchSend(
     h: HostSession,
     text: string,
-    loop?: { readonly reasoningLevel?: string },
+    loop?: SendLoopParams,
   ): void {
     h.turnBusy = true;
     h.status = "running";
@@ -1514,7 +1523,7 @@ export class RuntimeHost {
     this.emitStamped(h, { type: "turn.started", sessionId: h.id, turn: h.turnCount });
     this.emitStamped(h, { type: "message.delta", sessionId: h.id, messageId: `user-${h.turnCount}`, role: "user", text });
     this.store.insertMessage(h.id, Date.now(), "user", text);
-    void h.impl!.send(text, loop === undefined ? undefined : { reasoningLevel: loop.reasoningLevel }).catch((err: unknown) => {
+    void h.impl!.send(text, loop === undefined ? undefined : { reasoningLevel: loop.reasoningLevel, contextLength: loop.contextLength }).catch((err: unknown) => {
       log.error("turn failed", { sessionId: h.id, error: err instanceof Error ? err.message : String(err) });
       const errorEvent: RuntimeEvent = { type: "error", sessionId: h.id, message: err instanceof Error ? err.message : String(err), recoverable: false };
       this.emitStamped(h, errorEvent);

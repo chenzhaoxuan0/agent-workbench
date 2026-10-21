@@ -44,9 +44,10 @@ export function ImageStudioPage() {
     void initImageStudio();
   }, []);
   return (
-    <div className="h-full min-h-0 overflow-y-auto">
+    /* 头在滚动容器之外（固定 48px + 下方 flex-1 滚动）：滚动条不再越过 HEAD */
+    <div className="flex h-full min-h-0 flex-col">
       {/* 面包屑顶带 —— 统一在侧边栏返回工作台 */}
-      <div className="sticky top-0 z-10 border-b border-line bg-canvas">
+      <div className="shrink-0 border-b border-line bg-canvas">
         <div className="titlebar-drag mx-auto flex h-12 max-w-4xl items-center gap-2 px-8">
           <span className="text-body-sm font-medium text-ink">出图工作台</span>
           <span className="rounded-chip bg-teal-tint px-1.5 py-0.5 text-[10px] text-teal">OpenAI 兼容 images / responses</span>
@@ -55,9 +56,11 @@ export function ImageStudioPage() {
         </div>
       </div>
 
-      <div className="mx-auto max-w-4xl px-8 py-5">
-        <Composer />
-        <Gallery />
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="mx-auto max-w-4xl px-8 py-5">
+          <Composer />
+          <Gallery />
+        </div>
       </div>
     </div>
   );

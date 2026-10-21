@@ -20,6 +20,8 @@ interface WindowControlsApi {
   toggleMaximize: () => void;
   close: () => void;
   isMaximized: () => Promise<boolean>;
+  /** 弹出 Windows 系统菜单同款的原生菜单（还原/最大化/最小化/关闭，electron/main.cjs） */
+  openSystemMenu?: () => void;
   onMaximizedChanged: (listener: (value: boolean) => void) => () => void;
 }
 
@@ -99,4 +101,34 @@ export function WindowControls() {
       </button>
     </div>
   );
+}
+
+/* ------------------------------------------------- 标题栏右键（原生系统菜单） */
+
+/**
+ * 标题栏右键 = 弹 Windows 系统菜单同款的**原生**菜单（还原/最大化/最小化/关闭，
+ * 带 Alt+F4 字样；渲染与加速键都由系统绘制，electron/main.cjs 的
+ * `window:system-menu`）。不用 DOM 浮层 —— 无边框窗口顶栏右键弹系统菜单是
+ * Windows 的基本预期，DOM 菜单的观感和键盘语义都对不上。
+ *
+ * 挂在所有 titlebar-drag 头部行上（WorkspaceHeader / MobileLayout / 设置页）：
+ * 手机布局下右上角三钮隐藏，这是最小化/关闭的唯一常驻入口；拖动移动窗口由
+ * drag 热区本身承担。右键落在行内交互元素（按钮/输入框等）上时不劫持。
+ * 纯浏览器（无 electronAPI）安静返回，右键走默认行为。
+ */
+export function onTitleBarContextMenu(e: {
+  preventDefault: () => void;
+  target?: EventTarget | null;
+}): void {
+  if (!controls || typeof controls.openSystemMenu !== "function") return;
+  // 行内交互元素有自己的右键语义（输入框粘贴菜单等），不抢
+  const t = e.target;
+  if (
+    t instanceof Element &&
+    t.closest("button, a, input, textarea, select, label, [role='button'], [role='tab'], [role='combobox']")
+  ) {
+    return;
+  }
+  e.preventDefault();
+  controls.openSystemMenu();
 }

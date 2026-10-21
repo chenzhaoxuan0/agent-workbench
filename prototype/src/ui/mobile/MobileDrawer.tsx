@@ -1,8 +1,9 @@
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   Bot,
   Laptop,
   Moon,
+  Pin,
   Plus,
   RefreshCw,
   Settings,
@@ -13,6 +14,7 @@ import {
 import { useWorkbench } from "../../store/useWorkbench.ts";
 import { useShell } from "../../store/useShell.ts";
 import { useAppearance } from "../../store/useAppearance.ts";
+import { isResidentUnit, orderUnitsLikeSidebar } from "../../core/units.ts";
 import { type LayoutPreference } from "./useIsMobile.ts";
 import { cn } from "../cn.ts";
 
@@ -31,10 +33,20 @@ export function MobileDrawer({
   const activeUnitId = useWorkbench((s) => s.activeUnitId);
   const selectUnit = useWorkbench((s) => s.selectUnit);
   const refreshUnits = useWorkbench((s) => s.refreshUnits);
+  /** PC 侧栏普通节的拖拽顺序 —— 手机端同一份，两端列表同序 */
+  const unitOrder = useWorkbench((s) => s.unitOrder);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const openSettings = useShell((s) => s.openSettings);
   const resolvedAppearance = useAppearance((s) => s.resolvedAppearance);
   const setMode = useAppearance((s) => s.setMode);
+
+  // 与 PC 侧栏同一套排序（core/units.ts 的 orderUnitsLikeSidebar，单一口径）：
+  // 常驻（pin）节整体置前、总管恒在首位，普通节按 PC 端拖拽顺序排 —— 手机抽屉
+  // 不再按 daemon 返回的原始顺序裸列，和 PC 端对不上的错位感就出在这里
+  const orderedUnits = useMemo(() => {
+    const { residentUnits, normalUnits } = orderUnitsLikeSidebar(units, unitOrder);
+    return [...residentUnits, ...normalUnits];
+  }, [units, unitOrder]);
 
   // 原生手势左滑退出状态
   const [dragX, setDragX] = useState(0);
@@ -165,9 +177,10 @@ export function MobileDrawer({
               </button>
             </div>
           ) : (
-            units.map((u) => {
+            orderedUnits.map((u) => {
               const isSelected = u.id === activeUnitId;
               const isSteward = u.id === "steward";
+              const pinned = isResidentUnit(u);
               return (
                 <button
                   key={u.id}
@@ -196,6 +209,10 @@ export function MobileDrawer({
                       {isSteward ? "系统总管" : u.identity?.role || "bot"}
                     </span>
                   </div>
+                  {/* 常驻（pin）标识：与 PC 侧栏「常驻节置顶」同一语义的可见凭证 */}
+                  {pinned && !isSteward && (
+                    <Pin size={12} className="shrink-0 fill-teal text-teal" aria-label="已置顶" />
+                  )}
                   {isSelected && <span className="h-2 w-2 rounded-full bg-teal" />}
                 </button>
               );

@@ -64,6 +64,8 @@ export interface RuntimePref {
 export interface LoopParamsState {
   mode?: LoopParams["mode"];
   reasoningLevel?: string;
+  /** 上下文长度档（执行器侧原始 value）：仅 CLI 声明了可选档的执行器出现在界面 */
+  contextLength?: string;
 }
 
 const LOOP_PARAMS_KEY = "agent-workbench:loop-params";
@@ -1232,6 +1234,7 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
     const loop: LoopParams = {
       mode: loopState.mode ?? pmToMode(get().permissionMode),
       ...(loopState.reasoningLevel ? { reasoningLevel: loopState.reasoningLevel } : {}),
+      ...(loopState.contextLength ? { contextLength: loopState.contextLength } : {}),
     };
 
     // 模型回落：用户所选 → 工作单元 modelHint → 该 CLI 当前有效清单的第一个。

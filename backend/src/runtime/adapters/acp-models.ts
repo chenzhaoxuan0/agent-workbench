@@ -222,6 +222,28 @@ export function pickAcpModelOptions(result: unknown): { current?: string; option
   return pickAcpAvailableModels(result);
 }
 
+/**
+ * 找「上下文长度」这类可切换的 select 型 configOption。
+ *
+ * 不猜 key 的字面量（mcode 叫什么只有它自己知道），按 id/category **包含 "context"**
+ * 模糊匹配 —— 匹配不到就返回空 options，调用方据此不给界面出滑动条。
+ * 返回 configId 供 set_config_option 回写（发现时是什么 id 就写回什么 id）。
+ */
+export function pickAcpContextLengthOption(
+  result: unknown,
+): { configId?: string; current?: string; options: readonly AcpModelOption[] } {
+  const cfg = (result as { readonly configOptions?: readonly AcpConfigOption[] } | undefined)?.configOptions;
+  if (!Array.isArray(cfg)) return { options: [] };
+  const hit = cfg.find((c) => {
+    const key = `${c.id ?? ""} ${c.category ?? ""}`.toLowerCase();
+    // 排除窗口**元数据**类字段（是数值不是可切换档位）
+    return key.includes("context") && !key.includes("window") && !key.includes("usage");
+  });
+  if (hit === undefined) return { options: [] };
+  const inner = pickAcpSelectOption(result, (hit.id ?? hit.category ?? "").toLowerCase());
+  return { configId: hit.id ?? hit.category, current: inner.current, options: inner.options };
+}
+
 /** 旧版 ACP 的 `models.availableModels` 形态 */
 export function pickAcpAvailableModels(result: unknown): { current?: string; options: readonly AcpModelOption[] } {
   const models = (result as { readonly models?: { readonly availableModels?: readonly unknown[]; readonly currentModelId?: string } } | undefined)?.models;

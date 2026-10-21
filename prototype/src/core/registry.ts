@@ -127,6 +127,8 @@ export class RuntimeRegistry {
             maxOutput: m.maxOutput ?? known.maxOutput,
             reasoningLevels: m.reasoningLevels ?? known.reasoningLevels,
             defaultReasoningLevel: m.defaultReasoningLevel ?? known.defaultReasoningLevel,
+            contextLengths: m.contextLengths ?? known.contextLengths,
+            defaultContextLength: m.defaultContextLength ?? known.defaultContextLength,
             multimodal: m.multimodal ?? known.multimodal,
             inputPerMTok: m.inputPerMTok ?? known.inputPerMTok,
             outputPerMTok: m.outputPerMTok ?? known.outputPerMTok,
@@ -309,6 +311,8 @@ function sameModelList(a: readonly RawExecutorModel[], b: readonly RawExecutorMo
       m.multimodal === o.multimodal &&
       m.defaultReasoningLevel === o.defaultReasoningLevel &&
       sameStrings(m.reasoningLevels, o.reasoningLevels) &&
+      m.defaultContextLength === o.defaultContextLength &&
+      sameContextLengths(m.contextLengths, o.contextLengths) &&
       m.inputPerMTok === o.inputPerMTok &&
       m.outputPerMTok === o.outputPerMTok
     );
@@ -319,6 +323,15 @@ function sameStrings(a: readonly string[] | undefined, b: readonly string[] | un
   if (a === b) return true;
   if (a === undefined || b === undefined) return false;
   return a.length === b.length && a.every((s, i) => s === b[i]);
+}
+
+function sameContextLengths(
+  a: readonly { value: string; label: string }[] | undefined,
+  b: readonly { value: string; label: string }[] | undefined,
+): boolean {
+  if (a === b) return true;
+  if (a === undefined || b === undefined || a.length !== b.length) return false;
+  return a.every((x, i) => x?.value === b[i]?.value && x?.label === b[i]?.label);
 }
 
 /** 全局单例。Electron 阶段会按窗口隔离。 */

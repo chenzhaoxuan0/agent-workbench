@@ -41,7 +41,7 @@ import {
 import { builtinCommandsFor } from "./builtin-catalogs.ts";
 import { discoverGenericToolSkillsAndAgents, mergeCommandEntries } from "./discovery.ts";
 import type { NativeCommandInfo } from "../../contract.ts";
-import { pickAcpModelOptions, pickAcpSelectOption, queryAcpSessionNew } from "./acp-models.ts";
+import { pickAcpContextLengthOption, pickAcpModelOptions, pickAcpSelectOption, queryAcpSessionNew } from "./acp-models.ts";
 import type {
   ModelId,
   ProbeResult,
@@ -145,6 +145,10 @@ interface McodeSession {
   readonly mode: StartRequest["mode"];
   /** 用户选的模型（工作台 ModelId = 模型基础名，ACP 侧真实值查 _modelValues） */
   model: ModelId | null;
+  /** 上下文长度档（执行器侧原始 value）；send loop 可逐轮覆盖 */
+  contextLength: string | null;
+  /** 上一次成功下发的上下文档（同值不重发） */
+  appliedContextLength: string | null;
   /** mcode 的 ACP sessionId（"mvs_…"），session/new 后才有 */
   ref: string | null;
   sink: AdapterSink | null;
@@ -218,6 +222,9 @@ function toMcodeModelInfo(
     maxOutput: old?.maxOutput,
     reasoningLevels: levels === undefined ? undefined : [...levels],
     defaultReasoningLevel: hasThinking ? (old?.defaultReasoningLevel ?? "medium") : old?.defaultReasoningLevel,
+    // 上下文档位沿用上一份清单：本轮探测没声明时不清空（与 reasoningLevels 同一继承口径）
+    contextLengths: old?.contextLengths,
+    defaultContextLength: old?.defaultContextLength,
     multimodal: old?.multimodal,
     inputPerMTok: old?.inputPerMTok,
     outputPerMTok: old?.outputPerMTok,
@@ -274,6 +281,15 @@ export class McodeAdapter implements ExecutorAdapter {
   private readonly _modelValues = new Map<string, string>();
 
   /**
+   * 上下文长度这类 select 型 configOption 的写回 id（syncModels 时发现）。
+   *
+   * 只在 CLI 自己声明过该 configOption 时才非空 —— 我们从不猜 configId：
+   * 对不存在的 id 调 set_config_option 会被静默吞掉，界面上「设了」实际没设，
+   * 正是 mcode.ts 头注释里踩过的那个坑。没发现 = 界面不出上下文档滑动条。
+   */
+  private _contextConfigId: string | null = null;
+
+  /**
    * 动态对齐模型清单：`mcode acp` 的 session/new 把当前账号可选模型放在
    * `configOptions[category=model]` 里，随建会话一起回，**不发 prompt → 零用量**。
    *
@@ -296,6 +312,9 @@ export class McodeAdapter implements ExecutorAdapter {
 
       // 推理档位来自另一个 configOption（thinkingEffort），比模型选单更权威
       const efforts = pickAcpSelectOption(result, "thinkingEffort").options.map((o) => o.value);
+      // 上下文长度档（如 M3.1 Flash 的 512K / 1M）：同样只在 CLI 自己声明过才收录
+      const ctxOpt = pickAcpContextLengthOption(result);
+      this._contextConfigId = ctxOpt.options.length > 0 && ctxOpt.configId ? ctxOpt.configId : null;
       const prior = new Map(this._models.map((m) => [m.id, m]));
       const values = new Map<string, string>();
       const out: ExecutorModelInfo[] = [];
@@ -316,14 +335,21 @@ export class McodeAdapter implements ExecutorAdapter {
         values.set(parsed.base, opt.value);
         const info = toMcodeModelInfo(parsed.base, opt.name, parsed, prior);
         // 推理档位来自另一个 configOption（thinkingEffort），比静态清单里的猜测权威
+        const withEfforts = efforts.length > 0
+          ? {
+              ...info,
+              reasoningLevels: [...efforts],
+              defaultReasoningLevel: info.defaultReasoningLevel ?? efforts[0],
+            }
+          : info;
         out.push(
-          efforts.length > 0
+          ctxOpt.options.length > 0
             ? {
-                ...info,
-                reasoningLevels: [...efforts],
-                defaultReasoningLevel: info.defaultReasoningLevel ?? efforts[0],
+                ...withEfforts,
+                contextLengths: ctxOpt.options.map((o) => ({ value: o.value, label: o.name })),
+                defaultContextLength: ctxOpt.current,
               }
-            : info,
+            : withEfforts,
         );
       }
       if (out.length > 0) {
@@ -416,6 +442,8 @@ export class McodeAdapter implements ExecutorAdapter {
       rootPath: req.rootPath,
       mode: req.mode ?? "build",
       model: req.model,
+      contextLength: req.contextLength ?? null,
+      appliedContextLength: null,
       ref: null,
       sink,
       child: null,
@@ -436,7 +464,8 @@ export class McodeAdapter implements ExecutorAdapter {
 
     return {
       id: state.sessionId,
-      send: async (text: string) => {
+      send: async (text: string, loop) => {
+        if (loop?.contextLength !== undefined) state.contextLength = loop.contextLength;
         await this.runTurn(state, text);
       },
       cancel: async () => {
@@ -458,6 +487,8 @@ export class McodeAdapter implements ExecutorAdapter {
       rootPath,
       mode: "build",
       model: null, // 续接的会话沿用它自己当时的模型，不重设
+      contextLength: null, // 同上：沿用会话自己的档位
+      appliedContextLength: null,
       ref, // session/load 时用；load 失败才回落 session/new
       sink,
       child: null,
@@ -477,7 +508,8 @@ export class McodeAdapter implements ExecutorAdapter {
     this.sessions.set(sessionId, state);
     return {
       id: sessionId,
-      send: async (text: string) => {
+      send: async (text: string, loop) => {
+        if (loop?.contextLength !== undefined) state.contextLength = loop.contextLength;
         await this.runTurn(state, text);
       },
       cancel: async () => {
@@ -655,6 +687,7 @@ export class McodeAdapter implements ExecutorAdapter {
   private async runTurn(state: McodeSession, prompt: string): Promise<void> {    state.cancelled = false;
     await this.ensureSession(state);
     await this.applyMode(state);
+    await this.applyContextLength(state);
 
     const acc: TurnAcc = {
       sawAny: false,
@@ -742,6 +775,39 @@ export class McodeAdapter implements ExecutorAdapter {
       // 界面上却显示用户选的那档。所以这里必须留痕，不能只压 debug 了事。
       log.warn("mcode 权限档/模式下发失败，本轮沿用执行器默认档", {
         mode: state.mode,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  /**
+   * 下发上下文长度档（如 M3.1 Flash 的 512K / 1M）。
+   *
+   * 只在 CLI 自己声明过该 configOption（syncModels 发现了 configId）且用户
+   * 显式选了档时才发 —— 从不猜 id，猜错会被 set_config_option 静默吞掉。
+   * 同值不重发（config 是会话级的，重发只是浪费一次往返）；失败降级不挡轮，
+   * 但要留痕（与权限档同一理由：静默失效会让界面显示的档与实际跑的不一致）。
+   */
+  private async applyContextLength(state: McodeSession): Promise<void> {
+    if (state.contextLength === null || state.ref === null) return;
+    if (this._contextConfigId === null) {
+      // 未发现过该 configOption：不硬发。留 debug 足够 —— 界面根本不会出滑动条
+      log.debug("mcode 未发现上下文长度 configOption，跳过下发", { contextLength: state.contextLength });
+      return;
+    }
+    if (state.appliedContextLength === state.contextLength) return;
+    try {
+      await this.request(
+        state,
+        ACP_SET_CONFIG_OPTION,
+        { sessionId: state.ref, configId: this._contextConfigId, value: state.contextLength },
+        MODEL_SET_TIMEOUT_MS,
+      );
+      state.appliedContextLength = state.contextLength;
+    } catch (err: unknown) {
+      log.warn("mcode 上下文长度档下发失败，本轮沿用会话当前档", {
+        configId: this._contextConfigId,
+        contextLength: state.contextLength,
         error: err instanceof Error ? err.message : String(err),
       });
     }

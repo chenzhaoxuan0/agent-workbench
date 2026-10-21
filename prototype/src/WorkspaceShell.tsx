@@ -80,14 +80,17 @@ export function WorkspaceShell() {
     useTerminalStore.getState().installTerminalCreatedClaim();
   }, []);
 
+  // 手机布局下右上角三钮整体隐藏：与头部的会话形态切换（对话/终端 TUI）重叠、
+  // 点不到。关窗改走头部右键菜单（useWindowOpsMenu，MobileLayout / WorkspaceHeader
+  // 都挂了）。aw-wco-hidden 让 --wco-w 归零 —— 各顶行让位带与右上浮层偏移跟着
+  // 收缩，移动端设置页等仍引用该变量的行不再留 132px 空白。
+  useEffect(() => {
+    document.documentElement.classList.toggle("aw-wco-hidden", isMobile);
+    return () => document.documentElement.classList.remove("aw-wco-hidden");
+  }, [isMobile]);
+
   if (isMobile) {
-    return (
-      <>
-        <MobileLayout preference={preference} onSetPreference={setPreference} />
-        {/* 桌面端缩窄到手机布局时窗口控制按钮仍要常驻（纯浏览器时自渲染为空） */}
-        <WindowControls />
-      </>
-    );
+    return <MobileLayout preference={preference} onSetPreference={setPreference} />;
   }
 
   return (

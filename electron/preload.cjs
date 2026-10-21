@@ -18,6 +18,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
     toggleMaximize: () => ipcRenderer.send("window:toggle-maximize"),
     close: () => ipcRenderer.send("window:close"),
     isMaximized: () => ipcRenderer.invoke("window:is-maximized"),
+    /** 标题栏右键：弹出 Windows 系统菜单同款的原生菜单（还原/最大化/最小化/关闭） */
+    openSystemMenu: () => ipcRenderer.send("window:system-menu"),
     onMaximizedChanged: (listener) => {
       const wrapped = (_event, value) => listener(value);
       ipcRenderer.on("window:maximized-changed", wrapped);
