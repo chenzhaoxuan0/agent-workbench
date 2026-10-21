@@ -98,7 +98,21 @@ export interface NotificationsSidePaneTab {
   openedAt: number;
 }
 
-export type SidePaneTab = HistorySidePaneTab | LiveSessionSidePaneTab | PlanSidePaneTab | DiffSidePaneTab | NotificationsSidePaneTab;
+/**
+ * 上下文清单页（ADR 0014 / docs/20）：当前 bot 的注入矩阵——AGENTS.md 三态 +
+ * SOUL / USER / 记忆各柱 / 预设 + SOUL.md 编辑器。「这个 bot 到底知道什么」的
+ * 唯一管理面；Composer 的记忆选择器是它两根柱的快捷方式。
+ */
+export interface ContextSidePaneTab {
+  /** `context:{unitId}` —— 一个 bot 至多一个 */
+  id: string;
+  type: "context";
+  ownerUnitId: UnitId;
+  unitName: string;
+  openedAt: number;
+}
+
+export type SidePaneTab = HistorySidePaneTab | LiveSessionSidePaneTab | PlanSidePaneTab | DiffSidePaneTab | NotificationsSidePaneTab | ContextSidePaneTab;
 
 /**
  * tab 的作用域。unit 级归属某个 bot（切 bot 隐藏不销毁）；workspace 级属于整个
@@ -135,6 +149,7 @@ export const historyTabId = (unitId: UnitId): string => `history:${unitId}`;
 export const liveTabId = (sessionId: string): string => `live:${sessionId}`;
 export const planTabId = (unitId: UnitId): string => `plan:${unitId}`;
 export const diffTabId = (unitId: UnitId): string => `diff:${unitId}`;
+export const contextTabId = (unitId: UnitId): string => `context:${unitId}`;
 /** workspace 级单例：id 不含任何业务键 */
 export const notifyTabId = "notify:workspace";
 
@@ -218,6 +233,11 @@ export function openDiffTab(state: SidePaneState, request: OpenUnitTabRequest): 
   return openUnitTab(state, "diff", diffTabId(request.unitId), request);
 }
 
+/** 打开（或复用）上下文清单 tab：按 unit 幂等（ADR 0014） */
+export function openContextTab(state: SidePaneState, request: OpenUnitTabRequest): SidePaneState {
+  return openUnitTab(state, "context", contextTabId(request.unitId), request);
+}
+
 /** 打开（或复用）通知中心 tab：workspace 级单例，幂等聚焦 */
 export function openNotificationsTab(state: SidePaneState): SidePaneState {
   const existing = state.tabs.find((tab) => tab.id === notifyTabId);
@@ -269,16 +289,16 @@ export function moveTab(
 
 function openUnitTab(
   state: SidePaneState,
-  type: "plan" | "diff",
+  type: "plan" | "diff" | "context",
   id: string,
   request: OpenUnitTabRequest,
 ): SidePaneState {
   const existing = state.tabs.find((tab) => tab.id === id);
-  if (existing !== undefined && (existing.type === "plan" || existing.type === "diff")) {
+  if (existing !== undefined && (existing.type === "plan" || existing.type === "diff" || existing.type === "context")) {
     const merged = { ...existing, unitName: request.unitName, openedAt: Date.now() };
     return activateTab({ ...state, tabs: state.tabs.map((tab) => (tab.id === id ? merged : tab)) }, id);
   }
-  const tab: PlanSidePaneTab | DiffSidePaneTab = {
+  const tab: PlanSidePaneTab | DiffSidePaneTab | ContextSidePaneTab = {
     id,
     type,
     ownerUnitId: request.unitId,

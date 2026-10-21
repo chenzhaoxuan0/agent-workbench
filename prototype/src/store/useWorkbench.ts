@@ -14,6 +14,8 @@ import {
   asRuntimeId,
   asSessionId,
   asUnitId,
+  normalizeContextManifest,
+  type ContextManifest,
   type Deliverable,
   type Session,
   type SessionId,
@@ -154,10 +156,12 @@ interface WorkbenchState {
   /** 本次运行的权限模式（composer 右侧常驻） */
   permissionMode: PermissionMode;
   setPermissionMode: (mode: PermissionMode) => void;
-  /** 本次/后续会话记忆注入范围（默认仅注入长期记忆 ["semantic"]） */
-  memoryScopes: readonly ("semantic" | "daily")[];
-  setMemoryScopes: (scopes: readonly ("semantic" | "daily")[]) => void;
-  toggleMemoryScope: (scope: "semantic" | "daily") => void;
+  /**
+   * 改某个 bot 的上下文清单（ADR 0014）：patch 合并进归一后的 manifest 后写穿
+   * bot.json。注入开关的真相源自此在前端移除——旧的全局 memoryScopes 态退役，
+   * 快捷开关（记忆选择器 / Context 面板）都走这一条路，渠道会话天然同步。
+   */
+  patchUnitContext: (unitId: UnitId | string, patch: Partial<ContextManifest>) => Promise<void>;
   pushNotice: (
     title: string,
     text: string,
@@ -376,6 +380,8 @@ function persistPrefs(map: ModelPrefsMap): void {
 export interface BotWriteGuards {
   readonly ifRevision?: number;
   readonly ifAgentsMdHash?: string;
+  /** SOUL.md 内容 hash 乐观锁（ADR 0014 D5，与 ifAgentsMdHash 同构） */
+  readonly ifSoulMdHash?: string;
 }
 
 /** daemon 判定"盘上已被改过"时的错误码。前端据此弹三选一而不是静默覆盖。 */
@@ -462,20 +468,28 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
   draft: "",
   permissionDecisions: {},
   permissionMode: "bypass",
-  memoryScopes: ["semantic"] as readonly ("semantic" | "daily")[],
 
   setDraft: (draft) => set({ draft }),
 
   setPermissionMode: (permissionMode) => set({ permissionMode }),
 
-  setMemoryScopes: (memoryScopes) => set({ memoryScopes }),
-
-  toggleMemoryScope: (scope) =>
-    set((s) => {
-      const has = s.memoryScopes.includes(scope);
-      const next = has ? s.memoryScopes.filter((x) => x !== scope) : [...s.memoryScopes, scope];
-      return { memoryScopes: next };
-    }),
+  patchUnitContext: async (unitId, patch) => {
+    const u = get().units.find((x) => x.id === unitId);
+    if (u === undefined) return;
+    const next: ContextManifest = { ...normalizeContextManifest(u.contextManifest), ...patch };
+    // updateUnit 自带乐观锁与回滚；这里吞掉冲突异常并提示——快捷开关的调用方
+    // （Composer 记忆选择器）没有冲突三选一的 UI 面，静默失败会让人以为切过了。
+    try {
+      await get().updateUnit({ ...u, contextManifest: next }, { ifRevision: u.revision });
+    } catch (err: unknown) {
+      get().pushNotice(
+        "注入开关未写入",
+        err instanceof Error && err.message !== "" ? err.message : "bot.json 已被外部修改，重新打开设置页后再试",
+        { level: "warn" },
+      );
+      throw err;
+    }
+  },
 
   pushNotice: (title, text, options) => {
     set((s) => ({
@@ -1339,7 +1353,9 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
             kind: forkIntent.kind,
           },
           loop,
-          memoryOptions: opts?.memoryOptions ?? { scopes: get().memoryScopes },
+          // ADR 0014：注入清单权威在 bot.json（daemon 自读）；前端只在 /mem 这类
+          // 显式覆盖时才传 memoryOptions，不再有全局 scopes 真相源
+          memoryOptions: opts?.memoryOptions,
           attachments,
         });
       } catch (err: unknown) {
@@ -1521,7 +1537,8 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
         // 仅源代码管理面板显式传入：在此工作树开新会话（ADR 0008）
         worktree: opts?.worktree,
         loop,
-        memoryOptions: opts?.memoryOptions ?? { scopes: get().memoryScopes },
+        // ADR 0014：注入清单权威在 bot.json（daemon 自读），前端不再传全局 scopes
+        memoryOptions: opts?.memoryOptions,
         attachments,
       });
     } catch (err: unknown) {

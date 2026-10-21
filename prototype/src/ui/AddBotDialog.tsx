@@ -183,7 +183,8 @@ export function AddBotDialog({
     setRole(b.identity?.role ?? "");
     setRootPath(b.rootPath);
     setAgentsMd(b.agentsMd ?? "");
-    setPersona(b.identity?.persona ?? "");
+    // ADR 0014：人设优先读 SOUL.md 文件；老 bot 回落 identity.persona（保存即迁移）
+    setPersona(b.soulMd ?? b.identity?.persona ?? "");
     setPersonaTouched(true);
     setMemory(b.memory ?? { semantic: true, episodic: true, procedural: true });
     setRuntimeId(rid);
@@ -698,7 +699,7 @@ export function AddBotDialog({
               <div className="flex h-full min-h-0 flex-col gap-2">
                 <Field
                   label="soul.md · 人设与语气"
-                  hint="本质是 bot 的 soul（住在文件夹里的 SOUL.md 语义位）：运行时拼进 system prompt 的「你是谁、什么语气、什么原则」。与 AGENTS.md（岗位说明书）分开维护。"
+                  hint="保存时物化为文件夹根目录的 SOUL.md（ADR 0014，与 AGENTS.md 同构，VS Code 里可直接改）。是否注入由这个 bot 的上下文清单决定——新建默认裸跑，在右栏 Context 面板打开。"
                 >
                   <span />
                 </Field>
@@ -858,7 +859,7 @@ export function AddBotDialog({
             <>
               {/* 冲突态整条换掉提示语：此刻最重要的信息是"你没写进去"，不是"保存" */}
               <p className="min-w-0 flex-1 text-caption text-loss">
-                磁盘上的 {conflict.reason === "agents_md" ? "AGENTS.md" : "bot.json"} 在你编辑期间被改过
+                磁盘上的 {conflict.reason === "agents_md" ? "AGENTS.md" : conflict.reason === "soul_md" ? "SOUL.md" : "bot.json"} 在你编辑期间被改过
                 （多半是在 VS Code 里直接编辑了）。<span className="font-medium">这次没有写入。</span>
               </p>              <div className="flex shrink-0 items-center gap-2">
                 <button

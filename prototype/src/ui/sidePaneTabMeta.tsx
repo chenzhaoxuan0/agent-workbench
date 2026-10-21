@@ -1,5 +1,5 @@
 import type { ReactElement } from "react";
-import { Bell, FileDiff, History, ListChecks, Radio, type LucideIcon } from "lucide-react";
+import { Bell, FileDiff, History, Layers, ListChecks, Radio, type LucideIcon } from "lucide-react";
 import type { SidePaneTab } from "../core/sidePaneTabs.ts";
 import type { UnitId } from "../core/units.ts";
 import { useSidePane } from "../store/useSidePane.ts";
@@ -9,6 +9,7 @@ import { LiveSessionPane } from "./LiveSessionPane.tsx";
 import { PlanPane } from "./PlanPane.tsx";
 import { DiffPane } from "./DiffPane.tsx";
 import { NotificationsPane } from "./NotificationsPane.tsx";
+import { ContextPane } from "./ContextPane.tsx";
 
 /**
  * 侧栏 tab 的 UI 注册表 —— 图标 / 标题 / 内容渲染 / 功能主页入口的唯一登记处。
@@ -71,6 +72,12 @@ const entries: readonly SidePaneTabMetaEntry[] = [
     icon: FileDiff,
     title: (tab) => (tab.type === "diff" ? `${tab.unitName} · 变更` : ""),
     render: (tab, ctx) => (tab.type === "diff" ? <DiffTabBody unitId={tab.ownerUnitId} shown={ctx.shown} /> : null),
+  },
+  {
+    type: "context",
+    icon: Layers,
+    title: (tab) => (tab.type === "context" ? `${tab.unitName} · Context` : ""),
+    render: (tab, ctx) => (tab.type === "context" ? <ContextPane unitId={tab.ownerUnitId} shown={ctx.shown} /> : null),
   },  {
     type: "notify",
     icon: Bell,
@@ -161,6 +168,17 @@ export const SIDE_PANE_HOME_ENTRIES: readonly SidePaneHomeEntryDef[] = [
     open: ({ unitId, unitName }) => {
       if (unitId === null) return;
       useSidePane.getState().openDiff({ unitId, unitName });
+    },
+  },
+  {
+    key: "context",
+    label: "上下文清单",
+    desc: "这个 bot 知道什么：注入矩阵 + SOUL.md（ADR 0014）",
+    icon: Layers,
+    group: "companion",
+    open: ({ unitId, unitName }) => {
+      if (unitId === null) return;
+      useSidePane.getState().openContext({ unitId, unitName });
     },
   },
   {

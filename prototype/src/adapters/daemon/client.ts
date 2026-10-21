@@ -76,6 +76,8 @@ export interface DaemonExecutorInfo {
   readonly capabilities: RuntimeCapabilities;
   /** daemon 侧标了 = 这是测试夹具（mockperm），不是真的 CLI 工具 */
   readonly testOnly?: true;
+  /** 该执行器原生读取的 cwd 项目上下文文件（ADR 0014 防双注注册表）。缺省 = 未标注 */
+  readonly nativeContextFiles?: readonly string[];
 }
 
 /** 单家执行器的模型同步结果（daemon 返回） */
@@ -775,7 +777,7 @@ export async function mcpReadFileRpc(
 export async function putBotDefinition(
   unit: unknown,
   endpoint: string = defaultDaemonEndpoint(),
-  guards: { ifRevision?: number; ifAgentsMdHash?: string } = {},
+  guards: { ifRevision?: number; ifAgentsMdHash?: string; ifSoulMdHash?: string } = {},
   opts: { createRoot?: boolean } = {},
 ): Promise<RawBotPutResult> {
   const client = DaemonClient.get(endpoint);
@@ -789,12 +791,13 @@ export async function putBotDefinition(
   );
 }
 
-/** daemon `bot.put` 的回执：新 revision 与 AGENTS.md 指纹（写回 store 用） */
+/** daemon `bot.put` 的回执：新 revision 与 AGENTS.md / SOUL.md 指纹（写回 store 用） */
 export interface RawBotPutResult {
   readonly path?: string;
   readonly revision?: number;
   readonly updatedAt?: number;
   readonly agentsMd?: WorkUnit["agentsMdMeta"] | null;
+  readonly soulMd?: WorkUnit["soulMdMeta"] | null;
 }
 
 /** daemon 挂在每个定义上的 $meta（后端内部字段名，前端不该看见） */
@@ -802,10 +805,11 @@ interface RawBotMeta {
   readonly revision?: number;
   readonly updatedAt?: number;
   readonly agentsMd?: WorkUnit["agentsMdMeta"] | null;
+  readonly soulMd?: WorkUnit["soulMdMeta"] | null;
   readonly inlineAgentsMd?: boolean;
 }
 
-/** $meta 摊平成 WorkUnit 上的 revision / agentsMdMeta，其余原样 */
+/** $meta 摊平成 WorkUnit 上的 revision / agentsMdMeta / soulMdMeta，其余原样 */
 function flattenBotDef(def: unknown): WorkUnit {
   const d = def as Record<string, unknown>;
   const meta = d["$meta"] as RawBotMeta | undefined;
@@ -815,6 +819,7 @@ function flattenBotDef(def: unknown): WorkUnit {
     if (typeof meta.revision === "number") out.revision = meta.revision;
     // 指针在但文件缺失时后端给的是 null；这里归一成 undefined，别把 null 漏进 UI 判空
     if (meta.agentsMd !== undefined && meta.agentsMd !== null) out.agentsMdMeta = meta.agentsMd;
+    if (meta.soulMd !== undefined && meta.soulMd !== null) out.soulMdMeta = meta.soulMd;
   }
   return out as unknown as WorkUnit;
 }
@@ -824,6 +829,27 @@ export async function listBotDefinitions(endpoint: string = defaultDaemonEndpoin
   const client = DaemonClient.get(endpoint);
   const raw = await client.rpc<unknown[]>("bot.list", null, 15000);
   return raw.map(flattenBotDef);
+}
+
+// ---- USER.md 全局层（ADR 0014 D5）：关于「人」的 evergreen 文件，逐 bot 开关注入 ----
+
+export interface UserContextFile {
+  readonly path?: string;
+  readonly content: string;
+  readonly chars: number;
+  readonly limit: number;
+  readonly exists: boolean;
+}
+
+export async function readUserContext(endpoint: string = defaultDaemonEndpoint()): Promise<UserContextFile> {
+  return DaemonClient.get(endpoint).rpc<UserContextFile>("context.user.read", null, 15000);
+}
+
+export async function writeUserContext(
+  content: string,
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<{ path: string; chars: number; limit: number; nearLimit: boolean }> {
+  return DaemonClient.get(endpoint).rpc("context.user.write", { content }, 15000);
 }
 
 /** daemon `bot.defaultRoot` 的回执：自动安置的默认位置 + 目录浏览器起始根候选 */

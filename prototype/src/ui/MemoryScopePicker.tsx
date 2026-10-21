@@ -1,20 +1,25 @@
 import { useEffect, useRef, useState } from "react";
-import { Brain, Calendar, Check, CheckSquare, Square, Sparkles } from "lucide-react";
+import { Brain, Calendar, CheckSquare, Square } from "lucide-react";
 import { useWorkbench, selectActiveUnit } from "../store/useWorkbench.ts";
+import { normalizeContextManifest } from "../core/units.ts";
 import { useMemoryPanel } from "../store/useMemoryPanel.ts";
 import { cn } from "./cn.ts";
 
+/**
+ * 记忆注入快捷开关（ADR 0014 改造）：改的是**当前 bot** 的 contextManifest
+ * （写穿 bot.json），不再是全局前端态。完整矩阵（SOUL / USER / AGENTS 三态 /
+ * STANDING / 预设）在右栏 Context 面板，这里只留 Composer 触手可及的两柱。
+ */
 export function MemoryScopePicker({ compact }: { compact?: boolean } = {}) {
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const unit = useWorkbench(selectActiveUnit);
-  const memoryScopes = useWorkbench((s) => s.memoryScopes);
-  const setMemoryScopes = useWorkbench((s) => s.setMemoryScopes);
-  const toggleMemoryScope = useWorkbench((s) => s.toggleMemoryScope);
+  const patchUnitContext = useWorkbench((s) => s.patchUnitContext);
   const memory = useMemoryPanel((s) => s.memory);
 
-  const hasSemantic = memoryScopes.includes("semantic");
-  const hasDaily = memoryScopes.includes("daily");
+  const manifest = normalizeContextManifest(unit?.contextManifest);
+  const hasSemantic = manifest.memorySemantic === true;
+  const hasDaily = manifest.memoryDaily === true;
 
   const draft = useWorkbench((s) => s.draft);
 
@@ -36,6 +41,12 @@ export function MemoryScopePicker({ compact }: { compact?: boolean } = {}) {
     }
   }, [open]);
 
+  const toggle = (key: "memorySemantic" | "memoryDaily") => {
+    if (unit === undefined) return;
+    // 快捷开关不弹确认：失败由 patchUnitContext 统一推通知
+    void patchUnitContext(unit.id, { [key]: !(manifest[key] === true) }).catch(() => {});
+  };
+
   const label =
     hasSemantic && hasDaily
       ? "长期 + 今日精炼"
@@ -54,7 +65,7 @@ export function MemoryScopePicker({ compact }: { compact?: boolean } = {}) {
           type="button"
           onClick={() => setOpen(!open)}
           aria-expanded={open}
-          title={`记忆注入配置 (${label})`}
+          title={`记忆注入配置 (${label}) · 已写入该 bot 的注入清单`}
           className={cn(
             "relative flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border transition",
             isEnabled
@@ -71,7 +82,7 @@ export function MemoryScopePicker({ compact }: { compact?: boolean } = {}) {
         <button
           type="button"
           onClick={() => setOpen(!open)}
-          title="选择本轮对话要注入的记忆类型（长期记忆 MEMORY.md 与当日会话精炼独立注入）"
+          title="选择这个 bot 开新会话时注入的记忆（写入 bot.json 的注入清单，渠道会话同样生效）"
           className={cn(
             "flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs transition border font-medium select-none whitespace-nowrap",
             isEnabled
@@ -89,19 +100,20 @@ export function MemoryScopePicker({ compact }: { compact?: boolean } = {}) {
           <div className="flex items-center justify-between pb-2 border-b border-line-soft">
             <div className="flex items-center gap-1.5 text-xs font-semibold text-ink">
               <Brain size={14} className="text-teal" />
-              <span>记忆注入配置</span>
+              <span>记忆注入（这个 bot）</span>
             </div>
-            <span className="text-[10px] text-graphite font-mono">/mem 指令</span>
+            <span className="text-[10px] text-graphite font-mono">contextManifest</span>
           </div>
 
           <p className="mt-2 text-[11px] leading-relaxed text-graphite">
-            选择开新会话时注入到 prompt prefix 的记忆上下文。两者独立管理，不相互污染：
+            开关写入 bot.json 的注入清单——工作台、渠道、定时会话同一份（ADR 0014）。
+            两柱独立，不影响 SOUL / USER / AGENTS.md（在右栏 Context 面板管理）：
           </p>
 
           <div className="mt-2.5 space-y-2">
             {/* 1. 语义记忆 (MEMORY.md) */}
             <div
-              onClick={() => toggleMemoryScope("semantic")}
+              onClick={() => toggle("memorySemantic")}
               className={cn(
                 "group flex cursor-pointer items-start gap-2.5 rounded-lg border p-2 transition",
                 hasSemantic
@@ -129,7 +141,7 @@ export function MemoryScopePicker({ compact }: { compact?: boolean } = {}) {
 
             {/* 2. 当日会话精炼 (daily/*.md) */}
             <div
-              onClick={() => toggleMemoryScope("daily")}
+              onClick={() => toggle("memoryDaily")}
               className={cn(
                 "group flex cursor-pointer items-start gap-2.5 rounded-lg border p-2 transition",
                 hasDaily
@@ -155,13 +167,13 @@ export function MemoryScopePicker({ compact }: { compact?: boolean } = {}) {
             </div>
           </div>
 
-          {/* 快捷预设 */}
+          {/* 快捷预设 = 写开关的宏（ADR 0014 D7）：不持久化预设名，只落显式开关 */}
           <div className="mt-3 pt-2.5 border-t border-line-soft flex items-center justify-between">
             <span className="text-[10px] text-graphite">快捷预设:</span>
             <div className="flex items-center gap-1 text-[11px]">
               <button
                 type="button"
-                onClick={() => setMemoryScopes(["semantic", "daily"])}
+                onClick={() => void patchUnitContext(unit?.id ?? "", { memorySemantic: true, memoryDaily: true }).catch(() => {})}
                 className="rounded px-1.5 py-0.5 text-xs text-teal hover:bg-teal-tint transition"
               >
                 双注入
@@ -169,7 +181,7 @@ export function MemoryScopePicker({ compact }: { compact?: boolean } = {}) {
               <span className="text-line-soft">·</span>
               <button
                 type="button"
-                onClick={() => setMemoryScopes(["semantic"])}
+                onClick={() => void patchUnitContext(unit?.id ?? "", { memorySemantic: true, memoryDaily: false }).catch(() => {})}
                 className="rounded px-1.5 py-0.5 text-xs text-graphite hover:text-ink hover:bg-line-soft transition"
               >
                 仅长期
@@ -177,7 +189,7 @@ export function MemoryScopePicker({ compact }: { compact?: boolean } = {}) {
               <span className="text-line-soft">·</span>
               <button
                 type="button"
-                onClick={() => setMemoryScopes(["daily"])}
+                onClick={() => void patchUnitContext(unit?.id ?? "", { memorySemantic: false, memoryDaily: true }).catch(() => {})}
                 className="rounded px-1.5 py-0.5 text-xs text-graphite hover:text-ink hover:bg-line-soft transition"
               >
                 仅今日
@@ -185,7 +197,7 @@ export function MemoryScopePicker({ compact }: { compact?: boolean } = {}) {
               <span className="text-line-soft">·</span>
               <button
                 type="button"
-                onClick={() => setMemoryScopes([])}
+                onClick={() => void patchUnitContext(unit?.id ?? "", { memorySemantic: false, memoryDaily: false }).catch(() => {})}
                 className="rounded px-1.5 py-0.5 text-xs text-graphite hover:text-ink hover:bg-line-soft transition"
               >
                 清空

@@ -43,6 +43,7 @@ import {
   isProjectUnit,
   isResidentUnit,
   isSyntheticUnit,
+  normalizeContextManifest,
   orderUnitsLikeSidebar,
   SESSION_SOURCE_LABEL,
   type SessionSource,
@@ -515,10 +516,12 @@ export function Sidebar() {
                   identity: {
                     ...editingUnit.identity,
                     role: draft.role,
-                    persona: draft.persona || undefined,
+                    // ADR 0014：人设正文走 soulMd（保存即物化为 <root>/SOUL.md），
+                    // persona 字段由 daemon 在迁移后剥离；空串 = 不碰盘上已有文件
                     sourcePath: "AGENTS.md",
                     loadedAt: editingUnit.identity?.loadedAt ?? Date.now(),
                   },
+                  soulMd: draft.persona,
                   // 主执行器没选（daemon 未连接）就落空绑定，run() 里 find 返回 undefined 是安全的
                   bindings: draft.runtimeId
                     ? [
@@ -548,10 +551,13 @@ export function Sidebar() {
                 resident: draft.resident ?? false,
                 identity: {
                   role: draft.role,
-                  persona: draft.persona || undefined,
                   sourcePath: "AGENTS.md",
                   loadedAt: Date.now(),
                 },
+                // ADR 0014 D2：新建 bot 默认全关（裸跑）——注入是显式决定，
+                // 用户在右栏 Context 面板（或记忆选择器）按需打开
+                contextManifest: { agentsMd: "auto" },
+                soulMd: draft.persona || undefined,
                 bindings: draft.runtimeId
                   ? [
                       {
@@ -586,7 +592,7 @@ export function Sidebar() {
  * 里改了 AGENTS.md」。两者任一不符 daemon 就拒写，由对话框让用户选谁赢。
  */
 function guardsOf(u: WorkUnit): BotWriteGuards {
-  return { ifRevision: u.revision, ifAgentsMdHash: u.agentsMdMeta?.hash };
+  return { ifRevision: u.revision, ifAgentsMdHash: u.agentsMdMeta?.hash, ifSoulMdHash: u.soulMdMeta?.hash };
 }
 
 /* --------------------------------------------------- 历史会话的打开与状态灯 */
@@ -1024,6 +1030,37 @@ function UnitRow({
         <span className="flex min-w-0 flex-1 flex-col gap-0.5 pt-0.5">
           <span className="flex items-baseline gap-1.5">
             <span className="truncate text-body-sm font-medium text-ink">{unit.name}</span>
+            {/* 上下文注入徽标（ADR 0014）：默认全关的哲学需要可见性兜底——
+                裸跑要能被一眼看见，开了几项也要可见。精确矩阵在右栏 Context 面板 */}
+            {(() => {
+              const m = normalizeContextManifest(unit.contextManifest);
+              const items = [
+                m.soul === true && "SOUL.md",
+                m.user === true && "USER.md",
+                m.memorySemantic === true && "MEMORY.md",
+                m.memoryDaily === true && "当日精炼",
+                m.memoryStanding === true && "STANDING.md",
+                m.skills === true && "技能目录",
+              ].filter((x): x is string => x !== false);
+              const agentsOn = m.agentsMd === "on";
+              const bare = items.length === 0 && !agentsOn;
+              const total = items.length + (agentsOn ? 1 : 0);
+              return (
+                <span
+                  className={cn(
+                    "shrink-0 rounded-chip px-1 text-[10px] leading-4",
+                    bare ? "bg-line-soft/70 text-ash" : "bg-teal-tint text-teal",
+                  )}
+                  title={
+                    bare
+                      ? `裸跑：未注入任何上下文（AGENTS.md ${m.agentsMd === "auto" ? "auto——由执行器原生读取" : "已关闭"}）。合法状态；在右栏 Context 面板管理`
+                      : `注入 ${total} 项：${[...items, ...(agentsOn ? ["AGENTS.md（强制）"] : [])].join("、")}${m.agentsMd === "auto" ? "；AGENTS.md auto（执行器原生读取）" : ""}`
+                  }
+                >
+                  {bare ? "裸跑" : `注 ${total}`}
+                </span>
+              );
+            })()}
             {/* 渠道徽标 */}
             {enabledChannels.length > 0 && (
               <span

@@ -173,6 +173,8 @@ interface SidePaneStore extends sidePane.SidePaneState {
   /** 打开（或复用）当前 bot 的计划 / 变更审查 tab，并展开面板 */
   openPlan: (request: sidePane.OpenUnitTabRequest) => void;
   openDiff: (request: sidePane.OpenUnitTabRequest) => void;
+  /** 打开（或复用）上下文清单 tab（ADR 0014），并展开面板 */
+  openContext: (request: sidePane.OpenUnitTabRequest) => void;
   /** 打开（或复用）通知中心 tab（workspace 级单例），并展开面板 */
   openNotifications: () => void;
   closeTab: (tabId: string) => void;
@@ -257,6 +259,13 @@ export const useSidePane = create<SidePaneStore>((set, get) => ({
     set((s) => {
       useShell.getState().setMainView("chat");
       return openUnitTabSet(s, sidePane.openDiffTab(s, request), sidePane.diffTabId(request.unitId), request.unitId);
+    }),
+
+  /** 打开（或复用）上下文清单 tab（ADR 0014），并展开面板 */
+  openContext: (request) =>
+    set((s) => {
+      useShell.getState().setMainView("chat");
+      return openUnitTabSet(s, sidePane.openContextTab(s, request), sidePane.contextTabId(request.unitId), request.unitId);
     }),
 
   openNotifications: () =>
