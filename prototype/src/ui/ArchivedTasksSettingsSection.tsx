@@ -17,14 +17,15 @@ import {
   fetchUnitHistory,
   type UnitHistoryEntry,
 } from "../adapters/daemon/client.ts";
-import { asSessionId, asUnitId, isResidentUnit, type WorkUnit } from "../core/units.ts";
-import { useHistoryPrefs } from "../store/useHistoryPrefs.ts";
+import { asSessionId, asUnitId, isResidentUnit } from "../core/units.ts";
+import { AUTO_ARCHIVE_DAY_OPTIONS, useHistoryPrefs } from "../store/useHistoryPrefs.ts";
 import { useShell } from "../store/useShell.ts";
 import { useSidePane } from "../store/useSidePane.ts";
 import { collectLeafIds, useTerminalStore } from "../store/useTerminalStore.ts";
 import { useWorkbench } from "../store/useWorkbench.ts";
 import { resumeArgsFor } from "./HistoryPane.tsx";
 import { executorIconSrc } from "./executorIcon.ts";
+import { Toggle } from "./Toggle.tsx";
 import { cn } from "./cn.ts";
 
 function formatTimestamp(ts: number | null): string {
@@ -73,8 +74,11 @@ const KIND_LABEL: Record<UnitHistoryEntry["kind"], { label: string; cls: string 
 
 export function ArchivedTasksSettingsSection(): ReactElement {
   const units = useWorkbench((s) => s.units);
-  const archivedKeys = useHistoryPrefs((s) => s.prefs.archivedKeys);
-  const archivedEntries = useHistoryPrefs((s) => s.prefs.archivedEntries);
+  const historyPrefs = useHistoryPrefs((s) => s.prefs);
+  const setPrefs = useHistoryPrefs((s) => s.setPrefs);
+  const runAutoArchive = useHistoryPrefs((s) => s.runAutoArchive);
+  const archivedKeys = historyPrefs.archivedKeys;
+  const archivedEntries = historyPrefs.archivedEntries;
   const unarchiveKey = useHistoryPrefs((s) => s.unarchiveKey);
   const unarchiveAll = useHistoryPrefs((s) => s.unarchiveAll);
   const updateArchivedEntries = useHistoryPrefs((s) => s.updateArchivedEntries);
@@ -85,13 +89,14 @@ export function ArchivedTasksSettingsSection(): ReactElement {
   const [confirmClearAll, setConfirmClearAll] = useState(false);
   const [justRestoredKey, setJustRestoredKey] = useState<string | null>(null);
 
-  // 打开设置页时后台拉取一次历史，补充或刷新已归档条目的最新详情
+  // 打开设置页时后台拉取一次历史，补充或刷新已归档条目的最新详情，并执行自动归档检查
   useEffect(() => {
     let alive = true;
     void fetchUnitHistory(undefined, 500)
       .then((list) => {
         if (alive && list && list.length > 0) {
           updateArchivedEntries(list);
+          runAutoArchive(list);
         }
       })
       .catch((err: unknown) => {
@@ -100,7 +105,7 @@ export function ArchivedTasksSettingsSection(): ReactElement {
     return () => {
       alive = false;
     };
-  }, [updateArchivedEntries]);
+  }, [updateArchivedEntries, runAutoArchive]);
 
   // 全部归档任务列表（archivedKeys 驱动）
   const allArchivedList = useMemo(() => {
@@ -258,6 +263,58 @@ export function ArchivedTasksSettingsSection(): ReactElement {
           已归档的任务放进此「已完成抽屉」，内容和完整历史均永久保留，只是不再显示在左侧栏占用日常工作空间。
           在此您可以随时按条件检索、查看回顾、在聊天页或 TUI 中重新打开、或取消归档恢复回左侧栏。
         </p>
+      </div>
+
+      {/* 自动归档配置（对齐 ZCode taskAutoArchive 设置） */}
+      <div className="rounded-card border border-line bg-card/60 p-4 shadow-xs space-y-3">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="text-body-sm font-semibold text-ink">自动归档旧任务</span>
+              {historyPrefs.autoArchiveEnabled && (
+                <span className="rounded-full bg-teal-tint px-2 py-0.5 text-[10px] font-medium text-teal">
+                  已开启 · 超出 {historyPrefs.autoArchiveOlderThanDays} 天自动归档
+                </span>
+              )}
+            </div>
+            <p className="mt-1 text-caption text-ash">
+              自动将超过指定天数且已结束的旧任务移入此抽屉，保持左侧栏整洁。置顶任务和进行中的任务不会被自动归档。
+            </p>
+          </div>
+          <Toggle
+            on={historyPrefs.autoArchiveEnabled}
+            onChange={(v) => {
+              setPrefs({ autoArchiveEnabled: v });
+            }}
+            ariaLabel="自动归档旧任务"
+          />
+        </div>
+
+        {historyPrefs.autoArchiveEnabled && (
+          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line-soft pt-3">
+            <div>
+              <p className="text-caption font-medium text-graphite">归档保留时长</p>
+              <p className="text-[11px] text-ash">任务最后完成或更新时间早于该时长后，才会自动进入归档</p>
+            </div>
+            <div className="flex items-center gap-1.5">
+              {AUTO_ARCHIVE_DAY_OPTIONS.map((days) => (
+                <button
+                  key={days}
+                  type="button"
+                  onClick={() => setPrefs({ autoArchiveOlderThanDays: days })}
+                  className={cn(
+                    "rounded-btn px-2.5 py-1 text-caption font-medium transition cursor-pointer",
+                    historyPrefs.autoArchiveOlderThanDays === days
+                      ? "bg-teal text-white shadow-xs"
+                      : "border border-line bg-canvas text-graphite hover:bg-line-soft hover:text-ink",
+                  )}
+                >
+                  {days} 天后归档
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* 筛选与批量控制栏 */}

@@ -132,9 +132,6 @@ export function Sidebar() {
   };
   const addUnit = useWorkbench((s) => s.addUnit);
   const mainView = useShell((s) => s.mainView);
-  /** 归档抽屉展开态（对齐 ZCode showArchivedTasks） */
-  const [showArchivedDrawer, setShowArchivedDrawer] = useState(false);
-  const archivedKeys = useHistoryPrefs((s) => s.prefs.archivedKeys);
 
   /** 普通节拖拽排序：store 持有（单元切换器弹层共享同一份顺序，两侧同序） */
   const unitOrder = useWorkbench((s) => s.unitOrder);
@@ -291,36 +288,13 @@ export function Sidebar() {
       <div className="@container flex h-9 shrink-0 items-center justify-between gap-1 px-2.5">
         <div className="flex shrink-0 items-center gap-1.5">
           <UnitViewSegment value={unitView} onChange={switchUnitView} />
-          <span className="tnum hidden text-caption text-ash @min-[240px]:inline">({visibleUnits.length})</span>
         </div>
         <div className="flex shrink-0 items-center gap-1">
-          {/* 归档抽屉开关按钮（对齐 ZCode 的 toggleArchivedTasks） */}
-          <button
-            type="button"
-            onClick={() => setShowArchivedDrawer((v) => !v)}
-            aria-pressed={showArchivedDrawer}
-            title={showArchivedDrawer ? "关闭归档抽屉" : `归档抽屉${archivedKeys.length > 0 ? ` · 已有 ${archivedKeys.length} 个任务` : ""}`}
-            className={cn(
-              "flex items-center gap-1 rounded-btn px-1.5 py-0.5 text-caption transition cursor-pointer",
-              showArchivedDrawer
-                ? "bg-teal-tint text-teal font-medium"
-                : "text-graphite hover:bg-line-soft hover:text-ink",
-            )}
-          >
-            {showArchivedDrawer ? <X size={11} /> : <Archive size={11} />}
-            <span>{showArchivedDrawer ? "关闭" : "归档"}</span>
-            {archivedKeys.length > 0 && !showArchivedDrawer && (
-              <span className="rounded-full bg-teal/20 px-1 py-0.2 text-[9px] font-medium text-teal">
-                {archivedKeys.length}
-              </span>
-            )}
-          </button>
-
           <button
             onClick={() => useShell.getState().openAddBot()}
             aria-label="新建 bot"
             title="新建 bot —— 新文件夹自动创建；指向已有文件夹即为认领（原地注册，不动里面的文件）"
-            className="flex items-center gap-0.5 rounded-btn px-1.5 py-0.5 text-caption text-graphite hover:bg-line-soft hover:text-ink"
+            className="flex items-center gap-0.5 rounded-btn px-1.5 py-0.5 text-caption text-graphite hover:bg-line-soft hover:text-ink cursor-pointer"
           >
             <Plus size={11} />
             <span>新建</span>
@@ -329,10 +303,6 @@ export function Sidebar() {
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-4">
-        {showArchivedDrawer ? (
-          <ArchivedSidebarDrawerSection onClose={() => setShowArchivedDrawer(false)} />
-        ) : (
-          <>
         {/* 空态引导卡 */}
         {allUnits.length === 0 && (
           <button
@@ -510,8 +480,6 @@ export function Sidebar() {
             );
           })}
         </section>
-          </>
-        )}
       </div>
 
       {/* bot 对话框（AGENTS.md 岗位说明书）—— 新建 / 编辑共用一个组件。
@@ -882,7 +850,10 @@ function UnitRow({
       setHistErr(null);
       void fetchUnitHistory(unit.id, 100)
         .then((list) => {
-          if (alive) setHistEntries(list);
+          if (alive) {
+            setHistEntries(list);
+            useHistoryPrefs.getState().runAutoArchive(list);
+          }
         })
         .catch((e: unknown) => {
           if (alive) setHistErr(e instanceof Error ? e.message : String(e));
@@ -1402,7 +1373,7 @@ function UnitRow({
   );
 }
 
-/** 精简相对时间展示（侧栏紧凑宽度优化，如 刚刚/5m/2h/1d/10/12） */
+/** 精简相对时间展示（侧栏紧凑宽度优化，如 刚刚/5m/2h/1d/14d） */
 function formatHistoryTime(ts: number): string {
   const diffMs = Date.now() - ts;
   if (diffMs < 0) return "刚刚";
@@ -1413,9 +1384,8 @@ function formatHistoryTime(ts: number): string {
   const diffHour = Math.floor(diffMin / 60);
   if (diffHour < 24) return `${diffHour}h`;
   const diffDay = Math.floor(diffHour / 24);
-  if (diffDay < 7) return `${diffDay}d`;
-  const d = new Date(ts);
-  return `${d.getMonth() + 1}/${d.getDate()}`;
+  if (diffDay < 365) return `${diffDay}d`;
+  return `${Math.floor(diffDay / 365)}y`;
 }
 
 /**
@@ -1553,7 +1523,7 @@ function HistoryListRow({
       aria-current={active}
       title={`${kindLabel} · ${entry.runtimeId}${launchTip}${entry.detail !== null && entry.detail !== "" ? `\n${entry.detail}` : ""}\n${entry.title}\n${formatRelative(entry.startedAt)}\n${openDesc}${active ? "（当前显示中）" : ""}`}
       className={cn(
-        "group/hrow flex min-h-[30px] w-full cursor-pointer items-center gap-1.5 rounded-btn px-2 py-1.5 text-left transition",
+        "group/hrow flex min-h-[30px] w-full cursor-pointer items-center gap-1 rounded-btn px-2 py-1.5 text-left transition",
         active ? "bg-teal-tint" : "hover:bg-line-soft",
       )}
     >
@@ -1655,12 +1625,12 @@ function HistoryListRow({
         {modeLabel}
       </span>
       {/* 会话时间 ↔ 归档钮同位交叉淡入：
-          平时固定宽度显示相对时间（右对齐、等宽数字保证整个子列表整齐划一），
-          hover 时时间淡出、归档按钮淡入在同一位置，极致省下左侧栏横向空间 */}
-      <span className="relative flex h-4 w-8 shrink-0 items-center justify-end">
+          平时固定 22px 紧凑宽度显示相对时间（居中对齐、等宽数字保证整个子列表整齐划一，不挤占标题），
+          hover 时时间淡出、归档按钮同位淡入，节省左侧栏宝贵空间 */}
+      <span className="relative flex h-4 w-[22px] shrink-0 items-center justify-center">
         <span
           className={cn(
-            "w-full text-right font-mono text-[9px] tnum text-ash/70 transition-opacity truncate",
+            "w-full text-center font-mono text-[9px] tnum text-ash/70 transition-opacity truncate",
             "group-hover/hrow:opacity-0",
             archived && "opacity-0",
           )}
@@ -1685,7 +1655,7 @@ function HistoryListRow({
               }
             }}
             className={cn(
-              "absolute inset-0 flex cursor-pointer items-center justify-end rounded-[2px] transition-opacity",
+              "absolute inset-0 flex cursor-pointer items-center justify-center rounded-[2px] transition-opacity",
               archived ? "opacity-100 text-teal" : "opacity-0 text-ash group-hover/hrow:opacity-100 hover:text-teal",
             )}
           >
@@ -1697,177 +1667,7 @@ function HistoryListRow({
   );
 }
 
-/**
- * 侧边栏内联归档抽屉（对齐 ZCode 的 WorkspaceArchivedTasksFlatSection）。
- * 点击侧栏标题栏「归档」图标即可展开，展示所有已被放进抽屉的历史任务。
- */
-function ArchivedSidebarDrawerSection({ onClose }: { onClose: () => void }): ReactElement {
-  const archivedKeys = useHistoryPrefs((s) => s.prefs.archivedKeys);
-  const archivedEntries = useHistoryPrefs((s) => s.prefs.archivedEntries);
-  const unarchiveKey = useHistoryPrefs((s) => s.unarchiveKey);
-  const units = useWorkbench((s) => s.units);
-  const activeSessionId = useWorkbench((s) => s.activeSessionId);
-  const mainView = useShell((s) => s.mainView);
-  const [filterQuery, setFilterQuery] = useState("");
 
-  const list = useMemo(() => {
-    const res: UnitHistoryEntry[] = [];
-    const unitMap = new Map(units.map((u) => [u.id, u]));
-    for (const k of archivedKeys) {
-      const entry = archivedEntries[k];
-      if (entry) {
-        const u = entry.unitId ? unitMap.get(entry.unitId as any) : undefined;
-        res.push({
-          ...entry,
-          unitName: entry.unitName || u?.name || entry.unitId || "未知 Bot",
-        });
-      } else {
-        res.push({
-          key: k,
-          kind: "session",
-          title: `已归档任务 (${k})`,
-          subtitle: null,
-          runtimeId: "unknown",
-          launchMode: "headless",
-          status: "done",
-          trigger: null,
-          startedAt: 0,
-          endedAt: null,
-          detail: null,
-          sessionId: k.startsWith("session-") ? k.replace(/^session-/, "") : k,
-          resumeRef: null,
-        });
-      }
-    }
-    return res.sort((a, b) => (b.endedAt || b.startedAt) - (a.endedAt || a.startedAt));
-  }, [archivedKeys, archivedEntries, units]);
-
-  const filtered = useMemo(() => {
-    const q = filterQuery.trim().toLowerCase();
-    if (!q) return list;
-    return list.filter(
-      (e) =>
-        e.title.toLowerCase().includes(q) ||
-        (e.unitName && e.unitName.toLowerCase().includes(q)) ||
-        (e.subtitle && e.subtitle.toLowerCase().includes(q)),
-    );
-  }, [list, filterQuery]);
-
-  return (
-    <div className="space-y-2 py-1">
-      {/* 抽屉头部 */}
-      <div className="flex items-center justify-between px-1 py-1">
-        <div className="flex items-center gap-1.5">
-          <Archive size={13} className="text-teal" />
-          <span className="text-caption font-medium text-ink">已归档任务</span>
-          <span className="rounded-full bg-teal-tint px-1.5 py-0.2 text-[9px] font-medium text-teal">
-            {list.length}
-          </span>
-        </div>
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="关闭归档抽屉"
-          title="关闭归档抽屉"
-          className="flex h-5 w-5 items-center justify-center rounded-btn text-ash hover:bg-line-soft hover:text-ink cursor-pointer"
-        >
-          <X size={12} />
-        </button>
-      </div>
-
-      {/* 搜索框 */}
-      {list.length > 4 && (
-        <div className="relative px-0.5">
-          <Search size={11} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-ash" />
-          <input
-            type="text"
-            value={filterQuery}
-            onChange={(e) => setFilterQuery(e.target.value)}
-            placeholder="搜索已归档任务..."
-            className="h-6 w-full rounded-btn border border-line bg-canvas pl-6 pr-2 text-[10px] text-ink placeholder:text-ash/60 focus:border-teal/60 focus:outline-none"
-          />
-        </div>
-      )}
-
-      {/* 列表区 */}
-      {list.length === 0 ? (
-        <div className="rounded-btn border border-dashed border-line p-4 text-center">
-          <Archive size={16} className="mx-auto mb-1 text-ash" />
-          <p className="text-[11px] font-medium text-graphite">暂无已归档任务</p>
-          <p className="mt-1 text-[10px] leading-relaxed text-ash">
-            在任务行上右键选择「归档任务」或点击悬浮归档按钮，任务将移入此抽屉。
-          </p>
-        </div>
-      ) : filtered.length === 0 ? (
-        <p className="py-4 text-center text-[10px] text-ash">未找到匹配的归档任务</p>
-      ) : (
-        <div className="space-y-1">
-          {filtered.map((e) => {
-            const canChat = e.sessionId !== null;
-            const canTui = resumeArgsFor(e.runtimeId, e.resumeRef) !== null;
-            const rowActive =
-              mainView === "chat" && e.sessionId !== null && String(activeSessionId) === e.sessionId;
-            return (
-              <div
-                key={e.key}
-                className={cn(
-                  "group/arow flex items-center justify-between gap-1.5 rounded-btn px-2 py-1.5 transition text-left cursor-pointer",
-                  rowActive ? "bg-teal-tint" : "hover:bg-line-soft",
-                )}
-                onClick={() => {
-                  if (canChat) {
-                    openEntryInChat(e, e.unitId || (units[0]?.id ?? ""));
-                  } else if (canTui) {
-                    const u = units.find((x) => x.id === e.unitId) ?? units[0];
-                    if (u) openEntryInTui(e, u);
-                  }
-                }}
-              >
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-1">
-                    <span className="shrink-0 rounded-[2px] bg-line-soft px-1 py-0.2 text-[8px] font-medium text-ash">
-                      {e.unitName}
-                    </span>
-                    <span className="truncate text-[11px] text-ink">{e.title}</span>
-                  </div>
-                  <div className="mt-0.5 flex items-center gap-1 text-[9px] text-ash/70">
-                    <span>{formatRelative(e.startedAt)}</span>
-                  </div>
-                </div>
-
-                {/* 取消归档按钮 */}
-                <button
-                  type="button"
-                  data-no-drag
-                  onClick={(ev) => {
-                    ev.stopPropagation();
-                    unarchiveKey(e.key);
-                  }}
-                  title="取消归档：恢复到左侧栏列表"
-                  className="flex h-5 items-center gap-0.5 rounded-btn px-1.5 text-[9px] font-medium text-ash hover:bg-teal-tint hover:text-teal cursor-pointer shrink-0"
-                >
-                  <ArchiveRestore size={10} />
-                  <span>恢复</span>
-                </button>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {/* 前往设置页的完整列表链接 */}
-      <div className="pt-1 text-center">
-        <button
-          type="button"
-          onClick={() => useShell.getState().openSettings("archivedTasks")}
-          className="text-[10px] text-teal hover:underline cursor-pointer"
-        >
-          在设置页中打开完整列表 →
-        </button>
-      </div>
-    </div>
-  );
-}
 
 
 /* ------------------------------------------------------------- 小组件 */

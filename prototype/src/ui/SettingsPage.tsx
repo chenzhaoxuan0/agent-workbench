@@ -757,6 +757,34 @@ function HistorySettingsSection() {
           }
         />
         <SettingsRow
+          label="自动归档旧任务"
+          description={`超过 ${prefs.autoArchiveOlderThanDays} 天未更新的已完成任务自动移入归档抽屉（对齐 ZCode 自动归档）。`}
+          control={
+            <Toggle
+              on={prefs.autoArchiveEnabled}
+              onChange={(v) => setPrefs({ autoArchiveEnabled: v })}
+            />
+          }
+        />
+        {prefs.autoArchiveEnabled && (
+          <SettingsRow
+            label="归档保留时长"
+            description="任务完成或更新时间早于该时长后，才会自动归档。"
+            control={
+              <select
+                value={prefs.autoArchiveOlderThanDays}
+                onChange={(e) => setPrefs({ autoArchiveOlderThanDays: Number(e.target.value) })}
+                className="h-8 rounded-btn border border-line bg-canvas px-2 text-body-sm text-ink focus:border-teal focus:outline-none"
+              >
+                <option value={3}>3 天后归档</option>
+                <option value={7}>7 天后归档</option>
+                <option value={14}>14 天后归档</option>
+                <option value={30}>30 天后归档</option>
+              </select>
+            }
+          />
+        )}
+        <SettingsRow
           label="已归档任务抽屉"
           description="把完成或不常用的任务放进抽屉里，保留全部历史但不在左侧栏占用空间。"
           control={

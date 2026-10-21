@@ -38,7 +38,13 @@ export interface HistoryPrefs {
   archivedKeys: string[];
   /** 已归档任务的元数据快照缓存（key -> UnitHistoryEntry），用于抽屉与设置页直出 */
   archivedEntries: Record<string, UnitHistoryEntry>;
+  /** 是否开启自动归档旧任务（默认 false，对齐 ZCode taskAutoArchiveEnabled） */
+  autoArchiveEnabled: boolean;
+  /** 自动归档保留时长天数（默认 7，选项 3/7/14/30，对齐 ZCode taskAutoArchiveOlderThanDays） */
+  autoArchiveOlderThanDays: number;
 }
+
+export const AUTO_ARCHIVE_DAY_OPTIONS = [3, 7, 14, 30] as const;
 
 const DEFAULTS: HistoryPrefs = {
   hideFailedInSidebar: true,
@@ -49,6 +55,8 @@ const DEFAULTS: HistoryPrefs = {
   pinnedKeys: [],
   archivedKeys: [],
   archivedEntries: {},
+  autoArchiveEnabled: false,
+  autoArchiveOlderThanDays: 7,
 };
 
 /** 已读标记容量上限：超出后丢最旧的（FIFO），防止 localStorage 无限膨胀 */
@@ -88,6 +96,12 @@ function load(): HistoryPrefs {
         p.archivedEntries !== null && typeof p.archivedEntries === "object"
           ? (p.archivedEntries as Record<string, UnitHistoryEntry>)
           : {},
+      autoArchiveEnabled:
+        typeof p.autoArchiveEnabled === "boolean" ? p.autoArchiveEnabled : DEFAULTS.autoArchiveEnabled,
+      autoArchiveOlderThanDays:
+        typeof p.autoArchiveOlderThanDays === "number" && p.autoArchiveOlderThanDays > 0
+          ? p.autoArchiveOlderThanDays
+          : DEFAULTS.autoArchiveOlderThanDays,
     };
   } catch {
     return { ...DEFAULTS, lightsSinceTs: Date.now() };
@@ -138,6 +152,11 @@ export interface HistoryPrefsStore {
   unarchiveAll: () => void;
   /** 更新/同步已归档任务的最新快照（从 daemon 轮询拉取时丰富字段） */
   updateArchivedEntries: (entries: readonly UnitHistoryEntry[]) => void;
+  /**
+   * 运行自动归档检查（对齐 ZCode archiveStaleTasks）：
+   * 若启用了 autoArchiveEnabled，自动归档结束/更新时间早于设定天数的已完成且未置顶任务。
+   */
+  runAutoArchive: (entries: readonly UnitHistoryEntry[]) => number;
 }
 
 export const useHistoryPrefs = create<HistoryPrefsStore>((set, get) => ({
@@ -268,6 +287,64 @@ export const useHistoryPrefs = create<HistoryPrefsStore>((set, get) => ({
       persist(next);
       return { prefs: next };
     });
+  },
+  runAutoArchive: (entries) => {
+    const { prefs } = get();
+    if (!prefs.autoArchiveEnabled || !entries || entries.length === 0) return 0;
+    const days = Math.max(1, prefs.autoArchiveOlderThanDays || 7);
+    const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+
+    const pinnedSet = new Set(prefs.pinnedKeys);
+    const archivedSet = new Set(prefs.archivedKeys);
+    const toArchive: UnitHistoryEntry[] = [];
+
+    for (const e of entries) {
+      if (archivedSet.has(e.key) || (e.sessionId && archivedSet.has(`session-${e.sessionId}`))) {
+        continue;
+      }
+      if (pinnedSet.has(e.key)) {
+        continue;
+      }
+      if (e.status === "running" || e.status === "active") {
+        continue;
+      }
+      const time = e.endedAt ?? e.startedAt;
+      if (time > 0 && time < cutoff) {
+        toArchive.push(e);
+      }
+    }
+
+    if (toArchive.length === 0) return 0;
+
+    const nextArchivedKeys = [...prefs.archivedKeys];
+    const nextArchivedEntries = { ...prefs.archivedEntries };
+
+    for (const e of toArchive) {
+      if (!nextArchivedKeys.includes(e.key)) {
+        nextArchivedKeys.push(e.key);
+      }
+      if (e.sessionId && !nextArchivedKeys.includes(`session-${e.sessionId}`)) {
+        nextArchivedKeys.push(`session-${e.sessionId}`);
+      }
+      nextArchivedEntries[e.key] = e;
+      if (e.sessionId) {
+        nextArchivedEntries[`session-${e.sessionId}`] = e;
+      }
+    }
+
+    const finalArchivedKeys =
+      nextArchivedKeys.length > ARCHIVED_CAP ? nextArchivedKeys.slice(-ARCHIVED_CAP) : nextArchivedKeys;
+
+    const nextPrefs: HistoryPrefs = {
+      ...prefs,
+      archivedKeys: finalArchivedKeys,
+      archivedEntries: nextArchivedEntries,
+    };
+
+    set({ prefs: nextPrefs });
+    persist(nextPrefs);
+    notifyHistoryRefresh();
+    return toArchive.length;
   },
 }));
 
