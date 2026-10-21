@@ -239,3 +239,19 @@ ZCode 是工作台布局与交互习惯的**总参照**，几乎每个壳层文�
 > **开源许可证边界严正说明：**
 > Termux（`termux-app`）基于 GPL-3.0 协议开源，本项目基于 MIT 协议开源。
 > 本项目**未复制或包含任何 Termux 的 Java / Android 源代码或二进制资产**，仅参考其按键排布的网格形式与交互逻辑，在 React 19 + TypeScript 环境下独立全新开发。
+
+---
+
+## 十六、OpenClaw —— 上下文清单（ADR 0014 的参照与反例）
+
+本地克隆：`C:\Users\chenziyu\project\Agent\openclaw`（2026.9.7 源码调查）。借的是**文件词汇表与机制思想**，反的是它的两个立场（存在即注入、逐适配器硬编码防双注）——详见 `docs/adr/0014` 与 `docs/20`。
+
+| OpenClaw 的概念 / 机制 | 源码证据 | 本项目落点 | 取舍 |
+|---|---|---|---|
+| 工作区文件词汇表（SOUL/IDENTITY/USER/MEMORY/AGENTS.md） | `src/agents/workspace-bootstrap-policy.ts:29-36` | `prototype/src/core/units.ts` ContextManifest、`<root>/SOUL.md`、`<homeDir>/USER.md` | 借词汇；HEARTBEAT.md/DAILY.md/PROJECTS.md 已退役或不存在，不引入 |
+| 提示内固定顺序 agents→soul→identity→user→…→memory | `system-prompt-context-files.ts:7-15` | `backend/src/memory/injection.ts` 六节顺序 | 借顺序，唯一差异：STANDING 压轴（近因效应强化红线） |
+| 防双注：codex/copilot 声明 `nativeProjectDocBasenames` 排除 AGENTS.md，claude 反向关 CLAUDE.md | `extensions/codex/.../attempt-workspace-context.ts:19`、`extensions/anthropic/cli-shared.ts:35-36` | adapter SPI `nativeContextFiles`（`backend/src/runtime/adapters/types.ts`） | 做成声明式统一注册表（它欠的坑）；**不学**反向禁用执行器原生记忆（中立层原则） |
+| `memoryToolRouted`：有检索工具就不整注 MEMORY.md | `src/agents/harness/prompt-context.ts:31-49` | 未实现 | 记入 docs/10 未来节（接 WeKnora 时再做） |
+| 每日记忆默认不进 system prompt，仅 /new 时注近 2 天（1200/2800 上限） | `src/auto-reply/reply/startup-context.ts:12-35` | 现状 daily 恒注入 | 不跟：本项目 daily 已按天分片 + 4000 截断，且 manifest 可关 |
+| Skills 只注目录（name+位置，不注全文） | `src/agents/system-prompt-skills.ts:15-36` | Phase 4 计划（docs/20 P4） | 未实施 |
+| 每 agent 独立 workspace 目录（天然隔离） | `src/agents/agent-scope-config.ts:468-492` | 「文件夹即 bot」本来就如此 | 互相印证，非借鉴 |

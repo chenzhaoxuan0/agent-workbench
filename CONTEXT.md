@@ -26,6 +26,32 @@ _Avoid_: 导入（暗示复制或迁移数据）、挂载
 新建流中文件夹位置的默认落位：统一落在默认根下的新目录，用户不动输入框即得、可改可指位。不新增第二条存储通道。
 _Avoid_: 无根 bot（没有 bot 真的没有根）、虚拟 bot
 
+### 上下文与记忆
+
+**上下文清单（Context Manifest）**:
+每个 bot 一份的注入决策清单，住在 bot.json（`contextManifest` 节）：AGENTS.md 三态 + SOUL / USER / 记忆各柱 / 技能的开环。新建 bot 默认全关；权威在 daemon，startSession 时自读，渠道会话与工作台会话据此天然一致。前端传参只是显式覆盖（`/mem`），不是真相源。
+_Avoid_: 注入配置（只是其中一部分）、记忆开关（旧概念，原先存在前端全局态，已退役）
+
+**人设文件（SOUL.md）**:
+bot 的人格与主动行为提示词，正文住在单元根目录（与 AGENTS.md 同构：文件即数据库）。由用户维护，注入为只读块。
+_Avoid_: persona（旧字段名，内容已迁移，字段废弃中）、角色卡
+
+**用户文件（USER.md）**:
+关于「人」的全局 evergreen 层（作息、偏好、说话风格、常用环境），住在工作台集中存储家（`<homeDir>/USER.md`），所有 bot 之上共享、逐 bot 开关。对外渠道 bot 默认不注入。
+_Avoid_: 个人资料、全局记忆（它不随项目走，也不被 bot 改写）
+
+**裸跑（Bare-run）**:
+某 bot 的 manifest 全关（零注入）的运行状态。是合法状态而非错误，UI 必须显式标出——默认全关的哲学需要可见性兜底。
+_Avoid_: 空配置、未配置（暗示缺了东西）
+
+**原生读取（Native Read）**:
+执行器在 cwd 下自己发现并加载项目上下文文件的能力（adapter 以 `nativeContextFiles` 声明）。已声明原生读取 AGENTS.md 的执行器，工作台不再注入同一文件——防双注；未声明者由工作台注入兜底。
+_Avoid_: 自动读取（没说清是谁在读）、内置记忆（那是执行器自己的记忆体系，工作台不碰）
+
+**注入（Context Injection）**:
+startSession 时把 manifest 选中的上下文文件拼成 prefix block 加在首条用户消息前的动作。冻结快照语义：只注一次，续聊不重复（保 LLM 前缀缓存）；manifest 变更只影响下一个新会话。
+_Avoid_: 预加载、system prompt 拼接（实现细节，且多数执行器收不到工作台的 system prompt）
+
 ### 任务体系
 
 **待办（Backlog Item）**:

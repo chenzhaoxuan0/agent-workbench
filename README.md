@@ -6,7 +6,9 @@
 
 内置终端直接驱动各家 CLI（TUI 交互或 headless 驱动均可），每个 bot 绑定自己的
 默认执行器与模型；支持飞书/Telegram 渠道接入、定时自动化、待办（GTD：空闲心跳
-提议 + 确认门 + 验收闭环）、记忆系统、出图工作台，以及多执行器统一的
+提议 + 确认门 + 验收闭环）、**上下文清单**（每 bot 一份注入矩阵：SOUL.md /
+USER.md / MEMORY.md / 技能目录默认全关、按需打开，AGENTS.md 三态防双注——见
+[docs/20](docs/20-context-manifest.md)）、记忆系统、出图工作台，以及多执行器统一的
 浏览器控制（playwright-mcp 扇出）与电脑控制（总闸 + 急停）。
 以 [MIT](LICENSE) 协议开源。
 
@@ -169,7 +171,7 @@ agent-workbench/
 | **anthropic-quickstarts**（Anthropic） | MIT | computer-use-demo 的动作集与「截图 → 坐标动作」范式 → `computer_*` 12 工具形状（任何视觉模型开箱会用） |
 | **cherry-studio** | GPL | **只看思路未抄码**：dsh SDK 进程内嵌形态的对比参照，最终选了 ACP；借鉴「resume token 事件化」 |
 | **VS Code** | MIT | 终端集成模式（terminalInstance / xtermTerminal 的会话持久化与分屏） |
-| **OpenClaw**（OpenClaw Foundation） | MIT | 渠道插件抽象（ChannelPlugin）与渠道编排 |
+| **OpenClaw**（OpenClaw Foundation） | MIT | 渠道插件抽象（ChannelPlugin）与渠道编排；上下文文件词汇表（SOUL/USER/MEMORY 与提示内顺序）及防双注机制的反例参照 → 上下文清单（ADR 0014，docs/05 §十六） |
 | **GrokBot / Meta Muse** | 闭源 | 侧栏彩色 blob 头像、时间线思考折叠与工具卡片、行结构与相对时间 —— **仅视觉与交互参照，未复制任何代码或资产** |
 | **WeKnora**（Tencent） | MIT（含第三方组件声明） | 记忆后端渠道之一（知识库 listKb / saveFact / search 客户端为自写实现） |
 | **termux-app**（Termux） | GPL-3.0 | **仅参考形式未抄源码**：移动端终端虚拟辅助按键栏的布局形式（上下左右与 Home/End/PgUp/PgDn 经典方向导航集群，Esc/Tab/Ctrl/Alt 控制键阵列与修饰键交互形态）。因 Termux 采用 GPL-3.0 协议而本项目为 MIT 协议，严守开源许可证边界，本项目未复制或使用 Termux 仓库的任何源码与资产，仅借鉴其按键排列形式与交互体验，在 React / Web 前端全自研独立实现（落点：`prototype/src/ui/mobile/MobileVirtualKeyBar.tsx`）。 |
