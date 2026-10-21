@@ -28,13 +28,21 @@ export type {
 export { FULL_CAPABILITIES } from "../../prototype/src/core/adapter.ts";
 
 export type {
+  ContextManifest,
   ModelId,
   RuntimeId,
   Session,
   SessionId,
   SessionStatus,
+  SkillBinding,
   UnitId,
   WorkUnit,
+} from "../../prototype/src/core/units.ts";
+export {
+  LEGACY_CONTEXT_MANIFEST,
+  normalizeContextManifest,
+  normalizeSkillBinding,
+  resolveAgentsMdInjection,
 } from "../../prototype/src/core/units.ts";
 
 export type {

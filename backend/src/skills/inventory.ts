@@ -258,6 +258,45 @@ export interface ToggleResult {
 }
 
 /**
+ * 每 bot 技能目录的枚举（ADR 0014 D8 / docs/20 P4）——供上下文注入器做
+ * openclaw 式「目录注入」（name + 路径，不注 SKILL.md 全文，agent 按需读）。
+ *
+ * 口径：全部技能源（用户级 + 该 rootPath 的项目级）里**启用中**（不在 .disabled/）
+ * 的技能；跨源同 dirName 去重（先见先得，用户级在前）。绑定名单过滤在注入器做，
+ * 这里给全量——调用方还要拿它做「名单里但已找不到」的差异提示。
+ */
+export interface CatalogSkillEntry {
+  /** 技能文件夹名（绑定名单的匹配键，跨源稳定） */
+  readonly dirName: string;
+  /** 展示名（frontmatter name，缺省同 dirName） */
+  readonly name: string;
+  /** SKILL.md 所在目录的绝对路径（注入给 agent 的「去哪读」） */
+  readonly path: string;
+}
+
+export function listCatalogSkills(rootPath: string | undefined): CatalogSkillEntry[] {
+  const out: CatalogSkillEntry[] = [];
+  const seen = new Set<string>();
+  // 项目级源先于用户级（预算截断时最相关的先活下来——这台机器实测用户级
+  // 公共库有 400+ 技能，先用户级的话项目级必被截掉，恰好是最不该丢的那批）。
+  const ordered = [...sourceDefs(rootPath)].sort((a, b) => scopeRank(b.scope) - scopeRank(a.scope));
+  for (const def of ordered) {
+    for (const skill of listSkills(def.dir)) {
+      if (skill.disabled) continue; // 已停用的技能对所有 bot 都不可见（全局层先过滤）
+      if (seen.has(skill.dirName)) continue; // 跨源同名：先见先得（项目级胜出）
+      seen.add(skill.dirName);
+      // 单技能形态（SKILL.md 直挂源目录）：技能目录就是源目录本身
+      out.push({ dirName: skill.dirName, name: skill.name, path: skill.singleForm === true ? def.dir : join(def.dir, skill.dirName) });
+    }
+  }
+  return out;
+}
+
+function scopeRank(scope: "user" | "project" | "plugin"): number {
+  return scope === "project" ? 2 : scope === "user" ? 1 : 0;
+}
+
+/**
  * 停用/恢复一个技能：在**已知技能源内部**做文件夹搬运。
  *
  * 冲突语义（rename 在 Windows 上目标存在即失败，正好是我们的检测器）：

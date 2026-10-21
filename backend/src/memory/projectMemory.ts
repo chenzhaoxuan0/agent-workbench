@@ -43,6 +43,23 @@ export const STANDING_TEMPLATE = [
 
 export const STANDING_CHAR_LIMIT = 1000;
 
+/**
+ * SOUL.md / USER.md 的注入上限（ADR 0014 D5）。超限在注入侧走 truncateToBudget
+ * （保留首尾 + 显式截断标记）；USER.md 的写路径另有硬拒绝（见 writeUserFile）。
+ */
+export const SOUL_CHAR_LIMIT = 2000;
+export const USER_CHAR_LIMIT = 2000;
+
+/** 首次创建 USER.md 时的模板头（<homeDir>/USER.md，关于「人」的全局层）。 */
+export const USER_TEMPLATE = [
+  "# 关于我",
+  "",
+  "<!-- workbench · USER.md · 关于用户本人的常驻信息（作息、偏好、说话风格、常用环境）· 逐 bot 开关注入 · 改动前自动备份 -->",
+  "",
+  "- （把希望每个 bot 都知道的用户级事实写在这里。每行一条。）",
+  "",
+].join("\n");
+
 /** 备份保留份数。超出后按时间淘汰最旧的。 */
 export const BACKUP_KEEP = 20;
 
@@ -115,6 +132,56 @@ export async function readDaily(rootPath: string, date: string): Promise<MemoryF
   return readFileAt(path.join(p.dailyDir, `${date}.md`), Number.POSITIVE_INFINITY);
 }
 
+// ---- SOUL / USER（ADR 0014 D5）----
+
+/**
+ * AGENTS.md 兜底注入的截断上限（ADR 0014 D4）：只在执行器未声明原生读取、
+ * auto 判定需要工作台注入时才走这条路；原生读取的执行器完全不碰。
+ * 读的是根目录规范文件名（自定义 sourcePath 指针不跟随——那是给人看的落点）。
+ */
+export const AGENTS_INJECT_CHAR_LIMIT = 12000;
+
+export async function readAgentsMd(rootPath: string): Promise<MemoryFile> {
+  return readFileAt(path.join(rootPath, "AGENTS.md"), AGENTS_INJECT_CHAR_LIMIT);
+}
+
+/** <rootPath>/SOUL.md：人设，用户/设置页维护（bot.put 落盘），注入器只读。 */
+export function soulMdPath(rootPath: string): string {
+  return path.join(rootPath, "SOUL.md");
+}
+
+export async function readSoul(rootPath: string): Promise<MemoryFile> {
+  return readFileAt(soulMdPath(rootPath), SOUL_CHAR_LIMIT);
+}
+
+/** <homeDir>/USER.md：关于「人」的全局 evergreen 层，逐 bot 开关注入。 */
+export function userMdPath(homeDir: string): string {
+  return path.join(homeDir, "USER.md");
+}
+
+export async function readUser(homeDir: string): Promise<MemoryFile> {
+  return readFileAt(userMdPath(homeDir), USER_CHAR_LIMIT);
+}
+
+/** USER.md 备份分目录的 scopeKey（全局层没有 rootPath，用固定键派生稳定短 id）。 */
+const USER_SCOPE_KEY = "user-global";
+
+/**
+ * 覆盖写 USER.md：与 writeLongTerm 同一纪律——查容量 → 备份 → 原子写，
+ * 超限抛错且磁盘不发生任何变化。备份进 <homeDir>/backups/<user-scope>/。
+ */
+export async function writeUser(homeDir: string, content: string): Promise<WriteResult> {
+  const file = userMdPath(homeDir);
+  const current = await readFileAt(file, USER_CHAR_LIMIT);
+  const cap = checkCapacity(current.content, content, USER_CHAR_LIMIT);
+  if (!cap.ok) throw buildOverLimitError(current.content, content, USER_CHAR_LIMIT);
+
+  const backupPath = await backup(USER_SCOPE_KEY, file, current.content, homeDir);
+  await atomicWrite(file, content);
+  log.info("user context written", { chars: cap.used, limit: cap.limit, nearLimit: cap.nearLimit });
+  return { path: file, chars: cap.used, limit: cap.limit, backupPath, nearLimit: cap.nearLimit };
+}
+
 export async function listDaily(rootPath: string): Promise<string[]> {
   const p = resolvePaths(rootPath);
   try {
@@ -158,7 +225,7 @@ export async function writeLongTerm(
   if (!cap.ok) throw buildOverLimitError(current.content, content);
 
   await ensureLayout(rootPath);
-  const backupPath = await backup(rootPath, p.memoryMd, current.content, opts.homeDir);
+  const backupPath = await backup(scopeId(rootPath), p.memoryMd, current.content, opts.homeDir);
   await atomicWrite(p.memoryMd, content);
 
   log.info("project memory written", {
@@ -189,7 +256,7 @@ export async function writeDaily(
   const current = await readFileAt(file, Number.POSITIVE_INFINITY);
 
   await ensureLayout(rootPath);
-  const backupPath = await backup(rootPath, file, current.content, opts.homeDir);
+  const backupPath = await backup(scopeId(rootPath), file, current.content, opts.homeDir);
   await atomicWrite(file, content);
 
   return { path: file, chars: measure(content), limit: Number.POSITIVE_INFINITY, backupPath, nearLimit: false };
@@ -231,9 +298,9 @@ async function atomicWrite(file: string, content: string): Promise<void> {
   }
 }
 
-/** 写前备份到 homeDir/backups/<scopeId>/，按时间淘汰超出份数的旧备份。 */
+/** 写前备份到 homeDir/backups/<scopeKey>/，按时间淘汰超出份数的旧备份。 */
 async function backup(
-  rootPath: string,
+  scopeKey: string,
   file: string,
   currentContent: string,
   homeDir: string,
@@ -241,7 +308,7 @@ async function backup(
   // 文件还不存在（首次创建）→ 没有可备份的内容
   if (currentContent.trim() === "") return null;
 
-  const dir = path.join(homeDir, "backups", scopeId(rootPath));
+  const dir = path.join(homeDir, "backups", scopeKey);
   await mkdir(dir, { recursive: true });
 
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");

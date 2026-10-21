@@ -16,12 +16,15 @@ import path from "node:path";
 import type { Store } from "../store/db.ts";
 import { log } from "../log.ts";
 import { inspectDirectory, appendGitignore, type InspectReport } from "./inspect.ts";
+import { normalizeContextManifest } from "../../../prototype/src/core/units.ts";
 
 const ROOTS_KEY = "bot_roots";
 const BOT_DIR = ".agent-workbench";
 const BOT_FILE = "bot.json";
 /** 岗位说明书的规范文件名（相对 rootPath）。bot.json 只存指针，内容住这个文件。 */
 const AGENTS_FILE = "AGENTS.md";
+/** 人设的规范文件名（ADR 0014 D5，与 AGENTS.md 同构：正文住文件，bot.json 不留副本）。 */
+const SOUL_FILE = "SOUL.md";
 
 /**
  * 最小占位 AGENTS.md（ADR 0011：AGENTS.md 从必填降级为可选增强）。
@@ -57,6 +60,8 @@ export interface BotMeta {
   updatedAt: number;
   /** null = 定义里既无 sourcePath 也无内联 agentsMd（纯身份 bot） */
   agentsMd: AgentsFileMeta | null;
+  /** null = 没有 SOUL.md（裸 bot，人设未建）。ADR 0014。 */
+  soulMd: AgentsFileMeta | null;
   /** 内联残留：老 bot.json 把正文塞在 agentsMd 字段里，尚未落盘为文件 */
   inlineAgentsMd: boolean;
 }
@@ -65,15 +70,18 @@ export interface BotMeta {
 export class BotConflictError extends Error {
   readonly code = "conflict";
   /** 随 error.data 过线，前端据此指名是哪个文件变了 */
-  readonly data: { reason: "revision" | "agents_md"; current: { revision: number; agentsMd: AgentsFileMeta | null } };
+  readonly data: {
+    reason: "revision" | "agents_md" | "soul_md";
+    current: { revision: number; agentsMd: AgentsFileMeta | null; soulMd: AgentsFileMeta | null };
+  };
   constructor(
     readonly unitId: string,
-    reason: "revision" | "agents_md",
-    current: { revision: number; agentsMd: AgentsFileMeta | null },
+    reason: "revision" | "agents_md" | "soul_md",
+    current: { revision: number; agentsMd: AgentsFileMeta | null; soulMd?: AgentsFileMeta | null },
   ) {
     super(`bot ${unitId}: ${reason} changed on disk since it was read`);
     this.name = "BotConflictError";
-    this.data = { reason, current };
+    this.data = { reason, current: { ...current, soulMd: current.soulMd ?? null } };
   }
 }
 
@@ -171,7 +179,7 @@ export class BotRegistry {
    */
   async putBot(
     unit: BotDefinition,
-    opts: { ifRevision?: number; ifAgentsMdHash?: string; createRoot?: boolean } = {},
+    opts: { ifRevision?: number; ifAgentsMdHash?: string; ifSoulMdHash?: string; createRoot?: boolean } = {},
   ): Promise<{ path: string; revision: number }> {
     if (typeof unit.id !== "string" || unit.id === "") throw Object.assign(new Error("bot.id required"), { code: "bad_params" });
     if (typeof unit.rootPath !== "string" || unit.rootPath === "") throw Object.assign(new Error("bot.rootPath required"), { code: "bad_params" });
@@ -211,12 +219,17 @@ export class BotRegistry {
     const currentRevision = typeof prev?.revision === "number" ? prev.revision : 0;
     const agentsAbs = path.join(root, AGENTS_FILE);
     const currentAgents = await readAgentsMeta(agentsAbs, AGENTS_FILE);
+    const soulAbs = path.join(root, SOUL_FILE);
+    const currentSoul = await readAgentsMeta(soulAbs, SOUL_FILE);
 
     if (opts.ifRevision !== undefined && opts.ifRevision !== currentRevision) {
-      throw new BotConflictError(unit.id, "revision", { revision: currentRevision, agentsMd: currentAgents });
+      throw new BotConflictError(unit.id, "revision", { revision: currentRevision, agentsMd: currentAgents, soulMd: currentSoul });
     }
     if (opts.ifAgentsMdHash !== undefined && opts.ifAgentsMdHash !== (currentAgents?.hash ?? "")) {
-      throw new BotConflictError(unit.id, "agents_md", { revision: currentRevision, agentsMd: currentAgents });
+      throw new BotConflictError(unit.id, "agents_md", { revision: currentRevision, agentsMd: currentAgents, soulMd: currentSoul });
+    }
+    if (opts.ifSoulMdHash !== undefined && opts.ifSoulMdHash !== (currentSoul?.hash ?? "")) {
+      throw new BotConflictError(unit.id, "soul_md", { revision: currentRevision, agentsMd: currentAgents, soulMd: currentSoul });
     }
 
     // 1) 岗位说明书落盘（原子：先写 .tmp 再 rename，避免半截文件被 listBots 读到）
@@ -250,10 +263,43 @@ export class BotRegistry {
       agentsRel = sourcePathOf(prev ?? unit) ?? (currentAgents !== null ? AGENTS_FILE : "");
     }
 
-    // 2) 组装 bot.json：去掉 agentsMd 正文，换成 sourcePath 指针 + 自增版本
+    // 1.5) 人设落盘（ADR 0014 D5）：unit.soulMd 正文 → <rootPath>/SOUL.md，原子写。
+    // 与 AGENTS.md 同一套取舍：空正文但盘上已有文件不碰（局部更新不许顺手清掉）；
+    // 老定义的 identity.persona 首次保存时物化为 SOUL.md（迁移一次性完成，
+    // 之后 persona 字段从 bot.json 剥离）。
+    const writeSoulAtomic = async (content: string): Promise<void> => {
+      const tmp = `${soulAbs}.tmp`;
+      await writeFile(tmp, content, "utf8");
+      await rename(tmp, soulAbs);
+    };
+    const legacyPersona = typeof (unit.identity as { persona?: unknown } | undefined)?.persona === "string"
+      ? String((unit.identity as { persona?: string }).persona)
+      : "";
+    let soulWritten = false;
+    const nextSoul = typeof unit.soulMd === "string" ? unit.soulMd : "";
+    if (nextSoul.trim() !== "") {
+      await writeSoulAtomic(nextSoul);
+      soulWritten = true;
+    } else if (currentSoul === null && legacyPersona.trim() !== "") {
+      await writeSoulAtomic(legacyPersona);
+      soulWritten = true;
+      log.info("persona materialized into SOUL.md", { root });
+    }
+
+    // 2) 组装 bot.json：去掉 agentsMd/soulMd 正文与派生 $meta，换成 sourcePath 指针 + 自增版本
     const out: BotDefinition = { ...unit };
     delete out.agentsMd;
+    delete out.soulMd;
+    delete out.$meta;
     delete out.updatedAt;
+    // persona 已物化（或盘上本来就有 SOUL.md）→ 从定义里剥离，bot.json 不再携带
+    if (soulWritten || currentSoul !== null) {
+      const identity = (out.identity ?? {}) as Record<string, unknown>;
+      if ("persona" in identity) {
+        const { persona: _drop, ...rest } = identity;
+        out.identity = rest;
+      }
+    }
     if (agentsRel !== "") {
       const identity = (out.identity ?? {}) as Record<string, unknown>;
       out.identity = { ...identity, sourcePath: agentsRel };
@@ -371,10 +417,35 @@ export class BotRegistry {
       out.agentsMd = def.agentsMd; // 内联残留，原样带回
     }
 
+    // SOUL.md hydrate（ADR 0014 D5）：文件优先；老定义的 identity.persona 以 soulMd
+    // 兜底展示（$meta.soulMd = null 表示文件还没建，首次保存即物化为 SOUL.md）。
+    let soulMd: AgentsFileMeta | null = null;
+    if (root !== "") {
+      const soulAbs = path.resolve(root, SOUL_FILE);
+      soulMd = await readAgentsMeta(soulAbs, SOUL_FILE);
+      if (soulMd !== null) {
+        try {
+          out.soulMd = await readFile(soulAbs, "utf8");
+        } catch {
+          soulMd = null;
+          delete out.soulMd;
+        }
+      } else {
+        delete out.soulMd;
+        const persona = (def.identity as { persona?: unknown } | undefined)?.persona;
+        if (typeof persona === "string" && persona.trim() !== "") out.soulMd = persona;
+      }
+    }
+
+    // 上下文清单读时归一（ADR 0014）：整节缺失/畸形 = 存量语义（LEGACY），
+    // 字段级缺失 = 显式 false。归一值随下次保存自然落盘。
+    out.contextManifest = normalizeContextManifest(def.contextManifest);
+
     const meta: BotMeta = {
       revision: typeof def.revision === "number" ? def.revision : 0,
       updatedAt: typeof def.updatedAt === "number" ? def.updatedAt : 0,
       agentsMd,
+      soulMd,
       inlineAgentsMd: rel === null && inline,
     };
     out.$meta = meta;

@@ -177,6 +177,9 @@ export class PiAdapter implements ExecutorAdapter {
   readonly id = "pi";
   readonly displayName = "Pi";
   readonly glyph = "π";
+  // 原生读取 cwd 下的 AGENTS.md（本地克隆源码 coding-agent/src/core/resource-loader.ts:185
+  // 候选清单 AGENTS.override.md/AGENTS.md/CLAUDE.md，--no-context-files 可关）
+  readonly nativeContextFiles = ["AGENTS.md"];
   private _models: ExecutorModelInfo[] = [...DEFAULT_PI_MODELS];
   get models(): readonly ExecutorModelInfo[] {
     return this._models;

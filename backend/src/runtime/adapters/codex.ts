@@ -329,6 +329,8 @@ export class CodexAdapter implements ExecutorAdapter {
   readonly id = "codex";
   readonly displayName = "Codex";
   readonly glyph = "C";
+  // 原生读取 cwd 下的 AGENTS.md（官方文档明确；openclaw 的 codex 适配层也据此排除注入）
+  readonly nativeContextFiles = ["AGENTS.md"];
   private _models: ExecutorModelInfo[] = [...DEFAULT_CODEX_MODELS];
   get models(): readonly ExecutorModelInfo[] {
     return this._models;

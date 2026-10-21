@@ -74,7 +74,7 @@ import {
 } from "../../prototype/src/core/automation.ts";
 import { MemoryService } from "./memory/memory.ts";
 import { FileMemoryInjector } from "./memory/injection.ts";
-import { readLongTerm, writeLongTerm, readDaily, listDaily } from "./memory/projectMemory.ts";
+import { readLongTerm, writeLongTerm, readDaily, listDaily, readUser, writeUser } from "./memory/projectMemory.ts";
 import {
   readAppearance,
   writeAppearance,
@@ -112,7 +112,7 @@ import { CredentialVault } from "./credentials/vault.ts";
 import { getNetworkInterfaces } from "./network.ts";
 import { TunnelManager } from "./tunnel/manager.ts";
 import { askBot } from "./channels/askBot.ts";
-import { asModelId, asSessionId, asUnitId } from "../../prototype/src/core/units.ts";
+import { asModelId, asSessionId, asUnitId, normalizeContextManifest, normalizeSkillBinding } from "../../prototype/src/core/units.ts";
 
 const startedAt = Date.now();
 const config = loadConfig();
@@ -273,7 +273,7 @@ const host = new RuntimeHost((event, seq) => {
     // 待办（GTD）执行的终态回灌 —— 引擎内部按 sessionId 映射判归属，与自动化互不干扰
     backlogEngine?.onSessionEnded(event.sessionId, event.reason);
   }
-}, traceSink, config.homeDir, store, gate, new FileMemoryInjector());
+}, traceSink, config.homeDir, store, gate, new FileMemoryInjector(config.homeDir));
 memoryScheduler = new MemoryScheduler({
   homeDir: config.homeDir,
   store,
@@ -2284,6 +2284,17 @@ registerMethod("memory.project.daily", (params) => {
   return listDaily(p.rootPath);
 });
 
+// ---- USER.md 全局层（ADR 0014 D5）：关于「人」的 evergreen 文件，逐 bot 开关注入 ----
+
+registerMethod("context.user.read", () => readUser(config.homeDir));
+registerMethod("context.user.write", (params) => {
+  const p = (params ?? {}) as { content?: string };
+  if (typeof p.content !== "string") {
+    throw Object.assign(new Error("content is required"), { code: "bad_params" });
+  }
+  return writeUser(config.homeDir, p.content);
+});
+
 /** 后台守护引擎配置获取与更新 */
 registerMethod("memory.guardian.get", () => {
   return getGuardianConfig(store);
@@ -2434,15 +2445,18 @@ registerMethod("bot.put", (params) => {
     unit?: Record<string, unknown>;
     ifRevision?: number;
     ifAgentsMdHash?: string;
+    /** SOUL.md 内容 hash 乐观锁（ADR 0014 D5，与 ifAgentsMdHash 同构） */
+    ifSoulMdHash?: string;
     /** 自动安置（ADR 0011）：rootPath 不存在时幂等创建。只给新建流用。 */
     createRoot?: boolean;
   };
   if (p.unit === undefined || typeof p.unit !== "object") {
     throw Object.assign(new Error("unit is required"), { code: "bad_params" });
   }
-  const opts: { ifRevision?: number; ifAgentsMdHash?: string; createRoot?: boolean } = {};
+  const opts: { ifRevision?: number; ifAgentsMdHash?: string; ifSoulMdHash?: string; createRoot?: boolean } = {};
   if (typeof p.ifRevision === "number") opts.ifRevision = p.ifRevision;
   if (typeof p.ifAgentsMdHash === "string") opts.ifAgentsMdHash = p.ifAgentsMdHash;
+  if (typeof p.ifSoulMdHash === "string") opts.ifSoulMdHash = p.ifSoulMdHash;
   if (p.createRoot === true) opts.createRoot = true;
   return botRegistry.putBot(p.unit, opts);
 });
@@ -3084,7 +3098,7 @@ registerMethod("computerControl.actions", (params) => {
   return { actions: controlActions(afterSeq).filter((a) => a.domain === "computer") };
 });
 
-registerMethod("session.start", (params) => {
+registerMethod("session.start", async (params) => {
   // params 在协议里是可选的（wsd 的信封声明 params?: unknown）——
   // 缺了要当 bad_params 报，不能 `params as {...}` 后直接读属性（TypeError → internal）
   const p = (params ?? {}) as {
@@ -3144,6 +3158,10 @@ registerMethod("session.start", (params) => {
   ) {
     throw Object.assign(new Error("fork requires ofSessionId, anchorMessageId and kind=branch|revision"), { code: "bad_params" });
   }
+  // ADR 0014：注入清单的权威在 bot.json——这里从注册表带出归一后的 manifest 给
+  // host（host 不认识注册表）。扫不到定义（外部根/测试路径）= 不带，注入器退回
+  // legacy 行为。前端**不再**传全局 scopes 作为真相源；memoryOptions 只做 /mem 覆盖。
+  const botDef = await botRegistry.getBot(p.unitId);
   return host.startSession({
     runtimeId: p.runtimeId,
     unitId: asUnitId(p.unitId),
@@ -3171,6 +3189,9 @@ registerMethod("session.start", (params) => {
         : undefined,
     worktree,
     memoryOptions: p.memoryOptions,
+    // 再归一一次：合成 bot（steward/heartbeat）的定义可能没走 registry 的 hydrate
+    contextManifest: botDef === undefined ? undefined : normalizeContextManifest(botDef.contextManifest),
+    skillsBinding: botDef === undefined ? undefined : normalizeSkillBinding(botDef.skills),
   });
 });
 registerMethod("session.send", (params) => {

@@ -203,6 +203,16 @@ export interface ExecutorAdapter {
   readonly models: readonly ExecutorModelInfo[];
   readonly capabilities: RuntimeCapabilities;
   /**
+   * 该执行器在 cwd 下**原生读取**的项目上下文文件名（规范大写，如 "AGENTS.md"）。
+   * ADR 0014 D4 —— 唯一的防双注注册表（openclaw 把这件事硬编码在每个适配层里，
+   * 这里做成声明式能力位）。host 的注入计划据此判定：声明了 AGENTS.md 的执行器
+   * 不再由工作台注入同一文件（原生读取每轮新鲜，优于冻结快照）。
+   *
+   * **只标注验证过的**：不确定的执行器不标（auto 语义 = 未声明 → 工作台注入兜底，
+   * 宁双注勿漏注）。核对清单见 docs/20 P2-4。
+   */
+  readonly nativeContextFiles?: readonly string[];
+  /**
    * 动态对齐/刷新模型清单与上下文参数（支持的 CLI 会实时查询，失败时保留 fallback）。
    *
    * ## 零用量硬约束

@@ -6,8 +6,8 @@
  */
 
 import type { BotDefinition } from "../bots/registry.ts";
-import type { RuntimeHost, MemoryInjectorOptions } from "../runtime/host.ts";
-import { asModelId, asSessionId, asUnitId, type SessionId, type SessionSource } from "../../../prototype/src/core/units.ts";
+import type { RuntimeHost, ContextInjectorOptions } from "../runtime/host.ts";
+import { asModelId, asSessionId, asUnitId, normalizeContextManifest, normalizeSkillBinding, type SessionId, type SessionSource } from "../../../prototype/src/core/units.ts";
 import type { ModelId } from "../contract.ts";
 import { log } from "../log.ts";
 
@@ -42,7 +42,7 @@ export async function runBotTurn(
      * 裁决。只作用于**新会话**；续聊沿用该会话创建时的裁决方式。
      */
     interactive?: boolean;
-    memoryOptions?: MemoryInjectorOptions;
+    memoryOptions?: ContextInjectorOptions;
     /**
      * 轮次一开始（sessionId 一拿到）就回调 —— **不等这一轮跑完**。
      *
@@ -84,10 +84,9 @@ export async function runBotTurn(
   }
   if (sessionId === null) {
     sinceSeq = 0; // 新会话 seq 从 1 重新起算，旧游标必须作废
-    const declaredScopes = Array.isArray(bot["memoryScopes"])
-      ? (bot["memoryScopes"] as readonly ("semantic" | "daily" | "procedural")[])
-      : undefined;
-    const memOpts = opts.memoryOptions ?? (declaredScopes ? { scopes: declaredScopes } : undefined);
+    // ADR 0014：注入清单权威在 bot.json——渠道会话与工作台会话同一份 manifest
+    //（这正是「权威在 daemon」要修的旧缺陷：渠道会话吃不到用户在前端选的注入项）。
+    // memoryOptions 仅作显式覆盖通道保留。
     const s = await host.startSession({
       runtimeId,
       unitId: asUnitId(unitId),
@@ -99,7 +98,9 @@ export async function runBotTurn(
       // 来源标记：时间轴上据此显示「来自飞书 / 来自 webhook」徽标（docs/09 §六.2）
       source: opts.source ?? "workbench",
       interactive: opts.interactive ?? false,
-      memoryOptions: memOpts,
+      memoryOptions: opts.memoryOptions,
+      contextManifest: normalizeContextManifest(bot.contextManifest),
+      skillsBinding: normalizeSkillBinding(bot.skills),
       // 新会话路径：同样在 send 之前交出去（startSession 内部保证顺序）
       onSessionReady: opts.onTurnStart === undefined ? undefined : (sid) => opts.onTurnStart?.(sid),
     });
@@ -133,7 +134,7 @@ export async function askBot(
     mode?: "plan" | "build" | "edit" | "yolo";
     waitMs?: number;
     source?: SessionSource;
-    memoryOptions?: MemoryInjectorOptions;
+    memoryOptions?: ContextInjectorOptions;
   },
 ): Promise<BotTurnResult> {
   const bot = await registry.getBot(botId);

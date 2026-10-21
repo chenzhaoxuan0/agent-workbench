@@ -236,6 +236,8 @@ export class OpencodeAdapter implements ExecutorAdapter {
   readonly id = "opencode";
   readonly displayName = "OpenCode";
   readonly glyph = "O";
+  // 原生读取 cwd 下的 AGENTS.md（rules/AGENTS.md 层级加载，官方文档声明）
+  readonly nativeContextFiles = ["AGENTS.md"];
   private _models: ExecutorModelInfo[] = [...DEFAULT_OPENCODE_MODELS];
   get models(): readonly ExecutorModelInfo[] {
     return this._models;

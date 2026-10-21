@@ -986,6 +986,8 @@ export class ZcodeAdapter implements ExecutorAdapter {
   readonly id = "zcode";
   readonly displayName = "ZCode";
   readonly glyph = "Z";
+  // 原生读取 cwd 下的 AGENTS.md（工作区 agentsMd 机制，本产品自身的运行时即证据）
+  readonly nativeContextFiles = ["AGENTS.md"];
   private _models: ExecutorModelInfo[] = [
     {
       id: "GLM-5.3-Flash" as ModelId,

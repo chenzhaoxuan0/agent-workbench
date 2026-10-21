@@ -25,6 +25,7 @@ import type {
 import { adapterError } from "./adapters/types.ts";
 import type {
   ModelId,
+  ContextManifest,
   NativeCommandInfo,
   ProbeResult,
   RuntimeEvent,
@@ -32,9 +33,11 @@ import type {
   Session,
   SessionId,
   SessionStatus,
+  SkillBinding,
   TraceRecord,
   UnitId,
 } from "../contract.ts";
+import { normalizeContextManifest, normalizeSkillBinding, resolveAgentsMdInjection } from "../contract.ts";
 import { log } from "../log.ts";
 import { ensureWorktree } from "../git/repo.ts";
 import { asSessionId, type SessionSource } from "../../../prototype/src/core/units.ts";
@@ -76,6 +79,12 @@ export interface AdapterInfo {
    */
   readonly modelsCachedAt?: number;
   readonly capabilities: ExecutorAdapter["capabilities"];
+  /**
+   * 该执行器原生读取的 cwd 项目上下文文件（ADR 0014 D4 防双注注册表）。
+   * 缺省 = 未标注（视为不原生读，工作台注入兜底）。界面据此显示
+   * 「此执行器原生读取 AGENTS.md，无需注入」的徽标。
+   */
+  readonly nativeContextFiles?: readonly string[];
   /**
    * 这是**测试夹具**，不是真的 CLI 工具。
    *
@@ -256,8 +265,20 @@ export interface StartSessionInput {
    * （automation / webhook / mcp / 飞书 等无人可等的来源不变）。
    */
   readonly interactive?: boolean;
-  /** 记忆注入配置（可选指定 semantic / daily / procedural 作用域） */
-  readonly memoryOptions?: MemoryInjectorOptions;
+  /** 记忆注入配置（可选指定 semantic / daily / procedural 作用域——显式覆盖，如 /mem） */
+  readonly memoryOptions?: ContextInjectorOptions;
+  /**
+   * 上下文清单（ADR 0014）：调用方从 bot 注册表带来的该 bot 的 contextManifest。
+   * 权威在 bot.json——host 不认识注册表（依赖方向单一），auto 的防双注判定
+   * （执行器原生读取能力 × 三态）在 startSession 收口成注入矩阵。
+   * 缺省 = 调用方没有 bot 定义（mock/测试路径），注入器退回 legacy 行为。
+   */
+  readonly contextManifest?: ContextManifest;
+  /**
+   * 每 bot 技能绑定（ADR 0014 D8）：manifest.skills 打开时，注入目录按这份名单
+   * 过滤（"all" 或 dirName 数组）。同样由调用方从 bot 定义带来，host 不查注册表。
+   */
+  readonly skillsBinding?: SkillBinding;
   /**
    * 会话登记就绪、**首轮 prompt 还没发出去**的那一刻回调。
    *
@@ -290,7 +311,7 @@ function resolveModelFor(
 }
 
 /**
- * 记忆注入契约（docs/10 §4.2）。
+ * 上下文注入契约（docs/10 §4.2 + ADR 0014）。
  *
  * 刻意声明在 host 侧而不是从 memory 模块 import —— 依赖方向只能是
  * host ← memory 提供的实现，不能反过来。host 不该知道 MEMORY.md 是什么。
@@ -310,14 +331,28 @@ export interface InjectedPrompt {
   readonly injectedChars: number;
 }
 
-export interface MemoryInjectorOptions {
+/** 注入矩阵的布尔形态（三态与原生读取能力已在 host 收口，注入器只认结果） */
+export interface InjectPlan {
+  readonly agentsMd: boolean;
+  readonly soul: boolean;
+  readonly user: boolean;
+  readonly memorySemantic: boolean;
+  readonly memoryDaily: boolean;
+  readonly memoryStanding: boolean;
+  readonly skills: boolean;
+}
+
+export interface ContextInjectorOptions {
+  /** 注入矩阵。缺省 = 无 manifest 的调用方，注入器退回 legacy 行为 */
+  readonly plan?: InjectPlan;
+  /** 显式覆盖（/mem）：只替换记忆两柱 semantic/daily 的选择 */
   readonly scopes?: readonly ("semantic" | "daily" | "procedural")[];
   readonly dailyDate?: string;
   readonly dailyLimit?: number;
 }
 
-export interface MemoryInjector {
-  build(rootPath: string, userText: string, opts?: MemoryInjectorOptions): Promise<InjectedPrompt | null>;
+export interface ContextInjector {
+  build(rootPath: string, userText: string, opts?: ContextInjectorOptions): Promise<InjectedPrompt | null>;
 }
 
 export class RuntimeHost {
@@ -340,10 +375,10 @@ export class RuntimeHost {
     private readonly store: Store,
     private readonly gate: PermissionGate,
     /**
-     * 记忆注入器（docs/10 WP-3）。**可选**：不传 = 记忆系统关闭，
+     * 上下文注入器（docs/10 WP-3 + ADR 0014）。**可选**：不传 = 注入系统关闭，
      * 派发行为与引入记忆之前逐字节一致。所有既有冒烟因此不受影响。
      */
-    private readonly memory?: MemoryInjector,
+    private readonly injector?: ContextInjector,
   ) {
     // 同步读盘（文件很小，几 KB）。**必须**在构造函数里做完而不是懒加载：
     // daemon 启动**不再自动探测**（见 index.ts），界面的 adapter.list 很可能
@@ -699,6 +734,10 @@ export class RuntimeHost {
         // 同样躺在 modelCache 里，但那是新鲜结果，该让界面显示「· 实时」。
         ...(cached?.fromDisk === true ? { modelsCachedAt: cached.at } : {}),
         capabilities: a.capabilities,
+        // 防双注注册表（ADR 0014）：只在声明了才带这个键
+        ...(a.nativeContextFiles !== undefined && a.nativeContextFiles.length > 0
+          ? { nativeContextFiles: a.nativeContextFiles }
+          : {}),
         // 只在真标了的时候才带这个键，省得每个执行器都多一个 testOnly: undefined
         ...(a.testOnly === true ? { testOnly: true as const } : {}),
       };
@@ -1075,9 +1114,29 @@ export class RuntimeHost {
     // "/init" 这类原生命令变成一句普通文本 —— 命令就废了。命令是控制输入，不是内容。
     const isNativeCommand = input.prompt.startsWith("/");
     let injected: InjectedPrompt | null = null;
-    if (this.memory !== undefined && !isNativeCommand) {
+    if (this.injector !== undefined && !isNativeCommand) {
       try {
-        injected = await this.memory.build(rootPath, input.prompt, input.memoryOptions);
+        // ADR 0014：注入矩阵 = bot.json 的 contextManifest × 当前执行器的原生读取能力。
+        // manifest 由调用方从注册表带来；auto 的防双注判定在这里收口成布尔——
+        // 注入器只认结果，不认识三态。缺 manifest = 测试/mock 路径，退回 legacy。
+        const manifest =
+          input.contextManifest === undefined ? undefined : normalizeContextManifest(input.contextManifest);
+        const nativeAgents =
+          adapter.nativeContextFiles?.some((f) => f.toUpperCase() === "AGENTS.MD") ?? false;
+        const plan = manifest === undefined ? undefined : {
+          agentsMd: resolveAgentsMdInjection(manifest.agentsMd ?? "auto", nativeAgents),
+          soul: manifest.soul === true,
+          user: manifest.user === true,
+          memorySemantic: manifest.memorySemantic === true,
+          memoryDaily: manifest.memoryDaily === true,
+          memoryStanding: manifest.memoryStanding === true,
+          skills: manifest.skills === true,
+        };
+        injected = await this.injector.build(rootPath, input.prompt, {
+          ...input.memoryOptions,
+          plan,
+          ...(plan?.skills === true ? { skills: normalizeSkillBinding(input.skillsBinding) } : {}),
+        });
       } catch (err: unknown) {
         log.warn("memory injection skipped", {
           root: rootPath,

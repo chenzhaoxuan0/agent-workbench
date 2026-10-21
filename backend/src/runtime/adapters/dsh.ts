@@ -198,6 +198,9 @@ export class DshAdapter implements ExecutorAdapter {
   readonly id = "dsh";
   readonly displayName = "DeepSeek Harness";
   readonly glyph = "D";
+  // 原生读取 cwd 下的 AGENTS.md（其 e2e workspace-context 套件以 AGENTS.md 为默认
+  // instruction file candidate，见本地克隆 apps/cli/tests/.../workspace-context-resume）
+  readonly nativeContextFiles = ["AGENTS.md"];
   private _models: ExecutorModelInfo[] = [
     // DeepSeek Harness 官方长程架构（ACP 管道直连官方端点，支持 1M 上下文调度）
     {

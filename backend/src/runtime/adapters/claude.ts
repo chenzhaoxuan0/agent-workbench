@@ -292,6 +292,8 @@ export class ClaudeAdapter implements ExecutorAdapter {
   readonly id = "claude";
   readonly displayName = "Claude Code";
   readonly glyph = "C";
+  // Claude Code 兼读 cwd 下的 AGENTS.md（agents.md 标准，官方文档声明；版本不符以实测为准）
+  readonly nativeContextFiles = ["AGENTS.md"];
   private _models: ExecutorModelInfo[] = [
     {
       id: "sonnet" as ModelId,

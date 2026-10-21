@@ -134,6 +134,9 @@ export class GrokAdapter implements ExecutorAdapter {
   readonly id = "grok";
   readonly displayName = "Grok Build";
   readonly glyph = "G";
+  // 原生读取 cwd 下的 AGENTS.md（官方 docs.x.ai/build：「AGENTS.md, plugins, hooks,
+  // and MCP servers all work」，与 Claude Code 项目资产零配置兼容）
+  readonly nativeContextFiles = ["AGENTS.md"];
   private _models: ExecutorModelInfo[] = [...DEFAULT_GROK_MODELS];
   get models(): readonly ExecutorModelInfo[] {
     return this._models;

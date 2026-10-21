@@ -141,6 +141,8 @@ export class CursorAdapter implements ExecutorAdapter {
   readonly id = "cursor";
   readonly displayName = "Cursor Agent";
   readonly glyph = "C";
+  // 原生读取 cwd 下的 AGENTS.md（官方 Rules 文档：AGENTS.md 为 .cursor/rules 的简单替代，CLI 同规则系统）
+  readonly nativeContextFiles = ["AGENTS.md"];
   readonly tuiCommand = "cursor-agent";
 
   private dynamicModels: readonly ExecutorModelInfo[] | null = null;

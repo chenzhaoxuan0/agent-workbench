@@ -37,7 +37,12 @@ export interface WorkspaceIdentity {
   readonly role: string;
   /** 头像或 emoji */
   readonly avatar?: string;
-  /** 主动人格提示词 */
+  /**
+   * 主动人格提示词。
+   *
+   * @deprecated ADR 0014 D5：正文已物化为 <rootPath>/SOUL.md（文件即数据库，与
+   * AGENTS.md 同构），此字段只在保存时迁移、读时兼容一个版本。新代码请用 soulMd。
+   */
   readonly persona?: string;
   /** 来源文件路径（相对单元根目录） */
   readonly sourcePath: string;
@@ -136,6 +141,104 @@ export interface BotChannel {
   readonly config?: Readonly<Record<string, string>>;
 }
 
+// ---------------------------------------------------------------------------
+// 上下文清单（ADR 0014 / docs/20）
+// ---------------------------------------------------------------------------
+
+/**
+ * 每 bot 一份的注入决策清单，住在 bot.json 的 `contextManifest` 节。
+ *
+ * 定位立场：context 是显式资产、注入是显式决定——新建 bot 默认全关（裸跑），
+ * 存量 bot 读时归一为升级前行为（semantic + standing 注入）。权威在 daemon：
+ * host.startSession 从 bot 定义自读，渠道会话与工作台会话据此天然一致。
+ */
+export interface ContextManifest {
+  /**
+   * AGENTS.md 是唯一三态项。auto（默认）= 执行器声明原生读取则不注入（防双注），
+   * 未声明则注入兜底——宁双注勿漏注，岗位说明书静默丢失比浪费 token 严重（ADR 0014）。
+   */
+  readonly agentsMd?: "auto" | "on" | "off";
+  /** <rootPath>/SOUL.md 人设（用户维护，只读注入） */
+  readonly soul?: boolean;
+  /** <homeDir>/USER.md 关于「人」的全局层（对外渠道 bot 默认关） */
+  readonly user?: boolean;
+  /** MEMORY.md 长期事实 */
+  readonly memorySemantic?: boolean;
+  /** memory/daily/<今日>.md 当日精炼 */
+  readonly memoryDaily?: boolean;
+  /** STANDING.md 红线。唯一「存在即注入」倾向的项：默认关保护的是不被倾倒，不是不设防 */
+  readonly memoryStanding?: boolean;
+  /** 技能目录注入（Phase 4 接线，先占位） */
+  readonly skills?: boolean;
+}
+
+/**
+ * 存量 bot 的归一结果（bot.json 里没有 contextManifest 节 = 升级前就在跑）：
+ * 等价旧行为——semantic 默认注入 + STANDING 存在即注入，其余不注。
+ */
+export const LEGACY_CONTEXT_MANIFEST: ContextManifest = {
+  agentsMd: "auto",
+  memorySemantic: true,
+  memoryStanding: true,
+};
+
+/**
+ * 归一任何来源的 manifest（bot.json 原始 JSON / RPC 参数 / UI 草稿）。
+ *
+ * 两条规则刻意不同：
+ * - **整节缺失或畸形** → 存量语义（LEGACY）：手删整节回到升级前行为，不是全关。
+ * - **节存在但某字段缺** → 该字段 false（agentsMd 为 auto）：字段级缺省才是「显式全关」。
+ */
+export function normalizeContextManifest(raw: unknown): ContextManifest {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return LEGACY_CONTEXT_MANIFEST;
+  const m = raw as Partial<ContextManifest>;
+  return {
+    agentsMd: m.agentsMd === "on" || m.agentsMd === "off" ? m.agentsMd : "auto",
+    soul: m.soul === true,
+    user: m.user === true,
+    memorySemantic: m.memorySemantic === true,
+    memoryDaily: m.memoryDaily === true,
+    memoryStanding: m.memoryStanding === true,
+    skills: m.skills === true,
+  };
+}
+
+/**
+ * AGENTS.md 三态的最终判定（auto 在这里落地，host 注入前收口）。
+ * nativeReadsAgentsMd = 当前执行器是否声明原生读取 cwd 下的 AGENTS.md。
+ */
+export function resolveAgentsMdInjection(
+  mode: "auto" | "on" | "off",
+  nativeReadsAgentsMd: boolean,
+): boolean {
+  if (mode === "on") return true;
+  if (mode === "off") return false;
+  return !nativeReadsAgentsMd;
+}
+
+/**
+ * 每 bot 的技能绑定（ADR 0014 D8 / docs/20 P4）：名单制，住 bot.json 的 `skills` 节。
+ * 与全局停用（技能源内搬 `.disabled/`）是两层：绑定是**工作台层**的注入过滤，
+ * 不动文件系统；全局停用影响所有执行器，绑定只影响这个 bot 的注入目录。
+ */
+export interface SkillBinding {
+  /**
+   * "all"（缺省）= 注入清单包含全部启用中技能（受注入预算截断）；
+   * 字符串数组 = 名单制（按技能文件夹名 dirName 匹配，缺省名同目录名）。
+   */
+  readonly enabled: "all" | readonly string[];
+}
+
+/** 归一任何来源的技能绑定（bot.json 原始 JSON / RPC 参数 / UI 草稿） */
+export function normalizeSkillBinding(raw: unknown): SkillBinding {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return { enabled: "all" };
+  const enabled = (raw as { enabled?: unknown }).enabled;
+  if (Array.isArray(enabled) && enabled.every((x) => typeof x === "string" && x !== "")) {
+    return { enabled: enabled as readonly string[] };
+  }
+  return { enabled: "all" };
+}
+
 /** 运行时绑定：一个工作单元可以同时挂多个工具。 */
 export interface RuntimeBinding {
   readonly runtimeId: RuntimeId;
@@ -164,6 +267,28 @@ export interface WorkUnit {
   readonly avatar?: string;
   readonly schedule?: UnitSchedule;
   readonly bindings: readonly RuntimeBinding[];
+  /**
+   * 上下文清单（ADR 0014）：每 bot 一份的注入决策矩阵。daemon 读时归一
+   * （normalizeContextManifest），新建流写显式全关——权威在 bot.json。
+   */
+  readonly contextManifest?: ContextManifest;
+  /** 每 bot 技能绑定（ADR 0014 D8）：注入目录的名单过滤，不影响全局停用 */
+  readonly skills?: SkillBinding;
+  /**
+   * SOUL.md 的内容（ADR 0014 D5）。与 agentsMd 同构：不是副本的真相——真相在
+   * `<rootPath>/SOUL.md`，listBots 重扫盘时读回来填这里；设置页保存直接写同一个
+   * 文件。指针在、文件被删 → 空串 + UI 显示「文件缺失」。
+   */
+  readonly soulMd?: string;
+  /** SOUL.md 的当前状态（路径 + hash 乐观锁基线，与 agentsMdMeta 同构） */
+  readonly soulMdMeta?: {
+    readonly path: string;
+    readonly relPath: string;
+    /** sha256 前 16 hex；保存时与盘上比对，不符即报冲突 */
+    readonly hash: string;
+    readonly mtimeMs: number;
+    readonly bytes: number;
+  };
   /** AGENTS.md / SKILL.md / automations 继续可用，UI 只是渲染层 */
   readonly assets: {
     readonly agentFiles: readonly string[];

@@ -187,6 +187,8 @@ export class HermesAdapter implements ExecutorAdapter {
   readonly id = "hermes";
   readonly displayName = "Hermes Agent";
   readonly glyph = "H";
+  // 原生读取 cwd 祖先链的 AGENTS.md（本地克隆源码 agent/coding_context.py:38 _CONTEXT_FILES）
+  readonly nativeContextFiles = ["AGENTS.md"];
   private _models: ExecutorModelInfo[] = [...DEFAULT_HERMES_MODELS];
   get models(): readonly ExecutorModelInfo[] {
     return this._models;

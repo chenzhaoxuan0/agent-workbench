@@ -314,6 +314,8 @@ export class KimiAdapter implements ExecutorAdapter {
   readonly id = "kimi";
   readonly displayName = "Kimi Code";
   readonly glyph = "K";
+  // 原生读取 cwd 下的 AGENTS.md（官方文档 What's New：AGENTS.md 为配置面，改后 /reload 生效）
+  readonly nativeContextFiles = ["AGENTS.md"];
   private _models: ExecutorModelInfo[] = [...DEFAULT_KIMI_MODELS];
   get models(): readonly ExecutorModelInfo[] {
     return this._models;
