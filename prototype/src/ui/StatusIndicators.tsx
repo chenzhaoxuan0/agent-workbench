@@ -38,12 +38,11 @@ export function SessionLightLegendBadge({
     <div className="relative">
       <button
         onClick={() => setOpen((o) => !o)}
-        aria-label="查看会话列表指示灯说明"
-        title="会话列表指示灯说明：了解蓝灯呼吸、绿灯、浅蓝灯、红灯的含义与控制方式"
-        className="flex h-6 cursor-pointer items-center gap-1.5 rounded-btn px-2 text-caption text-graphite transition hover:bg-line-soft hover:text-ink"
+        aria-label="会话列表指示灯说明"
+        title="会话列表指示灯说明：点击了解蓝灯呼吸、绿灯、浅蓝灯、红灯的含义与控制方式"
+        className="flex h-6 w-6 cursor-pointer items-center justify-center rounded-btn text-graphite transition hover:bg-line-soft hover:text-ink"
       >
-        <HelpCircle size={12} className="text-ash" />
-        <span>会话灯说明</span>
+        <HelpCircle size={13} className="text-ash transition-colors hover:text-ink" />
       </button>
 
       {open && (
