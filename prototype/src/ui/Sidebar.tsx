@@ -13,6 +13,7 @@ import {
   GitBranch,
   History,
   ImagePlus,
+  Layers,
   ListTodo,
   MessageSquare,
   PanelLeftClose,
@@ -817,6 +818,15 @@ function UnitRow({
   const isEntryUnread = useHistoryPrefs((s) => s.isUnread);
   const setEntryOpenMode = useHistoryPrefs((s) => s.setEntryOpenMode);
   const togglePinned = useHistoryPrefs((s) => s.togglePinned);
+  /**
+   * 打开这个 bot 的上下文清单面板（ADR 0014）——徽标 / 右键菜单 / hover 操作条
+   * 三个入口共用。先切到该 bot：右栏 tab 按 owner 过滤可见，不切的话点别人的
+   * 徽标「开了却看不见」（SidePaneHome 跨单元历史的同一处理）。
+   */
+  const openContextTab = (): void => {
+    useWorkbench.getState().selectUnit(unit.id);
+    useSidePane.getState().openContext({ unitId: unit.id, unitName: unit.name });
+  };
   /** 会话实时状态（turn 进行中 = 呼吸灯的事实来源） */
   const sessions = useWorkbench((s) => s.sessions);
   const activeSessionId = useWorkbench((s) => s.activeSessionId);
@@ -980,6 +990,7 @@ function UnitRow({
                   ]
                 : []),
               { label: "历史详情", icon: History, onSelect: openHistoryTab },
+              { label: "上下文清单", icon: Layers, onSelect: openContextTab },
               { label: "设置", icon: Settings, onSelect: onOpenSettings },
               { label: "新建 TUI 会话", icon: SquareTerminal, onSelect: () => openNewTuiForUnit(unit) },
               { label: "新建会话", icon: Plus, onSelect: () => openNewChatForUnit(unit) },
@@ -988,7 +999,7 @@ function UnitRow({
         }
         aria-current={active}
         aria-expanded={historyOpen}
-        title={`${unit.name} —— 点击${historyOpen ? "收起" : "展开"}历史会话（右键：常驻 / 设置 / 新建会话）`}
+        title={`${unit.name} —— 点击${historyOpen ? "收起" : "展开"}历史会话（右键：常驻 / 历史详情 / 上下文清单 / 设置 / 新建会话）`}
         className={cn(
           "flex w-full items-start gap-2 rounded-input px-2 py-1.5 text-left",
           active ? "bg-teal-tint" : "hover:bg-line-soft",
@@ -1047,14 +1058,28 @@ function UnitRow({
               const total = items.length + (agentsOn ? 1 : 0);
               return (
                 <span
+                  role="button"
+                  tabIndex={0}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    openContextTab();
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.stopPropagation();
+                      openContextTab();
+                    }
+                  }}
+                  aria-label={`打开 ${unit.name} 的上下文清单`}
                   className={cn(
-                    "shrink-0 rounded-chip px-1 text-[10px] leading-4",
+                    "shrink-0 cursor-pointer rounded-chip px-1 text-[10px] leading-4 transition",
                     bare ? "bg-line-soft/70 text-ash" : "bg-teal-tint text-teal",
+                    "hover:ring-1 hover:ring-teal/60",
                   )}
                   title={
-                    bare
-                      ? `裸跑：未注入任何上下文（AGENTS.md ${m.agentsMd === "auto" ? "auto——由执行器原生读取" : "已关闭"}）。合法状态；在右栏 Context 面板管理`
-                      : `注入 ${total} 项：${[...items, ...(agentsOn ? ["AGENTS.md（强制）"] : [])].join("、")}${m.agentsMd === "auto" ? "；AGENTS.md auto（执行器原生读取）" : ""}`
+                    (bare
+                      ? `裸跑：未注入任何上下文（AGENTS.md ${m.agentsMd === "auto" ? "auto——由执行器原生读取" : "已关闭"}）。合法状态；点击打开上下文清单管理`
+                      : `注入 ${total} 项：${[...items, ...(agentsOn ? ["AGENTS.md（强制）"] : [])].join("、")}${m.agentsMd === "auto" ? "；AGENTS.md auto（执行器原生读取）" : ""}`) + " · 点击打开上下文清单"
                   }
                 >
                   {bare ? "裸跑" : `注 ${total}`}
@@ -1441,6 +1466,20 @@ function UnitRow({
           className="cursor-pointer rounded-btn p-1 text-ash hover:bg-line-soft hover:text-ink active:scale-90 transition"
         >
           <History size={12} />
+        </button>
+        <button
+          type="button"
+          draggable={false}
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            openContextTab();
+          }}
+          aria-label={`${unit.name} 上下文清单`}
+          title="上下文清单 —— 这个 bot 知道什么：注入矩阵、SOUL.md、技能名单"
+          className="cursor-pointer rounded-btn p-1 text-ash hover:bg-line-soft hover:text-ink active:scale-90 transition"
+        >
+          <Layers size={12} />
         </button>
         <button
           type="button"
