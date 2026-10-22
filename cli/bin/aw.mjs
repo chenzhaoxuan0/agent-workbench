@@ -332,7 +332,6 @@ async function cmdEvents(flags) {
     const { baseUrl, token } = discover(flags);
     const wsUrl = baseUrl.replace(/^http/, "ws") + "/ws" + (token === undefined ? "" : `?token=${encodeURIComponent(token)}`);
     const ws = new WebSocket(wsUrl);
-    const sessionSeqs = new Map();
     ws.addEventListener("message", (ev) => {
       let frame;
       try {
@@ -342,10 +341,6 @@ async function cmdEvents(flags) {
       }
       if (frame.type !== "event") return;
       if (session !== null && frame.event?.sessionId !== session) return;
-      if (session !== null) {
-        const last = sessionSeqs.get(session) ?? 0;
-        if (frame.seq > last) sessionSeqs.set(session, frame.seq);
-      }
       process.stdout.write(JSON.stringify({ seq: frame.seq, event: frame.event }) + "\n");
     });
     ws.addEventListener("error", () => {

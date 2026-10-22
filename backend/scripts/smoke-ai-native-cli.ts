@@ -241,7 +241,71 @@ async function main(): Promise<void> {
     const doctor = await aw(port, ["doctor"]);
     check("aw doctor reaches daemon", doctor.code === 0 && doctor.stderr.includes("methods") && doctor.stderr.includes("adapters"), doctor);
 
-    // 7. 收尾：daemon 经 aw 停（危险面走 --yes；非 TTY 不受阻的纪律同款）
+    // 7. 事件面（docs/21 D4）：补拉（session.events.since）+ 跟随（WS → JSONL）同源同 seq
+    const chatTurn = await aw(port, ["call", "session.chat", "--params", JSON.stringify({ unitId: "u-cli-events", rootPath: botRoot, runtimeId: "mockperm", text: "events 验证", waitMs: 30_000 })]);
+    let chatSid: string | undefined;
+    try {
+      chatSid = (JSON.parse(chatTurn.stdout) as { sessionId?: string }).sessionId;
+    } catch {
+      /* 断言里报 */
+    }
+    check("aw call session.chat (events fixture)", chatTurn.code === 0 && typeof chatSid === "string", chatTurn);
+
+    const ev = await aw(port, ["events", "--session", String(chatSid), "--since", "0"]);
+    const evLines = ev.stdout.trim().split("\n").filter((l) => l !== "");
+    let evParsed = 0;
+    for (const l of evLines) {
+      try {
+        JSON.parse(l);
+        evParsed++;
+      } catch {
+        /* 计数 */
+      }
+    }
+    check(
+      "aw events catch-up emits parseable JSONL",
+      ev.code === 0 && evLines.length >= 4 && evParsed === evLines.length,
+      { lines: evLines.length, parsed: evParsed, stderr: ev.stderr.trim() },
+    );
+
+    const followRes = await new Promise<{ out: string; err: string }>((resolve) => {
+      const child = spawn(process.execPath, [AW, "events", "--follow"], {
+        cwd: backendRoot,
+        env: { ...process.env, AGENT_WORKBENCH_URL: `http://127.0.0.1:${port}`, AGENT_WORKBENCH_TOKEN: TOKEN },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      let out = "";
+      let err = "";
+      child.stdout?.on("data", (c: Buffer) => (out += c));
+      child.stderr?.on("data", (c: Buffer) => (err += c));
+      setTimeout(() => {
+        // 跟随挂上后触发一轮新对话，实时帧应当流过来
+        void fetch(`http://127.0.0.1:${port}/rpc`, {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-awb-token": TOKEN },
+          body: JSON.stringify({ v: 1, method: "session.chat", params: { unitId: "u-cli-events", rootPath: botRoot, runtimeId: "mockperm", text: "follow 验证", waitMs: 30_000 } }),
+        }).catch(() => undefined);
+      }, 1000);
+      setTimeout(() => child.kill(), 4500);
+      child.on("close", () => resolve({ out, err }));
+    });
+    const fLines = followRes.out.trim().split("\n").filter((l) => l !== "");
+    let fParsed = 0;
+    for (const l of fLines) {
+      try {
+        JSON.parse(l);
+        fParsed++;
+      } catch {
+        /* 计数 */
+      }
+    }
+    check(
+      "aw events --follow streams live frames as JSONL",
+      fLines.length >= 3 && fParsed === fLines.length && !followRes.err.includes("transport error"),
+      { lines: fLines.length, err: followRes.err.trim() },
+    );
+
+    // 8. 收尾：daemon 经 aw 停（危险面走 --yes；非 TTY 不受阻的纪律同款）
     const stop = await aw(port, ["--yes", "call", "daemon.stop"]);
     check("aw --yes call daemon.stop", stop.code === 0, stop);
     const exitPromise = new Promise<number | null>((resolve) => {

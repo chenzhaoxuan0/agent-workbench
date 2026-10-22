@@ -15,7 +15,6 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import {
   callImageApi,
-  MIME_MAP,
   normalizeBaseUrl,
   type ImageGenParams,
   type ImageProfile,

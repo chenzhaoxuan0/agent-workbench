@@ -233,7 +233,7 @@ async function main(): Promise<void> {
     });
     check("unreadable attachment fails with attachment_missing", missing.ok === false && missing.error?.code === "attachment_missing", missing);
 
-    // 7. session.start 直带 attachments（GUI 改薄的通路）
+    // 8. session.start 直带 attachments（GUI 改薄的通路）
     const startEnv = await rpc(port, "session.start", {
       runtimeId: "mockperm",
       unitId: "u-chat-smoke-2",

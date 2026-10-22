@@ -270,7 +270,13 @@ const notifications = new NotificationsService(config.homeDir, (sid) => {
 });
 const host = new RuntimeHost((event, seq) => {
   broadcastEvent(wss, event, seq);
-  notifications.record(event);
+  // 通知是遥测不是功能路径：聚合异常绝不能炸断事件管线（review 保护——
+  // record 会查台账取会话元数据，任何抖动只降级为丢一条通知）
+  try {
+    notifications.record(event);
+  } catch (err: unknown) {
+    log.warn("notifications record failed", { error: err instanceof Error ? err.message : String(err) });
+  }
   // 自动化运行记录的终态回灌（Phase 5）
   if (event.type === "session.ended") {
     const hit = automationRunBySession.get(event.sessionId);
@@ -281,9 +287,13 @@ const host = new RuntimeHost((event, seq) => {
       // 会话本身跑挂了也要挂失败徽章 —— 不然调度层看不到，卡片一直显示「已完成」
       if (failed) store.setAutomationError(hit.automationId, `ended: ${event.reason}`, Date.now());
       // 通知取台账任务名直取（docs/21 P4b，取代前端补偿解析）；与上面 record() 的
-      // end:{sid} 同键原位刷新成「任务名 + 摘要」
-      const autoName = store.listAutomations().find((a) => a.id === hit.automationId)?.name;
-      notifications.notifyAutomationEnd(String(event.sessionId), event.reason, autoName);
+      // end:{sid} 同键原位刷新成「任务名 + 摘要」——同一条遥测保护
+      try {
+        const autoName = store.listAutomations().find((a) => a.id === hit.automationId)?.name;
+        notifications.notifyAutomationEnd(String(event.sessionId), event.reason, autoName);
+      } catch (err: unknown) {
+        log.warn("automation end notification failed", { error: err instanceof Error ? err.message : String(err) });
+      }
     }
     // 待办（GTD）执行的终态回灌 —— 引擎内部按 sessionId 映射判归属，与自动化互不干扰
     backlogEngine?.onSessionEnded(event.sessionId, event.reason);
