@@ -505,24 +505,22 @@ export function Sidebar() {
             if (editingUnit) {
               // 编辑：保留 id / assets / tags，只换用户能改的那些字段（kind 来自
               // 对话框的「单元形态」切换，ADR 0011 弱标签）。
-              // updateUnit 会 await 并在盘上被改过时抛 conflict —— **不吞掉**，
-              // 让对话框弹「覆盖 / 重新加载 / 取消」，静默覆盖就是数据丢失。
+              // 读最新的 store 状态（避免在「上下文与文件」中单独保存后 revision 过期或正文被旧草稿覆盖）
+              const fresh = useWorkbench.getState().units.find((u) => u.id === editingUnit.id) ?? editingUnit;
               await updateUnit(
                 {
-                  ...editingUnit,
+                  ...fresh,
                   name: draft.name,
                   rootPath: draft.rootPath,
                   kind: draft.kind,
                   resident: draft.resident,
                   identity: {
-                    ...editingUnit.identity,
+                    ...fresh.identity,
                     role: draft.role,
-                    // ADR 0014：人设正文走 soulMd（保存即物化为 <root>/SOUL.md），
-                    // persona 字段由 daemon 在迁移后剥离；空串 = 不碰盘上已有文件
                     sourcePath: "AGENTS.md",
-                    loadedAt: editingUnit.identity?.loadedAt ?? Date.now(),
+                    loadedAt: fresh.identity?.loadedAt ?? Date.now(),
                   },
-                  soulMd: draft.persona,
+                  soulMd: fresh.soulMd,
                   // 主执行器没选（daemon 未连接）就落空绑定，run() 里 find 返回 undefined 是安全的
                   bindings: draft.runtimeId
                     ? [
@@ -533,12 +531,12 @@ export function Sidebar() {
                         },
                       ]
                     : [],
-                  agentsMd: draft.agentsMd,
+                  agentsMd: fresh.agentsMd,
                   memory: draft.memory,
                   channels: draft.channels,
                   avatar: draft.avatar,
                 },
-                opts?.overwrite === true ? {} : guardsOf(editingUnit),
+                opts?.overwrite === true ? {} : guardsOf(fresh),
               );
               sh.closeUnitSettings();
             } else {
@@ -1041,51 +1039,7 @@ function UnitRow({
         <span className="flex min-w-0 flex-1 flex-col gap-0.5 pt-0.5">
           <span className="flex items-baseline gap-1.5">
             <span className="truncate text-body-sm font-medium text-ink">{unit.name}</span>
-            {/* 上下文注入徽标（ADR 0014）：默认全关的哲学需要可见性兜底——
-                裸跑要能被一眼看见，开了几项也要可见。精确矩阵在右栏 Context 面板 */}
-            {(() => {
-              const m = normalizeContextManifest(unit.contextManifest);
-              const items = [
-                m.soul === true && "SOUL.md",
-                m.user === true && "USER.md",
-                m.memorySemantic === true && "MEMORY.md",
-                m.memoryDaily === true && "当日精炼",
-                m.memoryStanding === true && "STANDING.md",
-                m.skills === true && "技能目录",
-              ].filter((x): x is string => x !== false);
-              const agentsOn = m.agentsMd === "on";
-              const bare = items.length === 0 && !agentsOn;
-              const total = items.length + (agentsOn ? 1 : 0);
-              return (
-                <span
-                  role="button"
-                  tabIndex={0}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    openContextTab();
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.stopPropagation();
-                      openContextTab();
-                    }
-                  }}
-                  aria-label={`打开 ${unit.name} 的上下文清单`}
-                  className={cn(
-                    "shrink-0 cursor-pointer rounded-chip px-1 text-[10px] leading-4 transition",
-                    bare ? "bg-line-soft/70 text-ash" : "bg-teal-tint text-teal",
-                    "hover:ring-1 hover:ring-teal/60",
-                  )}
-                  title={
-                    (bare
-                      ? `裸跑：未注入任何上下文（AGENTS.md ${m.agentsMd === "auto" ? "auto——由执行器原生读取" : "已关闭"}）。合法状态；点击打开上下文清单管理`
-                      : `注入 ${total} 项：${[...items, ...(agentsOn ? ["AGENTS.md（强制）"] : [])].join("、")}${m.agentsMd === "auto" ? "；AGENTS.md auto（执行器原生读取）" : ""}`) + " · 点击打开上下文清单"
-                  }
-                >
-                  {bare ? "裸跑" : `注 ${total}`}
-                </span>
-              );
-            })()}
+            {/* 上下文注入标签已移至 bot 设置页面查看，侧栏不再显示 */}
             {/* 渠道徽标 */}
             {enabledChannels.length > 0 && (
               <span

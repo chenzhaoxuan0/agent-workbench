@@ -2,11 +2,12 @@ import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import {
   AlarmClock,
-  Archive,
-  ChevronLeft,
   Anchor,
+  Archive,
+  BookOpen,
   Brain,
   ChartBar,
+  ChevronLeft,
   Globe,
   History,
   ImagePlus,
@@ -32,8 +33,8 @@ import {
   type SettingsSectionId,
 } from "../store/useShell.ts";
 import { useWorkbench, selectActiveUnit } from "../store/useWorkbench.ts";
-import { normalizeContextManifest, type WorkUnit } from "../core/units.ts";
-import { readUserContext, writeUserContext, type UserContextFile } from "../adapters/daemon/client.ts";
+import type { WorkUnit } from "../core/units.ts";
+import { UnitContextBadge, UnitContextEditor } from "./UnitContextEditor.tsx";
 import { useMemorySettings } from "../store/useMemoryPrefs.ts";
 import { getGuardianConfigRpc, readProjectMemory, runDigestDryRun, setGuardianConfigRpc, type DigestResult } from "../store/useMemoryPanel.ts";
 import { ProviderInstancesPanel } from "./ProviderInstancesPanel.tsx";
@@ -68,6 +69,7 @@ const ICONS: Record<string, typeof Settings2> = {
   history: History,
   archive: Archive,
   layers: Layers,
+  book: BookOpen,
   plug: Plug,
   terminal: SquareTerminal,
   globe: Globe,
@@ -294,6 +296,8 @@ function SectionBody({ section }: { section: SettingsSectionDef }) {  switch (se
       return <HeartbeatSettingsSection />;
     case "terminal":
       return <TerminalSettingsSection />;
+    case "context":
+      return <ContextSettingsSection />;
     case "skills":
       return <SkillsSettingsSection />;
     case "mcp":
@@ -322,6 +326,61 @@ function SectionBody({ section }: { section: SettingsSectionDef }) {  switch (se
 }
 
 /**
+ * 「上下文清单」分区（用户 2026-10-22 反馈第 2 点）：选任意一个 bot，
+ * 在一处完成注入矩阵 + 全部上下文文件（SOUL/AGENTS/MEMORY/STANDING/USER）的
+ * 查看与编辑。编辑本体在共享组件 UnitContextEditor——与 bot 设置对话框、
+ * 右栏 Context 面板同一份实现，三个面永远长一样。
+ */
+function ContextSettingsSection() {
+  const units = useWorkbench((s) => s.units);
+  const activeUnitId = useWorkbench((s) => s.activeUnitId);
+  const [picked, setPicked] = useState<string | null>(null);
+  // 默认跟随当前激活的 bot；若无激活项则默认第一个 bot；用户手动选过后尊重选择，所选 bot 被注销则回落
+  const unitId =
+    picked !== null && units.some((u) => String(u.id) === picked)
+      ? picked
+      : activeUnitId !== null && units.some((u) => String(u.id) === String(activeUnitId))
+        ? String(activeUnitId)
+        : units.length > 0 && units[0] !== undefined
+          ? String(units[0].id)
+          : null;
+
+  const selectedUnit = units.find((u) => String(u.id) === unitId);
+
+  if (units.length === 0) {
+    return <p className="text-caption text-ash">还没有任何 bot —— 左侧栏新建后这里就能管理它们的上下文。</p>;
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between gap-3 rounded-card border border-line bg-canvas p-3">
+        <div className="flex items-center gap-2.5">
+          <span className="text-caption font-medium text-graphite">选择 bot</span>
+          <select
+            value={unitId ?? ""}
+            onChange={(e) => setPicked(e.target.value)}
+            className="min-w-0 max-w-xs flex-1 rounded-btn border border-line bg-rail px-2.5 py-1 text-caption font-medium text-ink outline-none focus:border-teal/60"
+          >
+            {units.map((u) => (
+              <option key={String(u.id)} value={String(u.id)}>
+                {u.name}
+                {u.kind === "project" ? "（项目）" : ""}
+              </option>
+            ))}
+          </select>
+        </div>
+        {selectedUnit && <UnitContextBadge unit={selectedUnit} />}
+      </div>
+      {unitId === null ? (
+        <p className="text-caption text-ash">没有选中的 bot——从上面选一个。</p>
+      ) : (
+        <UnitContextEditor unitId={unitId} />
+      )}
+    </div>
+  );
+}
+
+/**
  * 记忆分区 —— 项目记忆上限 + 逐 bot 跨项目检索授权 + 每日总结（docs/10 §七 WP-8）。
  *
  * 上一版这里是「8 种记忆后端注册表 + 三层路由 + 检索门控」，其中 5 种还标着 coming。
@@ -334,10 +393,7 @@ function MemorySettingsSection() {
   const setPrefs = useMemorySettings((s) => s.setPrefs);
   const units = useWorkbench((s) => s.units);
   const updateUnit = useWorkbench((s) => s.updateUnit);
-  const activeUnit = useWorkbench(selectActiveUnit);
-  const activeRoot = activeUnit?.rootPath ?? null;
-  const patchUnitContext = useWorkbench((s) => s.patchUnitContext);
-  const activeManifest = normalizeContextManifest(activeUnit?.contextManifest);
+  const activeRoot = useWorkbench(selectActiveUnit)?.rootPath ?? null;
 
   const [usage, setUsage] = useState<{ chars: number; limit: number; exists: boolean } | null>(null);
   const [digest, setDigest] = useState<DigestResult | null>(null);
@@ -461,65 +517,8 @@ function MemorySettingsSection() {
         />
       </GroupCard>
 
-      {/* 会话记忆注入范围（ADR 0014：逐 bot 的注入清单，不再是全局开关） */}
-      <GroupCard>
-        <div className="px-4 pb-1 pt-3">
-          <p className="text-caption font-medium text-graphite">
-            记忆注入清单{activeUnit === undefined ? "" : ` · 当前 bot：${activeUnit.name}`}
-          </p>
-          <p className="mt-0.5 text-caption leading-relaxed text-ash">
-            写入该 bot 的 bot.json（contextManifest）——工作台、渠道、定时会话同一份。
-            完整矩阵（SOUL / USER / AGENTS.md 三态）在会话区右栏「Context」面板。
-          </p>
-        </div>
-        {activeUnit === undefined ? (
-          <p className="px-4 py-3 text-caption text-ash">没有选中的 bot。</p>
-        ) : (
-          <div className="divide-y divide-line-soft">
-            <div className="flex items-center justify-between gap-4 px-4 py-3">
-              <div>
-                <p className="text-body-sm font-medium text-ink">长期事实记忆 (MEMORY.md)</p>
-                <p className="text-caption text-ash">注入项目根目录 MEMORY.md 沉淀的关键设定与业务事实</p>
-              </div>
-              <Toggle
-                on={activeManifest.memorySemantic === true}
-                onChange={() =>
-                  void patchUnitContext(activeUnit.id, { memorySemantic: !(activeManifest.memorySemantic === true) }).catch(() => {})
-                }
-              />
-            </div>
-            <div className="flex items-center justify-between gap-4 px-4 py-3">
-              <div>
-                <p className="text-body-sm font-medium text-ink">当日会话精炼 (Daily Digest)</p>
-                <p className="text-caption text-ash">注入当天多轮会话提炼出的关键进展与临时上下文</p>
-              </div>
-              <Toggle
-                on={activeManifest.memoryDaily === true}
-                onChange={() =>
-                  void patchUnitContext(activeUnit.id, { memoryDaily: !(activeManifest.memoryDaily === true) }).catch(() => {})
-                }
-              />
-            </div>
-            <div className="flex items-center justify-between gap-4 px-4 py-3">
-              <div>
-                <p className="text-body-sm font-medium text-ink">红线禁令 (STANDING.md)</p>
-                <p className="text-caption text-ash">
-                  存在即注入的常驻硬性禁令（安全层；文件在项目根目录）。关闭前请确认你知道自己在做什么
-                </p>
-              </div>
-              <Toggle
-                on={activeManifest.memoryStanding === true}
-                onChange={() =>
-                  void patchUnitContext(activeUnit.id, { memoryStanding: !(activeManifest.memoryStanding === true) }).catch(() => {})
-                }
-              />
-            </div>
-          </div>
-        )}
-      </GroupCard>
-
-      {/* USER.md 全局层（ADR 0014 D5）：关于「人」的 evergreen 文件，逐 bot 开关注入 */}
-      <UserContextCard />
+      {/* 会话记忆注入范围与 USER.md 已并入「上下文清单」分区（集中编辑，ADR 0014）。
+          这里只保留记忆系统的全局配置（上限提醒阈值 / 每日总结 / 守护 / 跨项目检索）。 */}
 
       {/* 跨项目检索：逐 bot 授权 */}
       <GroupCard>
@@ -652,95 +651,6 @@ function MemorySettingsSection() {
         <p className="rounded-btn border border-line bg-card px-3 py-2 text-caption leading-relaxed text-loss">{err}</p>
       )}
     </div>
-  );
-}
-
-/**
- * USER.md 全局层编辑器（ADR 0014 D5）：关于「人」的 evergreen 文件，住在
- * <homeDir>/USER.md，所有 bot 之上共享、逐 bot 开关注入（contextManifest.user）。
- * 写路径走 daemon（备份 + 2000 上限硬校验），文件不属于任何项目文件夹。
- */
-function UserContextCard() {
-  const [file, setFile] = useState<UserContextFile | null>(null);
-  const [draft, setDraft] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  const [savedAt, setSavedAt] = useState<number | null>(null);
-
-  useEffect(() => {
-    let alive = true;
-    readUserContext()
-      .then((f) => {
-        if (!alive) return;
-        setFile(f);
-        setDraft(f.content);
-      })
-      .catch((e: unknown) => {
-        if (alive) setErr(e instanceof Error ? e.message : String(e));
-      });
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  const limit = file?.limit ?? 2000;
-  const dirty = draft !== (file?.content ?? "");
-
-  const save = async () => {
-    setBusy(true);
-    setErr(null);
-    try {
-      await writeUserContext(draft);
-      const f = await readUserContext();
-      setFile(f);
-      setDraft(f.content);
-      setSavedAt(Date.now());
-    } catch (e: unknown) {
-      setErr(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <GroupCard>
-      <div className="px-4 pb-1 pt-3">
-        <p className="text-caption font-medium text-graphite">USER.md · 关于我（全局层）</p>
-        <p className="mt-0.5 text-caption leading-relaxed text-ash">
-          希望每个 bot 都知道的用户级事实：作息、偏好、说话风格、常用环境。住在工作台
-          集中存储家，改动自动备份；是否注入由每个 bot 的清单决定（对外渠道 bot 建议保持关闭）。
-        </p>
-      </div>
-      <div className="px-4 pb-4 pt-2 space-y-2">
-        <textarea
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          spellCheck={false}
-          rows={6}
-          className="w-full resize-y rounded-btn border border-line bg-canvas px-3 py-2 font-mono text-caption leading-relaxed text-ink outline-none focus:border-teal/60"
-          placeholder={"- （把希望每个 bot 都知道的用户级事实写在这里。每行一条。）"}
-        />
-        <div className="flex items-center justify-between gap-3">
-          <p className="text-caption text-ash tnum">
-            {draft.length.toLocaleString("zh-CN")}/{limit.toLocaleString("zh-CN")} 字
-            {draft.length > limit ? " · 超限，保存会被拒绝" : ""}
-            {file !== null && file.path !== undefined ? ` · ${file.path}` : ""}
-            {savedAt !== null && !dirty ? " · 已保存" : ""}
-          </p>
-          <button
-            type="button"
-            onClick={() => void save()}
-            disabled={busy || !dirty || draft.length > limit}
-            className="shrink-0 rounded-btn bg-ink px-3 py-1.5 text-caption font-medium text-canvas transition disabled:opacity-40"
-          >
-            {busy ? "保存中…" : "保存"}
-          </button>
-        </div>
-        {err !== null && (
-          <p className="rounded-btn border border-line bg-card px-3 py-2 text-caption leading-relaxed text-loss">{err}</p>
-        )}
-      </div>
-    </GroupCard>
   );
 }
 

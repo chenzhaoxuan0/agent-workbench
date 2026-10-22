@@ -148,8 +148,8 @@ export interface BotChannel {
 /**
  * 每 bot 一份的注入决策清单，住在 bot.json 的 `contextManifest` 节。
  *
- * 定位立场：context 是显式资产、注入是显式决定——新建 bot 默认全关（裸跑），
- * 存量 bot 读时归一为升级前行为（semantic + standing 注入）。权威在 daemon：
+ * 定位立场：context 是显式资产、注入是显式决定——**默认全关（裸跑）**，
+ * 新建与存量同一规则（没写的就是不注入）。权威在 daemon：
  * host.startSession 从 bot 定义自读，渠道会话与工作台会话据此天然一致。
  */
 export interface ContextManifest {
@@ -173,21 +173,25 @@ export interface ContextManifest {
 }
 
 /**
- * 存量 bot 的归一结果（bot.json 里没有 contextManifest 节 = 升级前就在跑）：
- * 等价旧行为——semantic 默认注入 + STANDING 存在即注入，其余不注。
+ * 整节缺失时的归一结果 = 全关（2026-10-22 用户定夺：默认注入一律为 0，取消最初
+ * 「存量 bot 保持 semantic+standing」的兼容 seeding——裸跑是默认，打开是显式决定）。
+ * 唯一例外是 agentsMd 的 auto：对已标注原生读取的执行器它就是不注入（防双注）。
  */
 export const LEGACY_CONTEXT_MANIFEST: ContextManifest = {
   agentsMd: "auto",
-  memorySemantic: true,
-  memoryStanding: true,
+  soul: false,
+  user: false,
+  memorySemantic: false,
+  memoryDaily: false,
+  memoryStanding: false,
+  skills: false,
 };
 
 /**
  * 归一任何来源的 manifest（bot.json 原始 JSON / RPC 参数 / UI 草稿）。
  *
- * 两条规则刻意不同：
- * - **整节缺失或畸形** → 存量语义（LEGACY）：手删整节回到升级前行为，不是全关。
- * - **节存在但某字段缺** → 该字段 false（agentsMd 为 auto）：字段级缺省才是「显式全关」。
+ * 整节缺失/畸形与「节存在但字段缺」现在归一到同一结果：全关 + agentsMd auto
+ *（字段级缺省本来就是 false）——心智模型只剩一条：**没写的就是不注入**。
  */
 export function normalizeContextManifest(raw: unknown): ContextManifest {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return LEGACY_CONTEXT_MANIFEST;

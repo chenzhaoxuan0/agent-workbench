@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
+  BookOpen,
   Bot,
   Brain,
   Check,
@@ -22,6 +23,7 @@ import { fetchBotDefaultRoot, inspectBotFolder, openFolder } from "../adapters/d
 import { ChannelSection } from "./ChannelSection.tsx";
 import { ImportSessionsSection } from "./ImportSessionsSection.tsx";
 import { FolderPickerField } from "./FolderPickerField.tsx";
+import { UnitContextBadge, UnitContextEditor } from "./UnitContextEditor.tsx";
 import { cn } from "./cn.ts";
 
 /**
@@ -66,13 +68,11 @@ export interface AddBotDraft {
   readonly kind: UnitKind;
 }
 
-type Section = "identity" | "persona" | "memory" | "agentsmd" | "channels" | "importSessions";
+type Section = "identity" | "context" | "channels" | "importSessions";
 
 const SECTIONS: readonly { id: Section; label: string; icon: LucideIcon; hint: string }[] = [
   { id: "identity", label: "身份", icon: FileText, hint: "目录、名称、角色、执行器" },
-  { id: "persona", label: "soul.md", icon: Wand2, hint: "人设与语气（SOUL），可后补" },
-  { id: "memory", label: "记忆", icon: Brain, hint: "接入哪几类记忆" },
-  { id: "agentsmd", label: "AGENTS.md", icon: FileText, hint: "岗位说明书（可选，可后补）" },
+  { id: "context", label: "上下文与文件", icon: BookOpen, hint: "注入清单与 SOUL/AGENTS/MEMORY/STANDING/USER" },
   { id: "channels", label: "渠道", icon: Radio, hint: "把 bot 接到 IM / webhook" },
 ];
 
@@ -257,8 +257,8 @@ export function AddBotDialog({
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- fillFrom 依赖表单重置语义，随 open/initial 整体重跑
-  }, [open, initial]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fillFrom 依赖表单重置语义，随 open/initial?.id 整体重跑
+  }, [open, initial?.id]);
 
   useEffect(() => {
     if (!open) return;
@@ -417,7 +417,9 @@ export function AddBotDialog({
         {/* 头部 */}
         <div className="flex h-12 shrink-0 items-center gap-2 border-b border-line px-4">
           <FileText size={14} className="text-graphite" />
-          <p className="flex-1 text-body-sm font-medium text-ink">{isEdit ? "bot 设置" : "新建 bot"}</p>
+          <p className="text-body-sm font-medium text-ink">{isEdit ? "bot 设置" : "新建 bot"}</p>
+          {isEdit && initial && <UnitContextBadge unit={initial} />}
+          <div className="flex-1" />
           <button onClick={onClose} aria-label="关闭" className="rounded-btn p-1 text-ash hover:bg-line-soft hover:text-ink">
             <X size={13} />
           </button>
@@ -695,134 +697,94 @@ export function AddBotDialog({
               </div>
             )}
 
-            {section === "persona" && (
-              <div className="flex h-full min-h-0 flex-col gap-2">
-                <Field
-                  label="soul.md · 人设与语气"
-                  hint="保存时物化为文件夹根目录的 SOUL.md（ADR 0014，与 AGENTS.md 同构，VS Code 里可直接改）。是否注入由这个 bot 的上下文清单决定——新建默认裸跑，在右栏 Context 面板打开。"
-                >
-                  <span />
-                </Field>
-                <textarea
-                  value={persona}
-                  onChange={(e) => {
-                    setPersonaTouched(true);
-                    setPersona(e.target.value);
-                  }}
-                  spellCheck={false}
-                  aria-label="soul.md 人设与语气"
-                  placeholder="留空则使用默认语气：简洁、务实、结论先行。"
-                  className="min-h-0 flex-1 resize-none rounded-card border border-line bg-canvas p-3 font-mono text-caption leading-relaxed text-ink outline-none placeholder:text-ash focus:border-teal"
-                />
-                {!personaTouched && (
-                  <button
-                    onClick={() => {
-                      setPersonaTouched(true);
-                      setPersona(PERSONA_TEMPLATE(name, role));
-                    }}
-                    className="flex w-fit items-center gap-1 rounded-btn border border-line px-2 py-1 text-caption text-graphite hover:bg-line-soft hover:text-ink"
-                  >
-                    <Wand2 size={10} />
-                    按名称与角色生成人设
-                  </button>
-                )}
+            {section === "context" && isEdit && initial && (
+              <div className="h-full min-h-0 overflow-y-auto pr-1">
+                <UnitContextEditor unitId={String(initial.id)} />
               </div>
             )}
 
-            {section === "memory" && (
-              <div className="space-y-2">
-                <p className="text-caption leading-relaxed text-ash">
-                  对齐 waku 的记忆三柱：选择这个 bot 接入哪几类记忆。
-                  真实运行时据此接入对应后端；原型期仅作为声明保存。
-                </p>
-                <MemoryToggle
-                  label="语义记忆 · 事实"
-                  desc="关于人、项目、偏好的持久事实（“甲方喜欢简报不用长文”）"
-                  checked={memory.semantic}
-                  onChange={(v) => setMemory((m) => ({ ...m, semantic: v }))}
-                />
-                <MemoryToggle
-                  label="情节记忆 · 事件"
-                  desc="带日期的“发生过什么”（对话蒸馏出的一句话摘要）"
-                  checked={memory.episodic}
-                  onChange={(v) => setMemory((m) => ({ ...m, episodic: v }))}
-                />
-                <MemoryToggle
-                  label="程序性记忆 · 技能"
-                  desc="怎么做事的流程（SKILL.md，命中关键词时注入）"
-                  checked={memory.procedural}
-                  onChange={(v) => setMemory((m) => ({ ...m, procedural: v }))}
-                />
-              </div>
-            )}
-
-            {section === "agentsmd" && (
-              <div className="flex h-full min-h-0 flex-col gap-2">
-                {/* 落盘位置 + 重新加载：这是"文件夹即 bot"能不能被用户看见的关键一行。
-                    不显示路径，用户就不知道该去 VS Code 改哪个文件。 */}
-                <div className="flex shrink-0 items-center gap-2">
-                  <span className="flex min-w-0 items-center gap-1 text-caption text-ash">
-                    <FileText size={11} className="shrink-0" />
-                    <span className="shrink-0">AGENTS.md · 岗位说明书</span>
-                    <span className="shrink-0 text-ash/70">（可选，可后补）</span>
-                    {isEdit && agentsMdMeta && (
-                      <span
-                        className="truncate font-mono text-[10px] text-ash/80"
-                        title={`编辑这个文件 → 点右侧「重新加载」→ 内容同步进来\n${agentsMdMeta.path}`}
-                      >
-                        · {agentsMdMeta.path}
-                      </span>
-                    )}
-                    {isEdit && !agentsMdMeta && (
-                      <span className="text-[10px] text-ash">· 文件不存在，保存时会生成最小占位</span>
-                    )}
-                  </span>
-                  {isEdit && (
-                    <button
-                      onClick={() => void reloadFromDisk()}
-                      title="丢弃当前编辑内容，从磁盘重新读取"
-                      className="ml-auto flex shrink-0 items-center gap-1 rounded-btn px-1.5 py-0.5 text-caption text-graphite hover:bg-line-soft hover:text-ink"
-                    >
-                      <RefreshCw size={10} />
-                      重新加载
-                    </button>
-                  )}
-                  <div className={cn("flex items-center gap-1", !isEdit && "ml-auto")}>
-                    {SECTION_LIBRARY.map((s) => (
+            {section === "context" && !isEdit && (
+              <div className="space-y-5">
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-body-sm font-medium text-ink">SOUL.md · 人设与语气</p>
+                      <p className="text-caption text-ash">保存时物化为文件夹根目录的 SOUL.md。默认裸跑（0 注入），创建后可在设置中按需打开</p>
+                    </div>
+                    {!personaTouched && (
                       <button
-                        key={s.label}
+                        type="button"
                         onClick={() => {
-                          setAgentsMd((md) => `${md.trimEnd()}\n\n${s.snippet(name || "这个 bot")}`);
+                          setPersonaTouched(true);
+                          setPersona(PERSONA_TEMPLATE(name, role));
                         }}
-                        title={`插入「${s.label}」段落`}
-                        className="flex items-center gap-0.5 rounded-btn px-1.5 py-0.5 text-caption text-ash hover:bg-line-soft hover:text-ink"
+                        className="flex shrink-0 items-center gap-1 rounded-btn border border-line px-2 py-1 text-caption text-graphite hover:bg-line-soft hover:text-ink transition"
                       >
-                        <Plus size={9} />
-                        {s.label}
+                        <Wand2 size={10} />
+                        按名称角色生成人设
                       </button>
-                    ))}
-                    <button
-                      onClick={() => {
-                        setAgentsMd(agentsMdTemplate(name, role, rootPath));
-                      }}
-                      title="按名称与角色生成完整模板"
-                      className="flex items-center gap-0.5 rounded-btn px-1.5 py-0.5 text-caption text-ash hover:bg-line-soft hover:text-ink"
-                    >
-                      <Wand2 size={9} />
-                      生成模板
-                    </button>
+                    )}
                   </div>
+                  <textarea
+                    value={persona}
+                    onChange={(e) => {
+                      setPersonaTouched(true);
+                      setPersona(e.target.value);
+                    }}
+                    spellCheck={false}
+                    rows={5}
+                    aria-label="soul.md 人设与语气"
+                    placeholder="留空则使用默认语气：简洁、务实、结论先行。"
+                    className="w-full resize-y rounded-card border border-line bg-canvas p-3 font-mono text-caption leading-relaxed text-ink outline-none placeholder:text-ash focus:border-teal"
+                  />
                 </div>
-                <textarea
-                  value={agentsMd}
-                  onChange={(e) => {
-                    setAgentsMd(e.target.value);
-                  }}
-                  spellCheck={false}
-                  aria-label="AGENTS.md 内容"
-                  placeholder={"可选。这是 bot 的规矩文件，想清楚要它遵守什么时再回来补；\n留空保存时会在 bot 文件夹里生成一份最小占位 AGENTS.md。"}
-                  className="min-h-0 flex-1 resize-none rounded-card border border-line bg-canvas p-3 font-mono text-caption leading-relaxed text-ink outline-none placeholder:text-ash focus:border-teal"
-                />
+
+                <div className="space-y-1.5 border-t border-line-soft pt-4">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-body-sm font-medium text-ink">AGENTS.md · 岗位说明书</p>
+                      <p className="text-caption text-ash">bot 的规矩与交付规范。执行器通常原生读取；留空保存时生成最小占位</p>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-1">
+                      {SECTION_LIBRARY.map((s) => (
+                        <button
+                          key={s.label}
+                          type="button"
+                          onClick={() => {
+                            setAgentsMd((md) => `${md.trimEnd()}\n\n${s.snippet(name || "这个 bot")}`);
+                          }}
+                          title={`插入「${s.label}」段落`}
+                          className="flex items-center gap-0.5 rounded-btn px-1.5 py-0.5 text-caption text-ash hover:bg-line-soft hover:text-ink transition"
+                        >
+                          <Plus size={9} />
+                          {s.label}
+                        </button>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAgentsMd(agentsMdTemplate(name, role, rootPath));
+                        }}
+                        title="按名称与角色生成完整模板"
+                        className="flex items-center gap-0.5 rounded-btn px-1.5 py-0.5 text-caption text-ash hover:bg-line-soft hover:text-ink transition"
+                      >
+                        <Wand2 size={9} />
+                        生成模板
+                      </button>
+                    </div>
+                  </div>
+                  <textarea
+                    value={agentsMd}
+                    onChange={(e) => {
+                      setAgentsMd(e.target.value);
+                    }}
+                    spellCheck={false}
+                    rows={6}
+                    aria-label="AGENTS.md 内容"
+                    placeholder={"可选。这是 bot 的规矩文件，想清楚要它遵守什么时再回来补；\n留空保存时会在 bot 文件夹里生成一份最小占位 AGENTS.md。"}
+                    className="w-full resize-y rounded-card border border-line bg-canvas p-3 font-mono text-caption leading-relaxed text-ink outline-none placeholder:text-ash focus:border-teal"
+                  />
+                </div>
               </div>
             )}
 

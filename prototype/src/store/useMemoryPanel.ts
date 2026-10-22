@@ -148,6 +148,16 @@ export async function writeProjectMemory(rootPath: string, content: string): Pro
   return call("memory.project.write", { rootPath, content }, READ_TIMEOUT_MS);
 }
 
+/** 读一个项目的红线禁令（上下文编辑器用；与 readProjectMemory 同一口径） */
+export async function readStandingMemory(rootPath: string): Promise<MemoryFileInfo> {
+  return call<MemoryFileInfo>("memory.standing.read", { rootPath }, READ_TIMEOUT_MS);
+}
+
+/** 写一个项目的红线禁令（备份 + 1000 上限硬校验在 daemon 侧） */
+export async function writeStandingMemory(rootPath: string, content: string): Promise<unknown> {
+  return call("memory.standing.write", { rootPath, content }, READ_TIMEOUT_MS);
+}
+
 /** 列出一个项目的每日总结列表 */
 export async function listDailyMemory(rootPath: string): Promise<readonly string[]> {
   return call<readonly string[]>("memory.project.daily", { rootPath }, READ_TIMEOUT_MS);

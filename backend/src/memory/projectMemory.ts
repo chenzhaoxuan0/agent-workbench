@@ -166,10 +166,8 @@ export async function readUser(homeDir: string): Promise<MemoryFile> {
 /** USER.md 备份分目录的 scopeKey（全局层没有 rootPath，用固定键派生稳定短 id）。 */
 const USER_SCOPE_KEY = "user-global";
 
-/**
- * 覆盖写 USER.md：与 writeLongTerm 同一纪律——查容量 → 备份 → 原子写，
- * 超限抛错且磁盘不发生任何变化。备份进 <homeDir>/backups/<user-scope>/。
- */
+/** 覆盖写 USER.md：与 writeLongTerm 同一纪律——查容量 → 备份 → 原子写，
+ * 超限抛错且磁盘不发生任何变化。备份进 <homeDir>/backups/<user-scope>/。 */
 export async function writeUser(homeDir: string, content: string): Promise<WriteResult> {
   const file = userMdPath(homeDir);
   const current = await readFileAt(file, USER_CHAR_LIMIT);
@@ -180,6 +178,23 @@ export async function writeUser(homeDir: string, content: string): Promise<Write
   await atomicWrite(file, content);
   log.info("user context written", { chars: cap.used, limit: cap.limit, nearLimit: cap.nearLimit });
   return { path: file, chars: cap.used, limit: cap.limit, backupPath, nearLimit: cap.nearLimit };
+}
+
+/** 覆盖写 STANDING.md（红线禁令，上下文编辑器的写路径；agent 侧仍走文件工具自改）。 */
+export async function writeStanding(
+  rootPath: string,
+  content: string,
+  opts: { homeDir: string },
+): Promise<WriteResult> {
+  const p = resolvePaths(rootPath);
+  const current = await readFileAt(p.standingMd, STANDING_CHAR_LIMIT);
+  const cap = checkCapacity(current.content, content, STANDING_CHAR_LIMIT);
+  if (!cap.ok) throw buildOverLimitError(current.content, content, STANDING_CHAR_LIMIT);
+
+  const backupPath = await backup(scopeId(rootPath), p.standingMd, current.content, opts.homeDir);
+  await atomicWrite(p.standingMd, content);
+  log.info("standing instructions written", { root: path.basename(rootPath), chars: cap.used, nearLimit: cap.nearLimit });
+  return { path: p.standingMd, chars: cap.used, limit: cap.limit, backupPath, nearLimit: cap.nearLimit };
 }
 
 export async function listDaily(rootPath: string): Promise<string[]> {

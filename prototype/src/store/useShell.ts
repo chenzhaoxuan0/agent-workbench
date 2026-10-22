@@ -51,6 +51,7 @@ export type SettingsSectionId =
   | "terminal"
   | "image"
   | "shortcuts"
+  | "context"
   | "memory"
   | "skills"
   | "mcp"
@@ -90,6 +91,7 @@ export const SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
   { id: "terminal", title: "终端", desc: "对话页小终端的 Shell 类型（默认 PowerShell 7）与终端页共享的档案", groupId: "basics", icon: "terminal" },
   { id: "shortcuts", title: "快捷键", desc: "全局键位速查", groupId: "basics", icon: "keyboard" },
 
+  { id: "context", title: "上下文清单", desc: "选一个 bot：注入矩阵与 SOUL / AGENTS / MEMORY / STANDING / USER 全部上下文文件的集中编辑", groupId: "agentCapabilities", icon: "book" },
   { id: "memory", title: "记忆", desc: "语义事实 / 情节事件 / 程序性技能 三层记忆（对齐 waku）", groupId: "agentCapabilities", icon: "brain" },
   { id: "skills", title: "技能", desc: "按技能源分组的技能清单与停用开关（.disabled/ 搬运）", groupId: "agentCapabilities", icon: "layers" },
   { id: "mcp", title: "MCP 服务", desc: "分执行器管理各家原生配置里的 MCP：增删改、停用库、跨执行器复制", groupId: "agentCapabilities", icon: "plug" },

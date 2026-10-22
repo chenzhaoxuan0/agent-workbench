@@ -74,7 +74,7 @@ import {
 } from "../../prototype/src/core/automation.ts";
 import { MemoryService } from "./memory/memory.ts";
 import { FileMemoryInjector } from "./memory/injection.ts";
-import { readLongTerm, writeLongTerm, readDaily, listDaily, readUser, writeUser } from "./memory/projectMemory.ts";
+import { readLongTerm, writeLongTerm, readDaily, listDaily, readUser, writeUser, readStanding, writeStanding } from "./memory/projectMemory.ts";
 import {
   readAppearance,
   writeAppearance,
@@ -2293,6 +2293,21 @@ registerMethod("context.user.write", (params) => {
     throw Object.assign(new Error("content is required"), { code: "bad_params" });
   }
   return writeUser(config.homeDir, p.content);
+});
+
+// ---- STANDING.md（上下文编辑器的写路径；备份 + 1000 上限硬校验，与 MEMORY 同纪律）----
+
+registerMethod("memory.standing.read", (params) => {
+  const p = (params ?? {}) as { rootPath?: string };
+  if (typeof p.rootPath !== "string" || p.rootPath === "") throw Object.assign(new Error("rootPath is required"), { code: "bad_params" });
+  return readStanding(p.rootPath);
+});
+registerMethod("memory.standing.write", (params) => {
+  const p = (params ?? {}) as { rootPath?: string; content?: string };
+  if (typeof p.rootPath !== "string" || typeof p.content !== "string") {
+    throw Object.assign(new Error("rootPath and content are required"), { code: "bad_params" });
+  }
+  return writeStanding(p.rootPath, p.content, { homeDir: config.homeDir });
 });
 
 /** 后台守护引擎配置获取与更新 */

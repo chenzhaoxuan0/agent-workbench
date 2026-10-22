@@ -50,11 +50,14 @@ async function main(): Promise<void> {
   // ---- 1. 归一语义 --------------------------------------------------------
   console.log("[1] normalizeContextManifest");
   const legacy = normalizeContextManifest(undefined);
-  ok(legacy.memorySemantic === true && legacy.memoryStanding === true, "整节缺失 = 存量语义（semantic+standing 注入）");
+  ok(
+    legacy.memorySemantic === false && legacy.memoryStanding === false && legacy.soul === false && legacy.agentsMd === "auto",
+    "整节缺失 = 全关（2026-10-22 定夺：默认注入一律 0，取消存量兼容 seeding）",
+  );
   const malformed = normalizeContextManifest("garbage");
-  ok(malformed.memorySemantic === true, "畸形节同样回落存量语义");
+  ok(malformed.memorySemantic === false, "畸形节同样归全关");
   const bare = normalizeContextManifest({});
-  ok(bare.soul === false && bare.user === false && bare.memorySemantic === false && bare.agentsMd === "auto", "节存在但字段缺 = 显式全关（agentsMd=auto）");
+  ok(bare.soul === false && bare.user === false && bare.memorySemantic === false && bare.agentsMd === "auto", "节存在但字段缺 = 同一全关语义（agentsMd=auto）");
   const explicit = normalizeContextManifest({ soul: true, agentsMd: "on", memoryDaily: 1 });
   ok(explicit.soul === true && explicit.agentsMd === "on" && explicit.memoryDaily === false, "脏值字段归 false，合法值保留");
 
@@ -167,7 +170,7 @@ async function main(): Promise<void> {
     await reg.putBot({ id: "bot-a", rootPath: botRoot, name: "A", soulMd: "语气克制。" });
     const hydrated = await reg.getBot("bot-a");
     const hm = normalizeContextManifest(hydrated?.contextManifest);
-    ok(hm.memorySemantic === true && hm.memoryStanding === true, "存量 bot hydrate 归一为 LEGACY 语义");
+    ok(hm.memorySemantic === false && hm.agentsMd === "auto", "存量 bot hydrate 同样归全关（无 manifest 节 = 裸跑）");
     ok(typeof hydrated?.soulMd === "string" && hydrated.soulMd.includes("语气克制"), "hydrate 读回 SOUL.md 正文");
   } finally {
     await rm(tmp, { recursive: true, force: true });
