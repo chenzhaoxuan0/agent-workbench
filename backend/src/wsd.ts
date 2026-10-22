@@ -67,13 +67,23 @@ export interface BacklogFrame {
   readonly signal: unknown;
 }
 
+/**
+ * 通知帧（docs/21 P4b）—— daemon 聚合的通知事实推流，行形状见
+ * notifications.ts 的 NotificationRow；历史以 notifications.list 拉取为准。
+ */
+export interface NotificationFrame {
+  readonly v: typeof WIRE_VERSION;
+  readonly type: "notifications";
+  readonly row: unknown;
+}
+
 export type ResponseFrame =
   | { readonly v: typeof WIRE_VERSION; readonly id: string | null; readonly ok: true; readonly result: unknown }
   | {
       readonly v: typeof WIRE_VERSION;
       readonly id: string | null;
       readonly ok: false;
-      readonly error: { readonly code: string; readonly message: string };
+      readonly error: { readonly code: string; readonly message: string; readonly data?: unknown };
     };
 
 // ---- daemon ← client ------------------------------------------------------
@@ -89,12 +99,102 @@ export interface RequestFrame {
 
 type RpcHandler = (params: unknown) => unknown | Promise<unknown>;
 
-const methods = new Map<string, RpcHandler>();
+/** 方法元数据（docs/21 D6）：rpc.methods / aw methods / docs/07 §四生成表的共同口径 */
+export interface MethodMeta {
+  /** 一句话中文说明（会进 markdown 表格，禁用 `|` 字符） */
+  readonly description: string;
+  /** params 形状提示，如 `{rootPath}` / `{runtimeId?}` / `null` */
+  readonly paramsHint?: string;
+  /** 真危险面标注：CLI 交互确认提示用（--yes 跳过），不构成 agent 拦截 */
+  readonly danger?: "high";
+}
+
+interface RegisteredMethod {
+  handler: RpcHandler;
+  meta?: MethodMeta;
+}
+
+const methods = new Map<string, RegisteredMethod>();
 
 /** 注册一个 client 可调用的方法。同名注册是编程错误，直接掀桌。 */
-export function registerMethod(name: string, handler: RpcHandler): void {
+export function registerMethod(name: string, handler: RpcHandler, meta?: MethodMeta): void {
   if (methods.has(name)) throw new Error(`rpc method already registered: ${name}`);
-  methods.set(name, handler);
+  methods.set(name, { handler, meta });
+}
+
+/**
+ * 批量挂元数据（docs/21 D6）：集中表（methods.meta.ts）与注册点旁第三参并存。
+ * 键必须已注册——未知键 = 元数据表与注册表漂移了，启动即掀桌（fail-fast）。
+ */
+export function applyMethodMeta(meta: Record<string, MethodMeta>): void {
+  for (const [name, m] of Object.entries(meta)) {
+    const entry = methods.get(name);
+    if (entry === undefined) throw new Error(`method meta for unregistered method: ${name}`);
+    entry.meta = m;
+  }
+}
+
+export interface MethodDescriptor {
+  readonly method: string;
+  readonly description?: string;
+  readonly paramsHint?: string;
+  readonly danger?: "high";
+}
+
+/** 全量方法自描述（rpc.methods 的数据源；按名排序，域聚簇靠前缀天然成立） */
+export function listMethodMeta(): MethodDescriptor[] {
+  return [...methods.entries()]
+    .map(([method, { meta }]) => ({ method, ...(meta ?? {}) }))
+    .sort((a, b) => a.method.localeCompare(b.method));
+}
+
+// 自宿主：方法自描述（docs/21 D6）——aw methods 与 docs/07 §四生成表共用这一个入口
+registerMethod("rpc.methods", () => {
+  const list = listMethodMeta();
+  return { count: list.length, methods: list };
+});
+
+/**
+ * 统一分发器：WS 帧与 HTTP /rpc（docs/21 D2）共用同一条调用路径——信封校验之后的
+ * 一切（方法查找、执行、错误整形）都在这里，两个通道不各养一套错误语义。
+ */
+export type RpcOutcome =
+  | { readonly v: typeof WIRE_VERSION; readonly ok: true; readonly result: unknown }
+  | {
+      readonly v: typeof WIRE_VERSION;
+      readonly ok: false;
+      readonly error: { readonly code: string; readonly message: string; readonly data?: unknown };
+    };
+
+export async function dispatchRpc(method: string, params: unknown): Promise<RpcOutcome> {
+  const entry = methods.get(method);
+  if (entry === undefined) {
+    return {
+      v: WIRE_VERSION,
+      ok: false,
+      error: { code: "unknown_method", message: `no such method: ${method}` },
+    };
+  }
+  try {
+    return { v: WIRE_VERSION, ok: true, result: (await entry.handler(params)) ?? null };
+  } catch (err: unknown) {
+    const extra =
+      typeof err === "object" && err !== null && "data" in err && (err as { data: unknown }).data !== undefined
+        ? { data: (err as { data: unknown }).data }
+        : {};
+    return {
+      v: WIRE_VERSION,
+      ok: false,
+      error: {
+        code: err instanceof Error && "code" in err && typeof err.code === "string" ? err.code : "internal",
+        message: err instanceof Error ? err.message : String(err),
+        // data：结构化补充（冲突时带 reason + 盘上现值）。没有它前端只能拿到一句
+        // message 靠字符串猜「到底是 bot.json 变了还是 AGENTS.md 变了」，猜错就会
+        // 告诉用户错的那个文件。跨线的是「发生了什么」，不是「怎么排版」。
+        ...extra,
+      },
+    };
+  }
 }
 
 // ---- 服务器 ---------------------------------------------------------------
@@ -141,7 +241,7 @@ export function attachWs(
     };
     ws.send(JSON.stringify(hello));
 
-    ws.on("message", (data) => handleRaw(ws, data));
+    ws.on("message", (data) => void handleRaw(ws, data));
     ws.on("close", () => {
       clients.delete(ws);
       log.info("ws client closed", { clients: clients.size });
@@ -172,7 +272,15 @@ export function broadcastBacklog(wss: WebSocketServer, signal: unknown): void {
   }
 }
 
-function handleRaw(ws: WebSocket, data: unknown): void {
+/** 向所有在线客户端广播一条聚合通知（无订阅者就丢弃，历史以 notifications.list 拉取为准） */
+export function broadcastNotification(wss: WebSocketServer, row: unknown): void {
+  const payload = JSON.stringify({ v: WIRE_VERSION, type: "notifications", row } satisfies NotificationFrame);
+  for (const ws of wss.clients) {
+    if (ws.readyState === ws.OPEN) ws.send(payload);
+  }
+}
+
+async function handleRaw(ws: WebSocket, data: unknown): Promise<void> {
   let frame: unknown;
   try {
     frame = JSON.parse(String(data));
@@ -203,43 +311,14 @@ function handleRaw(ws: WebSocket, data: unknown): void {
     return;
   }
 
-  const handler = methods.get(f.method);
-  if (handler === undefined) {
-    send(ws, {
-      v: WIRE_VERSION,
-      id: f.id,
-      ok: false,
-      error: { code: "unknown_method", message: `no such method: ${f.method}` },
-    });
-    return;
-  }
-
-  const method: string = f.method;
   const id: string = f.id;
-  void Promise.resolve()
-    .then(() => handler(f.params))
-    .then(
-      (result) => send(ws, { v: WIRE_VERSION, id, ok: true, result: result ?? null }),
-      (err: unknown) => {
-        const extra =
-          typeof err === "object" && err !== null && "data" in err && (err as { data: unknown }).data !== undefined
-            ? { data: (err as { data: unknown }).data }
-            : {};
-        send(ws, {
-          v: WIRE_VERSION,
-          id,
-          ok: false,
-          error: {
-            code: err instanceof Error && "code" in err && typeof err.code === "string" ? err.code : "internal",
-            message: err instanceof Error ? err.message : String(err),
-            // data：结构化补充（冲突时带 reason + 盘上现值）。没有它前端只能拿到一句
-            // message 靠字符串猜「到底是 bot.json 变了还是 AGENTS.md 变了」，猜错就会
-            // 告诉用户错的那个文件。跨线的是「发生了什么」，不是「怎么排版」。
-            ...extra,
-          },
-        });
-      },
-    );
+  const outcome = await dispatchRpc(f.method, f.params);
+  send(
+    ws,
+    outcome.ok
+      ? { v: WIRE_VERSION, id, ok: true, result: outcome.result }
+      : { v: WIRE_VERSION, id, ok: false, error: outcome.error },
+  );
 }
 
 /**

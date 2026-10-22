@@ -230,3 +230,37 @@ _Avoid_: git log 面板（那是命令行概念）、DAG 视图
 **自动刷新（Git Auto-Refresh）**:
 daemon 侧文件监听（工作树 + .git）发现仓库变化后节流广播 `git.changed`，前端据此拉 git 状态的收敛机制（docs/16）。区别于轮询：没变化就不拉。
 _Avoid_: 文件监听（实现细节，对用户不可见）、watcher（同上）
+
+### AI-native 与操作面
+
+**AI-native**:
+软件的每个操作都能被 agent 以 headless 方式完成的程度判据：GUI 能做的每件事，外部 agent 都能用一条命令做等价事。达成路径不是给 agent 复刻一份逻辑，而是让 GUI 与 CLI 走同一条 daemon 代码路径（docs/21）。
+_Avoid_: 智能化（空话）、AI-first（口径不清）
+
+**操作面（Operation Surface）**:
+改变「其他客户端也看得见」的事实的能力集合（会话轮次、bot 定义、git、待办、出图任务……）。操作面必须 100% 住在 daemon——这是上移判据，也是「GUI 有而 `aw call` 打不到 = 缺口 bug」的出处。
+_Avoid_: API 面（传输概念）、功能列表（产品概念）
+
+**呈现（Presentation）**:
+只影响本端显示的逻辑（标签命名、颜色推导、已读标记、「你不在它面前」过滤）。留在 GUI，CLI 不做等价物——不为对称性上移。
+_Avoid_: UI 逻辑（废话）、视图层（实现词）
+
+**`/rpc` 桥（HTTP-RPC Bridge）**:
+daemon 的 RPC 方法注册表在 HTTP 上的门：`POST /rpc`，请求/响应与 WS 同信封同鉴权，不开第二套路由。RPC 层错误一律 200 + `ok:false`，状态码只表达传输层错误。
+_Avoid_: REST API（不是资源建模，是方法调用）、OpenAPI 面
+
+**`aw`（CLI）**:
+agent-workbench 的命令行客户端：零运行时依赖（node ≥22 原生 fetch/WebSocket），持 token 与 GUI 等权。stdout 只放数据，`--json` 机器口径，诊断走 stderr。
+_Avoid_: 前端命令行、headless UI（它不是 UI，是操作面的另一个客户端）
+
+**透传层 / 动词层（Pass-through / Verb Layer）**:
+CLI 的两层命令面：`aw call <method>` 全方法直达（agent 的兜底面）；动词层（`aw bot list` 等）只覆盖高频域的人机工效。长尾不做动词化。
+_Avoid_: 全量命令映射（明确不做）
+
+**`rpc.methods`（方法自描述）**:
+返回全量方法及其元数据（description / paramsHint / danger）的自宿主方法，`aw methods` 与 docs/07 §四生成表共用它。注册表是唯一真相，方法表是生成物。
+_Avoid_: API 文档（那是人写的、会陈旧；这是生成的）
+
+**工作台技能（Workbench Skill）**:
+随 daemon 分发的官方技能（`agent-workbench`）：教任何执行器用 `aw` 驾驶工作台本身——发现不背诵（`aw methods` 即文档）。daemon 持唯一正本，bot init 时按版本标记同步进 `.agents/skills/` 项目级源；无标记的用户自建同名文件不碰。
+_Avoid_: 内置技能（正本在 daemon 不在执行器）、引导提示词（那是提示执行器「它存在」的另一半，另一分支做）

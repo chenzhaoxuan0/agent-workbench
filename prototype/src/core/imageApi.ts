@@ -21,7 +21,35 @@
  * 透明背景 local 方法（canvas 抠图后处理）、遮罩编辑。
  */
 
-import { daemonImageFetch, dataUrlParts } from "./imageProxy.ts";
+
+/* ----------------------------------------------------------------- 传输类型 */
+
+/**
+ * 传输调用形状（与 imageProxy.ts 的 ImageProxyCall 结构同构）。就地声明而非从
+ * imageProxy 引入：TS 会把动态 import 的模块也拉进类型程序集，而 imageProxy 链上
+ * 是浏览器侧的 daemon client（localStorage / window）——backend 编译 image.generate
+ * 时不能被连带。transport 因此是**必传**：浏览器侧调用方显式传 daemonImageFetch。
+ */
+export interface ImageTransportCall {
+  /** 谁的密钥（空串 = 不带鉴权，纯下载隧道用） */
+  readonly profileId: string;
+  readonly url: string;
+  readonly method?: "GET" | "POST";
+  /** JSON 请求体原文 */
+  readonly bodyJson?: string;
+  /** edits 模式的 multipart 内容 */
+  readonly form?: { readonly fields: Record<string, string>; readonly files: readonly { field: string; filename: string; mime: string; b64: string }[] };
+  readonly signal?: AbortSignal;
+}
+
+export type ImageTransport = (call: ImageTransportCall) => Promise<Response>;
+
+/** dataURL 拆两段（与 imageProxy.ts 同实现；就地声明避免静态依赖浏览器模块） */
+function dataUrlParts(dataUrl: string): { mime: string; b64: string } {
+  const m = /^data:([^;,]+);base64,(.*)$/s.exec(dataUrl);
+  if (m === null) throw new Error("参考图不是 base64 dataURL");
+  return { mime: m[1]!, b64: m[2]! };
+}
 
 /* ----------------------------------------------------------------- 类型 */
 
@@ -113,19 +141,28 @@ const isHttpUrl = (v: unknown): v is string => typeof v === "string" && /^https?
 const isDataUrl = (v: unknown): v is string => typeof v === "string" && /^data:image\//i.test(v);
 
 /** 供应商图片 url → dataURL：也走 daemon 隧道（浏览器直 fetch 会被 CORS 拦掉 blob） */
-async function fetchImageUrlAsDataUrl(url: string, mime: string, signal?: AbortSignal, profileId?: string): Promise<string> {
-  const res = await daemonImageFetch({ profileId: profileId ?? "", url, method: "GET", signal });
+async function fetchImageUrlAsDataUrl(
+  url: string,
+  mime: string,
+  signal?: AbortSignal,
+  profileId?: string,
+  transport?: ImageTransport,
+): Promise<string> {
+  if (transport === undefined) throw new Error("transport 未注入（浏览器传 daemonImageFetch，daemon 注入直连——docs/21 P4c）");
+  const res = await transport({ profileId: profileId ?? "", url, method: "GET", signal });
   if (!res.ok) throw new Error(`图片下载失败（HTTP ${res.status}）`);
   const blob = await res.blob();
   return blobToDataUrl(blob, mime);
 }
 
 function blobToDataUrl(blob: Blob, fallbackMime: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(new Error("图片读取失败"));
-    reader.readAsDataURL(blob.type ? blob : new Blob([blob], { type: fallbackMime }));
+  // btoa 浏览器与 Node（≥16）都有；FileReader 只有浏览器有——编排唯一源必须双端可跑
+  return blob.arrayBuffer().then((buf) => {
+    const bytes = new Uint8Array(buf);
+    let bin = "";
+    const CHUNK = 0x8000;
+    for (let i = 0; i < bytes.length; i += CHUNK) bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+    return `data:${blob.type || fallbackMime};base64,${btoa(bin)}`;
   });
 }
 
@@ -396,6 +433,12 @@ interface CallOptions {
   signal?: AbortSignal;
   /** 流式 partial image 回调（images / responses 模式均支持） */
   onPartialImage?: (partial: PartialImageEvent) => void;
+  /**
+   * 传输层注入（docs/21 P4c）：浏览器传 daemonImageFetch（密钥不出 daemon、免 CORS，
+   * 保 SSE partial 的 GUI UX）；daemon 侧 image.generate 注入直连传输——
+   * GUI 与 headless 共用这一份编排唯一源。必传（见文件头传输类型注释）。
+   */
+  transport: ImageTransport;
 }
 
 /** 入口（callOpenAICompatibleImageApi 的移植）：images / responses 双模式 */
@@ -482,7 +525,7 @@ async function callImagesApiSingle(
       const ext = fileMime.split("/")[1] || "png";
       return { field: "image[]", filename: `input-${i + 1}.${ext}`, mime: fileMime, b64 };
     });
-    response = await daemonImageFetch({
+    response = await opts.transport({
       profileId: profile.id,
       url: `${base}/images/edits`,
       form: { fields, files },
@@ -494,7 +537,7 @@ async function callImagesApiSingle(
       body.stream = true;
       body.partial_images = partialImages;
     }
-    response = await daemonImageFetch({
+    response = await opts.transport({
       profileId: profile.id,
       url: `${base}/images/generations`,
       bodyJson: JSON.stringify(body),
@@ -508,9 +551,9 @@ async function callImagesApiSingle(
   }
 
   if (profile.streamImages && (response.headers.get("content-type") ?? "").includes("text/event-stream")) {
-    return parseImagesApiStreamResponse(response, mime, profile.id, opts.onPartialImage, signal);
+    return parseImagesApiStreamResponse(response, mime, profile.id, opts.onPartialImage, signal, opts.transport);
   }
-  return parseImagesApiResponse(await response.json(), mime, signal, profile.id);
+  return parseImagesApiResponse(await response.json(), mime, signal, profile.id, opts.transport);
 }
 
 interface ApiImageData {
@@ -520,7 +563,7 @@ interface ApiImageData {
 }
 
 /** parseImagesApiResponse：b64 / url 双路径 */
-async function parseImagesApiResponse(payload: unknown, mime: string, signal?: AbortSignal, profileId?: string): Promise<ImageCallResult> {
+async function parseImagesApiResponse(payload: unknown, mime: string, signal?: AbortSignal, profileId?: string, transport?: ImageTransport): Promise<ImageCallResult> {
   const data = Array.isArray(payload) ? (payload as ApiImageData[]) : ((payload as { data?: unknown })?.data as ApiImageData[] | undefined);
 
   if (!Array.isArray(data) || data.length === 0) {
@@ -541,7 +584,7 @@ async function parseImagesApiResponse(payload: unknown, mime: string, signal?: A
     }
     if (isHttpUrl(item.url)) {
       rawImageUrls.push(item.url);
-      images.push(await fetchImageUrlAsDataUrl(item.url, mime, signal, profileId));
+      images.push(await fetchImageUrlAsDataUrl(item.url, mime, signal, profileId, transport));
       revisedPrompts.push(revised);
       continue;
     }
@@ -568,6 +611,7 @@ async function parseImagesApiStreamResponse(
   profileId: string,
   onPartialImage?: CallOptions["onPartialImage"],
   signal?: AbortSignal,
+  transport?: ImageTransport,
 ): Promise<ImageCallResult> {
   const completedItems: ApiImageData[] = [];
   let resultPayload: unknown = null;
@@ -601,7 +645,7 @@ async function parseImagesApiStreamResponse(
     { signal, formatErrorMessage: () => STREAMING_FORMAT_HINT },
   );
 
-  if (resultPayload) return parseImagesApiResponse(resultPayload, mime, signal, profileId);
+  if (resultPayload) return parseImagesApiResponse(resultPayload, mime, signal, profileId, transport);
   if (!completedItems.length) throw new Error("流式接口未返回最终图片数据");
 
   const images: string[] = [];
@@ -616,7 +660,7 @@ async function parseImagesApiStreamResponse(
     }
     if (isHttpUrl(item.url) || isDataUrl(item.url)) {
       if (isHttpUrl(item.url)) rawImageUrls.push(item.url);
-      images.push(await fetchImageUrlAsDataUrl(item.url!, mime, signal, profileId));
+      images.push(await fetchImageUrlAsDataUrl(item.url!, mime, signal, profileId, transport));
       revisedPrompts.push(revised);
     }
   }
@@ -662,7 +706,7 @@ async function callResponsesImageApiSingle(
   if (profile.reasoningEffort) body.reasoning = { effort: profile.reasoningEffort };
   if (profile.streamImages) body.stream = true;
 
-  const response = await daemonImageFetch({
+  const response = await opts.transport({
     profileId: profile.id,
     url: `${base}/responses`,
     bodyJson: JSON.stringify(body),

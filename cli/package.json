@@ -1,0 +1,13 @@
+{
+  "name": "agent-workbench-cli",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "aw —— agent-workbench 的命令行客户端（docs/21 D3：透传层兜底 + 动词层高频，零运行时依赖）",
+  "bin": {
+    "aw": "bin/aw.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

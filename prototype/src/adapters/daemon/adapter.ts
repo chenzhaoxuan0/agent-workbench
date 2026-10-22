@@ -22,6 +22,7 @@ import type {
 } from "../../core/adapter.ts";
 import type { RuntimeEvent } from "../../core/events.ts";
 import { asModelId, type ModelId } from "../../core/models.ts";
+import type { ChatAttachment } from "../../core/attachments.ts";
 import {
   asRuntimeId,
   asSessionId,
@@ -31,6 +32,17 @@ import {
   type WorkUnit,
 } from "../../core/units.ts";
 import { DaemonClient, type DaemonExecutorInfo } from "./client.ts";
+
+/** 附件全带本地路径才交给 daemon 内联（docs/21 P4a）——与 store run() 的本地内联谓词一致 */
+function hasPathedAttachments(atts: readonly ChatAttachment[] | undefined): boolean {
+  return atts !== undefined && atts.length > 0 && atts.every((a) => typeof a.localPath === "string" && a.localPath !== "");
+}
+
+function attachmentPaths(atts: readonly ChatAttachment[] | undefined): string[] {
+  return (atts ?? [])
+    .map((a) => a.localPath)
+    .filter((p): p is string => typeof p === "string" && p !== "");
+}
 
 const ACCENTS = ["#7C6CF5", "#10A37F", "#4D6BFE", "#D97757", "#0EA5E9", "#F59E0B"];
 
@@ -241,9 +253,7 @@ class DaemonRuntimeAdapter implements RuntimeAdapter {
     await this.#client.ensureConnected();
   }
 
-  async disconnect(): Promise<void> {}
-
-  async listSessions(_unit: WorkUnit): Promise<readonly Session[]> {
+  async disconnect(): Promise<void> {}  async listSessions(_unit: WorkUnit): Promise<readonly Session[]> {
     const all = await this.#client.rpc<Session[]>("session.list", null, 15000);
     // 翻译放适配器边界（同 startSession/resumeSession 的约定，review P1）：
     // 裸执行器 id 落进前端 sessions[] 会让续聊判定永远不匹配 + 时间线 divider
@@ -277,6 +287,10 @@ class DaemonRuntimeAdapter implements RuntimeAdapter {
           ...(req.fork !== undefined ? { fork: req.fork } : {}),
           memoryOptions: req.memoryOptions,
           ...(req.contextManifestOverride !== undefined ? { contextManifestOverride: req.contextManifestOverride } : {}),
+          // 附件内联上移（docs/21 P4a）：全部附件都带本地路径时把内联交给 daemon
+          //（GUI 与 CLI 同一条组装路径）；混有浏览器附件（无路径）时不传——
+          // run() 那侧已本地内联进 prompt，这里再传会造成双份。
+          ...(hasPathedAttachments(req.attachments) ? { attachments: attachmentPaths(req.attachments) } : {}),
         },
         60000,
       );
@@ -329,6 +343,8 @@ class DaemonRuntimeAdapter implements RuntimeAdapter {
       reasoningLevel: req.loop?.reasoningLevel,
       contextLength: req.loop?.contextLength,
       ...(req.contextInject !== undefined ? { contextInject: req.contextInject } : {}),
+      // 同 startSession：全路径附件交给 daemon 内联（docs/21 P4a）
+      ...(hasPathedAttachments(req.attachments) ? { attachments: attachmentPaths(req.attachments) } : {}),
     });
   }
 

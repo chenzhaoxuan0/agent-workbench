@@ -11,6 +11,12 @@
     "dev": "tsx watch src/index.ts",
     "e2e:automation-ui": "tsx scripts/e2e-automation-ui.ts",
     "smoke": "tsx scripts/smoke-health.ts",
+    "smoke:ai-native-chat": "tsx scripts/smoke-ai-native-chat.ts",
+    "smoke:ai-native-cli": "tsx scripts/smoke-ai-native-cli.ts",
+    "smoke:ai-native-image": "tsx scripts/smoke-ai-native-image.ts",
+    "smoke:ai-native-notifications": "tsx scripts/smoke-ai-native-notifications.ts",
+    "smoke:ai-native-rpc": "tsx scripts/smoke-ai-native-rpc.ts",
+    "smoke:ai-native-skill": "tsx scripts/smoke-ai-native-skill.ts",
     "smoke:autoterm": "tsx scripts/smoke-autoterm.ts",
     "smoke:backlog": "tsx scripts/smoke-backlog.ts",
     "smoke:context": "tsx scripts/smoke-context.ts",
@@ -60,6 +66,7 @@
     "smoke:ui:live": "tsx scripts/live-gui-test.ts",
     "smoke:ui:resident": "tsx scripts/verify-resident-ui.ts",
     "start": "tsx src/index.ts",
+    "gen:methods": "tsx scripts/gen-methods-table.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

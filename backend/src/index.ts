@@ -6,7 +6,7 @@
  */
 
 import { existsSync, mkdirSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage } from "node:http";
@@ -20,7 +20,11 @@ import { ImageProfileStore, type ImageProfileRow } from "./image/profiles.ts";
 import { handleImageCall } from "./image/proxy.ts";
 import { log, setLogLevel } from "./log.ts";
 import { setSecretsHome } from "./secrets.ts";
-import { attachWs, broadcastBacklog, broadcastEvent, broadcastTerminal, registerMethod, WIRE_VERSION } from "./wsd.ts";
+import { applyMethodMeta, attachWs, broadcastBacklog, broadcastEvent, broadcastNotification, broadcastTerminal, dispatchRpc, registerMethod, WIRE_VERSION } from "./wsd.ts";
+import { METHOD_META } from "./methods.meta.ts";
+import { composePrompt, inlineAttachments, runChatTurn } from "./chat.ts";
+import { NotificationsService } from "./notifications.ts";
+import { generateImage, ImageTasks, type GenerateParams } from "./image/generate.ts";
 import { PermissionGate } from "./permissions/gate.ts";
 import { MockPermAdapter } from "./runtime/adapters/mockperm.ts";
 import { ClaudeAdapter } from "./runtime/adapters/claude.ts";
@@ -39,6 +43,7 @@ import { GrokAdapter } from "./runtime/adapters/grok.ts";
 import { CursorAdapter } from "./runtime/adapters/cursor.ts";
 import { OpenclawAdapter } from "./runtime/adapters/openclaw.ts";
 import { buildSkillsInventory, copySkill, setSkillDisabled } from "./skills/inventory.ts";
+import { syncWorkbenchSkill, workbenchSkillPath } from "./skills/workbenchSkill.ts";
 import * as gitRepo from "./git/repo.ts";
 import { GIT_ERROR_CODES } from "./contract.ts";
 import { GitWatcher } from "./git/watch.ts";
@@ -258,8 +263,21 @@ const store = new Store(config.homeDir);
 const gate = new PermissionGate(store);
 const traceSink = new TraceSink(config.homeDir);
 const botRegistry = new BotRegistry(store);
+// 通知事实源（docs/21 P4b）：挂在 host 事件汇点上聚合，「你不在它面前」与已读留在客户端。
+// metaOf 的 host 引用是闭包惰性求值（构造时 host 还不存在，事件到达时早已就绪）。
+const notifications = new NotificationsService(config.homeDir, (sid) => {
+  const s = host.listSessions().find((x) => String(x.id) === sid);
+  return s === undefined ? undefined : { source: s.source, title: s.title };
+});
 const host = new RuntimeHost((event, seq) => {
   broadcastEvent(wss, event, seq);
+  // 通知是遥测不是功能路径：聚合异常绝不能炸断事件管线（review 保护——
+  // record 会查台账取会话元数据，任何抖动只降级为丢一条通知）
+  try {
+    notifications.record(event);
+  } catch (err: unknown) {
+    log.warn("notifications record failed", { error: err instanceof Error ? err.message : String(err) });
+  }
   // 自动化运行记录的终态回灌（Phase 5）
   if (event.type === "session.ended") {
     const hit = automationRunBySession.get(event.sessionId);
@@ -269,6 +287,14 @@ const host = new RuntimeHost((event, seq) => {
       store.finishAutomationRun(hit.runId, failed ? "failed" : "done", `ended: ${event.reason}`);
       // 会话本身跑挂了也要挂失败徽章 —— 不然调度层看不到，卡片一直显示「已完成」
       if (failed) store.setAutomationError(hit.automationId, `ended: ${event.reason}`, Date.now());
+      // 通知取台账任务名直取（docs/21 P4b，取代前端补偿解析）；与上面 record() 的
+      // end:{sid} 同键原位刷新成「任务名 + 摘要」——同一条遥测保护
+      try {
+        const autoName = store.listAutomations().find((a) => a.id === hit.automationId)?.name;
+        notifications.notifyAutomationEnd(String(event.sessionId), event.reason, autoName);
+      } catch (err: unknown) {
+        log.warn("automation end notification failed", { error: err instanceof Error ? err.message : String(err) });
+      }
     }
     // 待办（GTD）执行的终态回灌 —— 引擎内部按 sessionId 映射判归属，与自动化互不干扰
     backlogEngine?.onSessionEnded(event.sessionId, event.reason);
@@ -832,6 +858,21 @@ let tunnelManager: TunnelManager;
 // ---- REST 管理面（权限闸的决策入口，docs/07 §六）----------------------------
 
 const httpRoutes: HttpRoute[] = [
+  // HTTP-RPC 桥（docs/21 D2）：WS 注册表的第二扇门——同信封、同鉴权、同错误语义，
+  // curl / shell / 任意执行器直达全部方法。传输层错误（401 鉴权 / 404 路由 / 413 超限 /
+  // 400 坏信封）用状态码；RPC 层错误一律 200 + ok:false（JSON-RPC over HTTP 惯例）。
+  {
+    method: "POST",
+    path: "/rpc",
+    handle: async ({ body }) => {
+      const f = body as { v?: unknown; id?: unknown; method?: unknown; params?: unknown } | null;
+      if (f === null || typeof f !== "object" || f.v !== WIRE_VERSION || typeof f.method !== "string") {
+        throw Object.assign(new Error(`expected { v:${WIRE_VERSION}, method:string, params? }`), { code: "bad_request" });
+      }
+      const outcome = await dispatchRpc(f.method, f.params);
+      return typeof f.id === "string" ? { ...outcome, id: f.id } : outcome;
+    },
+  },
   // 回环自动取 token（WP-7）：本机前端免配置；非回环走不到路由层（authorize 401）
   {
     method: "GET",
@@ -1062,6 +1103,9 @@ const authorize = (req: IncomingMessage, url: URL): boolean => {
 // 出图代理（docs 决策：密钥挪进 daemon）：浏览器把请求体交给 daemon，daemon 注入
 // Authorization 后转发并透传响应流。这条路由是流式大载荷，走 httpd 的裸路由通道。
 const imageProfiles = new ImageProfileStore(config.homeDir);
+// 出图任务历史（docs/21 P4c）：daemon 事实源，GUI 经 image.tasks.list 消费
+const imageTasks = new ImageTasks(config.homeDir);
+await imageTasks.load();
 
 // ---- 浏览器 / 电脑控制（docs/14）------------------------------------------------
 // 两个服务都持有 mcpadmin 的写通道（扇出 playwright / workbench-computer 条目）；
@@ -1078,6 +1122,44 @@ const { server, port } = await startHttp(config, startedAt, httpRoutes, authoriz
   // 电脑控制的 MCP 端点（Streamable HTTP）：CLI 客户端不会带 x-awb-token，
   // authorize 里按「回环 + 该路径」豁免（与 /bootstrap 同级信任）
   { method: "POST", path: COMPUTER_MCP_PATH, handle: computerControl.handleHttp },
+  // 生成图文件的服务面（docs/21 P4c）：只允许 <homeDir>/images 子树（路径穿越闸）；
+  // GET 可带 ?token=（<img> 标签设不了头，与 WS 鉴权同款豁口）
+  {
+    method: "GET",
+    path: "/api/image/file",
+    handle: async (_req, res, ctx) => {
+      const json = (status: number, body: unknown): void => {
+        const payload = JSON.stringify(body);
+        res.writeHead(status, {
+          "content-type": "application/json; charset=utf-8",
+          "content-length": Buffer.byteLength(payload),
+          ...(ctx.allowOrigin !== undefined ? { "access-control-allow-origin": ctx.allowOrigin } : {}),
+        });
+        res.end(payload);
+      };
+      const raw = ctx.url.searchParams.get("path") ?? "";
+      const abs = path.resolve(raw);
+      const root = path.resolve(join(config.homeDir, "images"));
+      if (raw === "" || (!abs.startsWith(root + path.sep) && abs !== root)) {
+        json(403, { ok: false, error: { code: "forbidden", message: "path 不在 images 目录下" } });
+        return;
+      }
+      try {
+        const data = await readFile(abs);
+        const ext = path.extname(abs).toLowerCase();
+        const mime = ext === ".jpg" || ext === ".jpeg" ? "image/jpeg" : ext === ".webp" ? "image/webp" : "image/png";
+        res.writeHead(200, {
+          "content-type": mime,
+          "content-length": data.byteLength,
+          "cache-control": "no-store",
+          ...(ctx.allowOrigin !== undefined ? { "access-control-allow-origin": ctx.allowOrigin } : {}),
+        });
+        res.end(data);
+      } catch {
+        json(404, { ok: false, error: { code: "not_found", message: "no such image file" } });
+      }
+    },
+  },
 ]);
 // 实际绑定端口（传 0 时由系统分配）同步给控制层——条目 url / dsh 注入都用它
 setControlContext(config.homeDir, port);
@@ -1087,6 +1169,8 @@ void computerControl.boot().catch((e: unknown) => {
 });
 tunnelManager = new TunnelManager(config.homeDir, port);
 const wss = attachWs(server, { config, startedAt, authorize });
+// 通知推送通道挂进 WS（在此之前到达的事件只记录不推送，历史以 notifications.list 为准）
+notifications.setPush((row) => broadcastNotification(wss, row));
 
 // ---- 待办 / GTD（backlog）—— 引擎需要 wss 广播，必须在 attachWs 之后构造 ----------
 
@@ -1095,7 +1179,10 @@ backlogEngine = new BacklogEngine({
   host,
   homeDir: config.homeDir,
   getConfig: () => getBacklogConfig(store),
-  broadcast: (signal: BacklogSignal) => broadcastBacklog(wss, signal),
+  broadcast: (signal: BacklogSignal) => {
+    notifications.recordBacklogSignal(signal);
+    broadcastBacklog(wss, signal);
+  },
   // 待办 launchMode=terminal 的 TUI 派发（与自动化共用 launchExecutorTerminal）
   launchTerminal: (o) => launchExecutorTerminal(o),
   notify: async (text) => {
@@ -2649,6 +2736,7 @@ function reqStrArray(params: unknown, key: string): string[] {
 let gitWatcherSeq = 0;
 const gitWatcher = new GitWatcher((rootPath) => {
   broadcastEvent(wss, { type: "git.changed", rootPath }, ++gitWatcherSeq);
+  notifications.recordGitChanged(rootPath);
 });
 
 registerMethod("git.status", async (params) => {
@@ -3145,6 +3233,7 @@ registerMethod("session.start", async (params) => {
     };
     contextManifestOverride?: unknown;
     customPromptOverride?: string;
+    attachments?: string[];
   };
   if (typeof p.runtimeId !== "string" || typeof p.unitId !== "string" ||
       typeof p.rootPath !== "string" || typeof p.prompt !== "string") {
@@ -3188,6 +3277,14 @@ registerMethod("session.start", async (params) => {
   ) {
     throw Object.assign(new Error("fork requires ofSessionId, anchorMessageId and kind=branch|revision"), { code: "bad_params" });
   }
+  // 附件路径内联（docs/21 P4a）：给了路径就由 daemon 组装 prompt——GUI 与 CLI 同一条路
+  if (p.attachments !== undefined && (!Array.isArray(p.attachments) || p.attachments.some((x) => typeof x !== "string" || x === ""))) {
+    throw Object.assign(new Error("attachments must be string[] of file paths"), { code: "bad_params" });
+  }
+  const prompt =
+    p.attachments !== undefined && p.attachments.length > 0
+      ? composePrompt(p.prompt, await inlineAttachments(p.attachments))
+      : p.prompt;
   // ADR 0014：注入清单的权威在 bot.json——这里从注册表带出归一后的 manifest 给
   // host（host 不认识注册表）。扫不到定义（外部根/测试路径）= 不带，注入器退回
   // legacy 行为。前端**不再**传全局 scopes 作为真相源；memoryOptions 只做 /mem 覆盖。
@@ -3197,7 +3294,7 @@ registerMethod("session.start", async (params) => {
     unitId: asUnitId(p.unitId),
     unitName: p.unitName ?? p.unitId,
     rootPath: p.rootPath,
-    prompt: p.prompt,
+    prompt,
     model: typeof p.model === "string" ? asModelId(p.model) : null,
     mode: p.mode,
     reasoningLevel: p.reasoningLevel,
@@ -3235,26 +3332,79 @@ registerMethod("session.start", async (params) => {
           : undefined,
   });
 });
-registerMethod("session.send", (params) => {
+registerMethod("session.send", async (params) => {
   const p = (params ?? {}) as {
     sessionId?: string;
     text?: string;
     reasoningLevel?: string;
     contextLength?: string;
     contextInject?: { manifest?: ContextManifest };
+    attachments?: string[];
   };
   if (typeof p.sessionId !== "string" || typeof p.text !== "string") {
     throw Object.assign(new Error("sessionId and text are required"), { code: "bad_params" });
   }
+  // 附件路径内联（docs/21 P4a）：给了路径就由 daemon 组装 prompt——GUI 与 CLI 同一条路
+  const text =
+    p.attachments !== undefined && p.attachments.length > 0
+      ? composePrompt(p.text, await inlineAttachments(p.attachments))
+      : p.text;
   return host.sendMessage(
     asSessionId(p.sessionId),
-    p.text,
+    text,
     {
       reasoningLevel: p.reasoningLevel,
       contextLength: typeof p.contextLength === "string" && p.contextLength !== "" ? p.contextLength : undefined,
     },
     p.contextInject,
   );
+});
+// headless 一轮闭环（docs/21 P4a）：附件内联 + 续聊判定 + 模型解析 + 等轮落定回全文。
+// 与 GUI run() 二分：操作在这里，视图（活跃会话/fork 回放/回显）在 GUI。
+registerMethod("session.chat", async (params) => {
+  const p = (params ?? {}) as Parameters<typeof runChatTurn>[1];
+  if (typeof p?.text !== "string" || p.text === "") {
+    throw Object.assign(new Error("text is required"), { code: "bad_params" });
+  }
+  if (p.attachments !== undefined && (!Array.isArray(p.attachments) || p.attachments.some((x) => typeof x !== "string" || x === ""))) {
+    throw Object.assign(new Error("attachments must be string[] of file paths"), { code: "bad_params" });
+  }
+  return runChatTurn({ host, registry: botRegistry }, p);
+});
+// 通知事实源（docs/21 P4b）：daemon 聚合行的查询面；已读与「你不在它面前」是客户端呈现
+registerMethod("notifications.list", (params) => {
+  const p = (params ?? {}) as { limit?: number };
+  return { items: notifications.list(typeof p.limit === "number" ? p.limit : undefined) };
+});
+// 出图操作面（docs/21 P4c）：编排唯一源在 prototype/core/imageApi.ts（GUI 同份），
+// 这里注入直连传输；任务历史是 daemon 事实（image-tasks.json），文件经 /api/image/file 取
+registerMethod("image.generate", async (params) => {
+  const p = (params ?? {}) as GenerateParams;
+  if (typeof p.profileId !== "string" || p.profileId === "" || typeof p.prompt !== "string" || p.prompt === "") {
+    throw Object.assign(new Error("profileId and prompt are required"), { code: "bad_params" });
+  }
+  return generateImage({ profiles: imageProfiles, tasks: imageTasks, homeDir: config.homeDir }, p);
+});
+registerMethod("image.tasks.list", () => ({ items: imageTasks.list() }));
+// 工作台技能同步（docs/21 P6）：bot init 已自动播种，这里兜底存量 bot / 升级 / force 重装
+registerMethod("workbench.skill.sync", async (params) => {
+  const p = (params ?? {}) as { botId?: string; rootPath?: string; force?: boolean };
+  const roots: string[] = [];
+  if (typeof p.rootPath === "string" && p.rootPath !== "") {
+    roots.push(p.rootPath);
+  } else if (typeof p.botId === "string" && p.botId !== "") {
+    const bot = await botRegistry.getBot(p.botId);
+    if (bot === undefined) throw Object.assign(new Error(`no such bot: ${p.botId}`), { code: "unknown_bot" });
+    if (typeof bot.rootPath === "string") roots.push(bot.rootPath);
+  } else {
+    roots.push(...(await botRegistry.listBots()).flatMap((b) => (typeof b.rootPath === "string" && b.rootPath !== "" ? [b.rootPath] : [])));
+  }
+  if (roots.length === 0) throw Object.assign(new Error("no bots to sync (传 botId/rootPath，或先建一个 bot)"), { code: "bad_params" });
+  const results = [];
+  for (const root of roots) {
+    results.push(await syncWorkbenchSkill(root, { force: p.force === true }));
+  }
+  return { results, path: roots.length === 1 ? workbenchSkillPath(roots[0] ?? "") : undefined };
 });
 registerMethod("session.cancel", (params) => {
   const { sessionId } = (params ?? {}) as { sessionId?: string };
@@ -3469,6 +3619,10 @@ void (async () => {
     /* 预热是优化不是功能路径：失败留给菜单打开时的正常拉取 */
   }
 })();
+
+// 方法元数据集中表（docs/21 D6）：挂到注册表供 rpc.methods / aw methods / docs/07 生成表
+// 消费。必须在全部 registerMethod 之后调用——本表出现注册表没有的键 = 漂移，启动掀桌。
+applyMethodMeta(METHOD_META);
 
 let shuttingDown = false;
 // 评审 P1：host.shutdown 必须真等——undelivered 广播是异步 socket 写、adapter.disconnect

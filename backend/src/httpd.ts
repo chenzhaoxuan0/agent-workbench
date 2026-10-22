@@ -95,7 +95,7 @@ async function readBody(req: IncomingMessage): Promise<unknown> {
   let size = 0;
   for await (const chunk of req) {
     size += (chunk as Buffer).length;
-    if (size > 1_000_000) throw Object.assign(new Error("body too large"), { code: "bad_request" });
+    if (size > 1_000_000) throw Object.assign(new Error("body too large"), { code: "too_large" });
     chunks.push(chunk as Buffer);
   }
   if (chunks.length === 0) return null;
@@ -185,6 +185,7 @@ export function startHttp(
       if (!res.headersSent) {
         const status =
           code === "bad_request" ? 400
+          : code === "too_large" ? 413
           : code === "unauthorized" ? 401
           : code === "forbidden" ? 403
           : code === "not_found" || code === "unknown_bot" || code === "no_channel" ? 404

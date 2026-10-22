@@ -157,6 +157,7 @@ export class DaemonClient {
   readonly #pending = new Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
   readonly #eventListeners = new Set<(e: RuntimeEvent, seq?: number) => void>();
   readonly #backlogListeners = new Set<(s: BacklogSignal) => void>();
+  readonly #notificationListeners = new Set<(row: DaemonNotificationRow) => void>();
   readonly #resyncListeners = new Set<() => void>();
   readonly #generationListeners = new Set<() => void>();
   readonly #terminalListeners = new Set<(f: DaemonTerminalFrame) => void>();
@@ -333,6 +334,13 @@ export class DaemonClient {
       for (const fn of this.#backlogListeners) fn(signal);
       return;
     }
+    if (frame["type"] === "notifications") {
+      const row = frame["row"] as DaemonNotificationRow | undefined;
+      // 最小形状校验（与 event/backlog 同理）
+      if (row === undefined || typeof row !== "object" || typeof row.id !== "string" || typeof row.kind !== "string") return;
+      for (const fn of this.#notificationListeners) fn(row);
+      return;
+    }
     // rpc 响应
     if (frame["id"] !== undefined && frame["id"] !== null && (frame["ok"] !== undefined || frame["error"] !== undefined)) {
       const key = String(frame["id"]);
@@ -392,6 +400,12 @@ export class DaemonClient {
   onBacklogSignal(fn: (s: BacklogSignal) => void): () => void {
     this.#backlogListeners.add(fn);
     return () => this.#backlogListeners.delete(fn);
+  }
+
+  /** daemon 聚合通知推流（docs/21 P4b）；历史以 fetchNotifications 拉取为准 */
+  onNotification(fn: (row: DaemonNotificationRow) => void): () => void {
+    this.#notificationListeners.add(fn);
+    return () => this.#notificationListeners.delete(fn);
   }
 
   /** 重连（未换代）时触发——适配器按会话游标增量补拉 */
@@ -1402,6 +1416,26 @@ export async function fetchAutomations(endpoint: string = defaultDaemonEndpoint(
   const client = DaemonClient.get(endpoint);
   const raw = await client.rpc<DaemonAutomation[]>("automation.list", null, 15000);
   return raw.map(daemonAutomationToAutomation);
+}
+
+/** daemon 聚合的通知事实行（docs/21 P4b）——read/「你不在它面前」是客户端呈现，行里没有 */
+export interface DaemonNotificationRow {
+  readonly id: string;
+  readonly at: number;
+  readonly level: "info" | "ok" | "warn" | "loss";
+  readonly kind: "session" | "permission" | "error" | "notice" | "steer" | "deliverable" | "backlog" | "git";
+  readonly title: string;
+  readonly text: string;
+  /** SessionSource 原始值（客户端渲染徽标） */
+  readonly source?: string;
+  readonly sessionId?: string;
+  readonly backlog?: boolean;
+}
+
+export async function fetchNotifications(endpoint: string = defaultDaemonEndpoint()): Promise<DaemonNotificationRow[]> {
+  const client = DaemonClient.get(endpoint);
+  const raw = await client.rpc<{ items?: DaemonNotificationRow[] }>("notifications.list", null, 15000);
+  return raw.items ?? [];
 }
 
 /** 一条「可续接的对话」—— 定时发送的目标选项 */
