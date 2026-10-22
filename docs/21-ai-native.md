@@ -134,12 +134,11 @@
 - [x] danger 标注 7 个真危险面：daemon.stop / git.push / git.worktree.remove / bot.put / computerControl.setEnabled / mcp.save / mcp.remove（computerControl.actions 经 handler 实读是只读审计流，危险标注改挂 setEnabled）
 - [x] `gen-methods-table.ts` + docs/07 §四替换为生成表（156 方法 29 域，锚点内勿手改）
 
-### P3 · `aw` CLI（~1–2 天）
-- [ ] `cli/` 包 + bin（Windows `.cmd` shim；`pnpm link --global` 本地安装，不发 npm）
-- [ ] 连接 / token 发现、`call` 透传层、`--json` / 退出码纪律
-- [ ] 动词层首批：`aw bot list/put`、`aw session chat/send/list/messages`、
-      `aw backlog list/add/done`、`aw git status/commit`、`aw methods`、`aw events`
-- [ ] `smoke:ai-native-cli`：起 daemon → `aw` 建 bot → 发消息 → 读结果全链路（headless 无 GUI）
+### P3 · `aw` CLI（已完成 2026-10-22）
+- [x] `cli/` 包 + bin（`pnpm -C cli link --global` 本地安装，.cmd shim 由 pnpm 生成；不发 npm）
+- [x] 连接 / token 发现、`call` 透传层、`--json` / 退出码纪律（0 成功 / 2 用法 / 3 RPC 错 / 4 传输错——比计划多一档，agent 脚本可区分「daemon 不在」与「方法报错」）
+- [x] 动词层首批：bot list/put/inspect/ask、session list/send/messages/cancel、backlog list/add/done（验收语义，新建议先执行后验收）、git status/commit、methods、events（补拉 + --follow）、doctor
+- [x] `smoke:ai-native-cli`：起 daemon → `aw` 建 bot → 加待办 → 读状态 → 退出码矩阵，19 项断言（headless 无 GUI）；`session chat` 动词随 P4a 落地
 
 ### P4 · 编排上移（可按项独立落地，每项 ~0.5–1 天）
 - [ ] P4a `session.chat`（附件路径化 + 续聊判定 + model `"auto"` 回退）+ GUI `run()` 改薄
