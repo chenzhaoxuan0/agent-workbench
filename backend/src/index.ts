@@ -44,6 +44,7 @@ import { CursorAdapter } from "./runtime/adapters/cursor.ts";
 import { OpenclawAdapter } from "./runtime/adapters/openclaw.ts";
 import { buildSkillsInventory, copySkill, setSkillDisabled } from "./skills/inventory.ts";
 import { syncWorkbenchSkill, workbenchSkillPath } from "./skills/workbenchSkill.ts";
+import { syncContextSkill } from "./skills/contextSkill.ts";
 import * as gitRepo from "./git/repo.ts";
 import { GIT_ERROR_CODES } from "./contract.ts";
 import { GitWatcher } from "./git/watch.ts";
@@ -3386,7 +3387,8 @@ registerMethod("image.generate", async (params) => {
   return generateImage({ profiles: imageProfiles, tasks: imageTasks, homeDir: config.homeDir }, p);
 });
 registerMethod("image.tasks.list", () => ({ items: imageTasks.list() }));
-// 工作台技能同步（docs/21 P6）：bot init 已自动播种，这里兜底存量 bot / 升级 / force 重装
+// 官方技能同步（docs/21 P6 × docs/20 收敛）：bot init 已自动播种，这里兜底存量 bot /
+// 升级 / force 重装；agent-workbench 与 workbench-context 两个基础技能一并同步
 registerMethod("workbench.skill.sync", async (params) => {
   const p = (params ?? {}) as { botId?: string; rootPath?: string; force?: boolean };
   const roots: string[] = [];
@@ -3402,7 +3404,9 @@ registerMethod("workbench.skill.sync", async (params) => {
   if (roots.length === 0) throw Object.assign(new Error("no bots to sync (传 botId/rootPath，或先建一个 bot)"), { code: "bad_params" });
   const results = [];
   for (const root of roots) {
+    // 官方技能 ×2（docs/20 × docs/21 P6 收敛）：agent-workbench 在前（兼容 results[0] 语义）
     results.push(await syncWorkbenchSkill(root, { force: p.force === true }));
+    results.push(...(await syncContextSkill(root, { force: p.force === true })));
   }
   return { results, path: roots.length === 1 ? workbenchSkillPath(roots[0] ?? "") : undefined };
 });

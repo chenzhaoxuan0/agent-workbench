@@ -2,9 +2,10 @@
  * AI-native P6 验收（docs/21 §2 P6）：工作台技能同步。
  *
  *   自起 daemon → bot.put（createRoot 新建）→ .agents/skills/agent-workbench/SKILL.md
- *   自动播种（版本标记 v1）→ skills.inventory 可见（项目级源）→
- *   workbench.skill.sync 幂等（current）→ 无标记的用户自建同名不被碰（skipped-foreign）→
- *   旧版本标记 → 升级（updated）→ force 重装 → 无参调用对全部 bot 兜底。
+ *   随 initWorkspace 自动播种（版本标记 v1）→ skills.inventory 可见（项目级源）→
+ *   workbench.skill.sync 幂等（current，两个官方技能一并返回）→ 无标记的用户自建
+ *   同名不被碰（skipped-foreign）→ 旧版本标记 → 升级（updated）→ force 重装 →
+ *   无参调用对全部 bot 兜底 → 仓库根自用副本与 daemon 正本零漂移。
  *
  * 用法：cd backend && pnpm smoke:ai-native-skill
  */
@@ -16,6 +17,8 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { workbenchSkillMd } from "../src/skills/workbenchSkill.ts";
+import { contextSkillMd } from "../src/skills/contextSkill.ts";
 
 const backendRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -122,7 +125,7 @@ async function main(): Promise<void> {
   try {
     check("daemon healthy", await waitHealthy(port), daemonOutput);
 
-    // 1. bot init 播种（fire-and-forget，轮询等落笔）
+    // 1. bot init 播种（initWorkspace 内 await，落笔随 bot.put 返回；轮询兜底时序）
     const put = await rpc(port, "bot.put", {
       unit: { id: "u-skill", rootPath: botRoot, name: "Skill Bot", kind: "bot", bindings: [], tags: [], channels: [] },
       createRoot: true,
@@ -146,9 +149,10 @@ async function main(): Promise<void> {
     const hit = flat.find((s) => s.dirName === "agent-workbench" && (s.dir ?? "").includes(botRoot));
     check("skills.inventory sees the project-level skill", inv.ok === true && hit !== undefined, flat.map((s) => s.dirName).slice(0, 10));
 
-    // 3. 幂等：再同步 = current
+    // 3. 幂等：再同步 = current（两个官方技能一并返回，agent-workbench 在前）
     const again = await rpc<{ results?: SyncResult[] }>(port, "workbench.skill.sync", { rootPath: botRoot });
     check("re-sync is a no-op (current)", again.ok === true && again.result?.results?.[0]?.status === "current", again);
+    check("sync also covers workbench-context (converged base skills)", again.result?.results?.some((r) => r.path.includes("workbench-context") && r.status === "current") === true, again.result?.results);
 
     // 4. 用户自建同名（无标记）不被碰
     await writeFile(skillFile, "---\nname: agent-workbench\ndescription: 我的私改版\n---\n用户内容\n", "utf8");
@@ -170,6 +174,14 @@ async function main(): Promise<void> {
     // 7. 无参调用：对全部 bot 兜底
     const all = await rpc<{ results?: SyncResult[] }>(port, "workbench.skill.sync", null);
     check("no-arg sync sweeps every bot", all.ok === true && (all.result?.results?.length ?? 0) >= 1, all);
+
+    // 8. 正本漂移防线：仓库根的自用副本（dogfood）必须与 daemon 正本逐字节一致——
+    //    改任一侧须同步另一侧并升版本，否则这里掀桌
+    const repoAgentsDir = path.resolve(backendRoot, "..", ".agents", "skills");
+    const repoAw = await readFile(path.join(repoAgentsDir, "agent-workbench", "SKILL.md"), "utf8");
+    check("repo-root agent-workbench copy matches daemon canonical (no drift)", repoAw === workbenchSkillMd(), { repo: repoAw.slice(0, 80), canonical: workbenchSkillMd().slice(0, 80) });
+    const repoCtx = await readFile(path.join(repoAgentsDir, "workbench-context", "SKILL.md"), "utf8");
+    check("repo-root workbench-context copy matches daemon canonical (no drift)", repoCtx === contextSkillMd(), { repo: repoCtx.slice(0, 80), canonical: contextSkillMd().slice(0, 80) });
   } finally {
     await stopDaemon();
   }

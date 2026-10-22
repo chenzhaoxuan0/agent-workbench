@@ -183,7 +183,10 @@
 - [x] 官方技能 `agent-workbench`（`backend/src/skills/workbenchSkill.ts` 持唯一正本）：教任何执行器驾驶工作台——入口两档（`aw` → curl 兜底零安装）、灵魂是**发现不背诵**（`aw methods` 自描述即文档）、高频动作速查（指挥别的 bot / 通知 / 待办 / git / 记忆 / 出图 / 事件流）、纪律（stdout 只有数据、退出码、token 即钥匙）
 - [x] bot init（registry.putBot 新建路径）自动播种到 `<rootPath>/.agents/skills/agent-workbench/SKILL.md`——.agents 规范公共库的**项目级源**，全执行器可发现、自动进 context manifest 技能目录；存量 bot 由 `workbench.skill.sync` RPC 兜底（botId / rootPath / 无参全量，force 重装）
 - [x] 同步契约：版本标记行 `agent-workbench-skill: vN`——**无标记的同名文件 = 用户自建，不碰**（skipped-foreign）；更旧 → 升级回正本；force → 重装；播种失败只 warn 不炸 bot 创建
-- [x] `smoke:ai-native-skill` 十项断言（播种 / 盘点可见 / 幂等 / 外来保护 / 版本升级 / force / 全量兜底）
+- [x] `smoke:ai-native-skill` 十二项断言（播种 / 盘点可见 / 幂等 / 外来保护 / 版本升级 / force / 全量兜底 / 两技能收敛 / 仓库根副本零漂移）
+- [x] **与 main 线记忆技能收敛（合并后补）**：播种契约抽通用（`skillSync.ts`），`workbench-context`
+  （docs/20 P6）与 `agent-workbench` 同一种使用形式——都是 bot init 在工作空间初始化的基础能力；
+  `workbench.skill.sync` 一并同步两个技能；详见 docs/20 P6
 
 ## 3. 验收清单
 

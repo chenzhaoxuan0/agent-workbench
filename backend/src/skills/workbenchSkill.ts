@@ -1,27 +1,16 @@
 /**
  * 工作台技能（docs/21 P6）—— 随 daemon 分发的官方技能：教任何执行器用 `aw` 驾驶
- * agent-workbench 本身。bot init（registry.put 创建路径）时同步进
+ * agent-workbench 本身。与 workbench-context 技能（contextSkill.ts）同走 skillSync.ts
+ * 版本标记契约：bot init（registry.initWorkspace 路径）时同步进
  * `<rootPath>/.agents/skills/agent-workbench/SKILL.md`（.agents 规范公共库的项目级源，
- * 全执行器可发现），存量 bot 由 `workbench.skill.sync` RPC 兜底。
- *
- * 同步纪律（文件即数据库）：
- * - 版本标记行 `<!-- agent-workbench-skill: vN -->` 是同步的契约——daemon 是这个
- *   文件的权威源，**只在**「不存在 / 版本更旧 / force」三种情形落笔；
- * - 无标记的同名文件 = 用户自建技能，**不碰**（skipped-foreign）；
- * - 播种是增强不是功能路径：任何失败只 log.warn，绝不炸 bot 创建。
+ * 全执行器可发现），存量 bot 由 `workbench.skill.sync` RPC / 补充 Init 兜底。
  */
 
-import { existsSync } from "node:fs";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { log } from "../log.ts";
+import { markerLine, syncCanonicalSkill, type SkillSyncResult } from "./skillSync.ts";
 
 export const WORKBENCH_SKILL_NAME = "agent-workbench";
 export const WORKBENCH_SKILL_VERSION = 1;
-
-/** 版本标记行（同步契约）：在正文中出现即认定为 daemon 维护的副本（标记后允许带注释再闭合） */
-const VERSION_MARKER = (v: number): string => `agent-workbench-skill: v${v}`;
-const MARKER_RE = /<!--\s*agent-workbench-skill:\s*v(\d+)[^\n>]*-->/;
 
 /** 官方正本——改这里并升 WORKBENCH_SKILL_VERSION，老 bot 的副本会在下次 sync 升级 */
 export function workbenchSkillMd(): string {
@@ -30,7 +19,7 @@ name: ${WORKBENCH_SKILL_NAME}
 description: 操作 agent-workbench 工作台本身——用 aw CLI 驱动会话、待办、git、通知、出图等全部操作面。当用户提到「工作台」「别的 bot」「待办」「通知」，或需要跨 bot 协作、查工作台状态时使用。
 ---
 
-<!-- ${VERSION_MARKER(WORKBENCH_SKILL_VERSION)}（daemon 维护，升级会覆盖；自定义请复制改名） -->
+${markerLine(WORKBENCH_SKILL_NAME, WORKBENCH_SKILL_VERSION)}
 
 # agent-workbench —— 驾驶你所在的工作台
 
@@ -87,46 +76,22 @@ aw events --session <sid> --follow                      # 实时跟随某个会�
 `;
 }
 
-export interface SkillSyncResult {
-  readonly rootPath: string;
-  readonly path: string;
-  readonly status: "written" | "updated" | "current" | "skipped-foreign";
-  readonly version: number;
-}
-
 export function workbenchSkillPath(rootPath: string): string {
   return path.join(rootPath, ".agents", "skills", WORKBENCH_SKILL_NAME, "SKILL.md");
 }
 
-/** 幂等同步（版本标记契约，见文件头） */
-export async function syncWorkbenchSkill(rootPath: string, opts: { force?: boolean } = {}): Promise<SkillSyncResult> {
-  const file = workbenchSkillPath(rootPath);
-  const canonical = workbenchSkillMd();
-  let status: SkillSyncResult["status"] = "written";
-  if (existsSync(file)) {
-    const prev = await readFile(file, "utf8");
-    const m = MARKER_RE.exec(prev);
-    if (m === null && opts.force !== true) {
-      // 无版本标记的同名文件 = 用户自建技能，不碰（文件即数据库：谁建谁拥有）
-      return { rootPath, path: file, status: "skipped-foreign", version: WORKBENCH_SKILL_VERSION };
-    }
-    if (opts.force !== true && m !== null && Number(m[1]) >= WORKBENCH_SKILL_VERSION) {
-      return { rootPath, path: file, status: "current", version: Number(m[1]) };
-    }
-    status = "updated";
-  }
-  await mkdir(path.dirname(file), { recursive: true });
-  const tmp = `${file}.tmp`;
-  await writeFile(tmp, canonical, "utf8");
-  await rename(tmp, file);
-  return { rootPath, path: file, status, version: WORKBENCH_SKILL_VERSION };
-}
-
-/** 播种（增强路径）：失败只 warn 不抛——技能没种上不该炸 bot 创建 */
-export function seedWorkbenchSkill(rootPath: string): void {
-  void syncWorkbenchSkill(rootPath).then(
-    (r) => log.info("workbench skill seeded", { root: rootPath, status: r.status }),
-    (err: unknown) =>
-      log.warn("workbench skill seed failed", { root: rootPath, error: err instanceof Error ? err.message : String(err) }),
+/** 幂等同步（版本标记契约，见 skillSync.ts） */
+export async function syncWorkbenchSkill(
+  rootPath: string,
+  opts: { force?: boolean } = {},
+): Promise<SkillSyncResult> {
+  const results = await syncCanonicalSkill(
+    rootPath,
+    { name: WORKBENCH_SKILL_NAME, version: WORKBENCH_SKILL_VERSION, md: workbenchSkillMd() },
+    [`.agents/skills/${WORKBENCH_SKILL_NAME}/SKILL.md`],
+    opts,
   );
+  const r = results[0];
+  if (r === undefined) throw new Error("syncCanonicalSkill returned no result for main path");
+  return r;
 }

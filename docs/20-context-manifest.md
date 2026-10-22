@@ -155,6 +155,21 @@ AGENTS.md（仅兜底时）→ SOUL → USER → MEMORY.semantic → daily → S
 - [ ] `docs/05-reference-map.md` 补 openclaw 借鉴条目（bootstrap 顺序 / nativeProjectDocBasenames / skills 目录注入 / per-agent workspace 隔离）
 - [ ] README 功能段更新
 
+### P6 · 记忆技能 Skill 化与官方技能收敛（已完成，2026-10-22）
+- [x] **两个官方基础技能，一种使用形式**：`workbench-context`（记忆检索，docs/20 本线）与
+  `agent-workbench`（驾驶工作台，docs/21 P6 线）都是 bot init 时在工作空间初始化的技能，
+  正本集中 daemon（`backend/src/skills/`，`skillSync.ts` 通用契约），落盘 `.agents/skills/`
+  规范位
+- [x] **版本标记契约统一**：`<!-- <name>-skill: vN -->`——只在「不存在 / 更旧 / force」落笔；
+  无标记但内容与迁移正本（`LEGACY_CONTEXT_SKILL_MD`）一致 = 无标记时代 daemon 种的可认领
+  升级；改过的 = 用户自建不碰。此前的 `ensureFile` 只补缺永不升级（改进正本存量永远留旧版）
+  退役，骨架 MD（MEMORY/STANDING/SOUL）仍走 ensureFile（用户文件永不覆盖）
+- [x] **落点收敛**：`skills/` 旧位降级为兼容位（只升存量不新建），规范位唯一 `.agents/skills/`
+- [x] **触发与兜底**：`initWorkspace`（bot init / 保存 / 补充 Init 按钮同一条路）内 sync 两技能，
+  `workbench.skill.sync` RPC 兜底存量与升级；播种失败只 warn 不炸 init（增强件统一姿态）
+- [x] **漂移防线**：`smoke:ai-native-skill` 断言仓库根自用副本与 daemon 正本逐字节一致；
+  `smoke:prog-init` 断言迁移判定（认领升级 / 用户自建不碰）
+
 ## 3. 验收清单
 
 1. 新建 bot → 派发日志零注入 parts，UI 显示「裸跑」

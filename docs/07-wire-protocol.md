@@ -153,10 +153,12 @@
 | `bot.ask` | 向 bot 发一条文本并等轮落定拿回全文（webhook/MCP 共用内核） | {botId, text, waitMs?, memoryOptions?} | — |
 | `bot.defaultRoot` | 查新建 bot 的默认安置目录与可浏览根（幂等建 bots 目录） | null | — |
 | `bot.gitignore.ensure` | 确保 bot 目录 .gitignore 覆盖密钥文件 | {rootPath} | — |
+| `bot.initWorkspace` | 初始化/补齐工作区骨架（memory 目录与核心 MD，绝不覆盖已有正文）并同步官方基础技能 ×2（agent-workbench + workbench-context，版本标记契约） | {rootPath} | — |
 | `bot.inspect` | 纯读探测目录现状（bot.json 有无、可导入项三分支） | {rootPath} | — |
 | `bot.list` | 列全部已注册 bot | null | — |
 | `bot.put` | 写 bot 定义落盘到 .agent-workbench/bot.json（含 contextManifest），三把乐观锁 | {unit, ifRevision?, ifAgentsMdHash?, ifSoulMdHash?, createRoot?} | ⚠️ high |
 | `bot.roots.add` | 登记一个 bot 扫描根目录 | {dir} | — |
+| `bot.unregister` | — | — | — |
 
 ### browserControl
 
@@ -387,7 +389,7 @@
 
 | 方法 | 说明 | params | 危险 |
 |---|---|---|---|
-| `workbench.skill.sync` | 同步官方「驾驶工作台」技能到 bot 的 .agents/skills/（bot init 已自动播种；这里兜底存量 bot、版本升级与 force 重装；无标记的用户自建同名技能不碰） | {botId? | rootPath?, force?} | — |
+| `workbench.skill.sync` | 同步官方基础技能 ×2（agent-workbench 驾驶工作台 + workbench-context 记忆检索）到 bot 工作区（bot init 已自动播种；这里兜底存量 bot、版本升级与 force 重装；无标记的用户自建同名技能不碰） | {botId? | rootPath?, force?} | — |
 
 ### workspace
 

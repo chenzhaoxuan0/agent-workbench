@@ -9,6 +9,8 @@ import path from "node:path";
 import { hasSubstantiveContent } from "../../prototype/src/core/units.ts";
 import { BotRegistry } from "../src/bots/registry.ts";
 import { FileMemoryInjector } from "../src/memory/injection.ts";
+import { LEGACY_CONTEXT_SKILL_MD, syncContextSkill } from "../src/skills/contextSkill.ts";
+import { workbenchSkillMd } from "../src/skills/workbenchSkill.ts";
 import type { Store } from "../src/store/db.ts";
 
 function fakeStore(): Store {
@@ -53,18 +55,36 @@ async function main() {
     const store = fakeStore();
     const registry = new BotRegistry(store);
 
-    // 2.1 补充 Init 机制
+    // 2.1 补充 Init 机制：骨架 + 官方技能 ×2（版本标记契约，规范位 .agents/skills/）
     const initRes = await registry.initWorkspace(botDir);
     ok(initRes.created.includes(".agent-workbench"), "创建了 .agent-workbench 目录");
-    ok(initRes.created.includes("skills/workbench-context/SKILL.md"), "创建了 skills/workbench-context/SKILL.md");
-    ok(initRes.created.includes(".agents/skills/workbench-context/SKILL.md"), "创建了 .agents/skills/workbench-context/SKILL.md 软链/镜像");
     ok(initRes.created.includes("MEMORY.md"), "创建了 MEMORY.md");
     ok(initRes.created.includes("STANDING.md"), "创建了 STANDING.md");
     ok(initRes.created.includes("SOUL.md"), "创建了 SOUL.md");
+    ok(existsSync(path.join(botDir, ".agents", "skills", "workbench-context", "SKILL.md")), "官方记忆技能落在 .agents/skills/ 规范位");
+    ok(existsSync(path.join(botDir, ".agents", "skills", "agent-workbench", "SKILL.md")), "官方驾驶技能同样随 init 落盘（基础能力一体）");
+    ok(!existsSync(path.join(botDir, "skills", "workbench-context")), "skills/ 旧位不再新建（兼容位只升存量）");
 
-    // 检查 SKILL.md 内容包含渐进式披露规范
-    const skillContent = await readFile(path.join(botDir, "skills", "workbench-context", "SKILL.md"), "utf8");
-    ok(skillContent.includes("workbench-context") && skillContent.includes("MEMORY.md"), "SKILL.md 包含工作区上下文规范说明");
+    // 检查 SKILL.md 内容包含渐进式披露规范与版本标记
+    const skillContent = await readFile(path.join(botDir, ".agents", "skills", "workbench-context", "SKILL.md"), "utf8");
+    ok(skillContent.includes("workbench-context-skill: v1") && skillContent.includes("MEMORY.md"), "SKILL.md 带版本标记且包含工作区上下文规范说明");
+
+    // 2.1b 迁移判定（无标记时代的副本）：
+    //     内容 = 旧正本 → daemon 所有可认领升级；改过的 → 用户自建不碰
+    const migrateDir = path.join(tmpRoot, "migrate");
+    await mkdir(path.join(migrateDir, ".agents", "skills", "workbench-context"), { recursive: true });
+    await mkdir(path.join(migrateDir, "skills", "workbench-context"), { recursive: true });
+    const agentsPos = path.join(migrateDir, ".agents", "skills", "workbench-context", "SKILL.md");
+    const compatPos = path.join(migrateDir, "skills", "workbench-context", "SKILL.md");
+    await writeFile(agentsPos, LEGACY_CONTEXT_SKILL_MD, "utf8");
+    await writeFile(compatPos, "我的私改记忆技能\n", "utf8");
+    const migrated = await syncContextSkill(migrateDir);
+    const migratedAgents = await readFile(agentsPos, "utf8");
+    const migratedCompat = await readFile(compatPos, "utf8");
+    ok(migrated.some((r) => r.path === agentsPos && r.status === "updated"), "无标记旧正本被认领升级（updated）");
+    ok(migratedAgents.includes("workbench-context-skill: v1"), "升级后的规范位带版本标记");
+    ok(migrated.some((r) => r.path === compatPos && r.status === "skipped-foreign"), "改过的兼容位副本视为用户自建（skipped-foreign）");
+    ok(migratedCompat === "我的私改记忆技能\n", "用户改写的内容一字不动");
 
     // 2.2 幂等性：第二次 init 不覆盖已有内容
     await writeFile(path.join(botDir, "SOUL.md"), "我是专属私人助手，风格幽默。", "utf8");

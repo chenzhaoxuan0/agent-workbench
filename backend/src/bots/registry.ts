@@ -16,7 +16,8 @@ import path from "node:path";
 import type { Store } from "../store/db.ts";
 import { log } from "../log.ts";
 import { inspectDirectory, appendGitignore, type InspectReport } from "./inspect.ts";
-import { seedWorkbenchSkill } from "../skills/workbenchSkill.ts";
+import { syncWorkbenchSkill } from "../skills/workbenchSkill.ts";
+import { syncContextSkill } from "../skills/contextSkill.ts";
 import { normalizeContextManifest, hasSubstantiveContent } from "../../../prototype/src/core/units.ts";
 
 const ROOTS_KEY = "bot_roots";
@@ -320,8 +321,16 @@ export class BotRegistry {
     await writeFile(tmpFile, JSON.stringify(out, null, 2) + "\n", "utf8");
     await rename(tmpFile, file);
 
-    // 3) 自动初始化/补齐标准工作区技能与目录（幂等，绝不覆盖已有正文）
-    await this.initWorkspace(root);
+    // 3) 自动初始化/补齐标准工作区骨架与官方技能（幂等，绝不覆盖已有正文）——
+    //    增强件失败只 warn：bot.json 已落盘，不该让骨架/技能写不进去炸掉整个创建
+    try {
+      await this.initWorkspace(root);
+    } catch (err: unknown) {
+      log.warn("workspace init failed (bot definition is already written)", {
+        root,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
 
     const parent = path.dirname(root);
     if (!this.roots().includes(parent) && parent !== root) this.addRoot(parent);
@@ -331,20 +340,19 @@ export class BotRegistry {
       log.warn("bot at filesystem root is not scannable — move it into a subdirectory", { root });
     }
     log.info("bot definition written", { id: unit.id, path: file, revision: out.revision, agentsMd: agentsRel });
-    // 工作台技能播种（docs/21 P6）：新建 bot（init）时把官方「驾驶工作台」技能同步进
-    // .agents/skills/（.agents 规范公共库，全执行器可发现）。幂等；失败只 warn 不炸创建。
-    if (prev === null) seedWorkbenchSkill(root);
     return { path: file, revision: out.revision as number };
   }
 
   /**
-   * 初始化/补齐工作区目录与标准技能（幂等）。
+   * 初始化/补齐工作区骨架与官方技能（幂等）。
    *
    * 补齐：
    * 1. .agent-workbench/
    * 2. memory/daily/
-   * 3. skills/workbench-context/SKILL.md 与 .agents/skills/workbench-context/SKILL.md（各 CLI 通用上下文查询工具）
-   * 4. 6 大核心 MD 骨架文件（缺失才补，已有正文绝不覆盖）
+   * 3. 6 大核心 MD 骨架文件（缺失才补，已有正文绝不覆盖）
+   * 4. 官方基础技能 ×2（版本标记契约，backend/src/skills/）：agent-workbench（驾驶
+   *    工作台）与 workbench-context（记忆检索）——bot init 与补充 Init 都走这条，
+   *    存量副本按标记升级，无标记的用户自建不碰；skills/ 旧位只升存量不新建。
    */
   async initWorkspace(rootPath: string): Promise<{ created: string[]; existed: string[] }> {
     const root = path.resolve(rootPath);
@@ -379,35 +387,27 @@ export class BotRegistry {
 
     await ensureDir(BOT_DIR);
     await ensureDir(path.join("memory", "daily"));
-    await ensureDir(path.join(".agents", "skills", "workbench-context"));
-    await ensureDir(path.join("skills", "workbench-context"));
-
-    const skillContent = [
-      "---",
-      "name: workbench-context",
-      'description: "检索本工作空间的长期事实记忆 (MEMORY.md)、日常碎片日志 (memory/daily/) 以及安全红线 (STANDING.md)。当遇到不确定的项目背景、历史决策或需要调取历史备忘时主动调用。"',
-      "---",
-      "",
-      "# 工作空间上下文与记忆检索工具",
-      "",
-      "本工作空间包含以下事实归档文件，你可以使用常规文件读取工具按需查看：",
-      "1. `MEMORY.md`：项目级长期事实、技术选型与关键共识（位于工作区根目录）。",
-      "2. `memory/daily/YYYY-MM-DD.md`：历史日常工作日志与对话提炼碎片。",
-      "3. `STANDING.md`：当前项目不可打破的安全约束与常驻红线。",
-      "",
-      "**使用准则**：",
-      "- 仅在用户问题涉及过往决策、特定历史背景或显式要求查阅记忆时读取对应文件。",
-      "- 避免一次性读取全部文件，根据问题日期或关键字按需精准读取。",
-      "",
-    ].join("\n");
-
-    await ensureFile(path.join(".agents", "skills", "workbench-context", "SKILL.md"), skillContent);
-    await ensureFile(path.join("skills", "workbench-context", "SKILL.md"), skillContent);
 
     // 核心 MD 骨架文件（若缺失才创建，绝不覆盖已有正文）
     await ensureFile("MEMORY.md", `# 项目记忆\n\n<!-- 项目级长期事实与技术决策 -->\n- （把项目级事实写在这里…）\n`);
     await ensureFile("STANDING.md", `# 常驻红线\n\n<!-- 不可打破的常驻指令与安全约束 -->\n`);
     await ensureFile("SOUL.md", `# 人设\n\n<!-- 这个 bot 的语气、风格与行为准则 -->\n`);
+
+    // 官方技能同步（增强件）：失败只 warn 不炸 init/补充 Init——技能没种上不该阻断骨架补齐
+    for (const sync of [syncWorkbenchSkill, syncContextSkill]) {
+      try {
+        const outcome = await sync(root);
+        for (const r of Array.isArray(outcome) ? outcome : [outcome]) {
+          log.info("official skill synced", { root, skill: path.basename(path.dirname(r.path)), status: r.status, version: r.version });
+        }
+      } catch (err: unknown) {
+        log.warn("official skill sync failed", {
+          root,
+          skill: sync === syncWorkbenchSkill ? "agent-workbench" : "workbench-context",
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
 
     return { created, existed };
   }
