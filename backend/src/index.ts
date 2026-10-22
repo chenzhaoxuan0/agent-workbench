@@ -20,7 +20,7 @@ import { ImageProfileStore, type ImageProfileRow } from "./image/profiles.ts";
 import { handleImageCall } from "./image/proxy.ts";
 import { log, setLogLevel } from "./log.ts";
 import { setSecretsHome } from "./secrets.ts";
-import { attachWs, broadcastBacklog, broadcastEvent, broadcastTerminal, registerMethod, WIRE_VERSION } from "./wsd.ts";
+import { attachWs, broadcastBacklog, broadcastEvent, broadcastTerminal, dispatchRpc, registerMethod, WIRE_VERSION } from "./wsd.ts";
 import { PermissionGate } from "./permissions/gate.ts";
 import { MockPermAdapter } from "./runtime/adapters/mockperm.ts";
 import { ClaudeAdapter } from "./runtime/adapters/claude.ts";
@@ -832,6 +832,21 @@ let tunnelManager: TunnelManager;
 // ---- REST 管理面（权限闸的决策入口，docs/07 §六）----------------------------
 
 const httpRoutes: HttpRoute[] = [
+  // HTTP-RPC 桥（docs/21 D2）：WS 注册表的第二扇门——同信封、同鉴权、同错误语义，
+  // curl / shell / 任意执行器直达全部方法。传输层错误（401 鉴权 / 404 路由 / 413 超限 /
+  // 400 坏信封）用状态码；RPC 层错误一律 200 + ok:false（JSON-RPC over HTTP 惯例）。
+  {
+    method: "POST",
+    path: "/rpc",
+    handle: async ({ body }) => {
+      const f = body as { v?: unknown; id?: unknown; method?: unknown; params?: unknown } | null;
+      if (f === null || typeof f !== "object" || f.v !== WIRE_VERSION || typeof f.method !== "string") {
+        throw Object.assign(new Error(`expected { v:${WIRE_VERSION}, method:string, params? }`), { code: "bad_request" });
+      }
+      const outcome = await dispatchRpc(f.method, f.params);
+      return typeof f.id === "string" ? { ...outcome, id: f.id } : outcome;
+    },
+  },
   // 回环自动取 token（WP-7）：本机前端免配置；非回环走不到路由层（authorize 401）
   {
     method: "GET",

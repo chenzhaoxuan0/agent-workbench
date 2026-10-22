@@ -73,7 +73,7 @@ export type ResponseFrame =
       readonly v: typeof WIRE_VERSION;
       readonly id: string | null;
       readonly ok: false;
-      readonly error: { readonly code: string; readonly message: string };
+      readonly error: { readonly code: string; readonly message: string; readonly data?: unknown };
     };
 
 // ---- daemon ← client ------------------------------------------------------
@@ -95,6 +95,49 @@ const methods = new Map<string, RpcHandler>();
 export function registerMethod(name: string, handler: RpcHandler): void {
   if (methods.has(name)) throw new Error(`rpc method already registered: ${name}`);
   methods.set(name, handler);
+}
+
+/**
+ * 统一分发器：WS 帧与 HTTP /rpc（docs/21 D2）共用同一条调用路径——信封校验之后的
+ * 一切（方法查找、执行、错误整形）都在这里，两个通道不各养一套错误语义。
+ */
+export type RpcOutcome =
+  | { readonly v: typeof WIRE_VERSION; readonly ok: true; readonly result: unknown }
+  | {
+      readonly v: typeof WIRE_VERSION;
+      readonly ok: false;
+      readonly error: { readonly code: string; readonly message: string; readonly data?: unknown };
+    };
+
+export async function dispatchRpc(method: string, params: unknown): Promise<RpcOutcome> {
+  const handler = methods.get(method);
+  if (handler === undefined) {
+    return {
+      v: WIRE_VERSION,
+      ok: false,
+      error: { code: "unknown_method", message: `no such method: ${method}` },
+    };
+  }
+  try {
+    return { v: WIRE_VERSION, ok: true, result: (await handler(params)) ?? null };
+  } catch (err: unknown) {
+    const extra =
+      typeof err === "object" && err !== null && "data" in err && (err as { data: unknown }).data !== undefined
+        ? { data: (err as { data: unknown }).data }
+        : {};
+    return {
+      v: WIRE_VERSION,
+      ok: false,
+      error: {
+        code: err instanceof Error && "code" in err && typeof err.code === "string" ? err.code : "internal",
+        message: err instanceof Error ? err.message : String(err),
+        // data：结构化补充（冲突时带 reason + 盘上现值）。没有它前端只能拿到一句
+        // message 靠字符串猜「到底是 bot.json 变了还是 AGENTS.md 变了」，猜错就会
+        // 告诉用户错的那个文件。跨线的是「发生了什么」，不是「怎么排版」。
+        ...extra,
+      },
+    };
+  }
 }
 
 // ---- 服务器 ---------------------------------------------------------------
@@ -141,7 +184,7 @@ export function attachWs(
     };
     ws.send(JSON.stringify(hello));
 
-    ws.on("message", (data) => handleRaw(ws, data));
+    ws.on("message", (data) => void handleRaw(ws, data));
     ws.on("close", () => {
       clients.delete(ws);
       log.info("ws client closed", { clients: clients.size });
@@ -172,7 +215,7 @@ export function broadcastBacklog(wss: WebSocketServer, signal: unknown): void {
   }
 }
 
-function handleRaw(ws: WebSocket, data: unknown): void {
+async function handleRaw(ws: WebSocket, data: unknown): Promise<void> {
   let frame: unknown;
   try {
     frame = JSON.parse(String(data));
@@ -203,43 +246,14 @@ function handleRaw(ws: WebSocket, data: unknown): void {
     return;
   }
 
-  const handler = methods.get(f.method);
-  if (handler === undefined) {
-    send(ws, {
-      v: WIRE_VERSION,
-      id: f.id,
-      ok: false,
-      error: { code: "unknown_method", message: `no such method: ${f.method}` },
-    });
-    return;
-  }
-
-  const method: string = f.method;
   const id: string = f.id;
-  void Promise.resolve()
-    .then(() => handler(f.params))
-    .then(
-      (result) => send(ws, { v: WIRE_VERSION, id, ok: true, result: result ?? null }),
-      (err: unknown) => {
-        const extra =
-          typeof err === "object" && err !== null && "data" in err && (err as { data: unknown }).data !== undefined
-            ? { data: (err as { data: unknown }).data }
-            : {};
-        send(ws, {
-          v: WIRE_VERSION,
-          id,
-          ok: false,
-          error: {
-            code: err instanceof Error && "code" in err && typeof err.code === "string" ? err.code : "internal",
-            message: err instanceof Error ? err.message : String(err),
-            // data：结构化补充（冲突时带 reason + 盘上现值）。没有它前端只能拿到一句
-            // message 靠字符串猜「到底是 bot.json 变了还是 AGENTS.md 变了」，猜错就会
-            // 告诉用户错的那个文件。跨线的是「发生了什么」，不是「怎么排版」。
-            ...extra,
-          },
-        });
-      },
-    );
+  const outcome = await dispatchRpc(f.method, f.params);
+  send(
+    ws,
+    outcome.ok
+      ? { v: WIRE_VERSION, id, ok: true, result: outcome.result }
+      : { v: WIRE_VERSION, id, ok: false, error: outcome.error },
+  );
 }
 
 /**
