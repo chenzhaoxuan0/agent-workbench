@@ -251,9 +251,11 @@
 
 | 方法 | 说明 | params | 危险 |
 |---|---|---|---|
+| `image.generate` | 出图（编排唯一源与 GUI 同份）：直连供应商、结果落盘 <homeDir>/images/<taskId>/，任务入历史；params 同 GUI 生成参数 | {profileId, prompt, params?, inputImagePaths?, inputImageDataUrls?, outDir?} | — |
 | `image.profiles.delete` | 按 id 删出图供应商 profile | {id} | — |
 | `image.profiles.list` | 列出图供应商 profile，密钥打码不回传 | null | — |
 | `image.profiles.put` | 按 id 新增或更新出图 profile | {id, ...profile 字段} | — |
+| `image.tasks.list` | 出图任务历史（daemon 事实源）；文件经 GET /api/image/file?path= 取 | null | — |
 
 ### mcp
 

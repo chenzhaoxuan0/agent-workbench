@@ -6,7 +6,7 @@
  */
 
 import { existsSync, mkdirSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage } from "node:http";
@@ -24,6 +24,7 @@ import { applyMethodMeta, attachWs, broadcastBacklog, broadcastEvent, broadcastN
 import { METHOD_META } from "./methods.meta.ts";
 import { composePrompt, inlineAttachments, runChatTurn } from "./chat.ts";
 import { NotificationsService } from "./notifications.ts";
+import { generateImage, ImageTasks, type GenerateParams } from "./image/generate.ts";
 import { PermissionGate } from "./permissions/gate.ts";
 import { MockPermAdapter } from "./runtime/adapters/mockperm.ts";
 import { ClaudeAdapter } from "./runtime/adapters/claude.ts";
@@ -1091,6 +1092,9 @@ const authorize = (req: IncomingMessage, url: URL): boolean => {
 // 出图代理（docs 决策：密钥挪进 daemon）：浏览器把请求体交给 daemon，daemon 注入
 // Authorization 后转发并透传响应流。这条路由是流式大载荷，走 httpd 的裸路由通道。
 const imageProfiles = new ImageProfileStore(config.homeDir);
+// 出图任务历史（docs/21 P4c）：daemon 事实源，GUI 经 image.tasks.list 消费
+const imageTasks = new ImageTasks(config.homeDir);
+await imageTasks.load();
 
 // ---- 浏览器 / 电脑控制（docs/14）------------------------------------------------
 // 两个服务都持有 mcpadmin 的写通道（扇出 playwright / workbench-computer 条目）；
@@ -1107,6 +1111,44 @@ const { server, port } = await startHttp(config, startedAt, httpRoutes, authoriz
   // 电脑控制的 MCP 端点（Streamable HTTP）：CLI 客户端不会带 x-awb-token，
   // authorize 里按「回环 + 该路径」豁免（与 /bootstrap 同级信任）
   { method: "POST", path: COMPUTER_MCP_PATH, handle: computerControl.handleHttp },
+  // 生成图文件的服务面（docs/21 P4c）：只允许 <homeDir>/images 子树（路径穿越闸）；
+  // GET 可带 ?token=（<img> 标签设不了头，与 WS 鉴权同款豁口）
+  {
+    method: "GET",
+    path: "/api/image/file",
+    handle: async (_req, res, ctx) => {
+      const json = (status: number, body: unknown): void => {
+        const payload = JSON.stringify(body);
+        res.writeHead(status, {
+          "content-type": "application/json; charset=utf-8",
+          "content-length": Buffer.byteLength(payload),
+          ...(ctx.allowOrigin !== undefined ? { "access-control-allow-origin": ctx.allowOrigin } : {}),
+        });
+        res.end(payload);
+      };
+      const raw = ctx.url.searchParams.get("path") ?? "";
+      const abs = path.resolve(raw);
+      const root = path.resolve(join(config.homeDir, "images"));
+      if (raw === "" || (!abs.startsWith(root + path.sep) && abs !== root)) {
+        json(403, { ok: false, error: { code: "forbidden", message: "path 不在 images 目录下" } });
+        return;
+      }
+      try {
+        const data = await readFile(abs);
+        const ext = path.extname(abs).toLowerCase();
+        const mime = ext === ".jpg" || ext === ".jpeg" ? "image/jpeg" : ext === ".webp" ? "image/webp" : "image/png";
+        res.writeHead(200, {
+          "content-type": mime,
+          "content-length": data.byteLength,
+          "cache-control": "no-store",
+          ...(ctx.allowOrigin !== undefined ? { "access-control-allow-origin": ctx.allowOrigin } : {}),
+        });
+        res.end(data);
+      } catch {
+        json(404, { ok: false, error: { code: "not_found", message: "no such image file" } });
+      }
+    },
+  },
 ]);
 // 实际绑定端口（传 0 时由系统分配）同步给控制层——条目 url / dsh 注入都用它
 setControlContext(config.homeDir, port);
@@ -3285,6 +3327,16 @@ registerMethod("notifications.list", (params) => {
   const p = (params ?? {}) as { limit?: number };
   return { items: notifications.list(typeof p.limit === "number" ? p.limit : undefined) };
 });
+// 出图操作面（docs/21 P4c）：编排唯一源在 prototype/core/imageApi.ts（GUI 同份），
+// 这里注入直连传输；任务历史是 daemon 事实（image-tasks.json），文件经 /api/image/file 取
+registerMethod("image.generate", async (params) => {
+  const p = (params ?? {}) as GenerateParams;
+  if (typeof p.profileId !== "string" || p.profileId === "" || typeof p.prompt !== "string" || p.prompt === "") {
+    throw Object.assign(new Error("profileId and prompt are required"), { code: "bad_params" });
+  }
+  return generateImage({ profiles: imageProfiles, tasks: imageTasks, homeDir: config.homeDir }, p);
+});
+registerMethod("image.tasks.list", () => ({ items: imageTasks.list() }));
 registerMethod("session.cancel", (params) => {
   const { sessionId } = (params ?? {}) as { sessionId?: string };
   if (typeof sessionId !== "string") throw Object.assign(new Error("sessionId is required"), { code: "bad_params" });

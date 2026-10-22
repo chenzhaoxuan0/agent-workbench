@@ -10,7 +10,9 @@
  * imageApi 的 SSE 解析（response.body.getReader）零改动。
  */
 
-import { DaemonClient, defaultDaemonEndpoint, httpUrlOf } from "../adapters/daemon/client.ts";
+// client 依赖（localStorage / window）是浏览器侧的——daemonImageFetch 里动态引入，
+// 让本模块在类型层不拖累 backend 的编译（daemon 的 image.generate 经 imageApi
+// 动态引到这里，类型检查不该连带编译 client.ts，docs/21 P4c）
 
 /** 信封里的表单文件（dataURL 拆成 mime + base64 两段） */
 export interface ProxyFormFile {
@@ -44,6 +46,7 @@ export function dataUrlParts(dataUrl: string): { mime: string; b64: string } {
  * （daemon 透传 status / content-type / 流式 body）。
  */
 export async function daemonImageFetch(call: ImageProxyCall): Promise<Response> {
+  const { DaemonClient, defaultDaemonEndpoint, httpUrlOf } = await import("../adapters/daemon/client.ts");
   const client = DaemonClient.get(defaultDaemonEndpoint());
   const token = await client.authToken().catch(() => null);
   const headers: Record<string, string> = { "Content-Type": "application/json" };

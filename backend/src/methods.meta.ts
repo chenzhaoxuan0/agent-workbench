@@ -243,6 +243,11 @@ export const METHOD_META: Record<string, MethodMeta> = {
 
   // ---- 出图 / 外观 ---------------------------------------------------------------
   "image.profiles.list": { description: "列出图供应商 profile，密钥打码不回传", paramsHint: "null" },
+  "image.generate": {
+    description: "出图（编排唯一源与 GUI 同份）：直连供应商、结果落盘 <homeDir>/images/<taskId>/，任务入历史；params 同 GUI 生成参数",
+    paramsHint: "{profileId, prompt, params?, inputImagePaths?, inputImageDataUrls?, outDir?}",
+  },
+  "image.tasks.list": { description: "出图任务历史（daemon 事实源）；文件经 GET /api/image/file?path= 取", paramsHint: "null" },
   "image.profiles.put": { description: "按 id 新增或更新出图 profile", paramsHint: "{id, ...profile 字段}" },
   "image.profiles.delete": { description: "按 id 删出图供应商 profile", paramsHint: "{id}" },
   "appearance.read": { description: "读 appearance.json 及壁纸 dataURL", paramsHint: "null" },

@@ -145,7 +145,7 @@ agent-workbench/
 
 | 模块 | 位置 | 为什么留 |
 |---|---|---|
-| 出图客户端 | `prototype/src/core/imageApi.ts` | 直连 OpenAI 兼容端点已端到端验证；浏览器直连 + 用户自己的 key，daemon 无需经手 |
+| 出图客户端 | `prototype/src/core/imageApi.ts` | **2026-10 修订（ADR 0015 / docs/21 P4c）**：编排唯一源已双端共用——GUI 走代理传输（保流式 partial），daemon `image.generate` 注入直连传输；「留在浏览器」的只剩传输适配器与保存句柄 |
 | 出图保存位置 | `prototype/src/core/imageSave.ts` | File System Access 句柄在用户手里，daemon 不经手 |
 | WeKnora 客户端 | `prototype/src/core/weknora.ts` | WeKnora 本地 Docker CORS 全开，浏览器直连已通 |
 | 本地文件夹记忆来源 | `prototype/src/core/localMemorySource.ts` | 授权句柄在浏览器 IndexedDB，纯本地索引检索 |

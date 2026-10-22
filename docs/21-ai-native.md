@@ -155,7 +155,14 @@
   GUI `useNotifications` 重写为消费面（历史拉取 + 推流，断线对账/事件聚合/补偿解析三块
   前端逻辑退役删除）；`smoke:ai-native-notifications` 五项断言（含 read 缺席边界与
   git:{root} 聚合）
-- [ ] P4c `image.generate` + 任务历史入 store + GUI 出图改薄 + docs/06 §八行项修订
+- [x] P4c `image.generate` + 任务历史入 store + GUI 出图改薄 + docs/06 §八行项修订（已完成 2026-10-22）：
+  **单一编排源 + 双传输适配器**（RuntimeAdapter SPI 同款哲学，非双轨）——imageApi.ts 的
+  `transport` 变必传：GUI 传 `daemonImageFetch`（保 SSE partial UX），daemon `image.generate`
+  注入直连（同 proxy 门禁）；结果落盘 `<homeDir>/images/<taskId>/`、任务历史
+  `image-tasks.json`（daemon 事实源）、文件服务面 `GET /api/image/file`（images 子树路径闸）；
+  FileReader 退役为双端可跑的 arrayBuffer+btoa。**GUI 任务历史面板消费切换
+  （localStorage → image.tasks.list）随 P5 落地**；`smoke:ai-native-image` 十项断言
+  （假供应商：落盘/历史/文件面/路径穿越 403/错密钥失败任务入史）
 - [ ] P4d 模型偏好并入 `adapter.modeldefaults` / `modelcatalog`
 - [ ] 每项：前端旧策略代码退役删除 + 对应 smoke 扩展
 

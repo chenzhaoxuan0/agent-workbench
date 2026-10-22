@@ -6,6 +6,7 @@ import {
   type ImageProfile,
   type PartialImageEvent,
 } from "../core/imageApi.ts";
+import { daemonImageFetch } from "../core/imageProxy.ts";
 import { saveImageToFolder, loadSaveFolder } from "../core/imageSave.ts";
 import { DaemonClient, defaultDaemonEndpoint } from "../adapters/daemon/client.ts";
 
@@ -408,6 +409,8 @@ export const useImageStudio = create<ImageStudioState>((set, get) => {
           inputImageDataUrls: task.refImages,
           signal: controller.signal,
           onPartialImage,
+          // 浏览器传输（docs/21 P4c）：密钥在 daemon，走 /api/image/call 代理保流式 partial
+          transport: daemonImageFetch,
         });
         set((st) => ({
           history: st.history.map((t) =>
