@@ -2,7 +2,7 @@
  * workspace.paths.list 逻辑冒烟 —— 直接调 listWorkspacePaths，不起 daemon。
  * 覆盖：根目录列举 / 子目录下钻 / 名字过滤 / 安全闸（.. 与绝对路径）/ 排序。
  */
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { listWorkspacePaths } from "../src/workspacePaths.ts";
@@ -116,6 +116,8 @@ async function rpcE2E(): Promise<void> {
         AGENT_WORKBENCH_PORT: String(port),
         AGENT_WORKBENCH_HOST: "127.0.0.1",
         AGENT_WORKBENCH_INSECURE: "1",
+        // 冒烟家隔离：daemon 状态住临时目录，绝不碰真实 ~/.agent-workbench
+        AGENT_WORKBENCH_HOME: mkdtempSync(path.join(tmpdir(), "aw-wsp-home-")),
       },
       stdio: ["ignore", "pipe", "pipe"],
     },

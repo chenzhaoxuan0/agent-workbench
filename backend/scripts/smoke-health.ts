@@ -12,11 +12,15 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
+import { mkdtempSync } from "node:fs";
 import net from "node:net";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const backendRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+/** 冒烟家（隔离 AGENT_WORKBENCH_HOME）：daemon 全部状态住临时目录，绝不碰真实 ~/.agent-workbench */
+const smokeHome = mkdtempSync(path.join(os.tmpdir(), "aw-health-home-"));
 
 // ---- 小工具 ---------------------------------------------------------------
 
@@ -58,7 +62,7 @@ const daemonOutput: string[] = [];
 function startDaemon(port: number): void {
   daemon = spawn(process.execPath, ["--import", "tsx", path.join(backendRoot, "src", "index.ts")], {
     cwd: backendRoot,
-    env: { ...process.env, AGENT_WORKBENCH_PORT: String(port), AGENT_WORKBENCH_HOST: "127.0.0.1", AGENT_WORKBENCH_INSECURE: "1" },
+    env: { ...process.env, AGENT_WORKBENCH_PORT: String(port), AGENT_WORKBENCH_HOST: "127.0.0.1", AGENT_WORKBENCH_INSECURE: "1", AGENT_WORKBENCH_HOME: smokeHome },
     stdio: ["ignore", "pipe", "pipe"],
   });
   for (const stream of [daemon.stdout, daemon.stderr]) {

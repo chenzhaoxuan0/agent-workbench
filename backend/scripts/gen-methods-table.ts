@@ -9,8 +9,9 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import net from "node:net";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -52,7 +53,14 @@ async function main(): Promise<void> {
   const port = await freePort();
   daemon = spawn(process.execPath, ["--import", "tsx", path.join(backendRoot, "src", "index.ts")], {
     cwd: backendRoot,
-    env: { ...process.env, AGENT_WORKBENCH_PORT: String(port), AGENT_WORKBENCH_HOST: "127.0.0.1", AGENT_WORKBENCH_INSECURE: "1" },
+    env: {
+      ...process.env,
+      AGENT_WORKBENCH_PORT: String(port),
+      AGENT_WORKBENCH_HOST: "127.0.0.1",
+      AGENT_WORKBENCH_INSECURE: "1",
+      // 生成器家隔离：daemon 只需 rpc.methods，状态住临时目录不碰真实 ~/.agent-workbench
+      AGENT_WORKBENCH_HOME: mkdtempSync(path.join(os.tmpdir(), "aw-gen-home-")),
+    },
     stdio: ["ignore", "ignore", "pipe"],
   });
   daemon.stderr?.on("data", (c: Buffer) => process.stderr.write(`  daemon | ${c}`));

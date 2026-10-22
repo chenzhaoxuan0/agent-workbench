@@ -31,6 +31,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const backendRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+/** 冒烟家（隔离 AGENT_WORKBENCH_HOME）：daemon 全部状态住临时目录，绝不碰真实 ~/.agent-workbench */
+const smokeHome = mkdtempSync(path.join(os.tmpdir(), "aw-git-home-"));
 
 // ---- 小工具（与 smoke-health 同构） -----------------------------------------
 
@@ -76,6 +78,7 @@ function startDaemon(port: number): void {
       AGENT_WORKBENCH_PORT: String(port),
       AGENT_WORKBENCH_HOST: "127.0.0.1",
       AGENT_WORKBENCH_INSECURE: "1",
+      AGENT_WORKBENCH_HOME: smokeHome,
       // 让 git 的身份解析**只**看仓库本地配置：否则这台机器的 ~/.gitconfig 一旦
       // 配了 user.email，「身份缺失」用例就永远测不到（提交面要靠它证明
       // identity_missing 这个码真的会抛出来）。文件本身是空的，放临时目录。

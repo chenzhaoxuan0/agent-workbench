@@ -11,12 +11,16 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
+import { mkdtempSync } from "node:fs";
 import net from "node:net";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const backendRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const TOKEN = "smoke-rpc-token-0123456789";
+/** 冒烟家（隔离 AGENT_WORKBENCH_HOME）：daemon 全部状态住临时目录，绝不碰真实 ~/.agent-workbench */
+const smokeHome = mkdtempSync(path.join(os.tmpdir(), "aw-rpc-home-"));
 
 // ---- 小工具（对齐 smoke-health.ts）-----------------------------------------
 
@@ -57,7 +61,7 @@ function startDaemon(port: number): void {
   daemon = spawn(process.execPath, ["--import", "tsx", path.join(backendRoot, "src", "index.ts")], {
     cwd: backendRoot,
     // 显式 token（不走 INSECURE）：鉴权面真实生效，401 才可断言
-    env: { ...process.env, AGENT_WORKBENCH_PORT: String(port), AGENT_WORKBENCH_HOST: "127.0.0.1", AGENT_WORKBENCH_TOKEN: TOKEN },
+    env: { ...process.env, AGENT_WORKBENCH_PORT: String(port), AGENT_WORKBENCH_HOST: "127.0.0.1", AGENT_WORKBENCH_TOKEN: TOKEN, AGENT_WORKBENCH_HOME: smokeHome },
     stdio: ["ignore", "pipe", "pipe"],
   });
   for (const stream of [daemon.stdout, daemon.stderr]) {
