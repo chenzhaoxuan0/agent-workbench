@@ -19,6 +19,7 @@ import { GitActionTrigger } from "./GitActionTrigger.tsx";
 import { UnitSwitcher } from "./UnitSwitcher.tsx";
 import { RunConfigPicker } from "./RuntimePicker.tsx";
 import { PermissionModePicker } from "./PermissionModePicker.tsx";
+import { ComposerContextPicker } from "./ComposerContextPicker.tsx";
 import { SlashCommandMenu, filterNativeCommands } from "./SlashCommandMenu.tsx";
 import { AttachmentsBar } from "./AttachmentsBar.tsx";
 import { PathMentionMenu } from "./PathMentionMenu.tsx";
@@ -732,6 +733,9 @@ export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
 
               {/* 权限模式选择器（计划模式 / 变更确认 / 自主模式 / 完全访问） */}
               <PermissionModePicker compact={isMobile} align="left" />
+
+              {/* 上下文注入快捷控制（自由选择本轮/首轮注入项） */}
+              <ComposerContextPicker compact={isMobile} />
 
               {/* 对话终端唤起按钮：对话页底部快捷小终端（Shell 在设置 → 终端里选，默认 PowerShell 7） */}
               <ChatTerminalToggleButton />

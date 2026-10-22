@@ -21,6 +21,7 @@ import {
   normalizeContextManifest,
   LEGACY_CONTEXT_MANIFEST,
   resolveAgentsMdInjection,
+  resolveEffectiveTurnManifest,
 } from "../../prototype/src/core/units.ts";
 import { FileMemoryInjector } from "../src/memory/injection.ts";
 import { writeUser } from "../src/memory/projectMemory.ts";
@@ -50,16 +51,29 @@ async function main(): Promise<void> {
   // ---- 1. 归一语义 --------------------------------------------------------
   console.log("[1] normalizeContextManifest");
   const legacy = normalizeContextManifest(undefined);
+  ok(legacy.firstTurnInject === true, "整节缺失默认 firstTurnInject=true");
   ok(
     legacy.memorySemantic === false && legacy.memoryStanding === false && legacy.soul === false && legacy.agentsMd === "auto",
     "整节缺失 = 全关（2026-10-22 定夺：默认注入一律 0，取消存量兼容 seeding）",
   );
+  const explicitOff = normalizeContextManifest({ firstTurnInject: false, soul: true });
+  ok(explicitOff.firstTurnInject === false && explicitOff.soul === true, "显式 firstTurnInject=false 保持关闭");
   const malformed = normalizeContextManifest("garbage");
   ok(malformed.memorySemantic === false, "畸形节同样归全关");
   const bare = normalizeContextManifest({});
   ok(bare.soul === false && bare.user === false && bare.memorySemantic === false && bare.agentsMd === "auto", "节存在但字段缺 = 同一全关语义（agentsMd=auto）");
   const explicit = normalizeContextManifest({ soul: true, agentsMd: "on", memoryDaily: 1 });
   ok(explicit.soul === true && explicit.agentsMd === "on" && explicit.memoryDaily === false, "脏值字段归 false，合法值保留");
+
+  // ---- 1.1 单轮决策判定 (resolveEffectiveTurnManifest) ---------------------
+  console.log("[1.1] resolveEffectiveTurnManifest");
+  const botM = { soul: true, memoryStanding: true, firstTurnInject: true };
+  ok(resolveEffectiveTurnManifest(undefined, botM, true)?.soul === true, "首轮缺省跟随 bot 预设");
+  ok(resolveEffectiveTurnManifest(undefined, botM, false) === null, "续聊缺省为 null（默认不重复注入）");
+  ok(resolveEffectiveTurnManifest({ mode: "off" }, botM, true) === null, "首轮显式 mode:off 裸跑");
+  ok(resolveEffectiveTurnManifest(undefined, { ...botM, firstTurnInject: false }, true) === null, "bot 配置 firstTurnInject=false 时首轮默认裸跑");
+  ok(resolveEffectiveTurnManifest({ mode: "bot_default" }, botM, false)?.memoryStanding === true, "续聊主动选择 bot_default 则带上 bot 上下文");
+  ok(resolveEffectiveTurnManifest({ mode: "custom", customManifest: { soul: false, memoryStanding: true } }, botM, false)?.soul === false, "续聊 custom 模式仅注入用户勾选项");
 
   // ---- auto 判定 ----------------------------------------------------------
   console.log("[2] resolveAgentsMdInjection");

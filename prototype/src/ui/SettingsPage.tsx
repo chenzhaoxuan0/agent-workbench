@@ -37,6 +37,7 @@ import type { WorkUnit } from "../core/units.ts";
 import { UnitContextBadge, UnitContextEditor } from "./UnitContextEditor.tsx";
 import { useMemorySettings } from "../store/useMemoryPrefs.ts";
 import { getGuardianConfigRpc, readProjectMemory, runDigestDryRun, setGuardianConfigRpc, type DigestResult } from "../store/useMemoryPanel.ts";
+import { listDaemonExecutors, type DaemonExecutorInfo } from "../adapters/daemon/client.ts";
 import { ProviderInstancesPanel } from "./ProviderInstancesPanel.tsx";
 import { SkillsSettingsSection } from "./SkillsSettingsSection.tsx";
 import { McpSettingsSection } from "./McpSettingsSection.tsx";
@@ -388,6 +389,37 @@ function ContextSettingsSection() {
  * `memory/daily/` / `skills/`），跨会话检索是现场扫 CLI 的源目录 ——
  * 既没有「注册到后端」这回事，也不需要向量库和门控小模型。注册表与 coming 标记一并移除。
  */
+function pickRecommendedGuardianModel(runner: string, models: readonly { id: string }[]): string {
+  if (models.length > 0) {
+    const keywords = ["flash", "haiku", "mini", "chat", "preview"];
+    for (const kw of keywords) {
+      const found = models.find((m) => m.id.toLowerCase().includes(kw));
+      if (found) return found.id;
+    }
+    return models[0]?.id ?? "deepseek-chat";
+  }
+  switch (runner) {
+    case "mcode":
+      return "MiniMax-M3.1-Flash-Preview";
+    case "claude":
+      return "claude-3-5-haiku";
+    case "codex":
+    case "pi":
+      return "gpt-4o-mini";
+    case "agy":
+      return "gemini-2.5-flash";
+    case "zcode":
+    default:
+      return "deepseek-chat";
+  }
+}
+
+/**
+ * 记忆系统设置（ADR 0014 拆分后）。
+ *
+ * 专注于全局记忆配置（上限、每日总结、Guardian 守护引擎、跨项目检索授权）。
+ * 单 bot 的会话注入范围、上下文清单已移至「上下文清单」分区（UnitContextEditor）。
+ */
 function MemorySettingsSection() {
   const prefs = useMemorySettings((s) => s.prefs);
   const setPrefs = useMemorySettings((s) => s.setPrefs);
@@ -399,6 +431,23 @@ function MemorySettingsSection() {
   const [digest, setDigest] = useState<DigestResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  const [executors, setExecutors] = useState<DaemonExecutorInfo[]>([]);
+  const [customModelMode, setCustomModelMode] = useState(false);
+
+  // 挂载时拉取真实探测到的 CLI 执行器列表
+  useEffect(() => {
+    let alive = true;
+    listDaemonExecutors()
+      .then((l) => {
+        if (!alive) return;
+        setExecutors(l.filter((e) => !e.testOnly));
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   // 挂载时用 daemon kv 里的权威配置校准显示。localStorage 只是离线兜底——
   // 换浏览器 / 清缓存 / agent 直改配置文件后，不同步就会显示一个假状态，
@@ -475,6 +524,23 @@ function MemorySettingsSection() {
   };
 
   const usagePct = usage !== null && usage.limit > 0 ? Math.round((usage.chars / usage.limit) * 100) : null;
+
+  const currentExecutor = executors.find((e) => e.id === prefs.guardianRunner);
+  const currentModels = currentExecutor?.models ?? [];
+  const modelInCurrentList = currentModels.some((m) => m.id === prefs.guardianModel);
+
+  const handleRunnerChange = (newRunner: string) => {
+    const targetExecutor = executors.find((e) => e.id === newRunner);
+    const targetModels = targetExecutor?.models ?? [];
+    let nextModel = prefs.guardianModel;
+    if (targetModels.length > 0 && !targetModels.some((m) => m.id === prefs.guardianModel)) {
+      nextModel = pickRecommendedGuardianModel(newRunner, targetModels);
+    } else if (targetModels.length === 0) {
+      nextModel = pickRecommendedGuardianModel(newRunner, []);
+    }
+    setPrefs({ guardianRunner: newRunner as any, guardianModel: nextModel });
+    void setGuardianConfigRpc({ runner: newRunner as any, model: nextModel });
+  };
 
   return (
     <div className="space-y-6">
@@ -563,40 +629,106 @@ function MemorySettingsSection() {
           control={
             <select
               value={prefs.guardianRunner}
-              onChange={(e) => {
-                const runner = e.target.value as "zcode" | "claude" | "codex" | "pi" | "mcode" | "agy" | "custom";
-                setPrefs({ guardianRunner: runner });
-                void setGuardianConfigRpc({ runner });
-              }}
+              onChange={(e) => handleRunnerChange(e.target.value)}
               className="h-8 rounded-btn border border-line bg-canvas px-2 text-body-sm text-ink focus:border-teal focus:outline-none"
             >
-              <option value="zcode">zcode</option>
-              <option value="claude">claude</option>
-              <option value="codex">codex</option>
-              <option value="pi">pi</option>
-              <option value="mcode">mcode</option>
-              <option value="agy">agy</option>
-              <option value="custom">custom</option>
+              {executors.length > 0 ? (
+                executors.map((e) => (
+                  <option key={e.id} value={e.id}>
+                    {e.displayName || e.id} ({e.id})
+                  </option>
+                ))
+              ) : (
+                <>
+                  <option value="zcode">ZCode (zcode)</option>
+                  <option value="claude">Claude (claude)</option>
+                  <option value="codex">Codex (codex)</option>
+                  <option value="pi">Pi (pi)</option>
+                  <option value="mcode">MiniMax (mcode)</option>
+                  <option value="agy">Antigravity (agy)</option>
+                  <option value="custom">Custom (custom)</option>
+                </>
+              )}
+              {executors.length > 0 && !executors.some((e) => e.id === prefs.guardianRunner) && (
+                <option value={prefs.guardianRunner}>{prefs.guardianRunner}</option>
+              )}
             </select>
           }
         />
         <SettingsRow
           label="轻量模型名称 (Model)"
-          description="指定后台执行合并压缩使用的小模型名称（如 deepseek-chat, gpt-4o-mini, MiniMax-M3.1-Flash-Preview 等）"
+          description={
+            currentModels.length > 0
+              ? `当前执行器 (${prefs.guardianRunner}) 探测到 ${currentModels.length} 个模型，优先推荐轻量高性价比模型`
+              : "指定后台执行合并压缩使用的小模型名称（如 deepseek-chat, gpt-4o-mini, MiniMax-M3.1-Flash-Preview 等）"
+          }
           control={
-            <input
-              type="text"
-              value={prefs.guardianModel}
-              onChange={(e) => {
-                const model = e.target.value;
-                setPrefs({ guardianModel: model });
-              }}
-              onBlur={() => {
-                void setGuardianConfigRpc({ model: prefs.guardianModel });
-              }}
-              placeholder="deepseek-chat"
-              className="h-8 w-48 rounded-btn border border-line bg-canvas px-2.5 font-mono text-body-sm text-ink focus:border-teal focus:outline-none"
-            />
+            currentModels.length > 0 && !customModelMode ? (
+              <div className="flex items-center gap-1.5">
+                <select
+                  value={modelInCurrentList ? prefs.guardianModel : "__custom__"}
+                  onChange={(e) => {
+                    if (e.target.value === "__custom__") {
+                      setCustomModelMode(true);
+                    } else {
+                      const m = e.target.value;
+                      setPrefs({ guardianModel: m });
+                      void setGuardianConfigRpc({ model: m });
+                    }
+                  }}
+                  className="h-8 max-w-[210px] truncate rounded-btn border border-line bg-canvas px-2 font-mono text-body-sm text-ink focus:border-teal focus:outline-none"
+                >
+                  {!modelInCurrentList && prefs.guardianModel && (
+                    <option value="__custom__">自定义: {prefs.guardianModel}</option>
+                  )}
+                  {currentModels.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.displayName ?? m.id}
+                    </option>
+                  ))}
+                  <option value="__custom__">✍️ 手动输入其他模型…</option>
+                </select>
+                <button
+                  type="button"
+                  onClick={() => setCustomModelMode(true)}
+                  className="rounded-btn border border-line px-2 py-1 text-caption text-ash hover:text-ink hover:border-teal"
+                  title="切换为手动自由输入"
+                >
+                  手输
+                </button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-1.5">
+                <input
+                  type="text"
+                  value={prefs.guardianModel}
+                  onChange={(e) => {
+                    const model = e.target.value;
+                    setPrefs({ guardianModel: model });
+                  }}
+                  onBlur={() => {
+                    void setGuardianConfigRpc({ model: prefs.guardianModel });
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      void setGuardianConfigRpc({ model: prefs.guardianModel });
+                    }
+                  }}
+                  placeholder={pickRecommendedGuardianModel(prefs.guardianRunner, currentModels)}
+                  className="h-8 w-44 rounded-btn border border-line bg-canvas px-2.5 font-mono text-body-sm text-ink focus:border-teal focus:outline-none"
+                />
+                {currentModels.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setCustomModelMode(false)}
+                    className="rounded-btn border border-line px-2 py-1 text-caption text-ash hover:text-ink hover:border-teal"
+                    title="从已探测模型列表中选择"
+                  >
+                    选单
+                  </button>
+                )}
+              </div>
+            )
           }
         />
         <SettingsRow

@@ -5,14 +5,18 @@ import {
   ChevronDown,
   Circle,
   FileText,
+  FolderSync,
+  MessageSquareQuote,
   ScrollText,
   ShieldAlert,
   Sparkles,
+  Trash2,
   UserCheck,
   type LucideIcon,
 } from "lucide-react";
 import { useWorkbench } from "../store/useWorkbench.ts";
 import {
+  hasSubstantiveContent,
   normalizeContextManifest,
   normalizeSkillBinding,
   resolveAgentsMdInjection,
@@ -49,19 +53,22 @@ export function UnitContextBadge({ unit }: { unit: WorkUnit }): ReactElement {
   const bare = items.length === 0 && !agentsOn;
   const total = items.length + (agentsOn ? 1 : 0);
 
+  const firstTurnOff = m.firstTurnInject === false;
   return (
     <span
       className={cn(
         "inline-flex items-center rounded-chip px-1.5 py-0.5 text-[10px] font-medium transition",
-        bare ? "bg-line-soft text-ash" : "bg-teal-tint text-teal font-semibold",
+        bare || firstTurnOff ? "bg-line-soft text-ash" : "bg-teal-tint text-teal font-semibold",
       )}
       title={
-        bare
-          ? `裸跑：未注入任何上下文（AGENTS.md ${m.agentsMd === "auto" ? "auto——由执行器原生读取" : "已关闭"}）`
-          : `注入 ${total} 项：${[...items, ...(agentsOn ? ["AGENTS.md（强制）"] : [])].join("、")}${m.agentsMd === "auto" ? "；AGENTS.md auto（执行器原生读取）" : ""}`
+        firstTurnOff
+          ? `首轮默认关闭注入（已配置 ${total} 项备选，可在聊天输入框按需开启）`
+          : bare
+            ? `裸跑：未注入任何上下文（AGENTS.md ${m.agentsMd === "auto" ? "auto——由执行器原生读取" : "已关闭"}）`
+            : `首轮注入 ${total} 项：${[...items, ...(agentsOn ? ["AGENTS.md（强制）"] : [])].join("、")}${m.agentsMd === "auto" ? "；AGENTS.md auto（执行器原生读取）" : ""}`
       }
     >
-      {bare ? "裸跑（0 注入）" : `注 ${total}`}
+      {firstTurnOff ? (bare ? "首轮关 (0注)" : `首轮关 (配${total})`) : bare ? "裸跑（0 注入）" : `注 ${total}`}
     </span>
   );
 }
@@ -155,6 +162,9 @@ export function UnitContextEditor({ unitId }: { unitId: string }): ReactElement 
         <PresetButton label="完整" onClick={() => patch({ agentsMd: "auto", soul: true, user: true, memorySemantic: true, memoryDaily: true, memoryStanding: true, skills: true })} />
       </div>
 
+      {/* 工作区生命周期与 Init 补齐栏 */}
+      <WorkspaceInitAndUnregisterBar unit={unit} />
+
       {/* ---- 注入矩阵 ---- */}
       <div className="overflow-hidden rounded-card border border-line bg-canvas">
         <div className="px-3 pb-1 pt-2.5">
@@ -162,9 +172,46 @@ export function UnitContextEditor({ unitId }: { unitId: string }): ReactElement 
           <p className="mt-0.5 text-[11px] text-ash">写入 bot.json（contextManifest 节）——工作台、渠道、定时会话同一份</p>
         </div>
         <div className="divide-y divide-line-soft">
+          <div className="flex items-center justify-between gap-3 px-3 py-2.5 bg-canvas/40">
+            <div className="min-w-0">
+              <p className="text-caption font-semibold text-ink flex items-center gap-1.5">
+                <span>新会话首轮自动注入</span>
+                <span
+                  className={cn(
+                    "rounded-full px-1.5 py-0.5 text-[10px] font-mono",
+                    manifest.firstTurnInject !== false ? "bg-teal-tint text-teal font-medium" : "bg-line-soft text-ash",
+                  )}
+                >
+                  {manifest.firstTurnInject !== false ? "默认开启" : "默认关闭"}
+                </span>
+              </p>
+              <p className="mt-0.5 text-[11px] leading-snug text-ash">
+                开启时，新开对话首轮自动按下方清单注入；关闭后开局默认裸跑，由用户在聊天输入框按需勾选。
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => patch({ firstTurnInject: !(manifest.firstTurnInject !== false) })}
+              className={cn(
+                "rounded px-2.5 py-1 text-[11px] font-medium border transition shrink-0",
+                manifest.firstTurnInject !== false
+                  ? "border-teal/40 bg-teal text-canvas"
+                  : "border-line text-graphite hover:text-ink bg-line-soft/40",
+              )}
+            >
+              {manifest.firstTurnInject !== false ? "已启用" : "已关闭"}
+            </button>
+          </div>
           <div className="flex items-center justify-between gap-3 px-3 py-2.5">
             <div className="min-w-0">
-              <p className="text-caption font-medium text-ink">岗位说明书 · AGENTS.md</p>
+              <p className="text-caption font-medium text-ink flex items-center gap-1.5 flex-wrap">
+                <span>岗位说明书 · AGENTS.md</span>
+                {!hasSubstantiveContent(unit.agentsMd) && (
+                  <span className="rounded px-1.5 py-0.5 bg-line-soft text-ash text-[10px] font-normal leading-none">
+                    空内容 · 自动跳过
+                  </span>
+                )}
+              </p>
               <p className="mt-0.5 text-[11px] leading-snug text-ash">
                 {nativeReadsAgents
                   ? `当前执行器${primaryRuntime !== "" ? `（${primaryRuntime}）` : ""}原生读取 —— auto 不重复注入（防双注）`
@@ -191,6 +238,7 @@ export function UnitContextEditor({ unitId }: { unitId: string }): ReactElement 
             title="人设 · SOUL.md"
             desc="这个 bot 的人格与主动行为提示词（用户维护，只读注入）"
             on={manifest.soul === true}
+            empty={!hasSubstantiveContent(unit.soulMd)}
             onToggle={() => patch({ soul: !(manifest.soul === true) })}
           />
           <ManifestRow
@@ -222,6 +270,9 @@ export function UnitContextEditor({ unitId }: { unitId: string }): ReactElement 
           <SkillsBindingSection unit={unit} manifestSkills={manifest.skills === true} onToggle={() => patch({ skills: !(manifest.skills === true) })} />
         </div>
       </div>
+
+      {/* ---- 自定义提示词 (Custom Prompt) ---- */}
+      <CustomPromptEditor unit={unit} updateUnit={updateUnit} />
 
       {/* ---- 文件编辑 ---- */}
       <div className="flex items-center justify-between px-0.5 pt-1">
@@ -277,16 +328,25 @@ function ManifestRow({
   desc,
   on,
   onToggle,
+  empty,
 }: {
   title: string;
   desc: string;
   on: boolean;
   onToggle: () => void;
+  empty?: boolean;
 }): ReactElement {
   return (
     <div className="flex items-center justify-between gap-3 px-3 py-2.5">
       <div className="min-w-0">
-        <p className="text-caption font-medium text-ink">{title}</p>
+        <p className="text-caption font-medium text-ink flex items-center gap-1.5 flex-wrap">
+          <span>{title}</span>
+          {empty === true && (
+            <span className="rounded px-1.5 py-0.5 bg-line-soft text-ash text-[10px] font-normal leading-none">
+              空内容 · 自动跳过
+            </span>
+          )}
+        </p>
         <p className="mt-0.5 text-[11px] leading-snug text-ash">{desc}</p>
       </div>
       <Toggle on={on} onChange={onToggle} ariaLabel={title} />
@@ -422,6 +482,216 @@ function SkillsBindingSection({
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+function WorkspaceInitAndUnregisterBar({
+  unit,
+}: {
+  unit: WorkUnit;
+}): ReactElement {
+  const [initBusy, setInitBusy] = useState(false);
+  const [confirmUnregister, setConfirmUnregister] = useState(false);
+  const [unregBusy, setUnregBusy] = useState(false);
+  const initWorkspace = useWorkbench((s) => s.initWorkspace);
+  const unregisterUnit = useWorkbench((s) => s.unregisterUnit);
+  const pushNotice = useWorkbench((s) => s.pushNotice);
+
+  const handleInit = async () => {
+    setInitBusy(true);
+    try {
+      const res = await initWorkspace(unit.rootPath);
+      await useWorkbench.getState().reloadUnit(unit.id);
+      pushNotice(
+        "工作区初始化完成",
+        `已补齐 ${res.created.length} 项（含 skills/workbench-context 检索技能与 memory 目录），${res.existed.length} 项既有内容已完好保留。`,
+        { level: "info" },
+      );
+    } catch (e: unknown) {
+      pushNotice("初始化失败", e instanceof Error ? e.message : String(e), { level: "warn" });
+    } finally {
+      setInitBusy(false);
+    }
+  };
+
+  const handleUnregister = async () => {
+    setUnregBusy(true);
+    try {
+      await unregisterUnit(unit.id);
+      pushNotice(
+        "Bot 已从工作台注销",
+        `「${unit.name}」已从列表移除。本地项目目录（${unit.rootPath}）完全保留，重新导入即可恢复。`,
+        { level: "info" },
+      );
+    } catch (e: unknown) {
+      pushNotice("注销失败", e instanceof Error ? e.message : String(e), { level: "warn" });
+      setUnregBusy(false);
+    }
+  };
+
+  return (
+    <div className="flex items-center justify-between gap-2 rounded-card border border-line bg-rail/40 px-3 py-2">
+      <div className="flex items-center gap-2 min-w-0">
+        <FolderSync size={13} className="shrink-0 text-teal" />
+        <div className="min-w-0">
+          <p className="text-[11px] font-medium text-ink truncate">工作区工具与生命周期</p>
+          <p className="text-[10px] text-ash truncate">补齐标准记忆与检索技能，或安全注销</p>
+        </div>
+      </div>
+      <div className="flex items-center gap-2 shrink-0">
+        <button
+          type="button"
+          onClick={() => void handleInit()}
+          disabled={initBusy}
+          className="rounded px-2.5 py-1 text-[11px] font-medium border border-line text-graphite hover:text-ink hover:bg-canvas transition disabled:opacity-40"
+          title="幂等补齐 skills/workbench-context/SKILL.md、memory/daily/ 及缺失的骨架文件（绝不覆盖已有正文）"
+        >
+          {initBusy ? "补齐中…" : "补充工作区配置 (Init)"}
+        </button>
+        {confirmUnregister ? (
+          <div className="flex items-center gap-1.5">
+            <span className="text-[10px] text-loss">不删物理文件，仅从列表移除？</span>
+            <button
+              type="button"
+              onClick={() => void handleUnregister()}
+              disabled={unregBusy}
+              className="rounded bg-loss text-canvas px-2 py-0.5 text-[10px] font-medium hover:bg-loss/90 transition"
+            >
+              {unregBusy ? "注销中…" : "确认注销"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setConfirmUnregister(false)}
+              className="rounded px-1.5 py-0.5 text-[10px] text-ash hover:text-ink transition"
+            >
+              取消
+            </button>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setConfirmUnregister(true)}
+            className="rounded px-2 py-1 text-[11px] text-ash hover:text-loss border border-transparent hover:border-loss/30 transition flex items-center gap-1"
+            title="从工作台注销该 Bot（不删除本地磁盘项目文件与代码）"
+          >
+            <Trash2 size={11} />
+            <span>注销 Bot</span>
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CustomPromptEditor({
+  unit,
+  updateUnit,
+}: {
+  unit: WorkUnit;
+  updateUnit: UpdateUnitFn;
+}): ReactElement {
+  const baseline = unit.customPrompt ?? "";
+  const [draft, setDraft] = useState(baseline);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const dirty = draft !== baseline;
+  const isSubstantive = hasSubstantiveContent(draft);
+
+  useEffect(() => {
+    setDraft(unit.customPrompt ?? "");
+  }, [unit.id, unit.customPrompt]);
+
+  const DEFAULT_TEMPLATE = `你当前运行在当前项目的专属工作台环境中。
+1. 请保持高效严谨的回答风格；
+2. 若遇到不确定的项目背景、历史技术决策或日常备忘，请通过 skills 目录中的 \`workbench-context\` 工具按需查阅 \`MEMORY.md\` 或 \`memory/daily/\`；
+3. 未经用户明确许可，严禁执行不可逆的危险系统命令与破坏性写操作。`;
+
+  const save = async () => {
+    setBusy(true);
+    setErr(null);
+    try {
+      await updateUnit(
+        { ...unit, customPrompt: draft.trim() } as WorkUnit,
+        { ifRevision: unit.revision, ifAgentsMdHash: unit.agentsMdMeta?.hash, ifSoulMdHash: unit.soulMdMeta?.hash },
+      );
+      await useWorkbench.getState().reloadUnit(unit.id);
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="overflow-hidden rounded-card border border-line bg-canvas">
+      <div className="flex items-center justify-between gap-2 px-3 py-2.5 bg-canvas/40 border-b border-line-soft">
+        <div className="flex items-center gap-2 min-w-0">
+          <MessageSquareQuote size={13} className="shrink-0 text-teal" />
+          <p className="text-caption font-medium text-ink">工作区自定义提示词 · Custom Prompt</p>
+          <span
+            className={cn(
+              "rounded-chip px-1.5 py-0.5 text-[10px] font-medium leading-none",
+              isSubstantive ? "bg-teal-tint text-teal font-semibold" : "bg-line-soft text-ash",
+            )}
+          >
+            {isSubstantive ? `已配置 · 首轮注入 (${draft.trim().length}字)` : "留空（0 注入）"}
+          </span>
+          {dirty && (
+            <span className="rounded-chip bg-amber-500/15 text-amber-600 dark:text-amber-400 px-1.5 py-0.5 text-[10px] font-medium leading-none">
+              未保存
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-1.5 shrink-0">
+          <button
+            type="button"
+            onClick={() => setDraft(DEFAULT_TEMPLATE)}
+            className="rounded px-2 py-0.5 text-[11px] font-medium border border-line text-graphite hover:text-ink hover:bg-rail transition"
+            title="一键填入包含通用指引与记忆技能调用的推荐模板"
+          >
+            使用推荐代写模板
+          </button>
+          {draft !== "" && (
+            <button
+              type="button"
+              onClick={() => setDraft("")}
+              className="rounded px-1.5 py-0.5 text-[11px] text-ash hover:text-loss transition"
+            >
+              清空
+            </button>
+          )}
+        </div>
+      </div>
+      <div className="p-3 space-y-2">
+        <p className="text-[11px] leading-snug text-ash">
+          在执行器已有系统提示词之外，为本工作区注入自定义前置指引。留空时不注入任何 Token；想让 Bot 记住特定工作习惯、业务规则或引导其调用检索 Skill 时推荐使用。
+        </p>
+        <textarea
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          spellCheck={false}
+          rows={4}
+          placeholder="留空则不注入……（可点击右上角「使用推荐代写模板」一键填入标准范式）"
+          className="w-full resize-y rounded-btn border border-line bg-rail px-2.5 py-2 font-mono text-caption leading-relaxed text-ink outline-none placeholder:text-ash focus:border-teal/60"
+        />
+        <div className="flex items-center justify-between gap-3">
+          <p className="tnum text-[10px] text-ash">
+            {draft.length.toLocaleString("zh-CN")} 字 {!dirty && !busy && draft !== "" ? " · 已保存" : ""}
+          </p>
+          <button
+            type="button"
+            onClick={() => void save()}
+            disabled={busy || !dirty}
+            className="shrink-0 rounded-btn bg-ink px-3 py-1.5 text-caption font-medium text-canvas transition disabled:opacity-40"
+          >
+            {busy ? "保存中…" : "保存提示词"}
+          </button>
+        </div>
+        {err !== null && (
+          <p className="rounded-btn border border-line bg-card px-3 py-2 text-caption leading-relaxed text-loss">{err}</p>
+        )}
+      </div>
     </div>
   );
 }

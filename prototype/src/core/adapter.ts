@@ -208,6 +208,8 @@ export interface StartSessionRequest {
   readonly memoryOptions?: MemoryInjectionOptions;
   /** 关联的附件列表 */
   readonly attachments?: readonly import("./attachments.ts").ChatAttachment[];
+  /** 本次启动覆盖的上下文清单（单次选择或首轮关闭） */
+  readonly contextManifestOverride?: import("./units.ts").ContextManifest;
 }
 
 export interface SendMessageRequest {
@@ -216,6 +218,8 @@ export interface SendMessageRequest {
   readonly attachments?: readonly import("./attachments.ts").ChatAttachment[];
   /** 下一轮的 loop 参数覆盖（会话级 mode 不变，reasoning 可逐轮调） */
   readonly loop?: Omit<LoopParams, "mode">;
+  /** 本轮续聊附带注入的上下文清单（用户主动勾选时生效） */
+  readonly contextInject?: { readonly manifest?: import("./units.ts").ContextManifest };
 }
 
 

@@ -191,7 +191,12 @@ interface HostSession {
    * T3 steer 语义：turn 进行中到达的消息在此排队，轮落定后自动发出。
    * id 是队列管理（删除/立刻发送/快照）的寻址键。
    */
-  readonly pendingSends: Array<{ id: string; text: string; loop?: SendLoopParams }>;
+  readonly pendingSends: Array<{
+    id: string;
+    text: string;
+    loop?: SendLoopParams;
+    contextInject?: { readonly manifest?: ContextManifest };
+  }>;
   /** 队列 id 发号器（会话内单调） */
   queueSeq: number;
   /**
@@ -275,6 +280,10 @@ export interface StartSessionInput {
    */
   readonly contextManifest?: ContextManifest;
   /**
+   * 工作区级自定义提示词（来自 bot.json 或调用方 override），非空时前置注入。
+   */
+  readonly customPrompt?: string;
+  /**
    * 每 bot 技能绑定（ADR 0014 D8）：manifest.skills 打开时，注入目录按这份名单
    * 过滤（"all" 或 dirName 数组）。同样由调用方从 bot 定义带来，host 不查注册表。
    */
@@ -347,8 +356,10 @@ export interface ContextInjectorOptions {
   readonly plan?: InjectPlan;
   /** 显式覆盖（/mem）：只替换记忆两柱 semantic/daily 的选择 */
   readonly scopes?: readonly ("semantic" | "daily" | "procedural")[];
+  readonly skills?: { readonly enabled: "all" | readonly string[] };
   readonly dailyDate?: string;
   readonly dailyLimit?: number;
+  readonly customPrompt?: string;
 }
 
 export interface ContextInjector {
@@ -1121,28 +1132,34 @@ export class RuntimeHost {
         // 注入器只认结果，不认识三态。缺 manifest = 测试/mock 路径，退回 legacy。
         const manifest =
           input.contextManifest === undefined ? undefined : normalizeContextManifest(input.contextManifest);
-        const nativeAgents =
-          adapter.nativeContextFiles?.some((f) => f.toUpperCase() === "AGENTS.MD") ?? false;
-        const plan = manifest === undefined ? undefined : {
-          agentsMd: resolveAgentsMdInjection(manifest.agentsMd ?? "auto", nativeAgents),
-          soul: manifest.soul === true,
-          user: manifest.user === true,
-          memorySemantic: manifest.memorySemantic === true,
-          memoryDaily: manifest.memoryDaily === true,
-          memoryStanding: manifest.memoryStanding === true,
-          skills: manifest.skills === true,
-        };
-        // memoryOptions 显式挑键、绝不 spread：plan/skills 只能出自本函数的 manifest
-        // 解析——线上（session.start / bot.ask 参数）塞进来的 plan 一律无视，
-        // 注入决策的权威只有 bot.json。
-        const mo = input.memoryOptions;
-        injected = await this.injector.build(rootPath, input.prompt, {
-          scopes: mo?.scopes,
-          dailyDate: mo?.dailyDate,
-          dailyLimit: mo?.dailyLimit,
-          plan,
-          ...(plan?.skills === true ? { skills: normalizeSkillBinding(input.skillsBinding) } : {}),
-        });
+        const shouldInject = manifest === undefined || manifest.firstTurnInject !== false;
+        if (!shouldInject) {
+          injected = null;
+        } else {
+          const nativeAgents =
+            adapter.nativeContextFiles?.some((f) => f.toUpperCase() === "AGENTS.MD") ?? false;
+          const plan = manifest === undefined ? undefined : {
+            agentsMd: resolveAgentsMdInjection(manifest.agentsMd ?? "auto", nativeAgents),
+            soul: manifest.soul === true,
+            user: manifest.user === true,
+            memorySemantic: manifest.memorySemantic === true,
+            memoryDaily: manifest.memoryDaily === true,
+            memoryStanding: manifest.memoryStanding === true,
+            skills: manifest.skills === true,
+          };
+          // memoryOptions 显式挑键、绝不 spread：plan/skills 只能出自本函数的 manifest
+          // 解析——线上（session.start / bot.ask 参数）塞进来的 plan 一律无视，
+          // 注入决策的权威只有 bot.json。
+          const mo = input.memoryOptions;
+          injected = await this.injector.build(rootPath, input.prompt, {
+            scopes: mo?.scopes,
+            dailyDate: mo?.dailyDate,
+            dailyLimit: mo?.dailyLimit,
+            plan,
+            customPrompt: input.customPrompt,
+            ...(plan?.skills === true ? { skills: normalizeSkillBinding(input.skillsBinding) } : {}),
+          });
+        }
       } catch (err: unknown) {
         log.warn("memory injection skipped", {
           root: rootPath,
@@ -1585,6 +1602,7 @@ export class RuntimeHost {
     sessionId: SessionId,
     text: string,
     loop?: SendLoopParams,
+    contextInject?: { readonly manifest?: ContextManifest },
   ): void {
     const h = this.sessions.get(sessionId);
     if (h === undefined) throw adapterError("unknown_session", `no such session: ${sessionId}`);
@@ -1594,7 +1612,7 @@ export class RuntimeHost {
       if (h.pendingSends.length >= 10) {
         throw adapterError("send_queue_full", "该会话已有 10 条排队消息 —— 等当前轮完成再发");
       }
-      this.enqueueSend(h, text, loop);
+      this.enqueueSend(h, text, loop, contextInject);
       return;
     }
     // 暂停中的队列还挂着（用户停止 / 轮失败后）：新消息排到队尾并恢复出队 ——
@@ -1602,18 +1620,23 @@ export class RuntimeHost {
     // 先解除暂停再入队：enqueueSend 内的快照一次到位，不用补发第二份。
     if (h.pendingSends.length > 0) {
       h.queuePaused = false;
-      this.enqueueSend(h, text, loop);
+      this.enqueueSend(h, text, loop, contextInject);
       this.flushPendingSends(h);
       return;
     }
 
-    this.dispatchSend(h, text, loop);
+    this.dispatchSend(h, text, loop, contextInject);
   }
 
   /** 入队（发号 + steer.queued 通知 + 权威快照）。调用方负责 flush/暂停语义 */
-  private enqueueSend(h: HostSession, text: string, loop?: SendLoopParams): void {
+  private enqueueSend(
+    h: HostSession,
+    text: string,
+    loop?: SendLoopParams,
+    contextInject?: { readonly manifest?: ContextManifest },
+  ): void {
     const id = `q${++h.queueSeq}`;
-    h.pendingSends.push({ id, text, loop });
+    h.pendingSends.push({ id, text, loop, contextInject });
     // 轮进行中入队是常态，但暂停队列续排也走这里 —— 日志不预设「turn in flight」
     log.info("message queued (steer)", { sessionId: h.id, queueDepth: h.pendingSends.length });
     // WP-10：插话入队对客户端可见（steer.queued）
@@ -1688,6 +1711,7 @@ export class RuntimeHost {
     h: HostSession,
     text: string,
     loop?: SendLoopParams,
+    contextInject?: { readonly manifest?: ContextManifest },
   ): void {
     h.turnBusy = true;
     h.status = "running";
@@ -1697,7 +1721,55 @@ export class RuntimeHost {
     this.emitStamped(h, { type: "turn.started", sessionId: h.id, turn: h.turnCount });
     this.emitStamped(h, { type: "message.delta", sessionId: h.id, messageId: `user-${h.turnCount}`, role: "user", text });
     this.store.insertMessage(h.id, Date.now(), "user", text);
-    void h.impl!.send(text, loop === undefined ? undefined : { reasoningLevel: loop.reasoningLevel, contextLength: loop.contextLength }).catch((err: unknown) => {
+
+    void (async () => {
+      let promptToSend = text;
+      const isNativeCommand = text.startsWith("/");
+      if (this.injector !== undefined && !isNativeCommand && contextInject?.manifest !== undefined) {
+        try {
+          const manifest = normalizeContextManifest(contextInject.manifest);
+          const nativeAgents =
+            h.adapter.nativeContextFiles?.some((f) => f.toUpperCase() === "AGENTS.MD") ?? false;
+          const plan = {
+            agentsMd: resolveAgentsMdInjection(manifest.agentsMd ?? "auto", nativeAgents),
+            soul: manifest.soul === true,
+            user: manifest.user === true,
+            memorySemantic: manifest.memorySemantic === true,
+            memoryDaily: manifest.memoryDaily === true,
+            memoryStanding: manifest.memoryStanding === true,
+            skills: manifest.skills === true,
+          };
+          const injected = await this.injector.build(h.rootPath, text, { plan });
+          if (injected !== null) {
+            promptToSend = injected.prompt;
+            try {
+              this.store.insertDispatch({
+                sessionId: h.id,
+                runtimeId: h.runtimeId,
+                rootPath: h.rootPath,
+                userText: redactText(text),
+                injectedBlock: injected.block,
+                injectedChars: injected.injectedChars,
+                parts: injected.parts,
+                createdAt: Date.now(),
+              });
+              for (const part of injected.parts) {
+                try {
+                  this.store.markMemoryUsed(part.sourcePath, Date.now(), part.chars);
+                } catch {
+                  // 忽略打点错误
+                }
+              }
+            } catch (err: unknown) {
+              log.warn("dispatch log write failed on turn send", { sessionId: h.id, error: err instanceof Error ? err.message : String(err) });
+            }
+          }
+        } catch (err: unknown) {
+          log.warn("turn context injection skipped", { error: err instanceof Error ? err.message : String(err) });
+        }
+      }
+      return h.impl!.send(promptToSend, loop === undefined ? undefined : { reasoningLevel: loop.reasoningLevel, contextLength: loop.contextLength });
+    })().catch((err: unknown) => {
       log.error("turn failed", { sessionId: h.id, error: err instanceof Error ? err.message : String(err) });
       const errorEvent: RuntimeEvent = { type: "error", sessionId: h.id, message: err instanceof Error ? err.message : String(err), recoverable: false };
       this.emitStamped(h, errorEvent);
@@ -1909,7 +1981,7 @@ export class RuntimeHost {
     // WP-10：注入点事件化——前端据此把 pre/post-steer 的助手消息分行
     this.emitStamped(h, { type: "steer.boundary", sessionId: h.id, id: next.id, text: next.text });
     this.emitQueueSnapshot(h);
-    this.dispatchSend(h, next.text, next.loop);
+    this.dispatchSend(h, next.text, next.loop, next.contextInject);
   }
 
   /**

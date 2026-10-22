@@ -15,11 +15,14 @@ import {
   asSessionId,
   asUnitId,
   normalizeContextManifest,
+  resolveEffectiveTurnManifest,
+  LEGACY_CONTEXT_MANIFEST,
   type ContextManifest,
   type Deliverable,
   type Session,
   type SessionId,
   type SessionStatus,
+  type TurnContextConfig,
   type UnitId,
   type WorkUnit,
 } from "../core/units.ts";
@@ -162,6 +165,12 @@ interface WorkbenchState {
    * 快捷开关（记忆选择器 / Context 面板）都走这一条路，渠道会话天然同步。
    */
   patchUnitContext: (unitId: UnitId | string, patch: Partial<ContextManifest>) => Promise<void>;
+  /**
+   * 输入框当前的单轮/临时上下文注入配置
+   */
+  turnContextConfig: TurnContextConfig;
+  setTurnContextConfig: (config: Partial<TurnContextConfig> | ((prev: TurnContextConfig) => TurnContextConfig)) => void;
+  resetTurnContextConfig: () => void;
   pushNotice: (
     title: string,
     text: string,
@@ -214,6 +223,10 @@ interface WorkbenchState {
    * 所以这能拿到用户在 VS Code 里改完的 AGENTS.md 新内容。
    */
   reloadUnit: (id: UnitId) => Promise<WorkUnit | null>;
+  /** 从工作台注销/软删除 Bot（不删除磁盘物理项目文件和代码） */
+  unregisterUnit: (id: UnitId) => Promise<void>;
+  /** 幂等初始化/补充工作区标准技能目录与记忆结构 */
+  initWorkspace: (rootPath: string) => Promise<{ created: string[]; existed: string[] }>;
   selectSession: (id: SessionId | null) => void;
   /** 切换执行器。返回是否成功 —— 门禁（本轮未落定）时拒绝并推 notice（ADR 0012） */
   selectRuntime: (id: string) => boolean;
@@ -497,6 +510,26 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
     }
   },
 
+  turnContextConfig: {
+    mode: "bot_default",
+    persistForSession: false,
+  },
+
+  setTurnContextConfig: (patch) => {
+    set((s) => ({
+      turnContextConfig: typeof patch === "function" ? patch(s.turnContextConfig) : { ...s.turnContextConfig, ...patch },
+    }));
+  },
+
+  resetTurnContextConfig: () => {
+    set({
+      turnContextConfig: {
+        mode: "bot_default",
+        persistForSession: false,
+      },
+    });
+  },
+
   pushNotice: (title, text, options) => {
     set((s) => ({
       timeline: [
@@ -661,7 +694,15 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
     // 挂 true 的话，后续 session.status 事件找不到活跃会话、永远没人清它 ——
     // openSession 门禁从此锁死，被切走的运行中对话也回不去（底栏条目点的
     // 就是这条路）。运行状态本身由任务栏（useTaskbar）继续跟踪。
-    set({ activeUnitId, activeSessionId: null, timeline: [], pendingFork: null, inputHistory: [], busy: false });
+    set({
+      activeUnitId,
+      activeSessionId: null,
+      timeline: [],
+      pendingFork: null,
+      inputHistory: [],
+      busy: false,
+      turnContextConfig: { mode: "bot_default", persistForSession: false },
+    });
     try {
       localStorage.setItem("agent-workbench:active-unit", activeUnitId);
     } catch {}
@@ -796,6 +837,25 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
     if (fresh === undefined) return null;
     set((s) => ({ units: s.units.map((x) => (x.id === id ? { ...x, ...fresh } : x)) }));
     return { ...(get().units.find((x) => x.id === id) ?? fresh) };
+  },
+
+  unregisterUnit: async (id) => {
+    const { unregisterBotRpc, defaultDaemonEndpoint } = await import("../adapters/daemon/client.ts");
+    await unregisterBotRpc(id, defaultDaemonEndpoint());
+    set((s) => {
+      const remaining = s.units.filter((u) => u.id !== id);
+      const activeUnitId = s.activeUnitId === id ? (remaining[0]?.id ?? ("" as UnitId)) : s.activeUnitId;
+      return {
+        units: remaining,
+        activeUnitId,
+        ...(s.activeUnitId === id ? { activeSessionId: null, timeline: [], busy: false } : {}),
+      };
+    });
+  },
+
+  initWorkspace: async (rootPath) => {
+    const { initWorkspaceRpc, defaultDaemonEndpoint } = await import("../adapters/daemon/client.ts");
+    return initWorkspaceRpc(rootPath, defaultDaemonEndpoint());
   },
 
   selectSession: (activeSessionId) => set({ activeSessionId }),
@@ -1434,6 +1494,9 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
       // 队列卡片接管「待发送」展示，轮落定 boundary 后才转成正式气泡。
       // 本地合成的旧路径在排队场景会把「排队中」伪装成「已发送」（正是本功能要修的）。
       const restoreDraft = (): void => set({ draft: prompt.trim() !== "" ? prompt : fullPrompt });
+      const currentTurnConfig = get().turnContextConfig;
+      const turnManifest = resolveEffectiveTurnManifest(currentTurnConfig, unit?.contextManifest, false);
+      const contextInject = turnManifest !== null ? { manifest: turnManifest } : undefined;
       try {
         await adapter.sendMessage({
           sessionId: active.id,
@@ -1442,7 +1505,11 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
           loop: {
             ...(loop.reasoningLevel ? { reasoningLevel: loop.reasoningLevel } : {}),
           },
+          contextInject,
         });
+        if (currentTurnConfig.persistForSession !== true) {
+          set({ turnContextConfig: { mode: "off", persistForSession: false } });
+        }
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         restoreDraft();
@@ -1506,6 +1573,9 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
             activeSessionId: normalized.id,
           }));
           markSessionViewed(normalized.id);
+          const currentTurnConfig = get().turnContextConfig;
+          const turnManifest = resolveEffectiveTurnManifest(currentTurnConfig, unit?.contextManifest, false);
+          const contextInject = turnManifest !== null ? { manifest: turnManifest } : undefined;
           await adapter.sendMessage({
             sessionId: normalized.id,
             text: fullPrompt,
@@ -1513,7 +1583,11 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
             loop: {
               ...(loop.reasoningLevel ? { reasoningLevel: loop.reasoningLevel } : {}),
             },
+            contextInject,
           });
+          if (currentTurnConfig.persistForSession !== true) {
+            set({ turnContextConfig: { mode: "off", persistForSession: false } });
+          }
           return;
         } catch (err: unknown) {
           // 续接失败显式回落新段（不静默）；消息文本还给输入框
@@ -1521,6 +1595,15 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
           get().pushNotice("旧段接不回去，改为开新段", err instanceof Error ? err.message : String(err), { level: "warn" });
         }
       }
+    }
+
+    const currentTurnConfig = get().turnContextConfig;
+    const turnManifest = resolveEffectiveTurnManifest(currentTurnConfig, unit?.contextManifest, true);
+    let contextManifestOverride: ContextManifest | undefined = undefined;
+    if (currentTurnConfig.mode === "off" || turnManifest === null) {
+      contextManifestOverride = { ...LEGACY_CONTEXT_MANIFEST, firstTurnInject: false };
+    } else if (currentTurnConfig.mode === "custom") {
+      contextManifestOverride = { ...turnManifest, firstTurnInject: true };
     }
 
     let session: Awaited<ReturnType<RuntimeAdapter["startSession"]>>;
@@ -1546,7 +1629,11 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
         // ADR 0014：注入清单权威在 bot.json（daemon 自读），前端不再传全局 scopes
         memoryOptions: opts?.memoryOptions,
         attachments,
+        contextManifestOverride,
       });
+      if (currentTurnConfig.persistForSession !== true) {
+        set({ turnContextConfig: { mode: "off", persistForSession: false } });
+      }
     } catch (err: unknown) {
       fail(err);
       return;

@@ -44,8 +44,11 @@ import {
   STANDING_BLOCK_CLOSE,
   INJECTION_SEPARATOR,
 } from "./ruleTemplate.ts";
+import { hasSubstantiveContent } from "../../../prototype/src/core/units.ts";
 
-export type InjectionScope = "agents" | "soul" | "user" | "semantic" | "daily" | "standing" | "skills";
+export { hasSubstantiveContent };
+
+export type InjectionScope = "agents" | "soul" | "user" | "semantic" | "daily" | "standing" | "skills" | "custom";
 
 export interface InjectedPart {
   readonly scope: InjectionScope;
@@ -97,6 +100,8 @@ export interface ContextInjectorOptions {
   readonly dailyDate?: string;
   /** 每日摘要字符上限截断保护（防止当天日报过长，例如默认 4000 字符） */
   readonly dailyLimit?: number;
+  /** 工作区级自定义提示词（如果存在且实质非空，则作为首部指引注入） */
+  readonly customPrompt?: string;
 }
 
 /** host.ts 只认这个接口，不依赖 memory 模块的具体实现（保持依赖方向单一）。 */
@@ -142,12 +147,25 @@ export class FileMemoryInjector implements ContextInjector {
     const parts: InjectedPart[] = [];
     const sections: string[] = [];
 
-    // 0. 岗位说明书兜底（ADR 0014 D4：仅执行器不原生读取 AGENTS.md 时）。
+    // 0. 工作区自定义提示词（Custom Prompt，用户在 bot 设置中维护的指引，留空或纯模板不注）
+    if (opts?.customPrompt && hasSubstantiveContent(opts.customPrompt)) {
+      const customBody = opts.customPrompt.trim();
+      sections.push(
+        [
+          "### 工作空间自定义提示词 (Custom Prompt)",
+          "",
+          customBody,
+        ].join("\n"),
+      );
+      parts.push({ scope: "custom", sourcePath: "bot.json:customPrompt", chars: customBody.length });
+    }
+
+    // 1. 岗位说明书兜底（ADR 0014 D4：仅执行器不原生读取 AGENTS.md 时）。
     // 原生读取每轮新鲜生效，优于这里的冻结快照——auto 已经在 host 判过「不注」。
     if (wantAgents) {
       try {
         const agents = await readAgentsMd(rootPath);
-        if (agents.exists && agents.content.trim() !== "") {
+        if (agents.exists && hasSubstantiveContent(agents.content)) {
           const over = agents.chars > agents.limit;
           const body = over ? truncateToBudget(agents.content, agents.limit, "AGENTS.md") : agents.content.trim();
           sections.push(
@@ -166,11 +184,11 @@ export class FileMemoryInjector implements ContextInjector {
       }
     }
 
-    // 1. 人设（SOUL.md，用户维护，只读注入）
+    // 2. 人设（SOUL.md，用户维护，只读注入）
     if (wantSoul) {
       try {
         const soul = await readSoul(rootPath);
-        if (soul.exists && soul.content.trim() !== "") {
+        if (soul.exists && hasSubstantiveContent(soul.content)) {
           const over = soul.chars > soul.limit;
           const body = over ? truncateToBudget(soul.content, soul.limit, "SOUL.md") : soul.content.trim();
           sections.push(
@@ -189,11 +207,11 @@ export class FileMemoryInjector implements ContextInjector {
       }
     }
 
-    // 2. 关于用户（USER.md，全局层，逐 bot 开关）
+    // 3. 关于用户（USER.md，全局层，逐 bot 开关）
     if (wantUser) {
       try {
         const user = await readUser(this.homeDir);
-        if (user.exists && user.content.trim() !== "") {
+        if (user.exists && hasSubstantiveContent(user.content)) {
           const over = user.chars > user.limit;
           const body = over ? truncateToBudget(user.content, user.limit, "USER.md") : user.content.trim();
           sections.push(
@@ -303,7 +321,7 @@ export class FileMemoryInjector implements ContextInjector {
     if (wantStanding) {
       try {
         const standing = await readStanding(rootPath);
-        if (standing.exists && hasRealEntries(standing.content)) {
+        if (standing.exists && hasSubstantiveContent(standing.content)) {
           const over = standing.chars > standing.limit;
           const body = over ? truncateToBudget(standing.content, standing.limit, "STANDING.md") : standing.content.trim();
           const standingSection = [

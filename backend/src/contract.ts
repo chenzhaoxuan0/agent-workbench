@@ -35,6 +35,8 @@ export type {
   SessionId,
   SessionStatus,
   SkillBinding,
+  TurnContextConfig,
+  TurnContextOverrideMode,
   UnitId,
   WorkUnit,
 } from "../../prototype/src/core/units.ts";
@@ -43,6 +45,7 @@ export {
   normalizeContextManifest,
   normalizeSkillBinding,
   resolveAgentsMdInjection,
+  resolveEffectiveTurnManifest,
 } from "../../prototype/src/core/units.ts";
 
 export type {

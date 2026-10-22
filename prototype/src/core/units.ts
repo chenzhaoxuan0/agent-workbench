@@ -154,6 +154,11 @@ export interface BotChannel {
  */
 export interface ContextManifest {
   /**
+   * 是否开启新会话首轮自动注入（缺省为 true）。
+   * 用户可在 Bot 设置中将其置为 false 实现该 Bot 默认裸跑，仅在输入框手动勾选时注入。
+   */
+  readonly firstTurnInject?: boolean;
+  /**
    * AGENTS.md 是唯一三态项。auto（默认）= 执行器声明原生读取则不注入（防双注），
    * 未声明则注入兜底——宁双注勿漏注，岗位说明书静默丢失比浪费 token 严重（ADR 0014）。
    */
@@ -178,6 +183,7 @@ export interface ContextManifest {
  * 唯一例外是 agentsMd 的 auto：对已标注原生读取的执行器它就是不注入（防双注）。
  */
 export const LEGACY_CONTEXT_MANIFEST: ContextManifest = {
+  firstTurnInject: true,
   agentsMd: "auto",
   soul: false,
   user: false,
@@ -197,6 +203,7 @@ export function normalizeContextManifest(raw: unknown): ContextManifest {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return LEGACY_CONTEXT_MANIFEST;
   const m = raw as Partial<ContextManifest>;
   return {
+    firstTurnInject: m.firstTurnInject !== false,
     agentsMd: m.agentsMd === "on" || m.agentsMd === "off" ? m.agentsMd : "auto",
     soul: m.soul === true,
     user: m.user === true,
@@ -205,6 +212,43 @@ export function normalizeContextManifest(raw: unknown): ContextManifest {
     memoryStanding: m.memoryStanding === true,
     skills: m.skills === true,
   };
+}
+
+/** 单轮对话上下文覆盖模式 */
+export type TurnContextOverrideMode = "bot_default" | "off" | "custom";
+
+/** 单轮或会话临时注入配置（Composer 工具栏使用） */
+export interface TurnContextConfig {
+  readonly mode: TurnContextOverrideMode;
+  /** 当 mode === 'custom' 时生效的临时清单 */
+  readonly customManifest?: ContextManifest;
+  /** 是否在本会话后续轮次持续保持（默认 false，发送后即复位为默认） */
+  readonly persistForSession?: boolean;
+}
+
+/**
+ * 计算当前轮实际生效的注入清单。
+ * 返回 null 表示完全不注入（裸跑）。
+ */
+export function resolveEffectiveTurnManifest(
+  config: TurnContextConfig | undefined,
+  botManifest: ContextManifest | undefined,
+  isFirstTurn: boolean,
+): ContextManifest | null {
+  const normBot = normalizeContextManifest(botManifest);
+  const mode = config?.mode ?? (isFirstTurn ? "bot_default" : "off");
+
+  if (mode === "off") return null;
+  if (mode === "custom" && config?.customManifest) {
+    return normalizeContextManifest(config.customManifest);
+  }
+  // mode === "bot_default"
+  if (isFirstTurn) {
+    if (normBot.firstTurnInject === false) return null;
+    return normBot;
+  }
+  // 续聊时若用户主动选择 "bot_default"，则附带 bot 预设清单
+  return normBot;
 }
 
 /**
@@ -218,6 +262,31 @@ export function resolveAgentsMdInjection(
   if (mode === "on") return true;
   if (mode === "off") return false;
   return !nativeReadsAgentsMd;
+}
+
+/**
+ * 判断一段文本是否包含实质性内容（排除 HTML 注释、Markdown 纯标题行、空白与括号说明等模板骨架）。
+ *
+ * 常见骨架：
+ * - <!-- 请在此处填写... -->
+ * - # SOUL.md / # 人设 / # 未命名
+ * - （还没写岗位说明书） / （留空表示...）
+ * 只有当存在实质正文时才返回 true。
+ */
+export function hasSubstantiveContent(text: string | null | undefined): boolean {
+  if (!text) return false;
+  const noComments = text.replace(/<!--[\s\S]*?-->/g, "");
+  const substantiveLines = noComments
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => {
+      if (l === "") return false;
+      if (/^#{1,6}\s+.*$/.test(l)) return false;
+      if (/^[（(].*[）)]$/.test(l)) return false;
+      if (/^[-*]\s*[（(].*[）)]$/.test(l)) return false;
+      return true;
+    });
+  return substantiveLines.join("").trim().length > 0;
 }
 
 /**
@@ -339,6 +408,10 @@ export interface WorkUnit {
    * 合成 bot（总管 steward / 心跳 heartbeat）：系统级自建 bot，不可降级或移除常驻。
    */
   readonly synthetic?: boolean;
+  /** 工作区级自定义提示词（在执行器提示词之外引导，留空不注入） */
+  readonly customPrompt?: string;
+  /** 软删除/已注销标记（为 true 时不出现在侧栏列表中，但磁盘数据完整保留） */
+  readonly unregistered?: boolean;
   /**
    * 外联渠道（docs/08 WP-5）：IM / webhook 绑定。daemon 的渠道网关据此把
    * "消息进来 → 会话 → 回出去"接到具体 bot 上；缺省 = 纯工作台内 bot。

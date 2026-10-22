@@ -101,6 +101,7 @@ export async function runBotTurn(
       memoryOptions: opts.memoryOptions,
       contextManifest: normalizeContextManifest(bot.contextManifest),
       skillsBinding: normalizeSkillBinding(bot.skills),
+      customPrompt: typeof (bot as { customPrompt?: unknown })?.customPrompt === "string" ? String((bot as { customPrompt?: unknown }).customPrompt) : undefined,
       // 新会话路径：同样在 send 之前交出去（startSession 内部保证顺序）
       onSessionReady: opts.onTurnStart === undefined ? undefined : (sid) => opts.onTurnStart?.(sid),
     });

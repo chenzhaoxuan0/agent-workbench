@@ -276,6 +276,7 @@ class DaemonRuntimeAdapter implements RuntimeAdapter {
           // ADR 0013：对话分叉 —— 锚点轮边界开新段（HANDOFF 上界由 daemon 解析）
           ...(req.fork !== undefined ? { fork: req.fork } : {}),
           memoryOptions: req.memoryOptions,
+          ...(req.contextManifestOverride !== undefined ? { contextManifestOverride: req.contextManifestOverride } : {}),
         },
         60000,
       );
@@ -327,6 +328,7 @@ class DaemonRuntimeAdapter implements RuntimeAdapter {
       text: req.text,
       reasoningLevel: req.loop?.reasoningLevel,
       contextLength: req.loop?.contextLength,
+      ...(req.contextInject !== undefined ? { contextInject: req.contextInject } : {}),
     });
   }
 

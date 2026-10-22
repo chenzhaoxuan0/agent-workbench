@@ -831,6 +831,22 @@ export async function listBotDefinitions(endpoint: string = defaultDaemonEndpoin
   return raw.map(flattenBotDef);
 }
 
+/** 软删除/从工作台注销 Bot（保留本地磁盘文件） */
+export async function unregisterBotRpc(
+  botId: string,
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<{ ok: boolean; path: string }> {
+  return DaemonClient.get(endpoint).rpc("bot.unregister", { id: botId }, 15000);
+}
+
+/** 初始化/补齐工作区目录与标准技能 */
+export async function initWorkspaceRpc(
+  rootPath: string,
+  endpoint: string = defaultDaemonEndpoint(),
+): Promise<{ created: string[]; existed: string[] }> {
+  return DaemonClient.get(endpoint).rpc("bot.initWorkspace", { rootPath }, 15000);
+}
+
 // ---- USER.md 全局层（ADR 0014 D5）：关于「人」的 evergreen 文件，逐 bot 开关注入 ----
 
 export interface UserContextFile {

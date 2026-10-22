@@ -16,7 +16,7 @@ import path from "node:path";
 import type { Store } from "../store/db.ts";
 import { log } from "../log.ts";
 import { inspectDirectory, appendGitignore, type InspectReport } from "./inspect.ts";
-import { normalizeContextManifest } from "../../../prototype/src/core/units.ts";
+import { normalizeContextManifest, hasSubstantiveContent } from "../../../prototype/src/core/units.ts";
 
 const ROOTS_KEY = "bot_roots";
 const BOT_DIR = ".agent-workbench";
@@ -280,10 +280,13 @@ export class BotRegistry {
     if (nextSoul.trim() !== "") {
       await writeSoulAtomic(nextSoul);
       soulWritten = true;
-    } else if (currentSoul === null && legacyPersona.trim() !== "") {
-      await writeSoulAtomic(legacyPersona);
-      soulWritten = true;
-      log.info("persona materialized into SOUL.md", { root });
+    } else if (legacyPersona.trim() !== "") {
+      const soulRaw = currentSoul !== null ? await readFile(soulAbs, "utf8").catch(() => "") : "";
+      if (currentSoul === null || !hasSubstantiveContent(soulRaw)) {
+        await writeSoulAtomic(legacyPersona);
+        soulWritten = true;
+        log.info("persona materialized into SOUL.md", { root });
+      }
     }
 
     // 2) 组装 bot.json：去掉 agentsMd/soulMd 正文与派生 $meta，换成 sourcePath 指针 + 自增版本
@@ -304,6 +307,10 @@ export class BotRegistry {
       const identity = (out.identity ?? {}) as Record<string, unknown>;
       out.identity = { ...identity, sourcePath: agentsRel };
     }
+    // 重建或保存时，如果之前被注销过，自动恢复注销标记
+    if (unit.unregistered !== true) {
+      delete out.unregistered;
+    }
     out.revision = currentRevision + 1;
     out.updatedAt = Date.now();
 
@@ -311,6 +318,9 @@ export class BotRegistry {
     const tmpFile = `${file}.tmp`;
     await writeFile(tmpFile, JSON.stringify(out, null, 2) + "\n", "utf8");
     await rename(tmpFile, file);
+
+    // 3) 自动初始化/补齐标准工作区技能与目录（幂等，绝不覆盖已有正文）
+    await this.initWorkspace(root);
 
     const parent = path.dirname(root);
     if (!this.roots().includes(parent) && parent !== root) this.addRoot(parent);
@@ -321,6 +331,103 @@ export class BotRegistry {
     }
     log.info("bot definition written", { id: unit.id, path: file, revision: out.revision, agentsMd: agentsRel });
     return { path: file, revision: out.revision as number };
+  }
+
+  /**
+   * 初始化/补齐工作区目录与标准技能（幂等）。
+   *
+   * 补齐：
+   * 1. .agent-workbench/
+   * 2. memory/daily/
+   * 3. skills/workbench-context/SKILL.md 与 .agents/skills/workbench-context/SKILL.md（各 CLI 通用上下文查询工具）
+   * 4. 6 大核心 MD 骨架文件（缺失才补，已有正文绝不覆盖）
+   */
+  async initWorkspace(rootPath: string): Promise<{ created: string[]; existed: string[] }> {
+    const root = path.resolve(rootPath);
+    if (!existsSync(root)) {
+      await mkdir(root, { recursive: true });
+    }
+    const created: string[] = [];
+    const existed: string[] = [];
+
+    const ensureDir = async (relDir: string): Promise<void> => {
+      const full = path.join(root, relDir);
+      const posix = relDir.replaceAll("\\", "/");
+      if (!existsSync(full)) {
+        await mkdir(full, { recursive: true });
+        created.push(posix);
+      } else {
+        existed.push(posix);
+      }
+    };
+
+    const ensureFile = async (relFile: string, content: string): Promise<void> => {
+      const full = path.join(root, relFile);
+      const posix = relFile.replaceAll("\\", "/");
+      if (!existsSync(full)) {
+        await mkdir(path.dirname(full), { recursive: true });
+        await writeFile(full, content, "utf8");
+        created.push(posix);
+      } else {
+        existed.push(posix);
+      }
+    };
+
+    await ensureDir(BOT_DIR);
+    await ensureDir(path.join("memory", "daily"));
+    await ensureDir(path.join(".agents", "skills", "workbench-context"));
+    await ensureDir(path.join("skills", "workbench-context"));
+
+    const skillContent = [
+      "---",
+      "name: workbench-context",
+      'description: "检索本工作空间的长期事实记忆 (MEMORY.md)、日常碎片日志 (memory/daily/) 以及安全红线 (STANDING.md)。当遇到不确定的项目背景、历史决策或需要调取历史备忘时主动调用。"',
+      "---",
+      "",
+      "# 工作空间上下文与记忆检索工具",
+      "",
+      "本工作空间包含以下事实归档文件，你可以使用常规文件读取工具按需查看：",
+      "1. `MEMORY.md`：项目级长期事实、技术选型与关键共识（位于工作区根目录）。",
+      "2. `memory/daily/YYYY-MM-DD.md`：历史日常工作日志与对话提炼碎片。",
+      "3. `STANDING.md`：当前项目不可打破的安全约束与常驻红线。",
+      "",
+      "**使用准则**：",
+      "- 仅在用户问题涉及过往决策、特定历史背景或显式要求查阅记忆时读取对应文件。",
+      "- 避免一次性读取全部文件，根据问题日期或关键字按需精准读取。",
+      "",
+    ].join("\n");
+
+    await ensureFile(path.join(".agents", "skills", "workbench-context", "SKILL.md"), skillContent);
+    await ensureFile(path.join("skills", "workbench-context", "SKILL.md"), skillContent);
+
+    // 核心 MD 骨架文件（若缺失才创建，绝不覆盖已有正文）
+    await ensureFile("MEMORY.md", `# 项目记忆\n\n<!-- 项目级长期事实与技术决策 -->\n- （把项目级事实写在这里…）\n`);
+    await ensureFile("STANDING.md", `# 常驻红线\n\n<!-- 不可打破的常驻指令与安全约束 -->\n`);
+    await ensureFile("SOUL.md", `# 人设\n\n<!-- 这个 bot 的语气、风格与行为准则 -->\n`);
+
+    return { created, existed };
+  }
+
+  /**
+   * 软删除/注销 Bot（仅从工作台列表移除注册，不删除磁盘项目文件和代码）。
+   */
+  async unregisterBot(id: string): Promise<{ ok: boolean; path: string }> {
+    const all = await this.listBots({ includeUnregistered: true });
+    const target = all.find((b) => b.id === id);
+    if (!target || typeof target.rootPath !== "string") {
+      throw Object.assign(new Error(`bot "${id}" not found`), { code: "not_found" });
+    }
+    const file = path.join(path.resolve(target.rootPath), BOT_DIR, BOT_FILE);
+    if (!existsSync(file)) {
+      throw Object.assign(new Error(`bot "${id}" definition file not found`), { code: "not_found" });
+    }
+    const def = JSON.parse(await readFile(file, "utf8")) as Record<string, unknown>;
+    def.unregistered = true;
+    def.revision = (typeof def.revision === "number" ? def.revision : 0) + 1;
+    def.updatedAt = Date.now();
+    await writeFile(file, JSON.stringify(def, null, 2) + "\n", "utf8");
+    log.info("bot unregistered (workspace files preserved)", { id, root: target.rootPath });
+    return { ok: true, path: file };
   }
 
   private async readFileDef(file: string): Promise<BotDefinition | null> {
@@ -355,7 +462,7 @@ export class BotRegistry {
    * 就看到新内容」是天然成立的，不需要额外的失效机制。hydrate 在这里做：读到
    * identity.sourcePath 就把 <rootPath>/<sourcePath> 的正文读进 agentsMd。
    */
-  async listBots(): Promise<BotDefinition[]> {
+  async listBots(opts?: { includeUnregistered?: boolean }): Promise<BotDefinition[]> {
     const byId = new Map<string, BotDefinition>();
     for (const rootDir of this.roots()) {
       if (!existsSync(rootDir)) continue;
@@ -371,6 +478,9 @@ export class BotRegistry {
         try {
           const def = JSON.parse(await readFile(file, "utf8")) as BotDefinition;
           if (typeof def.id === "string" && def.id !== "") {
+            if (def.unregistered === true && opts?.includeUnregistered !== true) {
+              continue;
+            }
             // 评审 P2：channels 形状容错——非数组的脏字段归一为缺省，渠道网关按"无渠道"处理
             if (def.channels !== undefined && !Array.isArray(def.channels)) {
               log.warn("bot channels malformed, ignored", { file });

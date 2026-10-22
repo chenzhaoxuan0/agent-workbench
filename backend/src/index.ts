@@ -112,7 +112,7 @@ import { CredentialVault } from "./credentials/vault.ts";
 import { getNetworkInterfaces } from "./network.ts";
 import { TunnelManager } from "./tunnel/manager.ts";
 import { askBot } from "./channels/askBot.ts";
-import { asModelId, asSessionId, asUnitId, normalizeContextManifest, normalizeSkillBinding } from "../../prototype/src/core/units.ts";
+import { asModelId, asSessionId, asUnitId, normalizeContextManifest, normalizeSkillBinding, type ContextManifest } from "../../prototype/src/core/units.ts";
 
 const startedAt = Date.now();
 const config = loadConfig();
@@ -2521,7 +2521,20 @@ registerMethod("channel.send", async (params) => {
   if (typeof p.text !== "string" || p.text === "") throw Object.assign(new Error("text is required"), { code: "bad_params" });
   return feishuGateway.sendTo(p.botId, p.accountId ?? "main", p.receiveId, p.text);
 });
-registerMethod("bot.list", () => botRegistry.listBots());
+registerMethod("bot.list", (params) => {
+  const p = (params ?? {}) as { includeUnregistered?: boolean };
+  return botRegistry.listBots(p);
+});
+registerMethod("bot.unregister", async (params) => {
+  const p = (params ?? {}) as { id?: string };
+  if (typeof p.id !== "string" || p.id === "") throw Object.assign(new Error("id is required"), { code: "bad_params" });
+  return botRegistry.unregisterBot(p.id);
+});
+registerMethod("bot.initWorkspace", async (params) => {
+  const p = (params ?? {}) as { rootPath?: string };
+  if (typeof p.rootPath !== "string" || p.rootPath === "") throw Object.assign(new Error("rootPath is required"), { code: "bad_params" });
+  return botRegistry.initWorkspace(p.rootPath);
+});
 // ---- 外观（appearance）—— <homeDir>/appearance.json，用户可让 agent 直接改这个文件 ----
 registerMethod("appearance.read", async () => {
   const meta = await readAppearance(config.homeDir);
@@ -3130,6 +3143,8 @@ registerMethod("session.start", async (params) => {
       dailyDate?: string;
       dailyLimit?: number;
     };
+    contextManifestOverride?: unknown;
+    customPromptOverride?: string;
   };
   if (typeof p.runtimeId !== "string" || typeof p.unitId !== "string" ||
       typeof p.rootPath !== "string" || typeof p.prompt !== "string") {
@@ -3204,20 +3219,42 @@ registerMethod("session.start", async (params) => {
         : undefined,
     worktree,
     memoryOptions: p.memoryOptions,
-    // 再归一一次：合成 bot（steward/heartbeat）的定义可能没走 registry 的 hydrate
-    contextManifest: botDef === undefined ? undefined : normalizeContextManifest(botDef.contextManifest),
+    // 若前端显式指定 contextManifestOverride（单次覆盖或首轮关闭），优先使用；否则取 bot 注册表
+    contextManifest:
+      p.contextManifestOverride !== undefined
+        ? normalizeContextManifest(p.contextManifestOverride)
+        : botDef === undefined
+          ? undefined
+          : normalizeContextManifest(botDef.contextManifest),
     skillsBinding: botDef === undefined ? undefined : normalizeSkillBinding(botDef.skills),
+    customPrompt:
+      typeof p.customPromptOverride === "string"
+        ? p.customPromptOverride
+        : typeof (botDef as { customPrompt?: unknown })?.customPrompt === "string"
+          ? String((botDef as { customPrompt?: unknown }).customPrompt)
+          : undefined,
   });
 });
 registerMethod("session.send", (params) => {
-  const p = (params ?? {}) as { sessionId?: string; text?: string; reasoningLevel?: string; contextLength?: string };
+  const p = (params ?? {}) as {
+    sessionId?: string;
+    text?: string;
+    reasoningLevel?: string;
+    contextLength?: string;
+    contextInject?: { manifest?: ContextManifest };
+  };
   if (typeof p.sessionId !== "string" || typeof p.text !== "string") {
     throw Object.assign(new Error("sessionId and text are required"), { code: "bad_params" });
   }
-  return host.sendMessage(asSessionId(p.sessionId), p.text, {
-    reasoningLevel: p.reasoningLevel,
-    contextLength: typeof p.contextLength === "string" && p.contextLength !== "" ? p.contextLength : undefined,
-  });
+  return host.sendMessage(
+    asSessionId(p.sessionId),
+    p.text,
+    {
+      reasoningLevel: p.reasoningLevel,
+      contextLength: typeof p.contextLength === "string" && p.contextLength !== "" ? p.contextLength : undefined,
+    },
+    p.contextInject,
+  );
 });
 registerMethod("session.cancel", (params) => {
   const { sessionId } = (params ?? {}) as { sessionId?: string };
