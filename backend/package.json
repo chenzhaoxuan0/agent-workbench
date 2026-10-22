@@ -60,6 +60,7 @@
     "smoke:ui:live": "tsx scripts/live-gui-test.ts",
     "smoke:ui:resident": "tsx scripts/verify-resident-ui.ts",
     "start": "tsx src/index.ts",
+    "gen:methods": "tsx scripts/gen-methods-table.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

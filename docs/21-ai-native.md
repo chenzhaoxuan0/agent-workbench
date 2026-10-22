@@ -128,11 +128,11 @@
 - [x] HTTP 语义映射与 401/404/413（含坏信封 400）传输层路径
 - [x] `smoke:ai-native-rpc`：health 回环、鉴权拒绝、`ok:false` 信封、WS 同路径一致性、`daemon.stop` 走 /rpc 退出码 0（流式拒绝清单顺延：当前全方法是请求/响应形，无流式方法可拒，D2 的「流式留 WS」由 D4 承担）
 
-### P2 · 方法元数据与自描述（后端，~1 天）
-- [ ] `wsd.ts`：registerMethod 元数据参数 + `rpc.methods` 自宿主方法
-- [ ] 高频方法补 description / paramsHint（首批：session / git / bot / backlog / automation）
-- [ ] danger 标注（六个真危险面）
-- [ ] `gen-methods-table.ts` + docs/07 §四替换为生成表
+### P2 · 方法元数据与自描述（后端，已完成 2026-10-22）
+- [x] `wsd.ts`：registerMethod 元数据参数 + `rpc.methods` 自宿主方法（另加 `applyMethodMeta` 集中表通道——155 处注册形态混合，逐点改第三参不现实；集中表 + 启动 fail-fast 校验同防漂移）
+- [x] 高频方法补 description / paramsHint —— 落地为全量 155 条（`backend/src/methods.meta.ts`）
+- [x] danger 标注 7 个真危险面：daemon.stop / git.push / git.worktree.remove / bot.put / computerControl.setEnabled / mcp.save / mcp.remove（computerControl.actions 经 handler 实读是只读审计流，危险标注改挂 setEnabled）
+- [x] `gen-methods-table.ts` + docs/07 §四替换为生成表（156 方法 29 域，锚点内勿手改）
 
 ### P3 · `aw` CLI（~1–2 天）
 - [ ] `cli/` 包 + bin（Windows `.cmd` shim；`pnpm link --global` 本地安装，不发 npm）

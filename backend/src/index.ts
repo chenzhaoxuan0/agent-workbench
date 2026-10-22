@@ -20,7 +20,8 @@ import { ImageProfileStore, type ImageProfileRow } from "./image/profiles.ts";
 import { handleImageCall } from "./image/proxy.ts";
 import { log, setLogLevel } from "./log.ts";
 import { setSecretsHome } from "./secrets.ts";
-import { attachWs, broadcastBacklog, broadcastEvent, broadcastTerminal, dispatchRpc, registerMethod, WIRE_VERSION } from "./wsd.ts";
+import { applyMethodMeta, attachWs, broadcastBacklog, broadcastEvent, broadcastTerminal, dispatchRpc, registerMethod, WIRE_VERSION } from "./wsd.ts";
+import { METHOD_META } from "./methods.meta.ts";
 import { PermissionGate } from "./permissions/gate.ts";
 import { MockPermAdapter } from "./runtime/adapters/mockperm.ts";
 import { ClaudeAdapter } from "./runtime/adapters/claude.ts";
@@ -3447,6 +3448,10 @@ void (async () => {
     /* 预热是优化不是功能路径：失败留给菜单打开时的正常拉取 */
   }
 })();
+
+// 方法元数据集中表（docs/21 D6）：挂到注册表供 rpc.methods / aw methods / docs/07 生成表
+// 消费。必须在全部 registerMethod 之后调用——本表出现注册表没有的键 = 漂移，启动掀桌。
+applyMethodMeta(METHOD_META);
 
 let shuttingDown = false;
 // 评审 P1：host.shutdown 必须真等——undelivered 广播是异步 socket 写、adapter.disconnect

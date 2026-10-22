@@ -188,7 +188,25 @@ async function main(): Promise<void> {
       { ws: wsResult, http: healthResult },
     );
 
-    // 6. 收尾也走 /rpc：daemon.stop → 退出码 0
+    // 6. 方法自描述（P2）：全量注册表 + 元数据（说明 / params 提示 / danger）
+    const meta = await rpc(port, { v: 1, method: "rpc.methods" });
+    const metaResult = meta.json?.["result"] as { count?: number; methods?: Array<Record<string, unknown>> } | undefined;
+    const metaList = metaResult?.methods ?? [];
+    const byName = (n: string): Record<string, unknown> | undefined => metaList.find((m) => m["method"] === n);
+    check(
+      "rpc.methods self-describes the registry",
+      meta.status === 200 && (metaResult?.count ?? 0) >= 150 && byName("health") !== undefined && byName("rpc.methods") !== undefined,
+      { count: metaResult?.count },
+    );
+    check(
+      "method metadata: descriptions and danger flags land",
+      typeof byName("session.start")?.["description"] === "string" &&
+        typeof byName("git.status")?.["paramsHint"] === "string" &&
+        byName("daemon.stop")?.["danger"] === "high" && byName("git.push")?.["danger"] === "high",
+      { sessionStart: byName("session.start"), daemonStop: byName("daemon.stop") },
+    );
+
+    // 7. 收尾也走 /rpc：daemon.stop → 退出码 0
     const stop = await rpc(port, { v: 1, method: "daemon.stop" });
     check("daemon.stop works over /rpc", stop.status === 200 && stop.json?.["ok"] === true, stop);
 

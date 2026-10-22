@@ -89,13 +89,60 @@ export interface RequestFrame {
 
 type RpcHandler = (params: unknown) => unknown | Promise<unknown>;
 
-const methods = new Map<string, RpcHandler>();
+/** 方法元数据（docs/21 D6）：rpc.methods / aw methods / docs/07 §四生成表的共同口径 */
+export interface MethodMeta {
+  /** 一句话中文说明（会进 markdown 表格，禁用 `|` 字符） */
+  readonly description: string;
+  /** params 形状提示，如 `{rootPath}` / `{runtimeId?}` / `null` */
+  readonly paramsHint?: string;
+  /** 真危险面标注：CLI 交互确认提示用（--yes 跳过），不构成 agent 拦截 */
+  readonly danger?: "high";
+}
+
+interface RegisteredMethod {
+  handler: RpcHandler;
+  meta?: MethodMeta;
+}
+
+const methods = new Map<string, RegisteredMethod>();
 
 /** 注册一个 client 可调用的方法。同名注册是编程错误，直接掀桌。 */
-export function registerMethod(name: string, handler: RpcHandler): void {
+export function registerMethod(name: string, handler: RpcHandler, meta?: MethodMeta): void {
   if (methods.has(name)) throw new Error(`rpc method already registered: ${name}`);
-  methods.set(name, handler);
+  methods.set(name, { handler, meta });
 }
+
+/**
+ * 批量挂元数据（docs/21 D6）：集中表（methods.meta.ts）与注册点旁第三参并存。
+ * 键必须已注册——未知键 = 元数据表与注册表漂移了，启动即掀桌（fail-fast）。
+ */
+export function applyMethodMeta(meta: Record<string, MethodMeta>): void {
+  for (const [name, m] of Object.entries(meta)) {
+    const entry = methods.get(name);
+    if (entry === undefined) throw new Error(`method meta for unregistered method: ${name}`);
+    entry.meta = m;
+  }
+}
+
+export interface MethodDescriptor {
+  readonly method: string;
+  readonly description?: string;
+  readonly paramsHint?: string;
+  readonly danger?: "high";
+}
+
+/** 全量方法自描述（rpc.methods 的数据源；按名排序，域聚簇靠前缀天然成立） */
+export function listMethodMeta(): MethodDescriptor[] {
+  return [...methods.entries()]
+    .map(([method, { meta }]) => ({ method, ...(meta ?? {}) }))
+    .sort((a, b) => a.method.localeCompare(b.method));
+}
+
+// 自宿主：方法自描述（docs/21 D6）——aw methods 与 docs/07 §四生成表共用这一个入口
+registerMethod("rpc.methods", () => {
+  const list = listMethodMeta();
+  return { count: list.length, methods: list };
+});
 
 /**
  * 统一分发器：WS 帧与 HTTP /rpc（docs/21 D2）共用同一条调用路径——信封校验之后的
@@ -110,8 +157,8 @@ export type RpcOutcome =
     };
 
 export async function dispatchRpc(method: string, params: unknown): Promise<RpcOutcome> {
-  const handler = methods.get(method);
-  if (handler === undefined) {
+  const entry = methods.get(method);
+  if (entry === undefined) {
     return {
       v: WIRE_VERSION,
       ok: false,
@@ -119,7 +166,7 @@ export async function dispatchRpc(method: string, params: unknown): Promise<RpcO
     };
   }
   try {
-    return { v: WIRE_VERSION, ok: true, result: (await handler(params)) ?? null };
+    return { v: WIRE_VERSION, ok: true, result: (await entry.handler(params)) ?? null };
   } catch (err: unknown) {
     const extra =
       typeof err === "object" && err !== null && "data" in err && (err as { data: unknown }).data !== undefined
