@@ -10,6 +10,9 @@
 USER.md / MEMORY.md / 技能目录默认全关、按需打开，AGENTS.md 三态防双注——见
 [docs/20](docs/20-context-manifest.md)）、记忆系统、出图工作台，以及多执行器统一的
 浏览器控制（playwright-mcp 扇出）与电脑控制（总闸 + 急停）。
+**AI-native（docs/21）**：全部操作既可由人经 GUI、也可由 agent 经 `aw` CLI /
+`POST /rpc`（`aw methods` 自描述）驱动——聊天编排（`session.chat`，附件路径
+daemon 内联）、通知事实源、出图（`image.generate`）GUI 与 headless 同一条代码路径。
 以 [MIT](LICENSE) 协议开源。
 
 ---

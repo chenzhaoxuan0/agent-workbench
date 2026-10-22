@@ -163,13 +163,21 @@
   FileReader 退役为双端可跑的 arrayBuffer+btoa。**GUI 任务历史面板消费切换
   （localStorage → image.tasks.list）随 P5 落地**；`smoke:ai-native-image` 十项断言
   （假供应商：落盘/历史/文件面/路径穿越 403/错密钥失败任务入史）
-- [ ] P4d 模型偏好并入 `adapter.modeldefaults` / `modelcatalog`
-- [ ] 每项：前端旧策略代码退役删除 + 对应 smoke 扩展
+- [x] P4d 模型偏好并入 `adapter.modeldefaults` / `modelcatalog`（2026-10-22 重新裁决）：
+  操作面部分已随 P4a 达成——session.chat 的模型解析链（显式 > 绑定 hint > **执行器原生默认值**）
+  即 daemon 侧的 auto 链，`adapter-default` 档与 `adapter.modeldefaults` 写入的原生默认同源。
+  剩余的 modelPrefs 内容（隐藏 / 排序 / 自定义模型展示）经 D1 复核属**呈现**（只影响本端下拉框
+  展示，不改变任何其他客户端可见的事实），按二分留在前端是正确裁决而非欠账；
+  「失效模型尊重用户选择不偷换」（`retired` 语义）在 GUI run() 链路保持不变。
+- [ ] 每项：前端旧策略代码退役删除 + 对应 smoke 扩展 —— 已随各子项落地（notifications 三块
+  逻辑删除、imageApi FileReader/默认传输退役、run() 附件谓词改薄）；**遗留一项**：出图任务历史
+  的 GUI 面板消费切换（localStorage → `image.tasks.list`）——daemon 事实源与查询面已就绪，
+  切换是纯前端改造，列为后续独立小项（不阻塞验收：headless 出图历史已可查）。
 
-### P5 · 收尾（~0.5 天）
-- [ ] `aw doctor`（端口 / token / 执行器探测 / 版本）
-- [ ] README 功能段；docs/00 北极星补一句（工作台可被 agent 操作 = 「数字员工模式」的自举）
-- [ ] 「GUI 操作 × CLI 等价命令」对照表（本文件附录或独立文件），作为长期回归清单
+### P5 · 收尾（已完成 2026-10-22）
+- [x] `aw doctor`（端口 / token / 执行器探测 / 版本）——随 P3 落地
+- [x] README 功能段；docs/00 北极星补注（工作台可被 agent 操作 = 「数字员工模式」的自举）
+- [x] 「GUI 操作 × CLI 等价命令」对照表 —— 本文件 §6 附录，长期回归清单
 
 ## 3. 验收清单
 
@@ -189,3 +197,32 @@
 - 不加第二套权限系统（D7）；不碰公网暴露（docs/13 轨道不变）
 - MCP server 后置（D8），不预做工具面
 - 呈现项不做 CLI 等价物（D1 豁免清单即边界）
+
+## 6. 附录 · GUI 操作 × CLI 等价命令对照表（P5，长期回归清单）
+
+判据：GUI 的每个操作域都有 CLI 等价物（动词层或 `aw call`），或明确列入 D1 呈现豁免。
+「GUI 有而 `aw call` 打不到 = 缺口 bug」——本表即验收第 6 条的实体。
+
+| 操作域 | GUI 入口 | CLI 等价 | 备注 |
+|---|---|---|---|
+| 会话发起/续聊（含附件） | Composer 发送 | `aw session chat --bot … --attach p1,p2` | 附件路径 daemon 内联（P4a） |
+| 会话续聊（指定段） | 时间线切换 + 发送 | `aw session chat --session <sid>` / `aw session send` | |
+| 会话列表/消息/取消 | 侧栏/历史 | `aw session list / messages / cancel` | |
+| 事件流 | 时间线实时 | `aw events --session <sid> [--since n] [--follow]` | |
+| bot 增删改查 | 侧栏/设置 | `aw bot list / put --file / inspect / ask` | |
+| 待办（GTD） | 待办面板 | `aw backlog list / add / done` + `aw call backlog.*` | 确认门/验收语义同 GUI |
+| 自动化 | 自动化页 | `aw call automation.*` | 动词层长尾走 call |
+| git | 源码面板 | `aw git status / commit` + `aw call git.*`（16 方法全量） | |
+| 记忆/上下文 | 记忆选择器/Context 面板 | `aw call memory.* / context.user.*`（21+2 方法） | |
+| 技能/MCP | 设置页 | `aw call skills.* / mcp.*` | mcp 写面带 danger 确认 |
+| 出图 | 出图工作台 | `aw call image.generate`（含参考图路径）/ `image.tasks.list` | GUI 历史面板消费切换列后续小项 |
+| 通知 | 通知中心 | `aw call notifications.list` | 已读/「你不在它面前」是客户端呈现 |
+| 外观/壁纸 | 设置页 | `aw call appearance.*` | 颜色推导本身是呈现（D1） |
+| 浏览器/电脑控制 | 控制面板 | `aw call browserControl.* / computerControl.*` | setEnabled/actions 带 danger |
+| 渠道 | 渠道设置 | `aw call channel.*`（含微信扫码 begin/poll） | |
+| 执行器/模型配置 | 设置页 | `aw call adapter.*`（10 方法） | 隐藏/排序偏好是呈现（P4d 裁决） |
+| 历史导入 | 历史弹窗 | `aw call history.* / unit.history` | |
+| 终端 | 内置终端 | **呈现豁免**（`terminal.*` 原语在，agent 有自己的终端） | D1 |
+| 工作树/隧道路由 | 面板入口 | `aw call git.worktree.* / tunnel.*` | |
+| 方法自描述 | — | `aw methods [--domain d]` | 注册表唯一真相 |
+| 健康自检 | 状态栏 | `aw doctor` | |
