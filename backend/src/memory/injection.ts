@@ -282,17 +282,16 @@ export class FileMemoryInjector implements ContextInjector {
           if (over) {
             lines.push(`…（共 ${picked.length} 个，受注入预算截断为前 ${SKILLS_IN_PROMPT_MAX} 个；完整清单见工作台技能页）`);
           }
-          sections.push(
-            [
-              "### 可用技能（目录 · 按需读取）",
-              "",
-              "以下是这个 bot 可用的技能目录。需要某项能力时，先用文件工具读取对应路径下的 SKILL.md 获取完整用法，再动手：",
-              "",
-              lines.join("\n"),
-            ].join("\n"),
-          );
-          // 目录节的 chars 记全部条目数（截断也如实记总口径）
-          parts.push({ scope: "skills", sourcePath: `${rootPath}（技能目录）`, chars: picked.length });
+          const section = [
+            "### 可用技能（目录 · 按需读取）",
+            "",
+            "以下是这个 bot 可用的技能目录。需要某项能力时，先用文件工具读取对应路径下的 SKILL.md 获取完整用法，再动手：",
+            "",
+            lines.join("\n"),
+          ].join("\n");
+          sections.push(section);
+          // sourcePath 如实记目录条数（chars 与其他 scope 同口径 = 渲染段字符数）
+          parts.push({ scope: "skills", sourcePath: `${rootPath}（技能目录 ${picked.length} 项）`, chars: measure(section) });
         }
       } catch {
         // 目录枚举失败不阻断其他注入

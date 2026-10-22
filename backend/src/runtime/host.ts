@@ -1132,8 +1132,14 @@ export class RuntimeHost {
           memoryStanding: manifest.memoryStanding === true,
           skills: manifest.skills === true,
         };
+        // memoryOptions 显式挑键、绝不 spread：plan/skills 只能出自本函数的 manifest
+        // 解析——线上（session.start / bot.ask 参数）塞进来的 plan 一律无视，
+        // 注入决策的权威只有 bot.json。
+        const mo = input.memoryOptions;
         injected = await this.injector.build(rootPath, input.prompt, {
-          ...input.memoryOptions,
+          scopes: mo?.scopes,
+          dailyDate: mo?.dailyDate,
+          dailyLimit: mo?.dailyLimit,
           plan,
           ...(plan?.skills === true ? { skills: normalizeSkillBinding(input.skillsBinding) } : {}),
         });

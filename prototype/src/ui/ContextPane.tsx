@@ -181,7 +181,13 @@ export function ContextPane({ unitId, shown }: { unitId: UnitId; shown: boolean 
         onSave={(content, hash) =>
           updateUnit(
             { ...unit, soulMd: content },
-            { ifRevision: unit.revision, ...(hash !== undefined ? { ifSoulMdHash: hash } : {}) },
+            // 三锁全带（guardsOf 同款）：payload 带着缓存的 agentsMd 正文走 putBot，
+            // 只锁 soul 的话期间 VS Code 里改过的 AGENTS.md 会被静默覆盖
+            {
+              ifRevision: unit.revision,
+              ifAgentsMdHash: unit.agentsMdMeta?.hash,
+              ...(hash !== undefined ? { ifSoulMdHash: hash } : {}),
+            },
           )
         }
       />
@@ -289,8 +295,16 @@ function SkillsBindingSection({
 
   const isAll = binding.enabled === "all";
   const list = isAll ? [] : binding.enabled;
+  const pushNotice = useWorkbench((s) => s.pushNotice);
   const saveBinding = (enabled: "all" | readonly string[]): void => {
-    void updateUnit({ ...unit, skills: { enabled } }, { ifRevision: unit.revision }).catch(() => {});
+    // 三锁全带（guardsOf 同款）：saveBinding 展开整个 unit（含 store 缓存的
+    // agentsMd/soulMd 正文），只锁 revision 会让 VS Code 里的并发修改被静默覆盖
+    void updateUnit(
+      { ...unit, skills: { enabled } },
+      { ifRevision: unit.revision, ifAgentsMdHash: unit.agentsMdMeta?.hash, ifSoulMdHash: unit.soulMdMeta?.hash },
+    ).catch(() => {
+      pushNotice("技能名单未写入", "bot.json 或 AGENTS.md / SOUL.md 已被外部修改，重新打开本面板后再试", { level: "warn" });
+    });
   };
   const toggleSkill = (dirName: string): void => {
     const next = list.includes(dirName) ? list.filter((x) => x !== dirName) : [...list, dirName];

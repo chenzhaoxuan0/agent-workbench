@@ -479,8 +479,14 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
     const next: ContextManifest = { ...normalizeContextManifest(u.contextManifest), ...patch };
     // updateUnit 自带乐观锁与回滚；这里吞掉冲突异常并提示——快捷开关的调用方
     // （Composer 记忆选择器）没有冲突三选一的 UI 面，静默失败会让人以为切过了。
+    // 三锁全带（Sidebar guardsOf 同款）：部分更新会带着 store 缓存的 agentsMd/soulMd
+    // 正文走 putBot，只锁 revision 的话，期间 VS Code 里改过的文件会被静默覆盖。
     try {
-      await get().updateUnit({ ...u, contextManifest: next }, { ifRevision: u.revision });
+      await get().updateUnit({ ...u, contextManifest: next }, {
+        ifRevision: u.revision,
+        ifAgentsMdHash: u.agentsMdMeta?.hash,
+        ifSoulMdHash: u.soulMdMeta?.hash,
+      });
     } catch (err: unknown) {
       get().pushNotice(
         "注入开关未写入",
