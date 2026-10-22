@@ -168,6 +168,12 @@ async function main(): Promise<void> {
     const badJson = await aw(port, ["call", "health", "--params", "{not json"]);
     check("aw exit 2 on bad --params", badJson.code === 2, badJson);
 
+    const h = await aw(port, ["-h"]);
+    check("aw -h prints help (exit 0)", h.code === 0 && h.stdout.includes("透传层"), h);
+
+    const followSince = await aw(port, ["events", "--follow", "--since", "0"]);
+    check("aw events --follow rejects --since (usage error 2)", followSince.code === 2 && followSince.stderr.includes("--follow"), followSince);
+
     const dead = await aw(port, ["call", "health"], { AGENT_WORKBENCH_URL: "http://127.0.0.1:1" });
     check("aw exit 4 on dead daemon", dead.code === 4 && dead.stderr.includes("transport"), dead);
 
@@ -194,6 +200,20 @@ async function main(): Promise<void> {
     const list = await aw(port, ["bot", "list"]);
     check("aw bot list reads it back", list.code === 0 && list.stdout.includes("u-cli-bot") && list.stdout.includes(botRoot), list);
 
+    // 2b. 动词层 chat：--model/--runtime 的值必须真的发给 daemon（VALUE_FLAGS 回归）
+    const chatVerb = await aw(port, ["session", "chat", "--bot", "u-cli-bot", "--text", "动词层验证", "--model", "mock-1", "--runtime", "mockperm", "--json"]);
+    let chatVerbJson: Record<string, unknown> | undefined;
+    try {
+      chatVerbJson = JSON.parse(chatVerb.stdout) as Record<string, unknown>;
+    } catch {
+      /* 断言里报 */
+    }
+    check(
+      "aw session chat verb passes --model/--runtime through",
+      chatVerb.code === 0 && chatVerbJson?.["model"] === "mock-1" && chatVerbJson?.["modelOrigin"] === "explicit" && typeof chatVerbJson?.["sessionId"] === "string",
+      chatVerb,
+    );
+
     // 4. backlog add → list → done
     const add = await aw(port, ["backlog", "add", "--goal", "验证 CLI 待办闭环", "--unit", "u-cli-bot", "--root", botRoot, "--title", "CLI 冒烟待办"]);
     let addJson: { id?: number } | undefined;
@@ -205,7 +225,7 @@ async function main(): Promise<void> {
     check("aw backlog add creates an item", add.code === 0 && typeof addJson?.id === "number", add);
 
     const bl = await aw(port, ["backlog", "list"]);
-    check("aw backlog list shows it", bl.code === 0 && bl.stdout.includes(`#${addJson?.id}`), bl);
+    check("aw backlog list shows it (id + title)", bl.code === 0 && bl.stdout.includes(`#${addJson?.id}`) && bl.stdout.includes("CLI 冒烟待办"), bl);
 
     // done 的语义是「验收」（确认门闭环的一环）：新建待办不在待验收态，daemon 正确挡回
     // bad_state —— 这里断言 CLI 把这个门槛如实透出（exit 3 + bad_state），再用 delete 清场。

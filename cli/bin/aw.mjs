@@ -32,8 +32,18 @@ const DANGER = new Set([
 
 const VALUE_FLAGS = new Set([
   "url", "token", "params", "params-file", "domain", "session", "since",
-  "bot", "text", "file", "goal", "unit", "root", "id", "message", "paths", "wait", "limit", "attach",
+  "bot", "text", "file", "goal", "unit", "root", "id", "message", "paths", "wait", "attach",
+  "model", "runtime", "title",
 ]);
+
+/** 布尔 flag：`--json=true` 这类 = 形式统一归一成 boolean（严格 === true 的消费点才不被静默绕过） */
+const BOOLEAN_FLAGS = new Set(["json", "yes", "follow", "new", "create-root", "h", "help"]);
+
+// 管道下游先关（`aw events --follow | head`）：EPIPE 是正常结束不是错误
+process.stdout.on("error", (err) => {
+  if (err !== null && typeof err === "object" && err.code === "EPIPE") process.exit(0);
+  throw err;
+});
 
 class UsageError extends Error {}
 class TransportError extends Error {}
@@ -49,6 +59,10 @@ function parseArgs(argv) {
       positional.push(...argv.slice(i + 1));
       break;
     }
+    if (a === "-h") {
+      flags.h = true;
+      continue;
+    }
     if (a.startsWith("--")) {
       const eq = a.indexOf("=");
       const key = eq === -1 ? a.slice(2) : a.slice(2, eq);
@@ -62,6 +76,9 @@ function parseArgs(argv) {
     } else {
       positional.push(a);
     }
+  }
+  for (const k of BOOLEAN_FLAGS) {
+    if (typeof flags[k] === "string") flags[k] = flags[k] === "true" || flags[k] === "1";
   }
   return { flags, positional };
 }
@@ -98,14 +115,20 @@ token：--token > AGENT_WORKBENCH_TOKEN > $AGENT_WORKBENCH_HOME|~/.agent-workben
 
 function discover(flags) {
   const baseUrl = (typeof flags.url === "string" ? flags.url : process.env.AGENT_WORKBENCH_URL) ?? DEFAULT_URL;
+  if (baseUrl.trim() === "") throw new UsageError("--url 不能为空");
   let token = typeof flags.token === "string" ? flags.token : process.env.AGENT_WORKBENCH_TOKEN;
   let tokenFrom = typeof flags.token === "string" ? "--token" : token !== undefined ? "env" : null;
   if (token === undefined) {
-    const home = process.env.AGENT_WORKBENCH_HOME ?? path.join(homedir(), ".agent-workbench");
+    // 相对路径按当次 cwd 解析会跨目录漂移——统一 resolve
+    const home = path.resolve(process.env.AGENT_WORKBENCH_HOME ?? path.join(homedir(), ".agent-workbench"));
     const tokenFile = path.join(home, "token");
     if (existsSync(tokenFile)) {
-      token = readFileSync(tokenFile, "utf8").trim();
-      tokenFrom = `file:${tokenFile}`;
+      try {
+        token = readFileSync(tokenFile, "utf8").trim();
+        tokenFrom = `file:${tokenFile}`;
+      } catch {
+        tokenFrom = `unreadable:${tokenFile}`; // 读不了（权限等）：按未配置处理，doctor 会如实报
+      }
     }
   }
   return { baseUrl: baseUrl.replace(/\/+$/, ""), token, tokenFrom };
@@ -113,9 +136,11 @@ function discover(flags) {
 
 let rpcSeq = 0;
 
-async function rpc({ flags, method, params }) {
+async function rpc({ flags, method, params, timeoutMs }) {
   const { baseUrl, token } = discover(flags);
-  if (DANGER.has(method) && flags.yes !== true && process.stdin.isTTY && process.stdout.isTTY) {
+  // 危险面确认：交互判定与提示输出流对齐（stdin 可问 + stderr 可答），管道场景
+  // （stdout 重定向）不该静默免确认
+  if (DANGER.has(method) && flags.yes !== true && process.stdin.isTTY && process.stderr.isTTY) {
     const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
     const answer = await rl.question(`⚠️  危险方法 ${method}，确认执行？[y/N] `);
     rl.close();
@@ -130,7 +155,7 @@ async function rpc({ flags, method, params }) {
       method: "POST",
       headers: { "content-type": "application/json", ...(token !== undefined ? { "x-awb-token": token } : {}) },
       body: JSON.stringify({ v: 1, id: `aw-${++rpcSeq}`, method, params: params ?? null }),
-      signal: AbortSignal.timeout(120_000),
+      signal: AbortSignal.timeout(timeoutMs ?? 120_000),
     });
   } catch (err) {
     throw new TransportError(`connect failed: ${baseUrl} (${err instanceof Error ? err.message : String(err)})`);
@@ -142,8 +167,8 @@ async function rpc({ flags, method, params }) {
 }
 
 /** 调用并在 ok:false 时按纪律退出（exit 3） */
-async function call(flags, method, params) {
-  const body = await rpc({ flags, method, params });
+async function call(flags, method, params, timeoutMs) {
+  const body = await rpc({ flags, method, params, timeoutMs });
   if (body.ok !== true) {
     const e = body.error ?? {};
     const extra = e.data === undefined ? "" : ` ${JSON.stringify(e.data)}`;
@@ -163,6 +188,15 @@ function requireFlag(flags, name, hint) {
   const v = flags[name];
   if (typeof v !== "string" || v === "") throw new UsageError(`缺少 --${name}${hint === undefined ? "" : `（${hint}）`}`);
   return v;
+}
+
+/** 数值 flag：非有限数字直接用法错（exit 2），绝不把 NaN 序列化成 null 静默发给 daemon */
+function numFlag(flags, name, hint) {
+  const v = flags[name];
+  if (v === undefined || v === true) return undefined;
+  const n = Number(v);
+  if (!Number.isFinite(n)) throw new UsageError(`--${name} 需要数字${hint === undefined ? "" : `（${hint}）`}`);
+  return n;
 }
 
 // ---- 命令 ------------------------------------------------------------------
@@ -229,7 +263,10 @@ async function cmdBot(flags, sub) {
   if (sub === "ask") {
     const botId = requireFlag(flags, "bot", "bot id");
     const text = requireFlag(flags, "text", "消息文本");
-    return printJson(await call(flags, "bot.ask", { botId, text, ...(typeof flags.wait === "string" ? { waitMs: Number(flags.wait) } : {}) }));
+    const waitMs = numFlag(flags, "wait", "等待毫秒");
+    return printJson(
+      await call(flags, "bot.ask", { botId, text, ...(waitMs !== undefined ? { waitMs } : {}) }, (waitMs ?? 180_000) + 15_000),
+    );
   }
   throw new UsageError("用法：aw bot list | inspect --root <p> | put --file <unit.json> | ask --bot <id> --text <t>");
 }
@@ -267,8 +304,10 @@ async function cmdSession(flags, sub) {
     if (typeof flags.runtime === "string") params.runtimeId = flags.runtime;
     if (typeof flags.model === "string") params.model = flags.model;
     if (flags.new === true) params.newSession = true;
-    if (typeof flags.wait === "string") params.waitMs = Number(flags.wait);
-    const result = await call(flags, "session.chat", params);
+    const waitMs = numFlag(flags, "wait", "等待毫秒");
+    if (waitMs !== undefined) params.waitMs = waitMs;
+    // rpc 超时对齐 --wait：等轮落定可能远超默认 120s，客户端先 abort 会把「慢」误报成「连不上」
+    const result = await call(flags, "session.chat", params, (waitMs ?? 180_000) + 15_000);
     if (flags.json === true) return printJson(result);
     process.stdout.write(`${(result.reply ?? "") + "\n"}`);
     console.error(`session ${result.sessionId}  ${result.status}${result.continued ? "  续聊" : "  新段"}  model=${result.model ?? `auto(${result.modelOrigin})`}`);
@@ -299,7 +338,8 @@ async function cmdBacklog(flags, sub) {
     return printJson(created);
   }
   if (sub === "done") {
-    const id = Number(requireFlag(flags, "id", "待办 id"));
+    const id = numFlag(flags, "id", "待办 id");
+    if (id === undefined) throw new UsageError("缺少 --id（待办 id）");
     return printJson(await call(flags, "backlog.review", { id, pass: true }));
   }
   throw new UsageError("用法：aw backlog list | add --goal <g> --unit <uid> --root <path> [--title t] | done --id <n>");
@@ -329,9 +369,20 @@ async function cmdGit(flags, sub) {
 async function cmdEvents(flags) {
   const session = typeof flags.session === "string" ? flags.session : null;
   if (flags.follow === true) {
+    if (flags.since !== undefined) {
+      throw new UsageError("--follow 从连接时刻跟随新事件，不回放——补拉请去掉 --follow（--since 属于补拉口径）");
+    }
     const { baseUrl, token } = discover(flags);
     const wsUrl = baseUrl.replace(/^http/, "ws") + "/ws" + (token === undefined ? "" : `?token=${encodeURIComponent(token)}`);
-    const ws = new WebSocket(wsUrl);
+    // 错误信息永不带 query（token 在里面）——凭证不进日志/CI 是硬规矩
+    const shownUrl = wsUrl.replace(/\?token=.*/, "?token=***");
+    let ws;
+    try {
+      ws = new WebSocket(wsUrl);
+    } catch (err) {
+      throw new UsageError(`ws 地址不合法：${shownUrl}（${err instanceof Error ? err.message : String(err)}）`);
+    }
+    let gotFrames = false;
     ws.addEventListener("message", (ev) => {
       let frame;
       try {
@@ -341,16 +392,22 @@ async function cmdEvents(flags) {
       }
       if (frame.type !== "event") return;
       if (session !== null && frame.event?.sessionId !== session) return;
+      gotFrames = true;
       process.stdout.write(JSON.stringify({ seq: frame.seq, event: frame.event }) + "\n");
     });
     ws.addEventListener("error", () => {
-      console.error(`transport error: ws connect failed: ${wsUrl}`);
+      console.error(`transport error: ws connect failed: ${shownUrl}`);
       process.exit(4);
+    });
+    // daemon 断开/关停：说清楚再退，别让进程静默消失（一帧没有 = 连了就断，按传输错）
+    ws.addEventListener("close", () => {
+      console.error(`ws closed: ${shownUrl}${gotFrames ? "" : "（未收到任何帧）"}`);
+      process.exit(gotFrames ? 0 : 4);
     });
     return; // 常驻：Ctrl-C 由 node 默认退出
   }
   if (session === null) throw new UsageError("补拉需要 --session <sid>（跟随全量事件流用 --follow）");
-  const since = typeof flags.since === "string" ? Number(flags.since) : undefined;
+  const since = numFlag(flags, "since", "游标 seq");
   const result = await call(flags, "session.events.since", { sessionId: session, ...(since === undefined ? {} : { afterSeq: since }) });
   for (const row of result ?? []) process.stdout.write(JSON.stringify(row) + "\n");
 }
