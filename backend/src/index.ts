@@ -20,9 +20,10 @@ import { ImageProfileStore, type ImageProfileRow } from "./image/profiles.ts";
 import { handleImageCall } from "./image/proxy.ts";
 import { log, setLogLevel } from "./log.ts";
 import { setSecretsHome } from "./secrets.ts";
-import { applyMethodMeta, attachWs, broadcastBacklog, broadcastEvent, broadcastTerminal, dispatchRpc, registerMethod, WIRE_VERSION } from "./wsd.ts";
+import { applyMethodMeta, attachWs, broadcastBacklog, broadcastEvent, broadcastNotification, broadcastTerminal, dispatchRpc, registerMethod, WIRE_VERSION } from "./wsd.ts";
 import { METHOD_META } from "./methods.meta.ts";
 import { composePrompt, inlineAttachments, runChatTurn } from "./chat.ts";
+import { NotificationsService } from "./notifications.ts";
 import { PermissionGate } from "./permissions/gate.ts";
 import { MockPermAdapter } from "./runtime/adapters/mockperm.ts";
 import { ClaudeAdapter } from "./runtime/adapters/claude.ts";
@@ -260,8 +261,15 @@ const store = new Store(config.homeDir);
 const gate = new PermissionGate(store);
 const traceSink = new TraceSink(config.homeDir);
 const botRegistry = new BotRegistry(store);
+// 通知事实源（docs/21 P4b）：挂在 host 事件汇点上聚合，「你不在它面前」与已读留在客户端。
+// metaOf 的 host 引用是闭包惰性求值（构造时 host 还不存在，事件到达时早已就绪）。
+const notifications = new NotificationsService(config.homeDir, (sid) => {
+  const s = host.listSessions().find((x) => String(x.id) === sid);
+  return s === undefined ? undefined : { source: s.source, title: s.title };
+});
 const host = new RuntimeHost((event, seq) => {
   broadcastEvent(wss, event, seq);
+  notifications.record(event);
   // 自动化运行记录的终态回灌（Phase 5）
   if (event.type === "session.ended") {
     const hit = automationRunBySession.get(event.sessionId);
@@ -271,6 +279,10 @@ const host = new RuntimeHost((event, seq) => {
       store.finishAutomationRun(hit.runId, failed ? "failed" : "done", `ended: ${event.reason}`);
       // 会话本身跑挂了也要挂失败徽章 —— 不然调度层看不到，卡片一直显示「已完成」
       if (failed) store.setAutomationError(hit.automationId, `ended: ${event.reason}`, Date.now());
+      // 通知取台账任务名直取（docs/21 P4b，取代前端补偿解析）；与上面 record() 的
+      // end:{sid} 同键原位刷新成「任务名 + 摘要」
+      const autoName = store.listAutomations().find((a) => a.id === hit.automationId)?.name;
+      notifications.notifyAutomationEnd(String(event.sessionId), event.reason, autoName);
     }
     // 待办（GTD）执行的终态回灌 —— 引擎内部按 sessionId 映射判归属，与自动化互不干扰
     backlogEngine?.onSessionEnded(event.sessionId, event.reason);
@@ -1104,6 +1116,8 @@ void computerControl.boot().catch((e: unknown) => {
 });
 tunnelManager = new TunnelManager(config.homeDir, port);
 const wss = attachWs(server, { config, startedAt, authorize });
+// 通知推送通道挂进 WS（在此之前到达的事件只记录不推送，历史以 notifications.list 为准）
+notifications.setPush((row) => broadcastNotification(wss, row));
 
 // ---- 待办 / GTD（backlog）—— 引擎需要 wss 广播，必须在 attachWs 之后构造 ----------
 
@@ -1112,7 +1126,10 @@ backlogEngine = new BacklogEngine({
   host,
   homeDir: config.homeDir,
   getConfig: () => getBacklogConfig(store),
-  broadcast: (signal: BacklogSignal) => broadcastBacklog(wss, signal),
+  broadcast: (signal: BacklogSignal) => {
+    notifications.recordBacklogSignal(signal);
+    broadcastBacklog(wss, signal);
+  },
   // 待办 launchMode=terminal 的 TUI 派发（与自动化共用 launchExecutorTerminal）
   launchTerminal: (o) => launchExecutorTerminal(o),
   notify: async (text) => {
@@ -2653,6 +2670,7 @@ function reqStrArray(params: unknown, key: string): string[] {
 let gitWatcherSeq = 0;
 const gitWatcher = new GitWatcher((rootPath) => {
   broadcastEvent(wss, { type: "git.changed", rootPath }, ++gitWatcherSeq);
+  notifications.recordGitChanged(rootPath);
 });
 
 registerMethod("git.status", async (params) => {
@@ -3261,6 +3279,11 @@ registerMethod("session.chat", async (params) => {
     throw Object.assign(new Error("attachments must be string[] of file paths"), { code: "bad_params" });
   }
   return runChatTurn({ host, registry: botRegistry }, p);
+});
+// 通知事实源（docs/21 P4b）：daemon 聚合行的查询面；已读与「你不在它面前」是客户端呈现
+registerMethod("notifications.list", (params) => {
+  const p = (params ?? {}) as { limit?: number };
+  return { items: notifications.list(typeof p.limit === "number" ? p.limit : undefined) };
 });
 registerMethod("session.cancel", (params) => {
   const { sessionId } = (params ?? {}) as { sessionId?: string };

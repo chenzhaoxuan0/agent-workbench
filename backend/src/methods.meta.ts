@@ -151,6 +151,10 @@ export const METHOD_META: Record<string, MethodMeta> = {
   "backlog.state.forceBusy": { description: "设强制忙碌开关，暂停待办自动派发", paramsHint: "{on}" },
   "backlog.consolidate.run": { description: "立即跑一次待办清单归并整理，默认强制", paramsHint: "{force?}" },
   "quotaResume.state": { description: "读配额续跑判定快照，只读不触发探测", paramsHint: "null" },
+  "notifications.list": {
+    description: "通知事实源：daemon 聚合的通知行（会话终态/审批/报错/产出/git/待办，自然键去重）；已读与「你不在它面前」是客户端呈现，行里不带 read",
+    paramsHint: "{limit?}",
+  },
   "automation.create": {
     description: "新建定时任务（5 字段 cron，创建时即校验）",
     paramsHint: "{unitId, unitName?, runtimeId, rootPath, prompt, model?, mode?, cron}",

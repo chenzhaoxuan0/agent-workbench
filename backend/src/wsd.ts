@@ -67,6 +67,16 @@ export interface BacklogFrame {
   readonly signal: unknown;
 }
 
+/**
+ * 通知帧（docs/21 P4b）—— daemon 聚合的通知事实推流，行形状见
+ * notifications.ts 的 NotificationRow；历史以 notifications.list 拉取为准。
+ */
+export interface NotificationFrame {
+  readonly v: typeof WIRE_VERSION;
+  readonly type: "notifications";
+  readonly row: unknown;
+}
+
 export type ResponseFrame =
   | { readonly v: typeof WIRE_VERSION; readonly id: string | null; readonly ok: true; readonly result: unknown }
   | {
@@ -257,6 +267,14 @@ export function broadcastTerminal(wss: WebSocketServer, frame: TerminalFrame): v
 /** 向所有在线客户端广播一条待办信号（无订阅者就丢弃，历史以 backlog.list 拉取为准） */
 export function broadcastBacklog(wss: WebSocketServer, signal: unknown): void {
   const payload = JSON.stringify({ v: WIRE_VERSION, type: "backlog", signal } satisfies BacklogFrame);
+  for (const ws of wss.clients) {
+    if (ws.readyState === ws.OPEN) ws.send(payload);
+  }
+}
+
+/** 向所有在线客户端广播一条聚合通知（无订阅者就丢弃，历史以 notifications.list 拉取为准） */
+export function broadcastNotification(wss: WebSocketServer, row: unknown): void {
+  const payload = JSON.stringify({ v: WIRE_VERSION, type: "notifications", row } satisfies NotificationFrame);
   for (const ws of wss.clients) {
     if (ws.readyState === ws.OPEN) ws.send(payload);
   }

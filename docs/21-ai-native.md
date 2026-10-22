@@ -147,7 +147,14 @@
 - [x] SessionSource 新增 `"cli"`（时间轴徽标「CLI」——外部 agent 是第五扇窗）
 ### P4 · 编排上移（其余各项，可按项独立落地）
 
-- [ ] P4b `notifications.list` + daemon 聚合事实源 + GUI `useNotifications` 改薄
+- [x] P4b `notifications.list` + daemon 聚合事实源 + GUI 改薄（已完成 2026-10-22）：
+  `backend/src/notifications.ts` 挂 host 事件汇点聚合（自然键/等级映射与前端口径逐条一致；
+  自动化终态直取台账任务名，取代前端拉 automation.list 补偿解析——docs/19「不改 daemon」
+      决策由 ADR 0015 有意推翻）；WS 新增 `notifications` 推送帧（docs/07 §二）；
+  行**不带 read 字段**（已读与「你不在它面前」是客户端呈现——二分边界本身）。
+  GUI `useNotifications` 重写为消费面（历史拉取 + 推流，断线对账/事件聚合/补偿解析三块
+  前端逻辑退役删除）；`smoke:ai-native-notifications` 五项断言（含 read 缺席边界与
+  git:{root} 聚合）
 - [ ] P4c `image.generate` + 任务历史入 store + GUI 出图改薄 + docs/06 §八行项修订
 - [ ] P4d 模型偏好并入 `adapter.modeldefaults` / `modelcatalog`
 - [ ] 每项：前端旧策略代码退役删除 + 对应 smoke 扩展

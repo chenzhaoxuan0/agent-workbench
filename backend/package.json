@@ -13,6 +13,7 @@
     "smoke": "tsx scripts/smoke-health.ts",
     "smoke:ai-native-chat": "tsx scripts/smoke-ai-native-chat.ts",
     "smoke:ai-native-cli": "tsx scripts/smoke-ai-native-cli.ts",
+    "smoke:ai-native-notifications": "tsx scripts/smoke-ai-native-notifications.ts",
     "smoke:ai-native-rpc": "tsx scripts/smoke-ai-native-rpc.ts",
     "smoke:autoterm": "tsx scripts/smoke-autoterm.ts",
     "smoke:backlog": "tsx scripts/smoke-backlog.ts",

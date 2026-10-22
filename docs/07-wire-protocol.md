@@ -59,6 +59,7 @@
   `apps/server/src/orchestration/Layers/ProviderCommandReactor.ts` 与
   `docs/internals/overview.md`。
 - `terminal` 帧是终端数据流（`kind: "data" | "exit"`，exit 带 `exitCode`）——高频且非契约事件，独立于 `event` 流，不落轨迹。
+- **`notifications` 帧是 daemon 聚合的通知推流**（docs/21 P4b）：`{v:1, type:"notifications", row}`，行形状即 `notifications.list` 的条目（自然键去重、**无 read 字段**——已读是客户端呈现）。无订阅者即丢弃，历史以 `notifications.list` 拉取为准，daemon 侧落 `<homeDir>/notifications.json`。
 - **`git.changed`（docs/16）是唯一无 `sessionId` 的 RuntimeEvent**：daemon 侧文件监听发现某仓库
   （`git.status` 心跳到达过的）工作树 / .git 有变化，节流后（默认 60s 一条，前沿即发、尾沿合并）
   广播 `{type:"git.changed", rootPath}`。它是「该刷新了」的信号不是数据本身，前端拉 `git.status` /
@@ -295,6 +296,12 @@
 |---|---|---|---|
 | `network.interfaces` | 列网卡拓扑，配对码与远程控制用 | null | — |
 
+### notifications
+
+| 方法 | 说明 | params | 危险 |
+|---|---|---|---|
+| `notifications.list` | 通知事实源：daemon 聚合的通知行（会话终态/审批/报错/产出/git/待办，自然键去重）；已读与「你不在它面前」是客户端呈现，行里不带 read | {limit?} | — |
+
 ### permission
 
 | 方法 | 说明 | params | 危险 |
@@ -318,6 +325,7 @@
 | 方法 | 说明 | params | 危险 |
 |---|---|---|---|
 | `session.cancel` | 取消会话当前执行轮 | {sessionId} | — |
+| `session.chat` | headless 一轮对话闭环：附件内联 + 续聊判定（显式 sessionId > 最近可续段 > 新段谱系延续）+ 模型解析（auto=执行器自决），等轮落定回全文 | {botId | unitId+rootPath, text, attachments?, model?, runtimeId?, sessionId?, newSession?, mode?, waitMs?} | — |
 | `session.events.since` | 断线补拉会话事件（热环直出，游标滑出环回落账本） | {sessionId, afterSeq?} | — |
 | `session.forget` | 遗忘指定会话（删台账行与消息，轨迹文件永不删） | {sessionId} | — |
 | `session.gc` | 列超龄死会话的回收候选，默认 14 天 | {maxAgeDays?} | — |
@@ -328,7 +336,7 @@
 | `session.queue.sendNow` | 立即发送会话队列中的某条消息 | {sessionId, id} | — |
 | `session.resumable` | 列可续接的会话（有 cli_ref 的那些） | {runtimeId?, limit?} | — |
 | `session.resume` | 按 cli_ref 续接既有会话，之后 send/cancel 照常 | {sessionId} | — |
-| `session.send` | 向既有会话续聊发一条文本（agent loop，上下文连续） | {sessionId, text} | — |
+| `session.send` | 向既有会话续聊发一条文本（agent loop，上下文连续）；attachments 为本地文件路径，daemon 侧内联 | {sessionId, text, attachments?, reasoningLevel?, contextLength?} | — |
 | `session.start` | 起会话跑一轮：按 bot 的 contextManifest 注入上下文、spawn 执行器；worktree 命中则会话 rootPath 全程指向该工作树 | {runtimeId, unitId, rootPath, prompt, unitName?, model?, mode?, reasoningLevel?, worktree?, memoryOptions?} | — |
 | `session.trace` | 读会话轨迹 NDJSON 账本（跨日期落盘），afterSeq 游标续拉 | {sessionId, afterSeq?} | — |
 
