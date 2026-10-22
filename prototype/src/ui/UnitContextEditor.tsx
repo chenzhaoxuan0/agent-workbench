@@ -154,13 +154,9 @@ export function UnitContextEditor({ unitId }: { unitId: string }): ReactElement 
         </p>
       </div>
 
-      {/* 预设：一次性写一组开关的宏，落盘的只有显式开关（ADR 0014 D7） */}
-      <div className="flex items-center gap-1.5">
-        <span className="text-[10px] text-ash">预设</span>
-        <PresetButton label="裸跑" onClick={() => patch({ agentsMd: "off", soul: false, user: false, memorySemantic: false, memoryDaily: false, memoryStanding: false, skills: false })} />
-        <PresetButton label="基础" onClick={() => patch({ agentsMd: "auto", soul: true, user: true, memorySemantic: true, memoryDaily: false, memoryStanding: true, skills: false })} />
-        <PresetButton label="完整" onClick={() => patch({ agentsMd: "auto", soul: true, user: true, memorySemantic: true, memoryDaily: true, memoryStanding: true, skills: true })} />
-      </div>
+      {/* 预设（2026-10-23 口径）：三类选项——预设（内置宏）/ 自定义（本 bot 保存的
+          快照，存 bot.json contextPreset）/ 清空（全关）。落盘的只有显式开关（D7）。 */}
+      <PresetRow unit={unit} manifest={manifest} patch={patch} />
 
       {/* 工作区生命周期与 Init 补齐栏 */}
       <WorkspaceInitAndUnregisterBar unit={unit} />
@@ -293,6 +289,7 @@ export function UnitContextEditor({ unitId }: { unitId: string }): ReactElement 
         loadKey={unit.rootPath}
         load={() => readProjectMemory(unit.rootPath)}
         save={(content) => writeProjectMemory(unit.rootPath, content).then(() => undefined)}
+        template={FILE_TEMPLATES.memory}
       />
       <RpcFileEditor
         title="STANDING.md · 红线禁令"
@@ -303,6 +300,7 @@ export function UnitContextEditor({ unitId }: { unitId: string }): ReactElement 
         loadKey={unit.rootPath}
         load={() => readStandingMemory(unit.rootPath)}
         save={(content) => writeStandingMemory(unit.rootPath, content).then(() => undefined)}
+        template={FILE_TEMPLATES.standing}
       />
       <UserFileEditor manifest={manifest} />
     </div>
@@ -311,15 +309,108 @@ export function UnitContextEditor({ unitId }: { unitId: string }): ReactElement 
 
 /* ------------------------------------------------------------- 小件 */
 
-function PresetButton({ label, onClick }: { label: string; onClick: () => void }): ReactElement {
+/**
+ * 预设行（2026-10-23 用户口径）：自定义 / 预设 / 清空 三类选项。
+ * - 预设：内置宏（裸跑/基础/完整），一次写一组开关；
+ * - 自定义：本 bot 保存的清单快照（bot.json contextPreset），一键取回；
+ *   「存为自定义」把当前清单原样快照进 bot.json（三锁防覆盖并发修改）；
+ * - 清空：全关（含 AGENTS.md）。
+ * 「完整」刻意不开技能目录：执行器原生已发现 .agents/skills，工作台再注一份
+ * 目录索引会重复（防双注，同 AGENTS.md auto 的思路）。
+ */
+function PresetRow({
+  unit,
+  manifest,
+  patch,
+}: {
+  unit: WorkUnit;
+  manifest: ContextManifest;
+  patch: (p: Partial<ContextManifest>) => void;
+}): ReactElement {
+  const updateUnit = useWorkbench((s) => s.updateUnit);
+  const pushNotice = useWorkbench((s) => s.pushNotice);
+  const [busy, setBusy] = useState(false);
+  const custom = unit.contextPreset;
+
+  const ALL_OFF: ContextManifest = {
+    agentsMd: "off",
+    soul: false,
+    user: false,
+    memorySemantic: false,
+    memoryDaily: false,
+    memoryStanding: false,
+    skills: false,
+  };
+  const presets: readonly { id: string; label: string; apply: ContextManifest }[] = [
+    { id: "bare", label: "裸跑", apply: ALL_OFF },
+    { id: "basic", label: "基础", apply: { agentsMd: "auto", soul: true, user: true, memorySemantic: true, memoryDaily: false, memoryStanding: true, skills: false } },
+    { id: "full", label: "完整", apply: { agentsMd: "auto", soul: true, user: true, memorySemantic: true, memoryDaily: true, memoryStanding: true, skills: false } },
+  ];
+
+  const saveCustom = async () => {
+    setBusy(true);
+    try {
+      await updateUnit(
+        { ...unit, contextPreset: manifest } as WorkUnit,
+        { ifRevision: unit.revision, ifAgentsMdHash: unit.agentsMdMeta?.hash, ifSoulMdHash: unit.soulMdMeta?.hash },
+      );
+      await useWorkbench.getState().reloadUnit(unit.id);
+      pushNotice("自定义预设已保存", `「${unit.name}」当前注入清单已快照为本 bot 的自定义预设。`, { level: "info" });
+    } catch (e: unknown) {
+      pushNotice("自定义预设保存失败", e instanceof Error ? e.message : String(e), { level: "warn" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="rounded-btn border border-line px-2 py-0.5 text-[11px] text-graphite transition hover:border-teal/50 hover:text-ink"
-    >
-      {label}
-    </button>
+    <div className="flex flex-wrap items-center gap-1.5">
+      <span className="text-[10px] text-ash">预设</span>
+      <select
+        value=""
+        onChange={(e) => {
+          const hit = presets.find((p) => p.id === e.target.value);
+          if (hit !== undefined) patch(hit.apply);
+        }}
+        className="h-6 rounded-btn border border-line bg-canvas px-1.5 text-[11px] text-graphite hover:border-teal/50 focus:outline-none"
+        aria-label="内置预设"
+      >
+        <option value="">预设…</option>
+        {presets.map((p) => (
+          <option key={p.id} value={p.id}>{p.label}</option>
+        ))}
+      </select>
+      <button
+        type="button"
+        disabled={custom === undefined}
+        onClick={() => custom !== undefined && patch(custom)}
+        title={custom !== undefined ? "取回本 bot 保存的自定义预设快照" : "还没有保存过自定义预设——调好清单后点「存为自定义」"}
+        className={cn(
+          "rounded-btn border px-2 py-0.5 text-[11px] transition",
+          custom !== undefined
+            ? "border-teal/50 text-teal hover:bg-teal-tint"
+            : "border-line text-ash/60",
+        )}
+      >
+        自定义{custom !== undefined ? " ✓" : ""}
+      </button>
+      <button
+        type="button"
+        disabled={busy}
+        onClick={() => void saveCustom()}
+        className="rounded-btn border border-line px-2 py-0.5 text-[11px] text-graphite transition hover:border-teal/50 hover:text-ink disabled:opacity-40"
+      >
+        {busy ? "保存中…" : "存为自定义"}
+      </button>
+      <button
+        type="button"
+        onClick={() => patch(ALL_OFF)}
+        className="rounded-btn border border-line px-2 py-0.5 text-[11px] text-graphite transition hover:border-teal/50 hover:text-ink"
+        title="全部关闭（含 AGENTS.md 注入）——回到裸跑"
+      >
+        清空
+      </button>
+    </div>
   );
 }
 
@@ -422,7 +513,9 @@ function SkillsBindingSection({
         <div className="min-w-0">
           <p className="text-caption font-medium text-ink">技能目录 · skills</p>
           <p className="mt-0.5 text-[11px] leading-snug text-ash">
-            注入 name + 路径目录（不注 SKILL.md 全文，按需读取）；名单只过滤这个 bot 的注入
+            ⚠ 防双注：执行器原生就会发现自己的技能目录（.agents/skills 等）——多数情况
+            下**保持关闭**即可；此开关是给不列技能的执行器补一份目录索引（name + 路径，
+            不注 SKILL.md 全文）。名单只过滤这个 bot 的注入
           </p>
         </div>
         <Toggle on={manifestSkills} onChange={onToggle} ariaLabel="技能目录注入" />
@@ -505,7 +598,7 @@ function WorkspaceInitAndUnregisterBar({
       await useWorkbench.getState().reloadUnit(unit.id);
       pushNotice(
         "工作区初始化完成",
-        `已补齐 ${res.created.length} 项（含 skills/workbench-context 检索技能与 memory 目录），${res.existed.length} 项既有内容已完好保留。`,
+        `已补齐 ${res.created.length} 项（memory 目录与官方基础技能），${res.existed.length} 项既有内容已完好保留。MD 正文不落骨架——写内容时才创建。`,
         { level: "info" },
       );
     } catch (e: unknown) {
@@ -545,7 +638,7 @@ function WorkspaceInitAndUnregisterBar({
           onClick={() => void handleInit()}
           disabled={initBusy}
           className="rounded px-2.5 py-1 text-[11px] font-medium border border-line text-graphite hover:text-ink hover:bg-canvas transition disabled:opacity-40"
-          title="幂等补齐 skills/workbench-context/SKILL.md、memory/daily/ 及缺失的骨架文件（绝不覆盖已有正文）"
+          title="幂等补齐 memory/daily 目录与官方基础技能 ×2（版本标记升级，绝不覆盖用户自建）；MD 正文不落骨架"
         >
           {initBusy ? "补齐中…" : "补充工作区配置 (Init)"}
         </button>
@@ -698,6 +791,18 @@ function CustomPromptEditor({
 
 /* ------------------------------------------------------------- 文件编辑器 */
 
+/**
+ * 推荐代写模板（2026-10-23）：与自定义提示词的模板同款口径——空文件一键填入，
+ * 已有内容仅展示不覆盖。模板只是起手式不是规范，用户改掉即个性化。
+ */
+const FILE_TEMPLATES = {
+  soul: `# 人设\n\n你是……（一句话角色定位）\n\n## 语气与风格\n- 例：克制、直接，不堆客套\n\n## 主动行为\n- 例：发现风险先说风险，再给方案`,
+  agents: `# 岗位说明书\n\n## 职责\n- ……\n\n## 决策依据\n- 遇到 X 优先考虑 Y\n\n## 输出契约\n- 结论先行；改动带文件路径\n\n## 红线\n- 未经确认不做不可逆操作`,
+  memory: `# 项目记忆\n\n## 关键事实\n- ……\n\n## 技术选型与共识\n- ……\n\n## 踩过的坑\n- ……`,
+  standing: `# 常驻红线\n\n- 严禁未经确认执行不可逆操作（删除 / 强推 / 格式化）\n- 严禁把密钥、token 写进日志或提交\n- ……`,
+  user: `# 关于我\n\n## 作息与环境\n- ……\n\n## 偏好\n- 例：中文简短答复，结论先行\n\n## 常用环境\n- 例：Windows + Git Bash`,
+} as const;
+
 /** 编辑器外壳：标题 + 展开/折叠 + 路径 + 计数 + 保存；内容与保存动作由调用方注入 */
 function EditorShell({
   title,
@@ -716,6 +821,8 @@ function EditorShell({
   placeholder,
   extra,
   defaultCollapsed = false,
+  missing = false,
+  template,
 }: {
   title: string;
   desc: string;
@@ -733,8 +840,13 @@ function EditorShell({
   placeholder: string;
   extra?: string;
   defaultCollapsed?: boolean;
+  /** 文件未创建（未经编辑不落盘）——标题挂浅色「未创建」标，路径行淡化 */
+  missing?: boolean;
+  /** 推荐代写模板：草稿为空时一键填入；已有内容时仅展示预览，绝不覆盖 */
+  template?: string;
 }): ReactElement {
   const [collapsed, setCollapsed] = useState(defaultCollapsed);
+  const [showTemplate, setShowTemplate] = useState(false);
   const dirty = draft !== baseline;
   const over = limit !== null && draft.length > limit;
 
@@ -753,8 +865,16 @@ function EditorShell({
         className="flex cursor-pointer items-center justify-between gap-2 px-3 py-2.5 transition hover:bg-rail/50 select-none"
       >
         <div className="flex min-w-0 items-center gap-2">
-          {Icon && <Icon size={13} className="shrink-0 text-teal" />}
-          <p className="text-caption font-medium text-ink">{title}</p>
+          {Icon && <Icon size={13} className={cn("shrink-0", missing ? "text-ash/50" : "text-teal")} />}
+          <p className={cn("text-caption font-medium", missing ? "text-ash" : "text-ink")}>{title}</p>
+          {missing && (
+            <span
+              className="rounded bg-line-soft/60 px-1.5 py-0.5 text-[10px] font-normal leading-none text-ash/80"
+              title="未经编辑不落盘——工作区里没有这个文件，注入为 0；写第一行内容并保存时才创建"
+            >
+              未创建 · 0 注入
+            </span>
+          )}
           {injectedLabel && (
             <span
               className={cn(
@@ -772,7 +892,7 @@ function EditorShell({
           )}
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          <span className="hidden sm:inline max-w-[240px] truncate text-[10px] text-ash" title={path}>
+          <span className={cn("hidden sm:inline max-w-[240px] truncate text-[10px]", missing ? "text-ash/50" : "text-ash")} title={path}>
             {path}
           </span>
           <ChevronDown
@@ -784,7 +904,38 @@ function EditorShell({
 
       {!collapsed && (
         <div className="border-t border-line-soft">
-          <p className="px-3 pt-2 text-[11px] leading-snug text-ash">{desc}</p>
+          <p className={cn("px-3 pt-2 text-[11px] leading-snug", missing ? "text-ash/70" : "text-ash")}>{desc}</p>
+          {template !== undefined && (
+            <div className="px-3 pt-1.5">
+              {draft.trim() === "" ? (
+                <button
+                  type="button"
+                  onClick={() => setDraft(template)}
+                  className="rounded px-2 py-0.5 text-[11px] font-medium border border-line text-graphite hover:text-ink hover:bg-rail transition"
+                  title="一键填入推荐代写模板"
+                >
+                  使用推荐代写模板
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setShowTemplate(!showTemplate)}
+                  className="rounded px-2 py-0.5 text-[11px] border border-line text-ash hover:text-ink hover:bg-rail transition"
+                  title="查看推荐代写模板（已有内容，仅展示不覆盖）"
+                >
+                  {showTemplate ? "收起模板" : "查看推荐模板（不覆盖）"}
+                </button>
+              )}
+              {showTemplate && draft.trim() !== "" && (
+                <div className="mt-1.5">
+                  <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap rounded-btn border border-line-soft bg-rail/60 px-2.5 py-2 font-mono text-[11px] leading-relaxed text-ash">
+                    {template}
+                  </pre>
+                  <p className="mt-1 text-[10px] text-ash/70">模板仅作展示——已有内容不会被覆盖；想用模板请先清空正文再点「使用推荐代写模板」。</p>
+                </div>
+              )}
+            </div>
+          )}
           <div className="space-y-2 px-3 pb-3 pt-1.5">
             <textarea
               value={draft}
@@ -833,6 +984,7 @@ function BotPutFileEditor({
   placeholder,
   unit,
   updateUnit,
+  template,
 }: {
   label: string;
   desc: string;
@@ -844,8 +996,10 @@ function BotPutFileEditor({
   placeholder: string;
   unit: WorkUnit;
   updateUnit: (u: WorkUnit, guards?: { ifRevision?: number; ifAgentsMdHash?: string; ifSoulMdHash?: string }) => Promise<void>;
+  template?: string;
 }): ReactElement {
   const baseline = unit[field] ?? "";
+  const missing = baseline.trim() === "" && unit[field === "soulMd" ? "soulMdMeta" : "agentsMdMeta"] === undefined;
   const [draft, setDraft] = useState(baseline);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -905,6 +1059,8 @@ function BotPutFileEditor({
       err={err}
       onSave={() => void save()}
       placeholder={placeholder}
+      template={template}
+      missing={missing}
     />
   );
 }
@@ -930,6 +1086,7 @@ function SoulFileEditor({
       placeholder={"你是……（语气、原则、主动行为）"}
       unit={unit}
       updateUnit={updateUnit}
+      template={FILE_TEMPLATES.soul}
     />
   );
 }
@@ -967,6 +1124,7 @@ function AgentsFileEditor({
       placeholder={"# 岗位说明书\n\n- ……"}
       unit={unit}
       updateUnit={updateUnit}
+      template={FILE_TEMPLATES.agents}
     />
   );
 }
@@ -989,6 +1147,7 @@ function RpcFileEditor({
   loadKey,
   load,
   save,
+  template,
 }: {
   title: string;
   desc: string;
@@ -998,6 +1157,7 @@ function RpcFileEditor({
   loadKey: string;
   load: () => Promise<MemoryLikeFile>;
   save: (content: string) => Promise<void>;
+  template?: string;
 }): ReactElement {
   const [file, setFile] = useState<MemoryLikeFile | null>(null);
   const [draft, setDraft] = useState("");
@@ -1050,6 +1210,8 @@ function RpcFileEditor({
       err={err}
       onSave={() => void doSave()}
       placeholder={"- （每行一条）"}
+      template={template}
+      missing={file !== null && file.exists === false}
     />
   );
 }
@@ -1108,6 +1270,8 @@ function UserFileEditor({ manifest }: { manifest: ContextManifest }): ReactEleme
       err={err}
       onSave={() => void save()}
       placeholder={"- （把希望每个 bot 都知道的用户级事实写在这里。每行一条。）"}
+      template={FILE_TEMPLATES.user}
+      missing={file !== null && file.exists === false}
     />
   );
 }

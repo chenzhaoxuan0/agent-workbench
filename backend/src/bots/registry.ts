@@ -28,15 +28,6 @@ const AGENTS_FILE = "AGENTS.md";
 /** 人设的规范文件名（ADR 0014 D5，与 AGENTS.md 同构：正文住文件，bot.json 不留副本）。 */
 const SOUL_FILE = "SOUL.md";
 
-/**
- * 最小占位 AGENTS.md（ADR 0011：AGENTS.md 从必填降级为可选增强）。
- * 创建时没给内容就静默落这份——文件即数据库不破：规矩文件的落点始终在单元自己
- * 文件夹里，内容克制到一句话，等用户想清楚再回来补。
- */
-function placeholderAgentsMd(name: string): string {
-  return `# ${name}\n\n（这是 ${name} 的 AGENTS.md——bot 的规矩文件。现在先空着，想清楚要它遵守什么时再回来补。）\n`;
-}
-
 /** bot.json 的行形态 = WorkUnit 的可持久化子集（松散类型：文件是手可编辑的） */
 export type BotDefinition = Record<string, unknown> & {
   id?: string;
@@ -176,8 +167,9 @@ export class BotRegistry {
    * 新建流的唯一必填交互是文件夹，预填的默认位置本来就不存在，daemon 落位时建出来。
    * 只对显式声明的调用方开（新建），编辑/导入仍报 root_not_found 抓手误路径。
    *
-   * **AGENTS.md 可选**：正文为空或缺省、且盘上还没有这个文件时，静默写一份最小占位
-   * （见 placeholderAgentsMd）；盘上已有文件则不碰——局部更新（渠道开关等）不许顺手清掉。
+   * **AGENTS.md 可选**：正文为空或缺省、且盘上还没有这个文件时**不落盘也不补占位**
+   * （2026-10-23 用户裁定——未经编辑的文件不占工作区）；盘上已有文件则不碰——
+   * 局部更新（渠道开关等）不许顺手清掉。
    */
   async putBot(
     unit: BotDefinition,
@@ -248,15 +240,13 @@ export class BotRegistry {
     } else if (currentAgents === null) {
       const prevRel = sourcePathOf(prev ?? unit);
       if (prevRel !== null && prevRel !== AGENTS_FILE) {
-        // 老定义指着自定义文件：维持既有语义（不擅自改指 AGENTS.md，也不补占位）
+        // 老定义指着自定义文件：维持既有语义（不擅自改指 AGENTS.md）
         agentsRel = prevRel;
       } else {
-        // 没带正文（或全空白）、盘上也没有规范文件：静默补最小占位（ADR 0011 第 1 条）。
-        // 覆盖创建与「指针在、规范文件没了」的修复保存两种情形——文件即数据库不破，
-        // 规矩文件的落点始终在单元自己的文件夹里。
-        await writeAgentsAtomic(placeholderAgentsMd(String(unit.name)));
-        agentsRel = AGENTS_FILE;
-        log.info("agents placeholder written", { root });
+        // 没给正文、盘上也没有规范文件：**不落盘**（2026-10-23 用户裁定）。
+        // 未经编辑的规矩文件不占工作区——占位正文既污染目录又可能混进注入。
+        // 指针同样不指：sourcePath 只在真有文件时才有意义。
+        agentsRel = "";
       }
     } else {
       // 带了空正文但盘上已有文件：不碰它。局部更新不许顺手清掉已有文件。
@@ -343,18 +333,21 @@ export class BotRegistry {
     return { path: file, revision: out.revision as number };
   }
 
-  /**
-   * 初始化/补齐工作区骨架与官方技能（幂等）。
-   *
-   * 补齐：
-   * 1. .agent-workbench/
-   * 2. memory/daily/
-   * 3. 6 大核心 MD 骨架文件（缺失才补，已有正文绝不覆盖）
-   * 4. 官方基础技能 ×2（版本标记契约，backend/src/skills/）：agent-workbench（驾驶
-   *    工作台）与 workbench-context（记忆检索）——bot init 与补充 Init 都走这条，
-   *    存量副本按标记升级，无标记的用户自建不碰；skills/ 旧位只升存量不新建。
-   */
-  async initWorkspace(rootPath: string): Promise<{ created: string[]; existed: string[] }> {
+/**
+ * 初始化/补齐工作区骨架与官方技能（幂等）。
+ *
+ * 补齐：
+ * 1. .agent-workbench/
+ * 2. memory/daily/
+ * 3. 官方基础技能 ×2（版本标记契约，backend/src/skills/）：agent-workbench（驾驶
+ *    工作台）与 workbench-context（记忆检索）——bot init 与补充 Init 都走这条，
+ *    存量副本按标记升级，无标记的用户自建不碰；skills/ 旧位只升存量不新建。
+ *
+ * MD 正文**不落骨架**（2026-10-23 用户裁定）：MEMORY/STANDING/SOUL/AGENTS 未经
+ * 用户编辑就不在工作区存文件（注入侧本来就会跳过实质为空的内容，落盘骨架只
+ * 污染目录）；文件在用户第一次写内容时才由对应写路径创建。
+ */
+async initWorkspace(rootPath: string): Promise<{ created: string[]; existed: string[] }> {
     const root = path.resolve(rootPath);
     if (!existsSync(root)) {
       await mkdir(root, { recursive: true });
@@ -373,25 +366,8 @@ export class BotRegistry {
       }
     };
 
-    const ensureFile = async (relFile: string, content: string): Promise<void> => {
-      const full = path.join(root, relFile);
-      const posix = relFile.replaceAll("\\", "/");
-      if (!existsSync(full)) {
-        await mkdir(path.dirname(full), { recursive: true });
-        await writeFile(full, content, "utf8");
-        created.push(posix);
-      } else {
-        existed.push(posix);
-      }
-    };
-
     await ensureDir(BOT_DIR);
     await ensureDir(path.join("memory", "daily"));
-
-    // 核心 MD 骨架文件（若缺失才创建，绝不覆盖已有正文）
-    await ensureFile("MEMORY.md", `# 项目记忆\n\n<!-- 项目级长期事实与技术决策 -->\n- （把项目级事实写在这里…）\n`);
-    await ensureFile("STANDING.md", `# 常驻红线\n\n<!-- 不可打破的常驻指令与安全约束 -->\n`);
-    await ensureFile("SOUL.md", `# 人设\n\n<!-- 这个 bot 的语气、风格与行为准则 -->\n`);
 
     // 官方技能同步（增强件）：失败只 warn 不炸 init/补充 Init——技能没种上不该阻断骨架补齐
     for (const sync of [syncWorkbenchSkill, syncContextSkill]) {

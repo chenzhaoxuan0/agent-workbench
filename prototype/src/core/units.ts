@@ -348,6 +348,18 @@ export interface WorkUnit {
   /** 每 bot 技能绑定（ADR 0014 D8）：注入目录的名单过滤，不影响全局停用 */
   readonly skills?: SkillBinding;
   /**
+   * 工作区技能置顶名单（2026-10-23）：bot 设置的技能管理页里置顶的技能目录名。
+   * 缺省 = 两个官方基础技能（agent-workbench / workbench-context）置顶——
+   * init 播种的基础能力永远排最前，其余按用户置顶与名称排序。
+   */
+  readonly pinnedSkills?: readonly string[];
+  /**
+   * 本 bot 的自定义注入预设快照（2026-10-23）：预设行「存为自定义」时把当前
+   * contextManifest 整份存进 bot.json；「自定义」一键取回。只作取回源，不参与
+   * 注入判定（注入永远看 contextManifest 本身）。
+   */
+  readonly contextPreset?: ContextManifest;
+  /**
    * SOUL.md 的内容（ADR 0014 D5）。与 agentsMd 同构：不是副本的真相——真相在
    * `<rootPath>/SOUL.md`，listBots 重扫盘时读回来填这里；设置页保存直接写同一个
    * 文件。指针在、文件被删 → 空串 + UI 显示「文件缺失」。

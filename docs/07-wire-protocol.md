@@ -153,7 +153,7 @@
 | `bot.ask` | 向 bot 发一条文本并等轮落定拿回全文（webhook/MCP 共用内核） | {botId, text, waitMs?, memoryOptions?} | — |
 | `bot.defaultRoot` | 查新建 bot 的默认安置目录与可浏览根（幂等建 bots 目录） | null | — |
 | `bot.gitignore.ensure` | 确保 bot 目录 .gitignore 覆盖密钥文件 | {rootPath} | — |
-| `bot.initWorkspace` | 初始化/补齐工作区骨架（memory 目录与核心 MD，绝不覆盖已有正文）并同步官方基础技能 ×2（agent-workbench + workbench-context，版本标记契约） | {rootPath} | — |
+| `bot.initWorkspace` | 初始化/补齐工作区（memory/daily 目录）并同步官方基础技能 ×2（agent-workbench + workbench-context，版本标记契约）；MD 正文不落骨架——未经编辑不落盘不注入 | {rootPath} | — |
 | `bot.inspect` | 纯读探测目录现状（bot.json 有无、可导入项三分支） | {rootPath} | — |
 | `bot.list` | 列全部已注册 bot | null | — |
 | `bot.put` | 写 bot 定义落盘到 .agent-workbench/bot.json（含 contextManifest），三把乐观锁 | {unit, ifRevision?, ifAgentsMdHash?, ifSoulMdHash?, createRoot?} | ⚠️ high |

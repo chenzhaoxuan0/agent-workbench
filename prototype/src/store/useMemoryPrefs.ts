@@ -37,8 +37,10 @@ export interface MemoryPrefs {
 const DEFAULTS: MemoryPrefs = {
   memoryCharLimit: 2200,
   digestEnabled: true,
-  guardianRunner: "zcode",
-  guardianModel: "deepseek-chat",
+  // 与后端 DEFAULT_GUARDIAN_CONFIG 对齐：runner 跟随总管（mcode），model 留空 =
+  // 不向 CLI 传 --model、用其默认模型。挂载时会被 daemon kv 的权威配置覆盖。
+  guardianRunner: "mcode",
+  guardianModel: "",
   autoConsolidate: true,
 };
 

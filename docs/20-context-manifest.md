@@ -163,12 +163,27 @@ AGENTS.md（仅兜底时）→ SOUL → USER → MEMORY.semantic → daily → S
 - [x] **版本标记契约统一**：`<!-- <name>-skill: vN -->`——只在「不存在 / 更旧 / force」落笔；
   无标记但内容与迁移正本（`LEGACY_CONTEXT_SKILL_MD`）一致 = 无标记时代 daemon 种的可认领
   升级；改过的 = 用户自建不碰。此前的 `ensureFile` 只补缺永不升级（改进正本存量永远留旧版）
-  退役，骨架 MD（MEMORY/STANDING/SOUL）仍走 ensureFile（用户文件永不覆盖）
+  退役（骨架 MD 的 ensureFile 后由 P7 整体退役——未经编辑不落盘）
 - [x] **落点收敛**：`skills/` 旧位降级为兼容位（只升存量不新建），规范位唯一 `.agents/skills/`
 - [x] **触发与兜底**：`initWorkspace`（bot init / 保存 / 补充 Init 按钮同一条路）内 sync 两技能，
   `workbench.skill.sync` RPC 兜底存量与升级；播种失败只 warn 不炸 init（增强件统一姿态）
 - [x] **漂移防线**：`smoke:ai-native-skill` 断言仓库根自用副本与 daemon 正本逐字节一致；
   `smoke:prog-init` 断言迁移判定（认领升级 / 用户自建不碰）
+
+### P7 · 上下文体验五点（2026-10-23 用户裁定）
+- [x] **MD 正文未经编辑不落盘**：initWorkspace 不再写 MEMORY/STANDING/SOUL 骨架、putBot 不再写
+  AGENTS.md 占位——空文件既污染目录也可能混进注入（注入侧 hasSubstantiveContent 本就跳过，这次
+  把「盘上也不留」补齐）。设置页对未创建文件挂浅色「未创建 · 0 注入」标；六个文件配推荐代写
+  模板（空文件一键填入，已有内容仅展示不覆盖）
+- [x] **技能目录防双注**：执行器原生发现自己的技能目录（.agents/skills 标准），工作台侧注入
+  是给不列技能的执行器补目录索引——UI 挂 ⚠ 注记，「完整」预设不再开 skills（默认本就全关）
+- [x] **每 bot 自定义预设**：bot.json `contextPreset` 存当前清单快照；预设行三类选项——
+  预设（内置宏 裸跑/基础/完整）/ 自定义（一键取回）/ 清空（全关）。「存为自定义」三锁写盘
+- [x] **bot 设置·工作区技能页**：只管本 bot 工作目录内的技能源，置顶名单存 bot.json
+  `pinnedSkills`（缺省 = agent-workbench / workbench-context 两个官方基础技能），停用与全局页
+  同一条路（.disabled/ 搬运）
+- [x] **Guardian 轻量模型默认跟随总管**：默认 model 留空 = 不向 CLI 传 --model（用其默认模型），
+  runner 默认对齐总管（mcode）；前端不再显示推荐占位名，切执行器不再自动挑模型
 
 ## 3. 验收清单
 

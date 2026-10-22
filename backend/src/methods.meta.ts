@@ -74,7 +74,7 @@ export const METHOD_META: Record<string, MethodMeta> = {
   },
   "bot.inspect": { description: "纯读探测目录现状（bot.json 有无、可导入项三分支）", paramsHint: "{rootPath}" },
   "bot.initWorkspace": {
-    description: "初始化/补齐工作区骨架（memory 目录与核心 MD，绝不覆盖已有正文）并同步官方基础技能 ×2（agent-workbench + workbench-context，版本标记契约）",
+    description: "初始化/补齐工作区（memory/daily 目录）并同步官方基础技能 ×2（agent-workbench + workbench-context，版本标记契约）；MD 正文不落骨架——未经编辑不落盘不注入",
     paramsHint: "{rootPath}",
   },
   "bot.ask": { description: "向 bot 发一条文本并等轮落定拿回全文（webhook/MCP 共用内核）", paramsHint: "{botId, text, waitMs?, memoryOptions?}" },

@@ -55,12 +55,12 @@ async function main() {
     const store = fakeStore();
     const registry = new BotRegistry(store);
 
-    // 2.1 补充 Init 机制：骨架 + 官方技能 ×2（版本标记契约，规范位 .agents/skills/）
+    // 2.1 补充 Init 机制：目录骨架 + 官方技能 ×2（MD 正文不落骨架——未经编辑不占工作区）
     const initRes = await registry.initWorkspace(botDir);
     ok(initRes.created.includes(".agent-workbench"), "创建了 .agent-workbench 目录");
-    ok(initRes.created.includes("MEMORY.md"), "创建了 MEMORY.md");
-    ok(initRes.created.includes("STANDING.md"), "创建了 STANDING.md");
-    ok(initRes.created.includes("SOUL.md"), "创建了 SOUL.md");
+    ok(!existsSync(path.join(botDir, "MEMORY.md")), "MEMORY.md 未落骨架（未经编辑不落盘）");
+    ok(!existsSync(path.join(botDir, "STANDING.md")), "STANDING.md 未落骨架");
+    ok(!existsSync(path.join(botDir, "SOUL.md")), "SOUL.md 未落骨架");
     ok(existsSync(path.join(botDir, ".agents", "skills", "workbench-context", "SKILL.md")), "官方记忆技能落在 .agents/skills/ 规范位");
     ok(existsSync(path.join(botDir, ".agents", "skills", "agent-workbench", "SKILL.md")), "官方驾驶技能同样随 init 落盘（基础能力一体）");
     ok(!existsSync(path.join(botDir, "skills", "workbench-context")), "skills/ 旧位不再新建（兼容位只升存量）");
@@ -86,19 +86,19 @@ async function main() {
     ok(migrated.some((r) => r.path === compatPos && r.status === "skipped-foreign"), "改过的兼容位副本视为用户自建（skipped-foreign）");
     ok(migratedCompat === "我的私改记忆技能\n", "用户改写的内容一字不动");
 
-    // 2.2 幂等性：第二次 init 不覆盖已有内容
+    // 2.2 幂等性：第二次 init 不覆盖已有内容（MD 是用户手写的，init 只碰目录与技能）
     await writeFile(path.join(botDir, "SOUL.md"), "我是专属私人助手，风格幽默。", "utf8");
-    const initRes2 = await registry.initWorkspace(botDir);
-    ok(initRes2.existed.includes("SOUL.md"), "第二次 init 识别到 SOUL.md 已存在");
+    await registry.initWorkspace(botDir);
     const preservedSoul = await readFile(path.join(botDir, "SOUL.md"), "utf8");
     ok(preservedSoul === "我是专属私人助手，风格幽默。", "二次 init 绝不覆盖已有正文");
 
-    // 2.3 注册 Bot
+    // 2.3 注册 Bot（不带 AGENTS 正文 → 不落占位文件；写内容才落盘）
     await registry.putBot({
       id: "bot-1",
       name: "Bot One",
       rootPath: botDir,
     });
+    ok(!existsSync(path.join(botDir, "AGENTS.md")), "putBot 未带正文时不写 AGENTS.md 占位（未经编辑不落盘）");
     const botsBefore = await registry.listBots();
     ok(botsBefore.some((b) => b.id === "bot-1"), "Bot 成功注册并列出");
 
@@ -109,7 +109,7 @@ async function main() {
     const botsIncludingUnreg = await registry.listBots({ includeUnregistered: true });
     ok(botsIncludingUnreg.some((b) => b.id === "bot-1" && b.unregistered === true), "加 includeUnregistered 可以查出已被软删除");
     ok(existsSync(path.join(botDir, "SOUL.md")), "注销后本地磁盘 SOUL.md 完整保留");
-    ok(existsSync(path.join(botDir, "MEMORY.md")), "注销后本地磁盘 MEMORY.md 完整保留");
+    ok(existsSync(path.join(botDir, ".agents", "skills", "workbench-context", "SKILL.md")), "注销后官方技能完整保留");
 
     // 2.5 恢复：重新认领/导入相同路径时，自动移除 unregistered 标记恢复
     await registry.putBot({

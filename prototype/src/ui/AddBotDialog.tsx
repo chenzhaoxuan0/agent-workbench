@@ -24,6 +24,7 @@ import { ChannelSection } from "./ChannelSection.tsx";
 import { ImportSessionsSection } from "./ImportSessionsSection.tsx";
 import { FolderPickerField } from "./FolderPickerField.tsx";
 import { UnitContextBadge, UnitContextEditor } from "./UnitContextEditor.tsx";
+import { WorkspaceSkillsEditor } from "./WorkspaceSkillsEditor.tsx";
 import { cn } from "./cn.ts";
 
 /**
@@ -68,7 +69,7 @@ export interface AddBotDraft {
   readonly kind: UnitKind;
 }
 
-type Section = "identity" | "context" | "channels" | "importSessions";
+type Section = "identity" | "context" | "skills" | "channels" | "importSessions";
 
 const SECTIONS: readonly { id: Section; label: string; icon: LucideIcon; hint: string }[] = [
   { id: "identity", label: "身份", icon: FileText, hint: "目录、名称、角色、执行器" },
@@ -447,6 +448,26 @@ export function AddBotDialog({
                 </span>
               </button>
             ))}
+            {/* 工作区技能：编辑态专属（2026-10-23）——只管本 bot 工作目录内的技能源，
+                官方基础技能默认置顶；与设置页的全局技能分区分工（那边管全部源） */}
+            {isEdit && (
+              <button
+                onClick={() => setSection("skills")}
+                aria-current={section === "skills"}
+                className={cn(
+                  "flex items-start gap-2 rounded-btn px-2 py-2 text-left",
+                  section === "skills" ? "bg-teal-tint" : "hover:bg-line-soft",
+                )}
+              >
+                <Package size={13} className={cn("mt-0.5 shrink-0", section === "skills" ? "text-teal" : "text-ash")} />
+                <span className="min-w-0">
+                  <span className={cn("block truncate text-body-sm", section === "skills" ? "font-medium text-ink" : "text-graphite")}>
+                    工作区技能
+                  </span>
+                  <span className="block truncate text-caption text-ash">本目录技能置顶与停用</span>
+                </span>
+              </button>
+            )}
             {/* 导入外部会话：编辑态专属（新建还没落盘，没有可查的工作目录） */}
             {isEdit && (
               <button
@@ -700,6 +721,12 @@ export function AddBotDialog({
             {section === "context" && isEdit && initial && (
               <div className="h-full min-h-0 overflow-y-auto pr-1">
                 <UnitContextEditor unitId={String(initial.id)} />
+              </div>
+            )}
+
+            {section === "skills" && isEdit && initial && (
+              <div className="h-full min-h-0 overflow-y-auto pr-1">
+                <WorkspaceSkillsEditor unit={initial} />
               </div>
             )}
 

@@ -16,7 +16,7 @@ export interface MemoryGuardianConfig {
   readonly runner: GuardianRunner;
   /** 自定义 CLI 执行命令（当 runner 为 custom 时使用） */
   readonly customCommand?: string;
-  /** 指定使用的模型名称（留空则走该 CLI 的默认配置，如 "deepseek-chat", "gpt-4o-mini"） */
+  /** 指定使用的模型名称。留空 = 跟随总管（不传 --model，用该 CLI 自己的默认模型） */
   readonly model: string;
   /** 单次后台任务超时时间（毫秒），默认 180,000 (3 分钟) */
   readonly timeoutMs: number;
@@ -30,9 +30,18 @@ export interface MemoryGuardianConfig {
   readonly digestEnabled: boolean;
 }
 
+/**
+ * 与总管同款默认执行器（memory/steward.ts 的 STEWARD_RUNTIME_ID）。
+ * 两处刻意不共享 import（steward 链路拉一串依赖），改任一处须同步另一处。
+ */
+const STEWARD_DEFAULT_RUNNER: GuardianRunner = "mcode";
+
 export const DEFAULT_GUARDIAN_CONFIG: MemoryGuardianConfig = {
-  runner: "zcode",
-  model: "deepseek-chat",
+  runner: STEWARD_DEFAULT_RUNNER,
+  // 留空 = 跟随总管：不向 CLI 传 --model，用该执行器自己的默认模型
+  //（llm.ts 对空 model 就是不拼 flag）。绝不写死示例名——占位名会被当真存进
+  // 配置里，用户看到「deepseek-chat」以为是自己选的。
+  model: "",
   timeoutMs: 180_000,
   autoConsolidate: true,
   consolidateThresholdRatio: 0.95,

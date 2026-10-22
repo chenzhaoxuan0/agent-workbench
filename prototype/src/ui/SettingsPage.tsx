@@ -387,32 +387,8 @@ function ContextSettingsSection() {
  * 上一版这里是「8 种记忆后端注册表 + 三层路由 + 检索门控」，其中 5 种还标着 coming。
  * **整套在新架构下作废**：记忆是项目文件夹里的普通 Markdown（`MEMORY.md` /
  * `memory/daily/` / `skills/`），跨会话检索是现场扫 CLI 的源目录 ——
- * 既没有「注册到后端」这回事，也不需要向量库和门控小模型。注册表与 coming 标记一并移除。
+ * 既没有「注册到」这回事，也不需要向量库和门控小模型。注册表与 coming 标记一并移除。
  */
-function pickRecommendedGuardianModel(runner: string, models: readonly { id: string }[]): string {
-  if (models.length > 0) {
-    const keywords = ["flash", "haiku", "mini", "chat", "preview"];
-    for (const kw of keywords) {
-      const found = models.find((m) => m.id.toLowerCase().includes(kw));
-      if (found) return found.id;
-    }
-    return models[0]?.id ?? "deepseek-chat";
-  }
-  switch (runner) {
-    case "mcode":
-      return "MiniMax-M3.1-Flash-Preview";
-    case "claude":
-      return "claude-3-5-haiku";
-    case "codex":
-    case "pi":
-      return "gpt-4o-mini";
-    case "agy":
-      return "gemini-2.5-flash";
-    case "zcode":
-    default:
-      return "deepseek-chat";
-  }
-}
 
 /**
  * 记忆系统设置（ADR 0014 拆分后）。
@@ -530,16 +506,10 @@ function MemorySettingsSection() {
   const modelInCurrentList = currentModels.some((m) => m.id === prefs.guardianModel);
 
   const handleRunnerChange = (newRunner: string) => {
-    const targetExecutor = executors.find((e) => e.id === newRunner);
-    const targetModels = targetExecutor?.models ?? [];
-    let nextModel = prefs.guardianModel;
-    if (targetModels.length > 0 && !targetModels.some((m) => m.id === prefs.guardianModel)) {
-      nextModel = pickRecommendedGuardianModel(newRunner, targetModels);
-    } else if (targetModels.length === 0) {
-      nextModel = pickRecommendedGuardianModel(newRunner, []);
-    }
-    setPrefs({ guardianRunner: newRunner as any, guardianModel: nextModel });
-    void setGuardianConfigRpc({ runner: newRunner as any, model: nextModel });
+    // 切执行器不带模型：留空 = 跟随该 CLI 自己的默认模型（与总管同款口径）。
+    // 绝不自动替用户挑一个名字——占位名会被存进配置，看着像用户自己选的。
+    setPrefs({ guardianRunner: newRunner as any, guardianModel: "" });
+    void setGuardianConfigRpc({ runner: newRunner as any, model: "" });
   };
 
   return (
@@ -658,15 +628,17 @@ function MemorySettingsSection() {
         <SettingsRow
           label="轻量模型名称 (Model)"
           description={
-            currentModels.length > 0
-              ? `当前执行器 (${prefs.guardianRunner}) 探测到 ${currentModels.length} 个模型，优先推荐轻量高性价比模型`
-              : "指定后台执行合并压缩使用的小模型名称（如 deepseek-chat, gpt-4o-mini, MiniMax-M3.1-Flash-Preview 等）"
+            prefs.guardianModel === ""
+              ? "未设置 —— 跟随总管：不向 CLI 传模型参数，用所选执行器自己的默认模型"
+              : currentModels.length > 0
+                ? `当前执行器 (${prefs.guardianRunner}) 探测到 ${currentModels.length} 个模型；清空则跟随 CLI 默认模型`
+                : "指定后台执行合并压缩使用的模型名称；留空则跟随 CLI 默认模型"
           }
           control={
             currentModels.length > 0 && !customModelMode ? (
               <div className="flex items-center gap-1.5">
                 <select
-                  value={modelInCurrentList ? prefs.guardianModel : "__custom__"}
+                  value={modelInCurrentList ? prefs.guardianModel : prefs.guardianModel === "" ? "" : "__custom__"}
                   onChange={(e) => {
                     if (e.target.value === "__custom__") {
                       setCustomModelMode(true);
@@ -678,6 +650,10 @@ function MemorySettingsSection() {
                   }}
                   className="h-8 max-w-[210px] truncate rounded-btn border border-line bg-canvas px-2 font-mono text-body-sm text-ink focus:border-teal focus:outline-none"
                 >
+                  {/* 空选项 = 未设置：跟随 CLI 默认模型（与总管同款口径）。不显示任何占位模型名 */}
+                  {prefs.guardianModel === "" && (
+                    <option value="">（未设置 · 跟随 CLI 默认）</option>
+                  )}
                   {!modelInCurrentList && prefs.guardianModel && (
                     <option value="__custom__">自定义: {prefs.guardianModel}</option>
                   )}
@@ -714,7 +690,7 @@ function MemorySettingsSection() {
                       void setGuardianConfigRpc({ model: prefs.guardianModel });
                     }
                   }}
-                  placeholder={pickRecommendedGuardianModel(prefs.guardianRunner, currentModels)}
+                  placeholder="留空 = 跟随 CLI 默认模型（与总管同款）"
                   className="h-8 w-44 rounded-btn border border-line bg-canvas px-2.5 font-mono text-body-sm text-ink focus:border-teal focus:outline-none"
                 />
                 {currentModels.length > 0 && (
