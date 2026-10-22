@@ -427,6 +427,8 @@ export type SessionSource =
   | "webhook"
   | "mcp"
   | "automation"
+  /** 外部 agent 经 `aw` CLI / POST /rpc 驱动的轮次（docs/21 P4a）——与渠道同级的第五扇窗 */
+  | "cli"
   /** 外部终端里跑的 CLI 会话，经「导入外部会话」收入历史（不是真实事件来源，仅台账标记） */
   | "imported";
 
@@ -441,6 +443,7 @@ export const SESSION_SOURCE_LABEL: Record<SessionSource, string> = {
   webhook: "webhook",
   mcp: "MCP",
   automation: "自动化",
+  cli: "CLI",
   imported: "导入",
 };
 

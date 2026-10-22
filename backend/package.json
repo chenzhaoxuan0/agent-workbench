@@ -11,6 +11,7 @@
     "dev": "tsx watch src/index.ts",
     "e2e:automation-ui": "tsx scripts/e2e-automation-ui.ts",
     "smoke": "tsx scripts/smoke-health.ts",
+    "smoke:ai-native-chat": "tsx scripts/smoke-ai-native-chat.ts",
     "smoke:ai-native-cli": "tsx scripts/smoke-ai-native-cli.ts",
     "smoke:ai-native-rpc": "tsx scripts/smoke-ai-native-rpc.ts",
     "smoke:autoterm": "tsx scripts/smoke-autoterm.ts",

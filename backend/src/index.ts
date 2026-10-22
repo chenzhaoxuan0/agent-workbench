@@ -22,6 +22,7 @@ import { log, setLogLevel } from "./log.ts";
 import { setSecretsHome } from "./secrets.ts";
 import { applyMethodMeta, attachWs, broadcastBacklog, broadcastEvent, broadcastTerminal, dispatchRpc, registerMethod, WIRE_VERSION } from "./wsd.ts";
 import { METHOD_META } from "./methods.meta.ts";
+import { composePrompt, inlineAttachments, runChatTurn } from "./chat.ts";
 import { PermissionGate } from "./permissions/gate.ts";
 import { MockPermAdapter } from "./runtime/adapters/mockperm.ts";
 import { ClaudeAdapter } from "./runtime/adapters/claude.ts";
@@ -3146,6 +3147,7 @@ registerMethod("session.start", async (params) => {
       dailyDate?: string;
       dailyLimit?: number;
     };
+    attachments?: string[];
   };
   if (typeof p.runtimeId !== "string" || typeof p.unitId !== "string" ||
       typeof p.rootPath !== "string" || typeof p.prompt !== "string") {
@@ -3189,6 +3191,14 @@ registerMethod("session.start", async (params) => {
   ) {
     throw Object.assign(new Error("fork requires ofSessionId, anchorMessageId and kind=branch|revision"), { code: "bad_params" });
   }
+  // 附件路径内联（docs/21 P4a）：给了路径就由 daemon 组装 prompt——GUI 与 CLI 同一条路
+  if (p.attachments !== undefined && (!Array.isArray(p.attachments) || p.attachments.some((x) => typeof x !== "string" || x === ""))) {
+    throw Object.assign(new Error("attachments must be string[] of file paths"), { code: "bad_params" });
+  }
+  const prompt =
+    p.attachments !== undefined && p.attachments.length > 0
+      ? composePrompt(p.prompt, await inlineAttachments(p.attachments))
+      : p.prompt;
   // ADR 0014：注入清单的权威在 bot.json——这里从注册表带出归一后的 manifest 给
   // host（host 不认识注册表）。扫不到定义（外部根/测试路径）= 不带，注入器退回
   // legacy 行为。前端**不再**传全局 scopes 作为真相源；memoryOptions 只做 /mem 覆盖。
@@ -3198,7 +3208,7 @@ registerMethod("session.start", async (params) => {
     unitId: asUnitId(p.unitId),
     unitName: p.unitName ?? p.unitId,
     rootPath: p.rootPath,
-    prompt: p.prompt,
+    prompt,
     model: typeof p.model === "string" ? asModelId(p.model) : null,
     mode: p.mode,
     reasoningLevel: p.reasoningLevel,
@@ -3225,15 +3235,32 @@ registerMethod("session.start", async (params) => {
     skillsBinding: botDef === undefined ? undefined : normalizeSkillBinding(botDef.skills),
   });
 });
-registerMethod("session.send", (params) => {
-  const p = (params ?? {}) as { sessionId?: string; text?: string; reasoningLevel?: string; contextLength?: string };
+registerMethod("session.send", async (params) => {
+  const p = (params ?? {}) as { sessionId?: string; text?: string; reasoningLevel?: string; contextLength?: string; attachments?: string[] };
   if (typeof p.sessionId !== "string" || typeof p.text !== "string") {
     throw Object.assign(new Error("sessionId and text are required"), { code: "bad_params" });
   }
-  return host.sendMessage(asSessionId(p.sessionId), p.text, {
+  // 附件路径内联（docs/21 P4a）：给了路径就由 daemon 组装 prompt——GUI 与 CLI 同一条路
+  const text =
+    p.attachments !== undefined && p.attachments.length > 0
+      ? composePrompt(p.text, await inlineAttachments(p.attachments))
+      : p.text;
+  return host.sendMessage(asSessionId(p.sessionId), text, {
     reasoningLevel: p.reasoningLevel,
     contextLength: typeof p.contextLength === "string" && p.contextLength !== "" ? p.contextLength : undefined,
   });
+});
+// headless 一轮闭环（docs/21 P4a）：附件内联 + 续聊判定 + 模型解析 + 等轮落定回全文。
+// 与 GUI run() 二分：操作在这里，视图（活跃会话/fork 回放/回显）在 GUI。
+registerMethod("session.chat", async (params) => {
+  const p = (params ?? {}) as Parameters<typeof runChatTurn>[1];
+  if (typeof p?.text !== "string" || p.text === "") {
+    throw Object.assign(new Error("text is required"), { code: "bad_params" });
+  }
+  if (p.attachments !== undefined && (!Array.isArray(p.attachments) || p.attachments.some((x) => typeof x !== "string" || x === ""))) {
+    throw Object.assign(new Error("attachments must be string[] of file paths"), { code: "bad_params" });
+  }
+  return runChatTurn({ host, registry: botRegistry }, p);
 });
 registerMethod("session.cancel", (params) => {
   const { sessionId } = (params ?? {}) as { sessionId?: string };

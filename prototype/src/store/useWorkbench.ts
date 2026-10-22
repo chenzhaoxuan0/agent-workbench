@@ -1295,8 +1295,15 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
         : (visible[0]?.id ?? asModelId(""));
 
     const attachments = opts?.attachments;
+    // 附件内联上移（docs/21 P4a）：附件都带本地路径时把组装交给 daemon
+    // （session.start/send 的 attachments 参数——GUI 与 CLI 同一条路）；
+    // 混有浏览器附件（无路径）时仍本地内联兜底，adapter 边界按同一谓词决定是否过线。
+    const allPaths =
+      attachments !== undefined &&
+      attachments.length > 0 &&
+      attachments.every((a) => typeof a.localPath === "string" && a.localPath !== "");
     let fullPrompt = prompt;
-    if (attachments && attachments.length > 0) {
+    if (attachments && attachments.length > 0 && !allPaths) {
       const parts: string[] = [];
       for (const att of attachments) {
         if (att.category === "image") {

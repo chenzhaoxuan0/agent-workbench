@@ -140,8 +140,13 @@
 - [x] 动词层首批：bot list/put/inspect/ask、session list/send/messages/cancel、backlog list/add/done（验收语义，新建议先执行后验收）、git status/commit、methods、events（补拉 + --follow）、doctor
 - [x] `smoke:ai-native-cli`：起 daemon → `aw` 建 bot → 加待办 → 读状态 → 退出码矩阵，19 项断言（headless 无 GUI）；`session chat` 动词随 P4a 落地
 
-### P4 · 编排上移（可按项独立落地，每项 ~0.5–1 天）
-- [ ] P4a `session.chat`（附件路径化 + 续聊判定 + model `"auto"` 回退）+ GUI `run()` 改薄
+### P4a · `session.chat` 编排上移（已完成 2026-10-22）
+- [x] `session.chat`（`backend/src/chat.ts`）：附件路径内联（与前端拼装格式逐字一致）+ 续聊判定（显式 sessionId > 台账最近可续段 > 新段谱系延续；**已终结段不自动续、显式才接**——与 GUI retention 同语义）+ 模型解析（显式 > 绑定 hint > 执行器自决；visible→hint→retired 全链随 P4d 补全）+ 等轮落定回全文（askBot 同款 usage 游标等待）
+- [x] GUI `run()` 改薄：附件全带本地路径时组装交 daemon（`session.start/send` 新增 `attachments` 参数，adapter 边界同谓词过线）；浏览器附件（无路径）本地内联兜底保留
+- [x] `aw session chat` 动词 + `smoke:ai-native-chat` 十项断言（mockperm：内联 / 一次性执行器选段 / 显式 reattach / 谱系一致 / attachment_missing / start 直带附件）
+- [x] SessionSource 新增 `"cli"`（时间轴徽标「CLI」——外部 agent 是第五扇窗）
+### P4 · 编排上移（其余各项，可按项独立落地）
+
 - [ ] P4b `notifications.list` + daemon 聚合事实源 + GUI `useNotifications` 改薄
 - [ ] P4c `image.generate` + 任务历史入 store + GUI 出图改薄 + docs/06 §八行项修订
 - [ ] P4d 模型偏好并入 `adapter.modeldefaults` / `modelcatalog`

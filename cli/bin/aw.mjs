@@ -76,6 +76,8 @@ const HELP = `aw ${VERSION} —— agent-workbench 命令行客户端（docs/21�
   aw bot list | inspect --root <path> | put --file <unit.json> [--create-root]
   aw bot ask --bot <id> --text <t> [--wait <ms>]
   aw session list | messages --id <sid> | send --id <sid> --text <t> | cancel --id <sid>
+  aw session chat (--bot <id> | --unit <uid> --root <p>) --text <t> [--attach p1,p2]
+                  [--model m] [--runtime r] [--session <sid>] [--new] [--wait <ms>]
   aw backlog list | add --goal <g> --unit <uid> --root <path> [--title <t>]
   aw backlog done --id <n>          验收通过（仅「待验收」态；新建议先执行后验收）
   aw git status --root <path> | commit --root <path> --message <m> [--paths a,b]
@@ -250,7 +252,29 @@ async function cmdSession(flags, sub) {
     const text = requireFlag(flags, "text", "消息文本");
     return printJson(await call(flags, "session.send", { sessionId, text }));
   }
-  throw new UsageError("用法：aw session list | messages --id <sid> | send --id <sid> --text <t> | cancel --id <sid>");
+  if (sub === "chat") {
+    const text = requireFlag(flags, "text", "消息文本");
+    const params = { text };
+    if (typeof flags.session === "string") params.sessionId = flags.session;
+    else if (typeof flags.bot === "string") params.botId = flags.bot;
+    else {
+      params.unitId = requireFlag(flags, "unit", "unit id（或用 --bot）");
+      params.rootPath = requireFlag(flags, "root", "工作目录");
+    }
+    if (typeof flags.attach === "string") {
+      params.attachments = flags.attach.split(",").map((p) => p.trim()).filter((p) => p !== "");
+    }
+    if (typeof flags.runtime === "string") params.runtimeId = flags.runtime;
+    if (typeof flags.model === "string") params.model = flags.model;
+    if (flags.new === true) params.newSession = true;
+    if (typeof flags.wait === "string") params.waitMs = Number(flags.wait);
+    const result = await call(flags, "session.chat", params);
+    if (flags.json === true) return printJson(result);
+    process.stdout.write(`${(result.reply ?? "") + "\n"}`);
+    console.error(`session ${result.sessionId}  ${result.status}${result.continued ? "  续聊" : "  新段"}  model=${result.model ?? `auto(${result.modelOrigin})`}`);
+    return;
+  }
+  throw new UsageError("用法：aw session list | chat | messages --id <sid> | send --id <sid> --text <t> | cancel --id <sid>");
 }
 
 async function cmdBacklog(flags, sub) {

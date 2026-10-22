@@ -35,7 +35,11 @@ export const METHOD_META: Record<string, MethodMeta> = {
     description: "起会话跑一轮：按 bot 的 contextManifest 注入上下文、spawn 执行器；worktree 命中则会话 rootPath 全程指向该工作树",
     paramsHint: "{runtimeId, unitId, rootPath, prompt, unitName?, model?, mode?, reasoningLevel?, worktree?, memoryOptions?}",
   },
-  "session.send": { description: "向既有会话续聊发一条文本（agent loop，上下文连续）", paramsHint: "{sessionId, text}" },
+  "session.send": { description: "向既有会话续聊发一条文本（agent loop，上下文连续）；attachments 为本地文件路径，daemon 侧内联", paramsHint: "{sessionId, text, attachments?, reasoningLevel?, contextLength?}" },
+  "session.chat": {
+    description: "headless 一轮对话闭环：附件内联 + 续聊判定（显式 sessionId > 最近可续段 > 新段谱系延续）+ 模型解析（auto=执行器自决），等轮落定回全文",
+    paramsHint: "{botId | unitId+rootPath, text, attachments?, model?, runtimeId?, sessionId?, newSession?, mode?, waitMs?}",
+  },
   "session.cancel": { description: "取消会话当前执行轮", paramsHint: "{sessionId}" },
   "session.list": { description: "列后端台账中的全部会话（按开始时间倒序，含累计 stats）", paramsHint: "null" },
   "session.resumable": { description: "列可续接的会话（有 cli_ref 的那些）", paramsHint: "{runtimeId?, limit?}" },
