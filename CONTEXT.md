@@ -260,3 +260,7 @@ _Avoid_: 全量命令映射（明确不做）
 **`rpc.methods`（方法自描述）**:
 返回全量方法及其元数据（description / paramsHint / danger）的自宿主方法，`aw methods` 与 docs/07 §四生成表共用它。注册表是唯一真相，方法表是生成物。
 _Avoid_: API 文档（那是人写的、会陈旧；这是生成的）
+
+**工作台技能（Workbench Skill）**:
+随 daemon 分发的官方技能（`agent-workbench`）：教任何执行器用 `aw` 驾驶工作台本身——发现不背诵（`aw methods` 即文档）。daemon 持唯一正本，bot init 时按版本标记同步进 `.agents/skills/` 项目级源；无标记的用户自建同名文件不碰。
+_Avoid_: 内置技能（正本在 daemon 不在执行器）、引导提示词（那是提示执行器「它存在」的另一半，另一分支做）

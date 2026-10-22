@@ -383,6 +383,12 @@
 |---|---|---|---|
 | `unit.history` | 查 bot 单元历史，合并自动化运行等多源条目 | {unitId?, limit?} | — |
 
+### workbench
+
+| 方法 | 说明 | params | 危险 |
+|---|---|---|---|
+| `workbench.skill.sync` | 同步官方「驾驶工作台」技能到 bot 的 .agents/skills/（bot init 已自动播种；这里兜底存量 bot、版本升级与 force 重装；无标记的用户自建同名技能不碰） | {botId? | rootPath?, force?} | — |
+
 ### workspace
 
 | 方法 | 说明 | params | 危险 |

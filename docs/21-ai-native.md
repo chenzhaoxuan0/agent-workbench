@@ -179,6 +179,12 @@
 - [x] README 功能段；docs/00 北极星补注（工作台可被 agent 操作 = 「数字员工模式」的自举）
 - [x] 「GUI 操作 × CLI 等价命令」对照表 —— 本文件 §6 附录，长期回归清单
 
+### P6 · 工作台技能（2026-10-22 增补，与「自定义提示词」分支的分工：那边管提示，这边管技能本体）
+- [x] 官方技能 `agent-workbench`（`backend/src/skills/workbenchSkill.ts` 持唯一正本）：教任何执行器驾驶工作台——入口两档（`aw` → curl 兜底零安装）、灵魂是**发现不背诵**（`aw methods` 自描述即文档）、高频动作速查（指挥别的 bot / 通知 / 待办 / git / 记忆 / 出图 / 事件流）、纪律（stdout 只有数据、退出码、token 即钥匙）
+- [x] bot init（registry.putBot 新建路径）自动播种到 `<rootPath>/.agents/skills/agent-workbench/SKILL.md`——.agents 规范公共库的**项目级源**，全执行器可发现、自动进 context manifest 技能目录；存量 bot 由 `workbench.skill.sync` RPC 兜底（botId / rootPath / 无参全量，force 重装）
+- [x] 同步契约：版本标记行 `agent-workbench-skill: vN`——**无标记的同名文件 = 用户自建，不碰**（skipped-foreign）；更旧 → 升级回正本；force → 重装；播种失败只 warn 不炸 bot 创建
+- [x] `smoke:ai-native-skill` 十项断言（播种 / 盘点可见 / 幂等 / 外来保护 / 版本升级 / force / 全量兜底）
+
 ## 3. 验收清单
 
 1. `curl -X POST …/rpc -d '{"v":1,"method":"health"}'`、`aw call health`、GUI 状态栏同一事实
@@ -225,4 +231,5 @@
 | 终端 | 内置终端 | **呈现豁免**（`terminal.*` 原语在，agent 有自己的终端） | D1 |
 | 工作树/隧道路由 | 面板入口 | `aw call git.worktree.* / tunnel.*` | |
 | 方法自描述 | — | `aw methods [--domain d]` | 注册表唯一真相 |
+| 工作台技能同步 | — | `aw call workbench.skill.sync` | bot init 已自动播种；此为存量 bot / 升级 / force 兜底 |
 | 健康自检 | 状态栏 | `aw doctor` | |

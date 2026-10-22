@@ -16,6 +16,7 @@ import path from "node:path";
 import type { Store } from "../store/db.ts";
 import { log } from "../log.ts";
 import { inspectDirectory, appendGitignore, type InspectReport } from "./inspect.ts";
+import { seedWorkbenchSkill } from "../skills/workbenchSkill.ts";
 import { normalizeContextManifest } from "../../../prototype/src/core/units.ts";
 
 const ROOTS_KEY = "bot_roots";
@@ -320,6 +321,9 @@ export class BotRegistry {
       log.warn("bot at filesystem root is not scannable — move it into a subdirectory", { root });
     }
     log.info("bot definition written", { id: unit.id, path: file, revision: out.revision, agentsMd: agentsRel });
+    // 工作台技能播种（docs/21 P6）：新建 bot（init）时把官方「驾驶工作台」技能同步进
+    // .agents/skills/（.agents 规范公共库，全执行器可发现）。幂等；失败只 warn 不炸创建。
+    if (prev === null) seedWorkbenchSkill(root);
     return { path: file, revision: out.revision as number };
   }
 

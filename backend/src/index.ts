@@ -43,6 +43,7 @@ import { GrokAdapter } from "./runtime/adapters/grok.ts";
 import { CursorAdapter } from "./runtime/adapters/cursor.ts";
 import { OpenclawAdapter } from "./runtime/adapters/openclaw.ts";
 import { buildSkillsInventory, copySkill, setSkillDisabled } from "./skills/inventory.ts";
+import { syncWorkbenchSkill, workbenchSkillPath } from "./skills/workbenchSkill.ts";
 import * as gitRepo from "./git/repo.ts";
 import { GIT_ERROR_CODES } from "./contract.ts";
 import { GitWatcher } from "./git/watch.ts";
@@ -3347,6 +3348,26 @@ registerMethod("image.generate", async (params) => {
   return generateImage({ profiles: imageProfiles, tasks: imageTasks, homeDir: config.homeDir }, p);
 });
 registerMethod("image.tasks.list", () => ({ items: imageTasks.list() }));
+// 工作台技能同步（docs/21 P6）：bot init 已自动播种，这里兜底存量 bot / 升级 / force 重装
+registerMethod("workbench.skill.sync", async (params) => {
+  const p = (params ?? {}) as { botId?: string; rootPath?: string; force?: boolean };
+  const roots: string[] = [];
+  if (typeof p.rootPath === "string" && p.rootPath !== "") {
+    roots.push(p.rootPath);
+  } else if (typeof p.botId === "string" && p.botId !== "") {
+    const bot = await botRegistry.getBot(p.botId);
+    if (bot === undefined) throw Object.assign(new Error(`no such bot: ${p.botId}`), { code: "unknown_bot" });
+    if (typeof bot.rootPath === "string") roots.push(bot.rootPath);
+  } else {
+    roots.push(...(await botRegistry.listBots()).flatMap((b) => (typeof b.rootPath === "string" && b.rootPath !== "" ? [b.rootPath] : [])));
+  }
+  if (roots.length === 0) throw Object.assign(new Error("no bots to sync (传 botId/rootPath，或先建一个 bot)"), { code: "bad_params" });
+  const results = [];
+  for (const root of roots) {
+    results.push(await syncWorkbenchSkill(root, { force: p.force === true }));
+  }
+  return { results, path: roots.length === 1 ? workbenchSkillPath(roots[0] ?? "") : undefined };
+});
 registerMethod("session.cancel", (params) => {
   const { sessionId } = (params ?? {}) as { sessionId?: string };
   if (typeof sessionId !== "string") throw Object.assign(new Error("sessionId is required"), { code: "bad_params" });

@@ -155,6 +155,10 @@ export const METHOD_META: Record<string, MethodMeta> = {
     description: "通知事实源：daemon 聚合的通知行（会话终态/审批/报错/产出/git/待办，自然键去重）；已读与「你不在它面前」是客户端呈现，行里不带 read",
     paramsHint: "{limit?}",
   },
+  "workbench.skill.sync": {
+    description: "同步官方「驾驶工作台」技能到 bot 的 .agents/skills/（bot init 已自动播种；这里兜底存量 bot、版本升级与 force 重装；无标记的用户自建同名技能不碰）",
+    paramsHint: "{botId? | rootPath?, force?}",
+  },
   "automation.create": {
     description: "新建定时任务（5 字段 cron，创建时即校验）",
     paramsHint: "{unitId, unitName?, runtimeId, rootPath, prompt, model?, mode?, cron}",
