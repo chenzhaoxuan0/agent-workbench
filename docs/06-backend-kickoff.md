@@ -138,6 +138,11 @@ agent-workbench/
 
 ## 八、不要重做的模块（已是真核，留在浏览器）
 
+> **2026-10 修订（ADR 0015 / docs/21）**：「留在浏览器」的判据改为**操作/呈现二分**——
+> 出图客户端与模型偏好是**操作**（其他客户端可见的事实），上移 daemon
+> （`image.generate`、`adapter.modeldefaults`）；File System Access / IndexedDB 句柄类
+> 与纯呈现逻辑（外观推导、终端簿记）仍留浏览器。行级修订随 docs/21 P4 落地标注。
+
 | 模块 | 位置 | 为什么留 |
 |---|---|---|
 | 出图客户端 | `prototype/src/core/imageApi.ts` | 直连 OpenAI 兼容端点已端到端验证；浏览器直连 + 用户自己的 key，daemon 无需经手 |
