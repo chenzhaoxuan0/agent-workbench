@@ -20,6 +20,9 @@ import {
   normalizeContextManifest,
   normalizeSkillBinding,
   resolveAgentsMdInjection,
+  AUTO_PRESET_NAME,
+  DEFAULT_CONTEXT_MANIFEST,
+  sameContextManifest,
   type ContextManifest,
   type WorkUnit,
 } from "../core/units.ts";
@@ -186,7 +189,8 @@ export function UnitContextEditor({ unitId }: { unitId: string }): ReactElement 
       <PresetRow unit={unit} manifest={manifest} />
 
       {/* 工作区生命周期与 Init 补齐栏 */}
-      <WorkspaceInitAndUnregisterBar unit={unit} />
+      {/* 工作区生命周期栏已移至 bot 设置「身份」分区（2026-10-23 用户裁定：
+          注销 Bot / 补充工作区配置是大设置，不该混在上下文注入里造成误会） */}
 
       {/* ---- 注入矩阵 ---- */}
       <div className="overflow-hidden rounded-card border border-line bg-canvas">
@@ -336,26 +340,7 @@ export function UnitContextEditor({ unitId }: { unitId: string }): ReactElement 
 
 /* ------------------------------------------------------------- 小件 */
 
-/** 默认清单（ADR 0014）：全关 Bare——新建与存量同一规则 */
-const DEFAULT_CONTEXT_MANIFEST: ContextManifest = {
-  agentsMd: "off",
-  soul: false,
-  user: false,
-  memorySemantic: false,
-  memoryDaily: false,
-  memoryStanding: false,
-  skills: false,
-};
-
-/** 注入矩阵的比对键（firstTurnInject 不参与「与预设一致」的判定） */
-const CONTEXT_MANIFEST_KEYS = ["agentsMd", "soul", "user", "memorySemantic", "memoryDaily", "memoryStanding", "skills"] as const;
-
-function sameContextManifest(a: ContextManifest, b: ContextManifest): boolean {
-  return CONTEXT_MANIFEST_KEYS.every((k) => a[k] === b[k]);
-}
-
-/** 自动保存预设的固定草稿槽名（2026-10-23 四次定稿）：未选中预设时的开关改动落这里 */
-const AUTO_PRESET_NAME = "自动保存";
+/* 默认清单 / 自动保存槽名 / 清单比对已上移 core/units.ts（预设行与输入框胶囊共用） */
 
 /**
  * 预设行（2026-10-23 四次定稿，指针模型）——胶囊气泡样式（对齐技能/执行器选择）：
@@ -701,7 +686,8 @@ function SkillsBindingSection({
   );
 }
 
-function WorkspaceInitAndUnregisterBar({
+/** 工作区生命周期与注销栏（2026-10-23 移至 bot 设置「身份」分区渲染） */
+export function WorkspaceInitAndUnregisterBar({
   unit,
 }: {
   unit: WorkUnit;

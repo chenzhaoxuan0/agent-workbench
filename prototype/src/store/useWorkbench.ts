@@ -175,9 +175,13 @@ interface WorkbenchState {
   /** 自愈写骨架（writeUnitWithHeal 的声明面；实现内部共用） */
   writeUnitWithHeal: (unitId: UnitId | string, build: (u: WorkUnit) => WorkUnit) => Promise<void>;
   /**
-   * 输入框当前的单轮/临时上下文注入配置
+   * 输入框当前的单轮/临时上下文注入配置——**当前 bot 的视图**。真相在
+   * turnContextByUnit（按 bot 记忆，2026-10-23：切走再切回保持原选择，
+   * 不再重置回跟随预设）；写入永远走 setTurnContextConfig / resetTurnContextConfig。
    */
   turnContextConfig: TurnContextConfig;
+  /** 每 bot 的临时注入配置（记忆面；视图 turnContextConfig 永远等于本表里 activeUnit 的条目） */
+  turnContextByUnit: Record<string, TurnContextConfig>;
   setTurnContextConfig: (config: Partial<TurnContextConfig> | ((prev: TurnContextConfig) => TurnContextConfig)) => void;
   resetTurnContextConfig: () => void;
   pushNotice: (
@@ -464,6 +468,26 @@ function getInitialActiveUnit(): UnitId {
   return asUnitId("");
 }
 
+/** 临时注入配置的默认态（跟随 bot 预设） */
+const DEFAULT_TURN_CONFIG: TurnContextConfig = { mode: "bot_default", persistForSession: false };
+
+/**
+ * 临时注入配置双写（2026-10-23 按 bot 记忆）：视图 turnContextConfig + 记忆表
+ * turnContextByUnit[activeUnitId] 同步落——切走再切回时从记忆表恢复，
+ * 不再重置回「跟随预设」。
+ */
+function writeTurnConfig(
+  set: (partial: Partial<WorkbenchState> | ((s: WorkbenchState) => Partial<WorkbenchState>)) => void,
+  get: () => WorkbenchState,
+  cfg: TurnContextConfig,
+): void {
+  const key = String(get().activeUnitId ?? "");
+  set((s) => ({
+    turnContextConfig: cfg,
+    turnContextByUnit: key !== "" ? { ...s.turnContextByUnit, [key]: cfg } : s.turnContextByUnit,
+  }));
+}
+
 export const useWorkbench = create<WorkbenchState>((set, get) => ({
   // 评审后清 mock（用户指示）：初始全空，一切数据来自真实 daemon——
   // 空态是设计的一部分（ZCode 原则：功能不因空而消失），不再用样例数据撑门面
@@ -559,19 +583,15 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
     persistForSession: false,
   },
 
+  turnContextByUnit: {},
+
   setTurnContextConfig: (patch) => {
-    set((s) => ({
-      turnContextConfig: typeof patch === "function" ? patch(s.turnContextConfig) : { ...s.turnContextConfig, ...patch },
-    }));
+    const next = typeof patch === "function" ? patch(get().turnContextConfig) : { ...get().turnContextConfig, ...patch };
+    writeTurnConfig(set, get, next);
   },
 
   resetTurnContextConfig: () => {
-    set({
-      turnContextConfig: {
-        mode: "bot_default",
-        persistForSession: false,
-      },
-    });
+    writeTurnConfig(set, get, DEFAULT_TURN_CONFIG);
   },
 
   pushNotice: (title, text, options) => {
@@ -738,6 +758,8 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
     // 挂 true 的话，后续 session.status 事件找不到活跃会话、永远没人清它 ——
     // openSession 门禁从此锁死，被切走的运行中对话也回不去（底栏条目点的
     // 就是这条路）。运行状态本身由任务栏（useTaskbar）继续跟踪。
+    // 临时注入配置按 bot 记忆：切回来恢复这个 bot 上次的覆盖态（不重置回跟随预设）
+    const restoredTurn = get().turnContextByUnit[String(activeUnitId)] ?? DEFAULT_TURN_CONFIG;
     set({
       activeUnitId,
       activeSessionId: null,
@@ -745,7 +767,7 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
       pendingFork: null,
       inputHistory: [],
       busy: false,
-      turnContextConfig: { mode: "bot_default", persistForSession: false },
+      turnContextConfig: restoredTurn,
     });
     try {
       localStorage.setItem("agent-workbench:active-unit", activeUnitId);
@@ -1559,7 +1581,7 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
           contextInject,
         });
         if (currentTurnConfig.persistForSession !== true) {
-          set({ turnContextConfig: { mode: "off", persistForSession: false } });
+          writeTurnConfig(set, get, { mode: "off", persistForSession: false });
         }
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -1637,7 +1659,7 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
             contextInject,
           });
           if (currentTurnConfig.persistForSession !== true) {
-            set({ turnContextConfig: { mode: "off", persistForSession: false } });
+            writeTurnConfig(set, get, { mode: "off", persistForSession: false });
           }
           return;
         } catch (err: unknown) {
@@ -1683,7 +1705,7 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
         contextManifestOverride,
       });
       if (currentTurnConfig.persistForSession !== true) {
-        set({ turnContextConfig: { mode: "off", persistForSession: false } });
+        writeTurnConfig(set, get, { mode: "off", persistForSession: false });
       }
     } catch (err: unknown) {
       fail(err);

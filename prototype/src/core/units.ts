@@ -158,6 +158,28 @@ export interface NamedContextPreset {
   readonly manifest: ContextManifest;
 }
 
+/** 默认清单（ADR 0014）：全关 Bare——新建与存量同一规则；预设行与输入框胶囊共用 */
+export const DEFAULT_CONTEXT_MANIFEST: ContextManifest = {
+  agentsMd: "off",
+  soul: false,
+  user: false,
+  memorySemantic: false,
+  memoryDaily: false,
+  memoryStanding: false,
+  skills: false,
+};
+
+/** 自动保存预设的固定草稿槽名：未选中预设时的开关改动落这里 */
+export const AUTO_PRESET_NAME = "自动保存";
+
+/** 注入矩阵的比对键（firstTurnInject 不参与「与预设一致」的判定） */
+const CONTEXT_MANIFEST_KEYS = ["agentsMd", "soul", "user", "memorySemantic", "memoryDaily", "memoryStanding", "skills"] as const;
+
+/** 两份清单在七个注入开关上是否一致（预设高亮/去重写判定的口径） */
+export function sameContextManifest(a: ContextManifest, b: ContextManifest): boolean {
+  return CONTEXT_MANIFEST_KEYS.every((k) => a[k] === b[k]);
+}
+
 export interface ContextManifest {
   /**
    * 是否开启新会话首轮自动注入（缺省为 true）。

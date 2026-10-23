@@ -23,7 +23,7 @@ import { fetchBotDefaultRoot, inspectBotFolder, openFolder } from "../adapters/d
 import { ChannelSection } from "./ChannelSection.tsx";
 import { ImportSessionsSection } from "./ImportSessionsSection.tsx";
 import { FolderPickerField } from "./FolderPickerField.tsx";
-import { UnitContextBadge, UnitContextEditor } from "./UnitContextEditor.tsx";
+import { UnitContextBadge, UnitContextEditor, WorkspaceInitAndUnregisterBar } from "./UnitContextEditor.tsx";
 import { WorkspaceSkillsEditor } from "./WorkspaceSkillsEditor.tsx";
 import { cn } from "./cn.ts";
 
@@ -694,6 +694,10 @@ export function AddBotDialog({
                     </div>
                   </Field>
                 )}
+
+                {/* 工作区生命周期（2026-10-23 自「上下文与文件」移入身份分区）：
+                    补充工作区配置与注销 Bot 是 bot 的大设置，不该混在注入清单里 */}
+                {isEdit && initial && <WorkspaceInitAndUnregisterBar unit={initial} />}
               </div>
             )}
 
