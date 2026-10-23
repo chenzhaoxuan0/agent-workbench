@@ -166,6 +166,15 @@ interface WorkbenchState {
    */
   patchUnitContext: (unitId: UnitId | string, patch: Partial<ContextManifest>) => Promise<void>;
   /**
+   * 按 bot 写任意定义字段（2026-10-23，预设指针等小写的统一通道）：fresh 读取 +
+   * 三锁 + **冲突自愈**（store 锁基线过期时拉盘上真值重试一次——与 patchUnitContext
+   * 同款；没有自愈的直写路径在基线过期时会「点了又弹回」）。silent 模式不弹通知，
+   * 由调用方自行处理/吞掉。
+   */
+  putUnitFields: (unitId: UnitId | string, fields: Partial<WorkUnit>, opts?: { silent?: boolean }) => Promise<void>;
+  /** 自愈写骨架（writeUnitWithHeal 的声明面；实现内部共用） */
+  writeUnitWithHeal: (unitId: UnitId | string, build: (u: WorkUnit) => WorkUnit) => Promise<void>;
+  /**
    * 输入框当前的单轮/临时上下文注入配置
    */
   turnContextConfig: TurnContextConfig;
@@ -486,36 +495,59 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
 
   setPermissionMode: (permissionMode) => set({ permissionMode }),
 
-  patchUnitContext: async (unitId, patch) => {
+  /** 自愈写骨架：fresh 读取 → 三锁写 → 冲突时拉盘上真值重试一次（两条写路径共用） */
+  writeUnitWithHeal: async (
+    unitId: UnitId | string,
+    build: (u: WorkUnit) => WorkUnit,
+  ): Promise<void> => {
     const apply = async (): Promise<void> => {
       const u = get().units.find((x) => x.id === unitId);
       if (u === undefined) return;
-      const next: ContextManifest = { ...normalizeContextManifest(u.contextManifest), ...patch };
       // 三锁全带（Sidebar guardsOf 同款）：部分更新会带着 store 缓存的 agentsMd/soulMd
       // 正文走 putBot，只锁 revision 的话，期间 VS Code 里改过的文件会被静默覆盖。
-      await get().updateUnit({ ...u, contextManifest: next }, {
+      await get().updateUnit(build(u), {
         ifRevision: u.revision,
         ifAgentsMdHash: u.agentsMdMeta?.hash,
         ifSoulMdHash: u.soulMdMeta?.hash,
       });
     };
     try {
-      try {
-        await apply();
-      } catch (err: unknown) {
-        // 冲突自愈（2026-10-23 修「注入开关未写入后卡死」）：store 的锁基线可能落后于
-        // 盘上（他端 putBot / 重开后的旧快照 / applyPutResult 不刷文件 meta）。上下文
-        // 开关是高频小写，冲突时拉一次盘上真值、用新基线重试一次——补丁只动
-        // contextManifest，不会覆盖他端对正文文件的修改。
-        const code = (err as { code?: string }).code;
-        if (code !== BOT_CONFLICT) throw err;
-        await get().reloadUnit(unitId as UnitId);
-        await apply();
-      }
+      await apply();
+    } catch (err: unknown) {
+      // 冲突自愈（2026-10-23 修「点了又弹回」）：store 的锁基线可能落后于盘上
+      // （他端 putBot / 长开窗口的旧快照 / applyPutResult 不刷文件 meta）。小字段的
+      // 高频写冲突时拉一次盘上真值、用新基线重试一次。
+      const code = (err as { code?: string }).code;
+      if (code !== BOT_CONFLICT) throw err;
+      await get().reloadUnit(unitId as UnitId);
+      await apply();
+    }
+  },
+
+  patchUnitContext: async (unitId, patch) => {
+    try {
+      await get().writeUnitWithHeal(
+        unitId,
+        (u) => ({ ...u, contextManifest: { ...normalizeContextManifest(u.contextManifest), ...patch } } as WorkUnit),
+      );
     } catch (err: unknown) {
       get().pushNotice(
         "注入开关未写入",
         err instanceof Error && err.message !== "" ? err.message : "bot.json 已被外部修改，重新打开设置页后再试",
+        { level: "warn" },
+      );
+      throw err;
+    }
+  },
+
+  putUnitFields: async (unitId, fields, opts) => {
+    try {
+      await get().writeUnitWithHeal(unitId, (u) => ({ ...u, ...fields } as WorkUnit));
+    } catch (err: unknown) {
+      if (opts?.silent === true) throw err;
+      get().pushNotice(
+        "设置未写入",
+        err instanceof Error && err.message !== "" ? err.message : "bot.json 已被外部修改，重新打开后再试",
         { level: "warn" },
       );
       throw err;

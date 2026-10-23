@@ -88,6 +88,7 @@ export function UnitContextBadge({ unit }: { unit: WorkUnit }): ReactElement {
 export function UnitContextEditor({ unitId }: { unitId: string }): ReactElement | null {
   const unit = useWorkbench((s) => s.units.find((u) => String(u.id) === String(unitId)));
   const patchUnitContext = useWorkbench((s) => s.patchUnitContext);
+  const putUnitFields = useWorkbench((s) => s.putUnitFields);
   const updateUnit = useWorkbench((s) => s.updateUnit);
 
   const [adapters, setAdapters] = useState<readonly DaemonExecutorInfo[]>([]);
@@ -131,7 +132,7 @@ export function UnitContextEditor({ unitId }: { unitId: string }): ReactElement 
    * - 选中了具名预设（自定义N）→ 就地更新该预设本体，选中态不变（改到与默认一致
    *   也仍是自定义N，不跳回默认）；
    * - 未选中 / 选中的是「默认」/「自动保存」→ 改动进「自动保存」草稿槽并选中它
-   *   （没有预设时第一次开关即建槽）。增强件：失败静默。
+   *   （没有预设时第一次开关即建槽）。增强件：失败静默（putUnitFields silent）。
    */
   const syncPresetOnEdit = async (): Promise<void> => {
     const fresh = useWorkbench.getState().units.find((x) => String(x.id) === String(unitId));
@@ -145,15 +146,9 @@ export function UnitContextEditor({ unitId }: { unitId: string }): ReactElement 
       : [...presets.filter((c) => c.name !== AUTO_PRESET_NAME), { name: AUTO_PRESET_NAME, manifest: m }];
     const nextActive = named !== undefined ? named.name : AUTO_PRESET_NAME;
     if (nextActive === active && sameContextManifest(normalizeContextManifest(presets.find((c) => c.name === nextActive)?.manifest ?? DEFAULT_CONTEXT_MANIFEST), m)) return;
-    try {
-      await updateUnit(
-        { ...fresh, contextPresets: nextPresets, contextPresetActive: nextActive } as WorkUnit,
-        { ifRevision: fresh.revision, ifAgentsMdHash: fresh.agentsMdMeta?.hash, ifSoulMdHash: fresh.soulMdMeta?.hash },
-      );
-      await useWorkbench.getState().reloadUnit(unit.id);
-    } catch {
+    await putUnitFields(unit.id, { contextPresets: nextPresets, contextPresetActive: nextActive }, { silent: true }).catch(() => {
       /* 预设同步失败不打断主流程（清单本身已写入） */
-    }
+    });
   };
 
   const patch = (p: Partial<ContextManifest>): void => {
@@ -379,15 +374,15 @@ function PresetRow({
   unit: WorkUnit;
   manifest: ContextManifest;
 }): ReactElement {
-  const updateUnit = useWorkbench((s) => s.updateUnit);
-  const pushNotice = useWorkbench((s) => s.pushNotice);
+  const putUnitFields = useWorkbench((s) => s.putUnitFields);
   const [busy, setBusy] = useState(false);
   const presets = unit.contextPresets ?? [];
   const active = unit.contextPresetActive ?? "";
   const customs = presets.filter((c) => c.name !== AUTO_PRESET_NAME);
   const autoPreset = presets.find((c) => c.name === AUTO_PRESET_NAME);
 
-  /** 一笔写：预设名单 / 选中指针 / 清单本体任一组合（fresh 读取 + 三锁 + 重载） */
+  /** 一笔写：预设名单 / 选中指针 / 清单本体任一组合——走 store 的自愈写通道
+   *  （putUnitFields：锁基线过期时自动拉盘上真值重试，不会「点了又弹回」） */
   const writeFields = async (fields: {
     contextPresets?: readonly { name: string; manifest: ContextManifest }[];
     contextPresetActive?: string;
@@ -395,14 +390,10 @@ function PresetRow({
   }): Promise<void> => {
     setBusy(true);
     try {
-      const fresh = useWorkbench.getState().units.find((x) => String(x.id) === String(unit.id)) ?? unit;
-      await updateUnit(
-        { ...fresh, ...fields } as WorkUnit,
-        { ifRevision: fresh.revision, ifAgentsMdHash: fresh.agentsMdMeta?.hash, ifSoulMdHash: fresh.soulMdMeta?.hash },
-      );
+      await putUnitFields(unit.id, fields as Partial<WorkUnit>);
       await useWorkbench.getState().reloadUnit(unit.id);
-    } catch (e: unknown) {
-      pushNotice("预设未写入", e instanceof Error ? e.message : String(e), { level: "warn" });
+    } catch {
+      /* putUnitFields 已弹通知 */
     } finally {
       setBusy(false);
     }
