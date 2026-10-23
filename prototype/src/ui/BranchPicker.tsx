@@ -1,10 +1,11 @@
+import { useSidePane } from "../store/useSidePane.ts";
+import { useWorkbench } from "../store/useWorkbench.ts";
 import { useEffect, useRef, useState } from "react";
 import { Check, ChevronDown, GitBranch, GitGraph, Loader2, Plus } from "lucide-react";
 import { validateBranchName, type GitBranchInfo } from "../core/git.ts";
 import { checkoutGitBranch, createGitBranch, fetchGitBranches } from "../adapters/daemon/client.ts";
 import { useGit } from "../store/useGit.ts";
 import { cn } from "./cn.ts";
-import { GitGraphDialog } from "./gitGraph/GitGraphDialog.tsx";
 
 /**
  * 对话输入框顶栏的分支选择器（ZCode GitBranchSwitcher 同款交互，分支面循
@@ -35,7 +36,6 @@ export function BranchPicker(props: { rootPath: string | undefined; showFooterAc
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
-  const [graphOpen, setGraphOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
 
   const locals = branches === null ? [] : branches.filter((b) => b.kind === "local");
@@ -213,7 +213,13 @@ export function BranchPicker(props: { rootPath: string | undefined; showFooterAc
                   <button
                     type="button"
                     onClick={() => {
-                      setGraphOpen(true);
+                      // 弹窗归拢（2026-10-23）：提交图走右栏 tab（按 rootPath 认领 bot）
+                      if (rootPath !== undefined) {
+                        const u = useWorkbench.getState().units.find((x) => x.rootPath === rootPath) ?? null;
+                        if (u !== null) {
+                          useSidePane.getState().openGitGraph({ unitId: u.id, unitName: u.name, rootPath, branchName });
+                        }
+                      }
                       setOpen(false);
                     }}
                     className="flex w-full items-center gap-2 rounded-btn px-2 py-1.5 text-body-sm text-ink hover:bg-line-soft"
@@ -229,9 +235,6 @@ export function BranchPicker(props: { rootPath: string | undefined; showFooterAc
         </div>
       )}
 
-      {graphOpen && rootPath !== undefined && (
-        <GitGraphDialog rootPath={rootPath} branchName={branchName} onClose={() => setGraphOpen(false)} />
-      )}
     </div>
   );
 }

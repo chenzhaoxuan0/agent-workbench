@@ -177,6 +177,10 @@ interface SidePaneStore extends sidePane.SidePaneState {
   openContext: (request: sidePane.OpenUnitTabRequest) => void;
   /** 打开（或复用）通知中心 tab（workspace 级单例），并展开面板 */
   openNotifications: () => void;
+  /** 打开（或复用）新建 bot tab（workspace 级单例，2026-10-23 归拢自弹窗），并展开面板 */
+  openNewBot: () => void;
+  /** 打开（或复用）git 提交图 tab（按 bot，2026-10-23 归拢自 GitGraphDialog 弹窗） */
+  openGitGraph: (request: sidePane.OpenUnitTabRequest & { rootPath: string; branchName: string | null }) => void;
   closeTab: (tabId: string) => void;
   /** tab 右键：关闭除该 tab 外的可见 tab（其它 bot 的隐藏 tab 保活） */
   closeOtherTabs: (tabId: string) => void;
@@ -276,6 +280,22 @@ export const useSidePane = create<SidePaneStore>((set, get) => ({
         collapsed: false,
         recentlyClosed: dropClosed(s.recentlyClosed, sidePane.notifyTabId),
       };
+    }),
+
+  openNewBot: () =>
+    set((s) => {
+      useShell.getState().setMainView("chat");
+      return {
+        ...sidePane.openNewBotTab(s),
+        collapsed: false,
+        recentlyClosed: dropClosed(s.recentlyClosed, sidePane.NEW_BOT_TAB_ID),
+      };
+    }),
+
+  openGitGraph: (request) =>
+    set((s) => {
+      useShell.getState().setMainView("chat");
+      return openUnitTabSet(s, sidePane.openGitGraphTab(s, request), sidePane.gitGraphTabId(request.unitId), request.unitId);
     }),
 
   /** 三条关闭路径共用收尾（settleClose），口径注释在此：

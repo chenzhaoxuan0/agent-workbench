@@ -453,7 +453,7 @@ function useCommands(): readonly Command[] {
         label: "新建 bot",
         hint: "新文件夹自动创建；指向已有文件夹即为认领（原地注册）",
         group: "bot",
-        run: () => shell().openAddBot(),
+        run: () => useSidePane.getState().openNewBot(),
       },
     );
 

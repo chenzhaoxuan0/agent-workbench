@@ -112,7 +112,40 @@ export interface ContextSidePaneTab {
   openedAt: number;
 }
 
-export type SidePaneTab = HistorySidePaneTab | LiveSessionSidePaneTab | PlanSidePaneTab | DiffSidePaneTab | NotificationsSidePaneTab | ContextSidePaneTab;
+/**
+ * 新建 bot 页（2026-10-23 归拢自弹窗）：workspace 级单例——AddBotDialog 新建态的
+ * 右栏宿主（编辑/设置早已是 context tab）。
+ */
+export interface NewBotSidePaneTab {
+  id: "newbot";
+  type: "newbot";
+  openedAt: number;
+}
+
+/**
+ * git 提交图页（2026-10-23 归拢自 GitGraphDialog 弹窗）：按 bot 一个，
+ * rootPath/branchName 打开时冻结（重开刷新）。
+ */
+export interface GitGraphSidePaneTab {
+  /** `gitgraph:{unitId}` —— 一个 bot 至多一个 */
+  id: string;
+  type: "gitgraph";
+  ownerUnitId: UnitId;
+  unitName: string;
+  rootPath: string;
+  branchName: string | null;
+  openedAt: number;
+}
+
+export type SidePaneTab =
+  | HistorySidePaneTab
+  | LiveSessionSidePaneTab
+  | PlanSidePaneTab
+  | DiffSidePaneTab
+  | NotificationsSidePaneTab
+  | ContextSidePaneTab
+  | NewBotSidePaneTab
+  | GitGraphSidePaneTab;
 
 /**
  * tab 的作用域。unit 级归属某个 bot（切 bot 隐藏不销毁）；workspace 级属于整个
@@ -121,14 +154,14 @@ export type SidePaneTab = HistorySidePaneTab | LiveSessionSidePaneTab | PlanSide
 export type SidePaneTabScope = "unit" | "workspace";
 
 export function tabScope(tab: SidePaneTab): SidePaneTabScope {
-  return tab.type === "notify" ? "workspace" : "unit";
+  return tab.type === "notify" || tab.type === "newbot" ? "workspace" : "unit";
 }
 
 /** unit 级 tab 的窄类型（带 ownerUnitId）—— 类型守卫给 TS 收窄用，语义同 tabScope */
-export type UnitScopedSidePaneTab = Exclude<SidePaneTab, NotificationsSidePaneTab>;
+export type UnitScopedSidePaneTab = Exclude<SidePaneTab, NotificationsSidePaneTab | NewBotSidePaneTab>;
 
 export function isUnitTab(tab: SidePaneTab): tab is UnitScopedSidePaneTab {
-  return tab.type !== "notify";
+  return tab.type !== "notify" && tab.type !== "newbot";
 }
 
 export interface SidePaneState {
@@ -236,6 +269,48 @@ export function openDiffTab(state: SidePaneState, request: OpenUnitTabRequest): 
 /** 打开（或复用）上下文清单 tab：按 unit 幂等（ADR 0014） */
 export function openContextTab(state: SidePaneState, request: OpenUnitTabRequest): SidePaneState {
   return openUnitTab(state, "context", contextTabId(request.unitId), request);
+}
+
+/** 打开（或复用）新建 bot tab：workspace 级单例，幂等聚焦 */
+export const NEW_BOT_TAB_ID = "newbot";
+export function openNewBotTab(state: SidePaneState): SidePaneState {
+  const existing = state.tabs.find((tab) => tab.id === NEW_BOT_TAB_ID);
+  if (existing === undefined) {
+    const tab: NewBotSidePaneTab = { id: NEW_BOT_TAB_ID, type: "newbot", openedAt: Date.now() };
+    return { tabs: [...state.tabs, tab], activeTabId: NEW_BOT_TAB_ID };
+  }
+  return activateTab(state, NEW_BOT_TAB_ID);
+}
+
+export const gitGraphTabId = (unitId: UnitId): string => `gitgraph:${unitId}`;
+
+/** 打开（或复用）git 提交图 tab：按 unit 幂等，重开时刷新 rootPath/branchName */
+export function openGitGraphTab(
+  state: SidePaneState,
+  request: OpenUnitTabRequest & { rootPath: string; branchName: string | null },
+): SidePaneState {
+  const id = gitGraphTabId(request.unitId);
+  const existing = state.tabs.find((tab) => tab.id === id);
+  if (existing !== undefined && existing.type === "gitgraph") {
+    const merged: GitGraphSidePaneTab = {
+      ...existing,
+      unitName: request.unitName,
+      rootPath: request.rootPath,
+      branchName: request.branchName,
+      openedAt: Date.now(),
+    };
+    return activateTab({ ...state, tabs: state.tabs.map((tab) => (tab.id === id ? merged : tab)) }, id);
+  }
+  const tab: GitGraphSidePaneTab = {
+    id,
+    type: "gitgraph",
+    ownerUnitId: request.unitId,
+    unitName: request.unitName,
+    rootPath: request.rootPath,
+    branchName: request.branchName,
+    openedAt: Date.now(),
+  };
+  return { tabs: [...state.tabs, tab], activeTabId: id };
 }
 
 /** 打开（或复用）通知中心 tab：workspace 级单例，幂等聚焦 */

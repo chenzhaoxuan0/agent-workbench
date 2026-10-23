@@ -15,6 +15,7 @@ import { useEffect, useRef, useState } from "react";
 import { Bot, Check, ChevronDown, FolderGit2, Plus } from "lucide-react";
 import { useWorkbench, type ViewMode } from "../store/useWorkbench.ts";
 import { useShell } from "../store/useShell.ts";
+import { useSidePane } from "../store/useSidePane.ts";
 import { isProjectUnit, orderUnitsLikeSidebar, type WorkUnit } from "../core/units.ts";
 import { UnitViewSegment } from "./UnitViewSegment.tsx";
 import { cn } from "./cn.ts";
@@ -182,7 +183,8 @@ export function UnitSwitcher(props: {
               type="button"
               onClick={() => {
                 setOpen(false);
-                useShell.getState().openAddBot();
+                // 弹窗归拢（2026-10-23）：新建 bot 走右栏面板
+                useSidePane.getState().openNewBot();
               }}
               className="flex flex-1 items-center justify-center gap-1 rounded-btn px-2 py-1.5 text-caption font-medium text-graphite transition hover:bg-line-soft hover:text-ink"
             >

@@ -56,8 +56,8 @@ function isPathRelated(path: GitGraphLayoutPath, hash: string | null): boolean {
   return hash !== null && path.relatedHashes.includes(hash);
 }
 
-export function GitGraphDialog(props: { rootPath: string; branchName: string | null; onClose: () => void }) {
-  const { rootPath, branchName } = props;
+export function GitGraphDialog(props: { rootPath: string; branchName: string | null; onClose: () => void; embedded?: boolean }) {
+  const { rootPath, branchName, embedded = false } = props;
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -144,12 +144,8 @@ export function GitGraphDialog(props: { rootPath: string; branchName: string | n
 
   const tableCols = "minmax(0,1fr) 110px 128px 72px";
 
-  return (
-    <DialogShell
-      title={`提交图${branchName === null ? "" : ` · ${branchName}`}`}
-      onClose={props.onClose}
-      widthClass="h-[min(78vh,720px)] w-[min(1060px,92vw)]"
-    >
+  // 主体（embedded 时直接返回——右栏 tab 即标题；弹窗态由 DialogShell 提供标题与尺寸）
+  const body = (
       <div className="flex h-full min-h-0 flex-col">
         <div className="flex shrink-0 items-center justify-between border-b border-line-soft px-4 py-2">
           <div className="flex min-w-0 items-center gap-2">
@@ -340,6 +336,18 @@ export function GitGraphDialog(props: { rootPath: string; branchName: string | n
           </div>
         )}
       </div>
+  );
+
+  if (embedded) {
+    return <div className="h-full min-h-0 w-full overflow-hidden bg-card">{body}</div>;
+  }
+  return (
+    <DialogShell
+      title={`提交图${branchName === null ? "" : ` · ${branchName}`}`}
+      onClose={props.onClose}
+      widthClass="h-[min(78vh,720px)] w-[min(1060px,92vw)]"
+    >
+      {body}
     </DialogShell>
   );
 }

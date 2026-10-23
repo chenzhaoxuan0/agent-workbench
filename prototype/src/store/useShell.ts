@@ -252,7 +252,6 @@ interface ShellState {
    *  「添加 bot」的按钮收进了侧栏 ⋯ 之后，单元区的空态要能当第二个入口，
    *  两处共用一个开关。新建＝新建＋认领单轨：指向已有文件夹时原地注册，
    *  不再另设导入对话框（原 ImportBotDialog 已并入）。 */
-  addBotOpen: boolean;
   /** 会话内视图：默认结构化聊天（docs/13 决策），终端画布为可切换的并行形态 */
   conversationView: ConversationView;
 
@@ -273,8 +272,6 @@ interface ShellState {
   closeSettings: () => void;
 
   setCommandOpen: (open: boolean) => void;
-  openAddBot: () => void;
-  closeAddBot: () => void;
 }
 
 export const useShell = create<ShellState>((set, get) => ({
@@ -289,7 +286,6 @@ export const useShell = create<ShellState>((set, get) => ({
   mainView: "chat",
   settingsOpen: false,
   settingsSection: "models",
-  addBotOpen: false,
   conversationView: "chat",
 
   setMainView: (mainView) => set({ mainView }),
@@ -338,8 +334,6 @@ export const useShell = create<ShellState>((set, get) => ({
 
   setCommandOpen: (commandOpen) => set({ commandOpen }),
 
-  openAddBot: () => set({ addBotOpen: true }),
-  closeAddBot: () => set({ addBotOpen: false }),
 }));
 
 // ---------------------------------------------------------------------------
@@ -377,7 +371,6 @@ export function bindShellShortcuts(): () => void {
     if (e.key === "Escape") {
       const s = useShell.getState();
       if (s.commandOpen) s.setCommandOpen(false);
-      else if (s.addBotOpen) s.closeAddBot();
       else if (s.settingsOpen) s.closeSettings();
       return;
     }

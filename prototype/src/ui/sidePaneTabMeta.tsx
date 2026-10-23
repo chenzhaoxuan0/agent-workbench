@@ -1,5 +1,5 @@
 import type { ReactElement } from "react";
-import { Bell, FileDiff, History, Layers, ListChecks, Radio, type LucideIcon } from "lucide-react";
+import { Bell, FileDiff, GitGraph, History, Layers, ListChecks, Plus, Radio, type LucideIcon } from "lucide-react";
 import type { SidePaneTab } from "../core/sidePaneTabs.ts";
 import type { UnitId } from "../core/units.ts";
 import { useSidePane } from "../store/useSidePane.ts";
@@ -10,6 +10,7 @@ import { PlanPane } from "./PlanPane.tsx";
 import { DiffPane } from "./DiffPane.tsx";
 import { NotificationsPane } from "./NotificationsPane.tsx";
 import { BotSettingsPane } from "./BotSettingsPane.tsx";
+import { NewBotPane, GitGraphPane } from "./SidePaneExtraPanes.tsx";
 
 /**
  * 侧栏 tab 的 UI 注册表 —— 图标 / 标题 / 内容渲染 / 功能主页入口的唯一登记处。
@@ -81,6 +82,21 @@ const entries: readonly SidePaneTabMetaEntry[] = [
     // context:*，原有入口（徽标/右键/胶囊「编辑各文件」）全部自然落进来
     title: (tab) => (tab.type === "context" ? `${tab.unitName} · 设置` : ""),
     render: (tab) => (tab.type === "context" ? <BotSettingsPane unitId={tab.ownerUnitId} /> : null),
+  },
+  {
+    // 新建 bot（2026-10-23 归拢自弹窗）：workspace 级单例，创建成功切新 bot 并关签
+    type: "newbot",
+    icon: Plus,
+    title: () => "新建 bot",
+    render: () => <NewBotPane />,
+  },
+  {
+    // git 提交图（2026-10-23 归拢自 GitGraphDialog 弹窗）：按 bot 一个
+    type: "gitgraph",
+    icon: GitGraph,
+    title: (tab) => (tab.type === "gitgraph" ? `${tab.unitName} · 提交图` : ""),
+    render: (tab) =>
+      tab.type === "gitgraph" ? <GitGraphPane unitId={tab.ownerUnitId} rootPath={tab.rootPath} branchName={tab.branchName} /> : null,
   },  {
     type: "notify",
     icon: Bell,
@@ -183,6 +199,27 @@ export const SIDE_PANE_HOME_ENTRIES: readonly SidePaneHomeEntryDef[] = [
       if (unitId === null) return;
       useSidePane.getState().openContext({ unitId, unitName });
     },
+  },
+  {
+    key: "gitgraph",
+    label: "git 提交图",
+    desc: "分支 · 标签 · 远端的可见历史图（归拢自原提交图弹窗）",
+    icon: GitGraph,
+    group: "companion",
+    open: ({ unitId, unitName }) => {
+      if (unitId === null) return;
+      const u = useWorkbench.getState().units.find((x) => String(x.id) === String(unitId));
+      if (u === undefined) return;
+      useSidePane.getState().openGitGraph({ unitId, unitName, rootPath: u.rootPath, branchName: null });
+    },
+  },
+  {
+    key: "newbot",
+    label: "新建 bot",
+    desc: "指一个文件夹认领/新建一个 bot（归拢自原弹窗，创建成功即上岗）",
+    icon: Plus,
+    group: "workspace",
+    open: () => useSidePane.getState().openNewBot(),
   },
   {
     key: "notify",

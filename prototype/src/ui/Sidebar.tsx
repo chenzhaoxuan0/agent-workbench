@@ -50,7 +50,7 @@ import {
 } from "../core/units.ts";
 
 export { isResidentUnit, isSyntheticUnit };
-import { AddBotDialog, type AddBotDraft } from "./AddBotDialog.tsx";
+
 import { UNIT_VIEWS, UnitViewSegment } from "./UnitViewSegment.tsx";
 import { ChannelMark, channelIdentityLabel } from "./ChannelMark.tsx";
 import { resumeArgsFor } from "./HistoryPane.tsx";
@@ -145,9 +145,7 @@ export function Sidebar() {
   const [dragUnit, setDragUnit] = useState<string | null>(null);
   /** 拖拽悬停的分区（常驻/普通）——drop zone 高亮用 */
   const [zoneHover, setZoneHover] = useState<"resident" | "normal" | null>(null);
-  // 「添加 bot」的对话框开关在 useShell —— 标题行的 ＋ 和单元区空态两个入口共用。
-  // bot 设置（编辑）已归拢右栏面板（2026-10-23），对话框只剩新建一条路
-  const addBotOpen = useShell((s) => s.addBotOpen);
+  // 新建 bot 与 bot 设置均已归拢右栏面板（2026-10-23）：＋/空态开「新建 bot」tab，齿轮开「bot 设置」tab
   const updateUnit = useWorkbench((s) => s.updateUnit);
   const settingsActive = useShell((s) => s.settingsOpen);
 
@@ -292,7 +290,7 @@ export function Sidebar() {
         </div>
         <div className="flex shrink-0 items-center gap-1">
           <button
-            onClick={() => useShell.getState().openAddBot()}
+            onClick={() => useSidePane.getState().openNewBot()  /* 弹窗归拢：新建 bot 走右栏 */}
             aria-label="新建 bot"
             title="新建 bot —— 新文件夹自动创建；指向已有文件夹即为认领（原地注册，不动里面的文件）"
             className="flex items-center gap-0.5 rounded-btn px-1.5 py-0.5 text-caption text-graphite hover:bg-line-soft hover:text-ink cursor-pointer"
@@ -307,7 +305,7 @@ export function Sidebar() {
         {/* 空态引导卡 */}
         {allUnits.length === 0 && (
           <button
-            onClick={() => useShell.getState().openAddBot()}
+            onClick={() => useSidePane.getState().openNewBot()  /* 弹窗归拢：新建 bot 走右栏 */}
             className="flex w-full flex-col items-center gap-1.5 rounded-input border border-dashed border-line px-3 py-6 text-center hover:bg-line-soft"
           >
             <FolderPlus size={18} className="text-ash" />
@@ -491,53 +489,6 @@ export function Sidebar() {
         </section>
       </div>
 
-      {/* 新建 bot 对话框 —— 只剩新建一条路（2026-10-23 设置面归拢：编辑/设置走右栏
-          bot 设置面板，见 UnitRow 齿轮）。开关在 useShell：侧栏的 ＋ 和空态卡开新建。 */}
-      {addBotOpen && (
-        <AddBotDialog
-          open
-          initial={null}
-          onClose={() => useShell.getState().closeAddBot()}
-          onSubmit={async (draft) => {
-            const sh = useShell.getState();
-            // 新建：等写盘结果再关窗。目录不存在 / daemon 没起都该让用户看见，
-            // 否则侧栏多一个刷新就没了的"幽灵 bot"。
-            await addUnit({
-              id: asUnitId(`bot-${Date.now().toString(36)}`),
-              rootPath: draft.rootPath,
-              name: draft.name,
-              kind: "bot",
-              resident: draft.resident ?? false,
-              identity: {
-                role: draft.role,
-                sourcePath: "AGENTS.md",
-                loadedAt: Date.now(),
-              },
-              // ADR 0014 D2：新建 bot 默认全关（Bare）——注入是显式决定，
-              // 用户在右栏 bot 设置面板（或输入框胶囊）按需打开
-              contextManifest: { agentsMd: "auto" },
-              soulMd: draft.persona || undefined,
-              bindings: draft.runtimeId
-                ? [
-                    {
-                      runtimeId: asRuntimeId(draft.runtimeId),
-                      modelHint: draft.modelHint ? asModelId(draft.modelHint) : undefined,
-                      primary: true,
-                    },
-                  ]
-                : [],
-              assets: { agentFiles: ["AGENTS.md"], skillDirs: [] },
-              agentsMd: draft.agentsMd,
-              memory: draft.memory,
-              channels: draft.channels,
-              avatar: draft.avatar,
-              tags: ["新建"],
-              lastActiveAt: Date.now(),
-            }, { createRoot: true });
-            sh.closeAddBot();
-          }}
-        />
-      )}
       {/* 导入已有文件夹（docs/09 §七）已并入新建对话框（单轨）：文件夹已存在时
           daemon 原地注册、保留既有 AGENTS.md；重复注册被 root_taken 拦下。 */}
     </div>
