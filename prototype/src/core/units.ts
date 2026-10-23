@@ -367,6 +367,13 @@ export interface WorkUnit {
    */
   readonly contextPresets?: readonly NamedContextPreset[];
   /**
+   * 当前选中的预设（2026-10-23 四次定稿）：显式指针，不做内容比对——
+   * "default" = 默认（Bare 全关）；预设名 = 选中该预设（之后的开关改动**就地更新
+   * 该预设本体**，绝不跳回默认或自动保存）；"" / 缺省 = 未选中（改动进「自动保存」
+   * 草稿槽）。注入判定永远只看 contextManifest，这个字段只是编辑面的光标。
+   */
+  readonly contextPresetActive?: string;
+  /**
    * SOUL.md 的内容（ADR 0014 D5）。与 agentsMd 同构：不是副本的真相——真相在
    * `<rootPath>/SOUL.md`，listBots 重扫盘时读回来填这里；设置页保存直接写同一个
    * 文件。指针在、文件被删 → 空串 + UI 显示「文件缺失」。

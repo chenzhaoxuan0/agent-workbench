@@ -127,33 +127,38 @@ export function UnitContextEditor({ unitId }: { unitId: string }): ReactElement 
     (resolveAgentsMdInjection(manifest.agentsMd ?? "auto", nativeReadsAgents) ? 1 : 0);
 
   /**
-   * 自动保存自定义预设（2026-10-23）：手动调出「与默认不同、且不匹配任何已有预设」
-   * 的清单时，自动落进「自动保存」这个单一槽位（持续更新；「存为自定义预设」的手动
-   * 快照不受影响）。这样从默认/别的预设切走后，胶囊与本页都能一键切回刚调的状态。
-   * 增强件：失败静默。
+   * 开关改动后的预设同步（2026-10-23 四次定稿，指针模型——不再做内容比对跳转）：
+   * - 选中了具名预设（自定义N）→ 就地更新该预设本体，选中态不变（改到与默认一致
+   *   也仍是自定义N，不跳回默认）；
+   * - 未选中 / 选中的是「默认」/「自动保存」→ 改动进「自动保存」草稿槽并选中它
+   *   （没有预设时第一次开关即建槽）。增强件：失败静默。
    */
-  const autoSaveCustomPreset = async (): Promise<void> => {
+  const syncPresetOnEdit = async (): Promise<void> => {
     const fresh = useWorkbench.getState().units.find((x) => String(x.id) === String(unitId));
     if (fresh === undefined) return;
     const m = normalizeContextManifest(fresh.contextManifest);
-    if (sameContextManifest(m, DEFAULT_CONTEXT_MANIFEST)) return;
-    const customs = fresh.contextPresets ?? [];
-    if (customs.some((c) => sameContextManifest(normalizeContextManifest(c.manifest), m))) return;
-    const next = [...customs.filter((c) => c.name !== AUTO_PRESET_NAME), { name: AUTO_PRESET_NAME, manifest: m }];
+    const presets = fresh.contextPresets ?? [];
+    const active = fresh.contextPresetActive ?? "";
+    const named = presets.find((c) => c.name === active && c.name !== AUTO_PRESET_NAME);
+    const nextPresets = named !== undefined
+      ? presets.map((c) => (c.name === named.name ? { ...c, manifest: m } : c))
+      : [...presets.filter((c) => c.name !== AUTO_PRESET_NAME), { name: AUTO_PRESET_NAME, manifest: m }];
+    const nextActive = named !== undefined ? named.name : AUTO_PRESET_NAME;
+    if (nextActive === active && sameContextManifest(normalizeContextManifest(presets.find((c) => c.name === nextActive)?.manifest ?? DEFAULT_CONTEXT_MANIFEST), m)) return;
     try {
       await updateUnit(
-        { ...fresh, contextPresets: next } as WorkUnit,
+        { ...fresh, contextPresets: nextPresets, contextPresetActive: nextActive } as WorkUnit,
         { ifRevision: fresh.revision, ifAgentsMdHash: fresh.agentsMdMeta?.hash, ifSoulMdHash: fresh.soulMdMeta?.hash },
       );
       await useWorkbench.getState().reloadUnit(unit.id);
     } catch {
-      /* 自动保存失败不打断主流程 */
+      /* 预设同步失败不打断主流程（清单本身已写入） */
     }
   };
 
   const patch = (p: Partial<ContextManifest>): void => {
     void patchUnitContext(unit.id, p)
-      .then(() => void autoSaveCustomPreset())
+      .then(() => void syncPresetOnEdit())
       .catch(() => {});
   };
 
@@ -181,9 +186,9 @@ export function UnitContextEditor({ unitId }: { unitId: string }): ReactElement 
         </p>
       </div>
 
-      {/* 预设（2026-10-23 二次定稿）：默认 + 自定义N（存 bot.json contextPresets），
-          ＋存/清空管理，点击切换。名单与输入框胶囊两处对应。 */}
-      <PresetRow unit={unit} manifest={manifest} patch={patch} />
+      {/* 预设（2026-10-23 四次定稿，指针模型）：胶囊气泡直接选中；选中具名预设后
+          开关改动就地更新该预设；未选中改动进「自动保存」草稿槽；不因内容一致跳默认 */}
+      <PresetRow unit={unit} manifest={manifest} />
 
       {/* 工作区生命周期与 Init 补齐栏 */}
       <WorkspaceInitAndUnregisterBar unit={unit} />
@@ -354,37 +359,64 @@ function sameContextManifest(a: ContextManifest, b: ContextManifest): boolean {
   return CONTEXT_MANIFEST_KEYS.every((k) => a[k] === b[k]);
 }
 
-/** 自动保存预设的固定槽位名（2026-10-23）：单一槽位持续更新，手动快照不受影响 */
+/** 自动保存预设的固定草稿槽名（2026-10-23 四次定稿）：未选中预设时的开关改动落这里 */
 const AUTO_PRESET_NAME = "自动保存";
 
 /**
- * 预设行（2026-10-23 二次定稿，用户口径）：按钮顺序 = 预设标题、存为自定义预设、
- * 清除选择（把已打开的注入开关全关，不动已存预设）、然后是预设按钮（默认 +
- * 自定义N）。没有下拉菜单，没有裸跑/基础/完整内置宏；点击预设按钮即切换
- * （当前清单与哪个预设一致就高亮谁）。同一份名单同时出现在输入框的上下文
- * 胶囊里——两处对应。
+ * 预设行（2026-10-23 四次定稿，指针模型）——胶囊气泡样式（对齐技能/执行器选择）：
+ * - 点击胶囊 = 选中该预设并应用其清单；选中态是**显式指针**（bot.json
+ *   contextPresetActive），不做内容比对跳转——自定义1 改到与默认完全一致也仍是
+ *   自定义1；
+ * - 选中具名预设后的开关改动**就地更新该预设本体**（不跳自动保存）；
+ * - 未选中 / 选中的是「默认」时，开关改动进「自动保存」草稿槽并选中它；
+ * - 「存为自定义预设」从当前清单建 自定义N 并**选中**它（随后的开关改动即编辑它）；
+ * - 「取消选中」回到未选中态：之后的开关改动进自动保存草稿，不再改动选中预设。
  */
 function PresetRow({
   unit,
   manifest,
-  patch,
 }: {
   unit: WorkUnit;
   manifest: ContextManifest;
-  patch: (p: Partial<ContextManifest>) => void;
 }): ReactElement {
   const updateUnit = useWorkbench((s) => s.updateUnit);
   const pushNotice = useWorkbench((s) => s.pushNotice);
   const [busy, setBusy] = useState(false);
-  const customs = unit.contextPresets ?? [];
+  const presets = unit.contextPresets ?? [];
+  const active = unit.contextPresetActive ?? "";
+  const customs = presets.filter((c) => c.name !== AUTO_PRESET_NAME);
+  const autoPreset = presets.find((c) => c.name === AUTO_PRESET_NAME);
 
-  const DEFAULT_MANIFEST = DEFAULT_CONTEXT_MANIFEST;
-  const sameManifest = sameContextManifest;
-  const defaultActive = sameManifest(manifest, DEFAULT_MANIFEST);
+  /** 一笔写：预设名单 / 选中指针 / 清单本体任一组合（fresh 读取 + 三锁 + 重载） */
+  const writeFields = async (fields: {
+    contextPresets?: readonly { name: string; manifest: ContextManifest }[];
+    contextPresetActive?: string;
+    contextManifest?: ContextManifest;
+  }): Promise<void> => {
+    setBusy(true);
+    try {
+      const fresh = useWorkbench.getState().units.find((x) => String(x.id) === String(unit.id)) ?? unit;
+      await updateUnit(
+        { ...fresh, ...fields } as WorkUnit,
+        { ifRevision: fresh.revision, ifAgentsMdHash: fresh.agentsMdMeta?.hash, ifSoulMdHash: fresh.soulMdMeta?.hash },
+      );
+      await useWorkbench.getState().reloadUnit(unit.id);
+    } catch (e: unknown) {
+      pushNotice("预设未写入", e instanceof Error ? e.message : String(e), { level: "warn" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** 选中预设：应用其清单 + 指针一笔写（选中即进入「编辑该预设」状态） */
+  const selectPreset = (name: string, m: ContextManifest): void => {
+    if (active === name) return;
+    void writeFields({ contextManifest: m, contextPresetActive: name });
+  };
 
   /** 自动命名：自定义1、自定义2……取第一个空缺号，不与现存重名 */
   const nextPresetName = (): string => {
-    const used = new Set(customs.map((c) => c.name));
+    const used = new Set(presets.map((c) => c.name));
     for (let i = 1; i <= 99; i++) {
       const candidate = `自定义${i}`;
       if (!used.has(candidate)) return candidate;
@@ -392,76 +424,95 @@ function PresetRow({
     return `自定义${Date.now() % 1000}`;
   };
 
-  const writePresets = async (next: readonly { name: string; manifest: ContextManifest }[]): Promise<void> => {
-    setBusy(true);
-    try {
-      await updateUnit(
-        { ...unit, contextPresets: next } as WorkUnit,
-        { ifRevision: unit.revision, ifAgentsMdHash: unit.agentsMdMeta?.hash, ifSoulMdHash: unit.soulMdMeta?.hash },
-      );
-      await useWorkbench.getState().reloadUnit(unit.id);
-    } catch (e: unknown) {
-      pushNotice("自定义预设未写入", e instanceof Error ? e.message : String(e), { level: "warn" });
-    } finally {
-      setBusy(false);
-    }
+  /** 存为自定义预设：建 自定义N 并选中（之后的开关改动就地更新它） */
+  const saveCustom = (): void => {
+    const name = nextPresetName();
+    void writeFields({ contextPresets: [...presets, { name, manifest }], contextPresetActive: name });
   };
+
+  /** 删除预设：删的是选中项时，选中态回未选中 */
+  const deletePreset = (name: string): void => {
+    void writeFields({
+      contextPresets: presets.filter((c) => c.name !== name),
+      ...(active === name ? { contextPresetActive: "" } : {}),
+    });
+  };
+
+  const pillCls = (on: boolean): string =>
+    cn(
+      "flex items-center gap-1 rounded-full border px-3 py-1 text-caption transition select-none",
+      on
+        ? "border-teal bg-teal-tint font-medium text-teal"
+        : "border-line bg-canvas text-graphite hover:border-teal/40 hover:text-ink",
+    );
 
   return (
     <div className="flex flex-wrap items-center gap-1.5">
-      <span className="text-[10px] text-ash">预设</span>
+      <span className="text-caption font-medium text-ink">预设</span>
       <button
         type="button"
         disabled={busy}
-        onClick={() => void writePresets([...customs, { name: nextPresetName(), manifest }])}
-        className="rounded-btn border border-line px-2 py-0.5 text-[11px] text-graphite transition hover:border-teal/50 hover:text-ink disabled:opacity-40"
-        title="把当前注入清单保存为一条自定义预设（输入框胶囊同款可切换）"
+        onClick={() => selectPreset("default", DEFAULT_CONTEXT_MANIFEST)}
+        title="选中默认预设（Bare 全关）并应用——之后再改动会转入自动保存草稿"
+        className={pillCls(active === "default")}
       >
-        存为自定义预设
-      </button>
-      <button
-        type="button"
-        onClick={() => patch(DEFAULT_MANIFEST)}
-        className="rounded-btn border border-line px-2 py-0.5 text-[11px] text-graphite transition hover:border-teal/50 hover:text-ink"
-        title="清除选择：把已打开的注入开关全部关掉（不动已存的自定义预设）"
-      >
-        清除选择
-      </button>
-      <button
-        type="button"
-        onClick={() => patch(DEFAULT_MANIFEST)}
-        title="切换到默认预设：全部关闭（Bare，ADR 0014 默认态）"
-        className={cn(
-          "rounded-btn border px-2 py-0.5 text-[11px] transition",
-          defaultActive
-            ? "border-teal/50 bg-teal-tint text-teal font-medium"
-            : "border-line text-graphite hover:border-teal/40 hover:text-ink",
-        )}
-      >
+        {active === "default" ? <CheckCircle2 size={12} /> : <Circle size={12} className="text-ash/50" />}
         默认
       </button>
+      {autoPreset !== undefined && (
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => selectPreset(AUTO_PRESET_NAME, autoPreset.manifest)}
+          title="自动保存草稿——未选中具名预设时的开关改动都暂存在这里"
+          className={pillCls(active === AUTO_PRESET_NAME)}
+        >
+          {active === AUTO_PRESET_NAME ? <CheckCircle2 size={12} /> : <Circle size={12} className="text-ash/50" />}
+          {AUTO_PRESET_NAME}
+          <span
+            role="button"
+            tabIndex={0}
+            onClick={(e) => {
+              e.stopPropagation();
+              deletePreset(AUTO_PRESET_NAME);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.stopPropagation();
+                deletePreset(AUTO_PRESET_NAME);
+              }
+            }}
+            className="ml-0.5 text-ash/60 hover:text-loss"
+            aria-label="删除自动保存草稿"
+          >
+            ×
+          </span>
+        </button>
+      )}
       {customs.map((c) => (
         <span
           key={c.name}
           className={cn(
-            "inline-flex items-center gap-0.5 rounded-btn border px-1.5 py-0.5 text-[11px] transition",
-            sameManifest(manifest, c.manifest)
-              ? "border-teal/50 bg-teal-tint text-teal font-medium"
-              : "border-line text-graphite hover:border-teal/40 hover:text-ink",
+            "inline-flex items-center gap-0.5 rounded-full border px-3 py-1 text-caption transition select-none",
+            active === c.name
+              ? "border-teal bg-teal-tint font-medium text-teal"
+              : "border-line bg-canvas text-graphite hover:border-teal/40 hover:text-ink",
           )}
         >
           <button
             type="button"
             disabled={busy}
-            onClick={() => patch(c.manifest)}
-            title={`切换到「${c.name}」`}
+            onClick={() => selectPreset(c.name, c.manifest)}
+            title={`选中「${c.name}」并应用——之后的开关改动就地更新这个预设`}
+            className="flex items-center gap-1"
           >
+            {active === c.name ? <CheckCircle2 size={12} /> : <Circle size={12} className="text-ash/50" />}
             {c.name}
           </button>
           <button
             type="button"
             disabled={busy}
-            onClick={() => void writePresets(customs.filter((x) => x.name !== c.name))}
+            onClick={() => deletePreset(c.name)}
             title={`删除「${c.name}」`}
             className="text-ash/60 hover:text-loss"
             aria-label={`删除预设 ${c.name}`}
@@ -470,6 +521,26 @@ function PresetRow({
           </button>
         </span>
       ))}
+      <button
+        type="button"
+        disabled={busy}
+        onClick={saveCustom}
+        className="rounded-full border border-dashed border-line px-3 py-1 text-caption text-graphite transition hover:border-teal/50 hover:text-ink disabled:opacity-40"
+        title="把当前注入清单保存为新的自定义预设并选中（随后可继续用开关编辑它）"
+      >
+        ＋ 存为自定义预设
+      </button>
+      {active !== "" && (
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => void writeFields({ contextPresetActive: "" })}
+          className="rounded-btn px-2 py-0.5 text-[11px] text-ash transition hover:text-ink"
+          title="取消选中：之后的开关改动转入自动保存草稿，不再改动当前选中的预设（清单不变）"
+        >
+          取消选中
+        </button>
+      )}
     </div>
   );
 }
