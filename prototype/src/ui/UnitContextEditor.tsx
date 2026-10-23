@@ -154,8 +154,8 @@ export function UnitContextEditor({ unitId }: { unitId: string }): ReactElement 
         </p>
       </div>
 
-      {/* 预设（2026-10-23 口径）：三类选项——预设（内置宏）/ 自定义（本 bot 保存的
-          快照，存 bot.json contextPreset）/ 清空（全关）。落盘的只有显式开关（D7）。 */}
+      {/* 预设（2026-10-23 口径）：自定义（可多条，存 bot.json contextPresets）/
+          预设（内置宏）/ 清空（全关）。名单与输入框胶囊两处对应。 */}
       <PresetRow unit={unit} manifest={manifest} patch={patch} />
 
       {/* 工作区生命周期与 Init 补齐栏 */}
@@ -310,10 +310,11 @@ export function UnitContextEditor({ unitId }: { unitId: string }): ReactElement 
 /* ------------------------------------------------------------- 小件 */
 
 /**
- * 预设行（2026-10-23 用户口径）：自定义 / 预设 / 清空 三类选项。
+ * 预设行（2026-10-23 用户口径）：自定义（可多条，自定义1/自定义2…）/ 预设 / 清空。
  * - 预设：内置宏（裸跑/基础/完整），一次写一组开关；
- * - 自定义：本 bot 保存的清单快照（bot.json contextPreset），一键取回；
- *   「存为自定义」把当前清单原样快照进 bot.json（三锁防覆盖并发修改）；
+ * - 自定义：本 bot 保存的清单快照（bot.json contextPresets），点击取回，× 删除，
+ *   「＋ 存」把当前清单快照为新预设（自动命名 自定义N，三锁防覆盖并发修改）；
+ *   同一份名单同时出现在输入框的上下文胶囊里——两处对应；
  * - 清空：全关（含 AGENTS.md）。
  * 「完整」刻意不开技能目录：执行器原生已发现 .agents/skills，工作台再注一份
  * 目录索引会重复（防双注，同 AGENTS.md auto 的思路）。
@@ -330,7 +331,7 @@ function PresetRow({
   const updateUnit = useWorkbench((s) => s.updateUnit);
   const pushNotice = useWorkbench((s) => s.pushNotice);
   const [busy, setBusy] = useState(false);
-  const custom = unit.contextPreset;
+  const customs = unit.contextPresets ?? [];
 
   const ALL_OFF: ContextManifest = {
     agentsMd: "off",
@@ -347,17 +348,26 @@ function PresetRow({
     { id: "full", label: "完整", apply: { agentsMd: "auto", soul: true, user: true, memorySemantic: true, memoryDaily: true, memoryStanding: true, skills: false } },
   ];
 
-  const saveCustom = async () => {
+  /** 自动命名：自定义1、自定义2……取第一个空缺号，不与现存重名 */
+  const nextPresetName = (): string => {
+    const used = new Set(customs.map((c) => c.name));
+    for (let i = 1; i <= 99; i++) {
+      const candidate = `自定义${i}`;
+      if (!used.has(candidate)) return candidate;
+    }
+    return `自定义${Date.now() % 1000}`;
+  };
+
+  const writePresets = async (next: readonly { name: string; manifest: ContextManifest }[]): Promise<void> => {
     setBusy(true);
     try {
       await updateUnit(
-        { ...unit, contextPreset: manifest } as WorkUnit,
+        { ...unit, contextPresets: next } as WorkUnit,
         { ifRevision: unit.revision, ifAgentsMdHash: unit.agentsMdMeta?.hash, ifSoulMdHash: unit.soulMdMeta?.hash },
       );
       await useWorkbench.getState().reloadUnit(unit.id);
-      pushNotice("自定义预设已保存", `「${unit.name}」当前注入清单已快照为本 bot 的自定义预设。`, { level: "info" });
     } catch (e: unknown) {
-      pushNotice("自定义预设保存失败", e instanceof Error ? e.message : String(e), { level: "warn" });
+      pushNotice("自定义预设未写入", e instanceof Error ? e.message : String(e), { level: "warn" });
     } finally {
       setBusy(false);
     }
@@ -380,27 +390,40 @@ function PresetRow({
           <option key={p.id} value={p.id}>{p.label}</option>
         ))}
       </select>
-      <button
-        type="button"
-        disabled={custom === undefined}
-        onClick={() => custom !== undefined && patch(custom)}
-        title={custom !== undefined ? "取回本 bot 保存的自定义预设快照" : "还没有保存过自定义预设——调好清单后点「存为自定义」"}
-        className={cn(
-          "rounded-btn border px-2 py-0.5 text-[11px] transition",
-          custom !== undefined
-            ? "border-teal/50 text-teal hover:bg-teal-tint"
-            : "border-line text-ash/60",
-        )}
-      >
-        自定义{custom !== undefined ? " ✓" : ""}
-      </button>
+      {customs.map((c) => (
+        <span
+          key={c.name}
+          className="inline-flex items-center gap-0.5 rounded-btn border border-teal/40 px-1.5 py-0.5 text-[11px] text-teal transition hover:bg-teal-tint"
+        >
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => patch(c.manifest)}
+            title={`取回「${c.name}」预设快照`}
+            className="font-medium"
+          >
+            {c.name}
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void writePresets(customs.filter((x) => x.name !== c.name))}
+            title={`删除「${c.name}」`}
+            className="text-ash/60 hover:text-loss"
+            aria-label={`删除预设 ${c.name}`}
+          >
+            ×
+          </button>
+        </span>
+      ))}
       <button
         type="button"
         disabled={busy}
-        onClick={() => void saveCustom()}
+        onClick={() => void writePresets([...customs, { name: nextPresetName(), manifest }])}
         className="rounded-btn border border-line px-2 py-0.5 text-[11px] text-graphite transition hover:border-teal/50 hover:text-ink disabled:opacity-40"
+        title="把当前注入清单快照为一条自定义预设（输入框胶囊同款可取回）"
       >
-        {busy ? "保存中…" : "存为自定义"}
+        {busy ? "…" : "＋ 存"}
       </button>
       <button
         type="button"

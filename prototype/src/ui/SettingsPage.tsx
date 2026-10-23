@@ -40,6 +40,7 @@ import { getGuardianConfigRpc, readProjectMemory, runDigestDryRun, setGuardianCo
 import { listDaemonExecutors, type DaemonExecutorInfo } from "../adapters/daemon/client.ts";
 import { ProviderInstancesPanel } from "./ProviderInstancesPanel.tsx";
 import { SkillsSettingsSection } from "./SkillsSettingsSection.tsx";
+import { CliSettingsSection } from "./CliSettingsSection.tsx";
 import { McpSettingsSection } from "./McpSettingsSection.tsx";
 import { BrowserControlSection } from "./BrowserControlSection.tsx";
 import { ComputerControlSection } from "./ComputerControlSection.tsx";
@@ -274,6 +275,8 @@ function SectionBody({ section }: { section: SettingsSectionDef }) {  switch (se
       );
     case "shortcuts":
       return <ShortcutsSection />;
+    case "cli":
+      return <CliSettingsSection />;
     case "history":
       return (
         <div className="space-y-6">

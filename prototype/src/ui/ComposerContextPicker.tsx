@@ -32,7 +32,8 @@ import { cn } from "./cn.ts";
  * 核心设计哲学：
  * 1. 默认行为极度丝滑：首轮默认跟随 Bot 预设，续聊默认不重复注入；
  * 2. 极致的自由度与自主权：用户可在任意一轮随时开启/关闭注入，自主勾选要注入的文件；
- * 3. 快捷预设秒切：提供「跟随 Bot」、「仅红线 STANDING」、「仅人设 SOUL」、「清空」四组常用预设；
+ * 3. 快捷预设秒切（2026-10-23 与 bot 设置对应）：跟随 Bot 默认、内置宏（裸跑/基础/完整）、
+ *    本 bot 的自定义预设（bot.json contextPresets 同一份名单）、清空；
  * 4. 默认「单轮生效」防污染：发送后自动复位为后续默认，亦可勾选「本会话保持」。
  */
 export function ComposerContextPicker({ compact }: { compact?: boolean } = {}) {
@@ -113,31 +114,32 @@ export function ComposerContextPicker({ compact }: { compact?: boolean } = {}) {
     });
   };
 
-  // 快捷预设设置
-  const applyPreset = (preset: "bot_default" | "standing_only" | "soul_only" | "off") => {
+  // 快捷预设设置（2026-10-23 口径，与 bot 设置的预设行对应）：
+  // 跟随 Bot 默认 / 内置宏（裸跑·基础·完整）/ 本 bot 的自定义预设 / 清空。
+  // 自定义预设的增删在 bot 设置（bot.json contextPresets），这里同一份名单一键取回。
+  const builtinPresets: readonly { id: string; label: string; manifest: ContextManifest }[] = [
+    { id: "bare", label: "裸跑", manifest: { agentsMd: "off", soul: false, user: false, memorySemantic: false, memoryDaily: false, memoryStanding: false, skills: false } },
+    { id: "basic", label: "基础", manifest: { agentsMd: "auto", soul: true, user: true, memorySemantic: true, memoryDaily: false, memoryStanding: true, skills: false } },
+    { id: "full", label: "完整", manifest: { agentsMd: "auto", soul: true, user: true, memorySemantic: true, memoryDaily: true, memoryStanding: true, skills: false } },
+  ];
+  const customs = unit?.contextPresets ?? [];
+
+  const applyPreset = (preset: "bot_default" | "off") => {
     if (preset === "bot_default") {
       setTurnContextConfig({ mode: "bot_default" });
-    } else if (preset === "off") {
+    } else {
       setTurnContextConfig({ mode: "off" });
-    } else if (preset === "standing_only") {
-      setTurnContextConfig({
-        mode: "custom",
-        customManifest: {
-          ...LEGACY_CONTEXT_MANIFEST,
-          firstTurnInject: true,
-          memoryStanding: true,
-        },
-      });
-    } else if (preset === "soul_only") {
-      setTurnContextConfig({
-        mode: "custom",
-        customManifest: {
-          ...LEGACY_CONTEXT_MANIFEST,
-          firstTurnInject: true,
-          soul: true,
-        },
-      });
     }
+  };
+  const applyManifest = (m: ContextManifest): void => {
+    setTurnContextConfig({ mode: "custom", customManifest: { ...m, firstTurnInject: true } });
+  };
+  const manifestActive = (m: ContextManifest): boolean => {
+    if (turnContextConfig.mode !== "custom") return false;
+    const c = turnContextConfig.customManifest;
+    if (c === undefined) return false;
+    const keys: (keyof ContextManifest)[] = ["soul", "user", "memorySemantic", "memoryDaily", "memoryStanding", "skills", "agentsMd"];
+    return keys.every((k) => c[k] === m[k]);
   };
 
   return (
@@ -218,13 +220,13 @@ export function ComposerContextPicker({ compact }: { compact?: boolean } = {}) {
             </button>
           </div>
 
-          {/* 快捷一键预设条 */}
+          {/* 快捷预设条（与 bot 设置的预设行对应）：跟随预设 / 预设宏 / 自定义 / 清空 */}
           <div className="pt-2 pb-1.5">
             <div className="text-[10px] text-ash font-medium mb-1.5 flex items-center justify-between">
               <span>快捷预设</span>
-              <span className="font-mono text-[9px] text-ash/80">一键切换</span>
+              <span className="font-mono text-[9px] text-ash/80">本轮生效</span>
             </div>
-            <div className="grid grid-cols-4 gap-1 select-none">
+            <div className="flex flex-wrap items-center gap-1 select-none">
               <button
                 type="button"
                 onClick={() => applyPreset("bot_default")}
@@ -238,38 +240,37 @@ export function ComposerContextPicker({ compact }: { compact?: boolean } = {}) {
               >
                 跟随预设
               </button>
-              <button
-                type="button"
-                onClick={() => applyPreset("standing_only")}
-                title="一键只注入常驻红线 STANDING.md（纠偏神技）"
-                className={cn(
-                  "rounded-lg border px-1.5 py-1 text-[11px] transition truncate text-center",
-                  turnContextConfig.mode === "custom" &&
-                    turnContextConfig.customManifest?.memoryStanding &&
-                    !turnContextConfig.customManifest?.soul &&
-                    !turnContextConfig.customManifest?.user &&
-                    !turnContextConfig.customManifest?.memorySemantic
-                    ? "border-teal/40 bg-teal-tint text-teal font-medium"
-                    : "border-line-soft text-graphite hover:bg-line-soft hover:text-ink",
-                )}
+              <select
+                value=""
+                onChange={(e) => {
+                  const hit = builtinPresets.find((p) => p.id === e.target.value);
+                  if (hit !== undefined) applyManifest(hit.manifest);
+                }}
+                title="内置预设宏（裸跑 / 基础 / 完整）"
+                className="h-[26px] rounded-lg border border-line-soft bg-canvas px-1.5 text-[11px] text-graphite hover:border-teal/40 focus:outline-none"
+                aria-label="内置预设"
               >
-                仅红线
-              </button>
-              <button
-                type="button"
-                onClick={() => applyPreset("soul_only")}
-                title="一键只注入人设 SOUL.md"
-                className={cn(
-                  "rounded-lg border px-1.5 py-1 text-[11px] transition truncate text-center",
-                  turnContextConfig.mode === "custom" &&
-                    turnContextConfig.customManifest?.soul &&
-                    !turnContextConfig.customManifest?.memoryStanding
-                    ? "border-teal/40 bg-teal-tint text-teal font-medium"
-                    : "border-line-soft text-graphite hover:bg-line-soft hover:text-ink",
-                )}
-              >
-                仅人设
-              </button>
+                <option value="">预设…</option>
+                {builtinPresets.map((p) => (
+                  <option key={p.id} value={p.id}>{p.label}</option>
+                ))}
+              </select>
+              {customs.map((c) => (
+                <button
+                  key={c.name}
+                  type="button"
+                  onClick={() => applyManifest(c.manifest)}
+                  title={`本轮取回「${c.name}」（bot 设置里保存的预设）`}
+                  className={cn(
+                    "rounded-lg border px-1.5 py-1 text-[11px] transition truncate text-center",
+                    manifestActive(c.manifest)
+                      ? "border-teal/40 bg-teal-tint text-teal font-medium"
+                      : "border-teal/25 text-teal/80 hover:bg-teal-tint/50 hover:text-teal",
+                  )}
+                >
+                  {c.name}
+                </button>
+              ))}
               <button
                 type="button"
                 onClick={() => applyPreset("off")}

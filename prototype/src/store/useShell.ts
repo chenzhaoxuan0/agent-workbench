@@ -45,6 +45,7 @@ export type ConversationView = "chat" | "terminal";
 export type SettingsSectionId =
   | "appearance"
   | "models"
+  | "cli"
   | "history"
   | "archivedTasks"
   | "heartbeat"
@@ -85,6 +86,7 @@ export const SETTINGS_GROUPS: readonly { id: SettingsGroupId; title: string }[] 
 export const SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
   { id: "appearance", title: "外观", desc: "预设主题、十组配色、透明度、背景壁纸与表面排版", groupId: "basics", icon: "palette" },
   { id: "models", title: "执行器与模型", desc: "执行器实例、供应商与每个 CLI 的模型清单", groupId: "basics", icon: "brain" },
+  { id: "cli", title: "命令行 (aw)", desc: "aw CLI 的安装、连接与 GUI 操作对照——GUI 能做的每件事都有命令行等价物", groupId: "basics", icon: "terminal" },
   { id: "history", title: "历史会话", desc: "会话时间轴过滤、失败记录隐藏与展示偏好", groupId: "basics", icon: "history" },
   { id: "archivedTasks", title: "归档任务", desc: "查看与恢复已归档的历史任务，放进抽屉不占侧栏空间", groupId: "basics", icon: "archive" },
   { id: "heartbeat", title: "心跳", desc: "心跳开关、周期、空闲阈值、提议超时与忽略上限 —— 待办自动提议的节拍", groupId: "basics", icon: "alarm" },

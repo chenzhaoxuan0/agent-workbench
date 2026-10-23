@@ -222,7 +222,9 @@
 | 待办（GTD） | 待办面板 | `aw backlog list / add / done` + `aw call backlog.*` | 确认门/验收语义同 GUI |
 | 自动化 | 自动化页 | `aw call automation.*` | 动词层长尾走 call |
 | git | 源码面板 | `aw git status / commit` + `aw call git.*`（16 方法全量） | |
-| 记忆/上下文 | 记忆选择器/Context 面板 | `aw call memory.* / context.user.*`（21+2 方法） | |
+| 记忆/上下文 | 记忆选择器/Context 面板 | `aw call memory.* / context.user.*`（21+2 方法） | 含 memory.project/standing 读写、guardian 配置 |
+| 上下文清单（注入矩阵/预设/置顶技能） | Context 面板 / bot 设置 | `aw call bot.put`（contextManifest / contextPresets / pinnedSkills 节） | 三锁乐观锁同 GUI；注入本身是会话行为，清单可 CLI 读写 |
+| 工作区生命周期（Init/注销/软恢复） | bot 设置 | `aw call bot.initWorkspace / bot.unregister / bot.put`（unregistered 恢复） | MD 不落骨架；官方技能 ×2 版本标记升级（docs/20 P6/P7） |
 | 技能/MCP | 设置页 | `aw call skills.* / mcp.*` | mcp 写面带 danger 确认 |
 | 出图 | 出图工作台 | `aw call image.generate`（含参考图路径）/ `image.tasks.list` | GUI 历史面板消费切换列后续小项 |
 | 通知 | 通知中心 | `aw call notifications.list` | 已读/「你不在它面前」是客户端呈现 |

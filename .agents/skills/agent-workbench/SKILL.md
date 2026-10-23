@@ -3,7 +3,7 @@ name: agent-workbench
 description: 操作 agent-workbench 工作台本身——用 aw CLI 驱动会话、待办、git、通知、出图等全部操作面。当用户提到「工作台」「别的 bot」「待办」「通知」，或需要跨 bot 协作、查工作台状态时使用。
 ---
 
-<!-- agent-workbench-skill: v1（daemon 维护，升级会覆盖；自定义请复制改名） -->
+<!-- agent-workbench-skill: v2（daemon 维护，升级会覆盖；自定义请复制改名） -->
 
 # agent-workbench —— 驾驶你所在的工作台
 
@@ -39,6 +39,11 @@ aw call notifications.list --json                      # 你不在时发生了�
 aw backlog add --goal "…" --unit <id> --root <路径>     # 登记一条待办
 aw git status --root <路径>                             # 仓库状态
 aw call memory.search --params '{"query":"…"}'         # 检索这台工作台的记忆
+aw call memory.project.read --params '{"rootPath":"…"}'        # 读这个工作区的 MEMORY.md
+aw call memory.project.write --params '{"rootPath":"…","content":"…"}'  # 写 MEMORY.md（备份+上限校验）
+aw call context.user.read                              # 读全局 USER.md（用户级事实）
+aw call bot.initWorkspace --params '{"rootPath":"…"}'  # 补齐工作区（memory 目录 + 官方技能 ×2）
+aw call workbench.skill.sync                           # 官方技能升级兜底（agent-workbench + workbench-context）
 aw call image.generate --params '{"profileId":"…","prompt":"…"}'  # 出图（结果落盘回路径）
 aw events --session <sid> --follow                      # 实时跟随某个会话的事件流
 ```

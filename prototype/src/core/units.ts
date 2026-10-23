@@ -152,6 +152,12 @@ export interface BotChannel {
  * 新建与存量同一规则（没写的就是不注入）。权威在 daemon：
  * host.startSession 从 bot 定义自读，渠道会话与工作台会话据此天然一致。
  */
+/** 命名的自定义注入预设（2026-10-23）：name 供两处 UI 展示，manifest 是快照本体 */
+export interface NamedContextPreset {
+  readonly name: string;
+  readonly manifest: ContextManifest;
+}
+
 export interface ContextManifest {
   /**
    * 是否开启新会话首轮自动注入（缺省为 true）。
@@ -354,11 +360,12 @@ export interface WorkUnit {
    */
   readonly pinnedSkills?: readonly string[];
   /**
-   * 本 bot 的自定义注入预设快照（2026-10-23）：预设行「存为自定义」时把当前
-   * contextManifest 整份存进 bot.json；「自定义」一键取回。只作取回源，不参与
-   * 注入判定（注入永远看 contextManifest 本身）。
+   * 本 bot 的自定义注入预设（2026-10-23）：预设行「存为自定义」把当前
+   * contextManifest 快照成一条命名预设存进 bot.json；bot 设置与输入框的上下文
+   * 胶囊两处同一份名单，点击一键取回。只作取回源，不参与注入判定
+   * （注入永远看 contextManifest 本身）。
    */
-  readonly contextPreset?: ContextManifest;
+  readonly contextPresets?: readonly NamedContextPreset[];
   /**
    * SOUL.md 的内容（ADR 0014 D5）。与 agentsMd 同构：不是副本的真相——真相在
    * `<rootPath>/SOUL.md`，listBots 重扫盘时读回来填这里；设置页保存直接写同一个

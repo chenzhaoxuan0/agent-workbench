@@ -10,7 +10,7 @@ import path from "node:path";
 import { markerLine, syncCanonicalSkill, type SkillSyncResult } from "./skillSync.ts";
 
 export const WORKBENCH_SKILL_NAME = "agent-workbench";
-export const WORKBENCH_SKILL_VERSION = 1;
+export const WORKBENCH_SKILL_VERSION = 2;
 
 /** 官方正本——改这里并升 WORKBENCH_SKILL_VERSION，老 bot 的副本会在下次 sync 升级 */
 export function workbenchSkillMd(): string {
@@ -55,6 +55,11 @@ aw call notifications.list --json                      # 你不在时发生了�
 aw backlog add --goal "…" --unit <id> --root <路径>     # 登记一条待办
 aw git status --root <路径>                             # 仓库状态
 aw call memory.search --params '{"query":"…"}'         # 检索这台工作台的记忆
+aw call memory.project.read --params '{"rootPath":"…"}'        # 读这个工作区的 MEMORY.md
+aw call memory.project.write --params '{"rootPath":"…","content":"…"}'  # 写 MEMORY.md（备份+上限校验）
+aw call context.user.read                              # 读全局 USER.md（用户级事实）
+aw call bot.initWorkspace --params '{"rootPath":"…"}'  # 补齐工作区（memory 目录 + 官方技能 ×2）
+aw call workbench.skill.sync                           # 官方技能升级兜底（agent-workbench + workbench-context）
 aw call image.generate --params '{"profileId":"…","prompt":"…"}'  # 出图（结果落盘回路径）
 aw events --session <sid> --follow                      # 实时跟随某个会话的事件流
 \`\`\`
