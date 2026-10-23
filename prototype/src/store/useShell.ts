@@ -253,9 +253,6 @@ interface ShellState {
    *  两处共用一个开关。新建＝新建＋认领单轨：指向已有文件夹时原地注册，
    *  不再另设导入对话框（原 ImportBotDialog 已并入）。 */
   addBotOpen: boolean;
-  /** 正在编辑的单元 id —— 非 null 时同一个对话框切到「保存」模式并预填该 bot。
-   *  和 addBotOpen 二选一：新建 / 编辑共用一个对话框组件，不开第二份表单状态。 */
-  editUnitId: UnitId | null;
   /** 会话内视图：默认结构化聊天（docs/13 决策），终端画布为可切换的并行形态 */
   conversationView: ConversationView;
 
@@ -278,8 +275,6 @@ interface ShellState {
   setCommandOpen: (open: boolean) => void;
   openAddBot: () => void;
   closeAddBot: () => void;
-  openUnitSettings: (id: UnitId) => void;
-  closeUnitSettings: () => void;
 }
 
 export const useShell = create<ShellState>((set, get) => ({
@@ -295,7 +290,6 @@ export const useShell = create<ShellState>((set, get) => ({
   settingsOpen: false,
   settingsSection: "models",
   addBotOpen: false,
-  editUnitId: null,
   conversationView: "chat",
 
   setMainView: (mainView) => set({ mainView }),
@@ -344,10 +338,8 @@ export const useShell = create<ShellState>((set, get) => ({
 
   setCommandOpen: (commandOpen) => set({ commandOpen }),
 
-  openAddBot: () => set({ addBotOpen: true, editUnitId: null }),
+  openAddBot: () => set({ addBotOpen: true }),
   closeAddBot: () => set({ addBotOpen: false }),
-  openUnitSettings: (editUnitId) => set({ editUnitId, addBotOpen: false }),
-  closeUnitSettings: () => set({ editUnitId: null }),
 }));
 
 // ---------------------------------------------------------------------------
@@ -386,7 +378,6 @@ export function bindShellShortcuts(): () => void {
       const s = useShell.getState();
       if (s.commandOpen) s.setCommandOpen(false);
       else if (s.addBotOpen) s.closeAddBot();
-      else if (s.editUnitId !== null) s.closeUnitSettings();
       else if (s.settingsOpen) s.closeSettings();
       return;
     }

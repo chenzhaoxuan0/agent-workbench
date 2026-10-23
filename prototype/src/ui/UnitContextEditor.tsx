@@ -36,7 +36,7 @@ import { Toggle } from "./Toggle.tsx";
 import { cn } from "./cn.ts";
 
 /**
- * 注入状态简标：显示「裸跑（0 注入）」或「注 N」
+ * 注入状态简标：显示「Bare（0 注入）」或「注 N」
  * 供总设置页、bot 设置页弹窗头部等位置复用
  */
 export function UnitContextBadge({ unit }: { unit: WorkUnit }): ReactElement {
@@ -64,11 +64,11 @@ export function UnitContextBadge({ unit }: { unit: WorkUnit }): ReactElement {
         firstTurnOff
           ? `首轮默认关闭注入（已配置 ${total} 项备选，可在聊天输入框按需开启）`
           : bare
-            ? `裸跑：未注入任何上下文（AGENTS.md ${m.agentsMd === "auto" ? "auto——由执行器原生读取" : "已关闭"}）`
+            ? `Bare：未注入任何上下文（AGENTS.md ${m.agentsMd === "auto" ? "auto——由执行器原生读取" : "已关闭"}）`
             : `首轮注入 ${total} 项：${[...items, ...(agentsOn ? ["AGENTS.md（强制）"] : [])].join("、")}${m.agentsMd === "auto" ? "；AGENTS.md auto（执行器原生读取）" : ""}`
       }
     >
-      {firstTurnOff ? (bare ? "首轮关 (0注)" : `首轮关 (配${total})`) : bare ? "裸跑（0 注入）" : `注 ${total}`}
+      {firstTurnOff ? (bare ? "首轮关 (0注)" : `首轮关 (配${total})`) : bare ? "Bare（0 注入）" : `注 ${total}`}
     </span>
   );
 }
@@ -126,8 +126,35 @@ export function UnitContextEditor({ unitId }: { unitId: string }): ReactElement 
     (manifest.skills === true ? 1 : 0) +
     (resolveAgentsMdInjection(manifest.agentsMd ?? "auto", nativeReadsAgents) ? 1 : 0);
 
+  /**
+   * 自动保存自定义预设（2026-10-23）：手动调出「与默认不同、且不匹配任何已有预设」
+   * 的清单时，自动落进「自动保存」这个单一槽位（持续更新；「存为自定义预设」的手动
+   * 快照不受影响）。这样从默认/别的预设切走后，胶囊与本页都能一键切回刚调的状态。
+   * 增强件：失败静默。
+   */
+  const autoSaveCustomPreset = async (): Promise<void> => {
+    const fresh = useWorkbench.getState().units.find((x) => String(x.id) === String(unitId));
+    if (fresh === undefined) return;
+    const m = normalizeContextManifest(fresh.contextManifest);
+    if (sameContextManifest(m, DEFAULT_CONTEXT_MANIFEST)) return;
+    const customs = fresh.contextPresets ?? [];
+    if (customs.some((c) => sameContextManifest(normalizeContextManifest(c.manifest), m))) return;
+    const next = [...customs.filter((c) => c.name !== AUTO_PRESET_NAME), { name: AUTO_PRESET_NAME, manifest: m }];
+    try {
+      await updateUnit(
+        { ...fresh, contextPresets: next } as WorkUnit,
+        { ifRevision: fresh.revision, ifAgentsMdHash: fresh.agentsMdMeta?.hash, ifSoulMdHash: fresh.soulMdMeta?.hash },
+      );
+      await useWorkbench.getState().reloadUnit(unit.id);
+    } catch {
+      /* 自动保存失败不打断主流程 */
+    }
+  };
+
   const patch = (p: Partial<ContextManifest>): void => {
-    void patchUnitContext(unit.id, p).catch(() => {});
+    void patchUnitContext(unit.id, p)
+      .then(() => void autoSaveCustomPreset())
+      .catch(() => {});
   };
 
   return (
@@ -143,7 +170,7 @@ export function UnitContextEditor({ unitId }: { unitId: string }): ReactElement 
         <p className="text-caption leading-relaxed text-graphite">
           {onCount === 0 ? (
             <>
-              <span className="font-medium text-ink">裸跑</span> —— 未注入任何上下文文件（默认状态）。
+              <span className="font-medium text-ink">Bare</span> —— 未注入任何上下文文件（默认状态）。
             </>
           ) : (
             <>
@@ -182,7 +209,7 @@ export function UnitContextEditor({ unitId }: { unitId: string }): ReactElement 
                 </span>
               </p>
               <p className="mt-0.5 text-[11px] leading-snug text-ash">
-                开启时，新开对话首轮自动按下方清单注入；关闭后开局默认裸跑，由用户在聊天输入框按需勾选。
+                开启时，新开对话首轮自动按下方清单注入；关闭后开局默认 Bare，由用户在聊天输入框按需勾选。
               </p>
             </div>
             <button
@@ -309,12 +336,33 @@ export function UnitContextEditor({ unitId }: { unitId: string }): ReactElement 
 
 /* ------------------------------------------------------------- 小件 */
 
+/** 默认清单（ADR 0014）：全关 Bare——新建与存量同一规则 */
+const DEFAULT_CONTEXT_MANIFEST: ContextManifest = {
+  agentsMd: "off",
+  soul: false,
+  user: false,
+  memorySemantic: false,
+  memoryDaily: false,
+  memoryStanding: false,
+  skills: false,
+};
+
+/** 注入矩阵的比对键（firstTurnInject 不参与「与预设一致」的判定） */
+const CONTEXT_MANIFEST_KEYS = ["agentsMd", "soul", "user", "memorySemantic", "memoryDaily", "memoryStanding", "skills"] as const;
+
+function sameContextManifest(a: ContextManifest, b: ContextManifest): boolean {
+  return CONTEXT_MANIFEST_KEYS.every((k) => a[k] === b[k]);
+}
+
+/** 自动保存预设的固定槽位名（2026-10-23）：单一槽位持续更新，手动快照不受影响 */
+const AUTO_PRESET_NAME = "自动保存";
+
 /**
- * 预设行（2026-10-23 二次定稿，用户口径）：按钮顺序 = 预设标题、＋存、清空、
- * 然后是预设按钮（默认 + 自定义N）。没有下拉菜单，没有裸跑/基础/完整内置宏——
- * 内置只留「默认」（ADR 0014 默认态 = 全关）；自定义预设「＋ 存」随时添加、
- * × 单删、「清空」一键删光。点击预设按钮即切换（当前清单与哪个预设一致就高亮谁）。
- * 同一份名单同时出现在输入框的上下文胶囊里——两处对应。
+ * 预设行（2026-10-23 二次定稿，用户口径）：按钮顺序 = 预设标题、存为自定义预设、
+ * 清除选择（把已打开的注入开关全关，不动已存预设）、然后是预设按钮（默认 +
+ * 自定义N）。没有下拉菜单，没有裸跑/基础/完整内置宏；点击预设按钮即切换
+ * （当前清单与哪个预设一致就高亮谁）。同一份名单同时出现在输入框的上下文
+ * 胶囊里——两处对应。
  */
 function PresetRow({
   unit,
@@ -330,20 +378,8 @@ function PresetRow({
   const [busy, setBusy] = useState(false);
   const customs = unit.contextPresets ?? [];
 
-  /** 默认预设（ADR 0014）：全关裸跑——新建与存量同一规则 */
-  const DEFAULT_MANIFEST: ContextManifest = {
-    agentsMd: "off",
-    soul: false,
-    user: false,
-    memorySemantic: false,
-    memoryDaily: false,
-    memoryStanding: false,
-    skills: false,
-  };
-  const sameManifest = (a: ContextManifest, b: ContextManifest): boolean => {
-    const keys: (keyof ContextManifest)[] = ["agentsMd", "soul", "user", "memorySemantic", "memoryDaily", "memoryStanding", "skills"];
-    return keys.every((k) => a[k] === b[k]);
-  };
+  const DEFAULT_MANIFEST = DEFAULT_CONTEXT_MANIFEST;
+  const sameManifest = sameContextManifest;
   const defaultActive = sameManifest(manifest, DEFAULT_MANIFEST);
 
   /** 自动命名：自定义1、自定义2……取第一个空缺号，不与现存重名 */
@@ -379,23 +415,22 @@ function PresetRow({
         disabled={busy}
         onClick={() => void writePresets([...customs, { name: nextPresetName(), manifest }])}
         className="rounded-btn border border-line px-2 py-0.5 text-[11px] text-graphite transition hover:border-teal/50 hover:text-ink disabled:opacity-40"
-        title="把当前注入清单存为一条自定义预设（输入框胶囊同款可切换）"
+        title="把当前注入清单保存为一条自定义预设（输入框胶囊同款可切换）"
       >
-        ＋ 存
-      </button>
-      <button
-        type="button"
-        disabled={busy || customs.length === 0}
-        onClick={() => void writePresets([])}
-        className="rounded-btn border border-line px-2 py-0.5 text-[11px] text-graphite transition hover:border-teal/50 hover:text-ink disabled:opacity-40"
-        title="清空全部自定义预设（只删预设按钮，不动当前注入清单）"
-      >
-        清空
+        存为自定义预设
       </button>
       <button
         type="button"
         onClick={() => patch(DEFAULT_MANIFEST)}
-        title="切换到默认清单：全部关闭（裸跑，ADR 0014 默认态）"
+        className="rounded-btn border border-line px-2 py-0.5 text-[11px] text-graphite transition hover:border-teal/50 hover:text-ink"
+        title="清除选择：把已打开的注入开关全部关掉（不动已存的自定义预设）"
+      >
+        清除选择
+      </button>
+      <button
+        type="button"
+        onClick={() => patch(DEFAULT_MANIFEST)}
+        title="切换到默认预设：全部关闭（Bare，ADR 0014 默认态）"
         className={cn(
           "rounded-btn border px-2 py-0.5 text-[11px] transition",
           defaultActive

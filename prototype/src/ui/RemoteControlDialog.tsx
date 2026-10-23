@@ -33,6 +33,7 @@ import {
 import { useWorkbench, selectActiveUnit } from "../store/useWorkbench.ts";
 import { useShell } from "../store/useShell.ts";
 import { cn } from "./cn.ts";
+import { useSidePane } from "../store/useSidePane.ts";
 
 export function RemoteControlDialog({ onClose, embedded = false }: { onClose: () => void; embedded?: boolean }) {
   const dialogTitleId = useId();
@@ -53,7 +54,6 @@ export function RemoteControlDialog({ onClose, embedded = false }: { onClose: ()
   const [wingetCopied, setWingetCopied] = useState(false);
 
   const activeUnit = useWorkbench(selectActiveUnit);
-  const openUnitSettings = useShell((s) => s.openUnitSettings);
 
   // 1. 加载网卡、渠道状态与公网穿透
   const refreshData = async () => {
@@ -656,7 +656,8 @@ export function RemoteControlDialog({ onClose, embedded = false }: { onClose: ()
                   <button
                     onClick={() => {
                       onClose();
-                      openUnitSettings(activeUnit.id);
+                      // 设置面归拢（2026-10-23）：渠道配置在右栏 bot 设置面板的「渠道」区
+                      useSidePane.getState().openContext({ unitId: activeUnit.id, unitName: activeUnit.name });
                     }}
                     className="flex items-center gap-1.5 rounded-lg bg-teal px-3 py-1.5 text-caption font-medium text-white shadow-xs transition hover:bg-teal-hover"
                   >

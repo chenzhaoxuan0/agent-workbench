@@ -63,8 +63,12 @@ export function WorkspaceHeader() {
               名称不压缩、不省略号：空间真不够时硬裁（overflow-hidden，无 "…"）；
               一句话角色徽标最先让位（<1100 隐藏，可见时仍有 280px 上限截断） */}
           <button
-            onClick={() => useShell.getState().openUnitSettings(unit.id)}
-            title="查看与编辑单元设置（身份 / 执行器 / 模型 / AGENTS.md / 渠道）"
+            onClick={() => {
+              // 设置面归拢（2026-10-23）：单元设置走右栏 bot 设置面板
+              useWorkbench.getState().selectUnit(unit.id);
+              useSidePane.getState().openContext({ unitId: unit.id, unitName: unit.name });
+            }}
+            title="查看与编辑 bot 设置（身份 / 执行器 / 模型 / 上下文 / 技能 / 渠道——右栏打开）"
             className="group flex min-w-0 items-center gap-2 rounded-btn px-2 py-1 transition hover:bg-line-soft"
           >
             {/* 名字 */}

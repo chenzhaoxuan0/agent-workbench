@@ -254,7 +254,7 @@ export function ComposerContextPicker({ compact }: { compact?: boolean } = {}) {
               <button
                 type="button"
                 onClick={() => applyPreset("off")}
-                title="清空本轮注入（裸跑）"
+                title="清空本轮注入（Bare）"
                 className={cn(
                   "rounded-lg border px-1.5 py-1 text-[11px] transition truncate text-center",
                   turnContextConfig.mode === "off"

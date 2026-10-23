@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactElement } from "react";
 import {
   BookOpen,
   Bot,
@@ -118,6 +118,7 @@ export function AddBotDialog({
   initial,
   onClose,
   onSubmit,
+  embedded = false,
 }: {
   open: boolean;
   /**
@@ -131,6 +132,12 @@ export function AddBotDialog({
    * 对话据展示覆盖 / 重新加载 / 取消三选一。`opts.overwrite` 让调用方跳过乐观锁。
    */
   onSubmit: (draft: AddBotDraft, opts?: { overwrite?: boolean }) => void | Promise<void>;
+  /**
+   * 嵌入右栏形态（2026-10-23 设置面归拢）：bot 设置不再弹 920px 大窗，改由右侧栏
+   * 承载——去掉遮罩/头部（tab 条即标题），分区导航从竖排侧栏换成横排 chips，
+   * 底部（冲突三选一 + 保存）原样保留。新建流仍走弹窗。
+   */
+  embedded?: boolean;
 }) {
   const runtimes = useWorkbench((s) => s.runtimes);
   const [section, setSection] = useState<Section>("identity");
@@ -406,90 +413,62 @@ export function AddBotDialog({
 
   if (!open) return null;
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-6" onClick={onClose}>
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label={isEdit ? "bot 设置" : "新建 bot"}
-        onClick={(e) => e.stopPropagation()}
-        className="flex h-[620px] max-h-[92vh] w-[920px] max-w-[94vw] flex-col overflow-hidden rounded-card border border-line bg-card shadow-2xl"
+  // 分区导航（弹窗竖排 / 嵌入右栏横排 chips 共用同一组定义；editOnly 仅编辑态出现）
+  const navItems: readonly { id: Section; label: string; icon: LucideIcon; hint: string; editOnly?: boolean }[] = [
+    ...SECTIONS,
+    { id: "skills", label: "工作区技能", icon: Package, hint: "本目录技能置顶与停用", editOnly: true },
+    { id: "importSessions", label: "导入会话", icon: Download, hint: "收入外部终端跑的 CLI 会话", editOnly: true },
+  ];
+  const visibleNavItems = navItems.filter((it) => it.editOnly !== true || isEdit);
+  const navBtn = (it: { id: Section; label: string; icon: LucideIcon; hint: string }): ReactElement => {
+    const active = section === it.id;
+    const Icon = it.icon;
+    return embedded ? (
+      <button
+        key={it.id}
+        onClick={() => setSection(it.id)}
+        aria-current={active}
+        title={it.hint}
+        className={cn(
+          "flex shrink-0 items-center gap-1 rounded-chip border px-2 py-1 text-caption transition",
+          active ? "border-teal bg-teal-tint font-medium text-ink" : "border-line text-graphite hover:bg-line-soft hover:text-ink",
+        )}
       >
-        {/* 头部 */}
-        <div className="flex h-12 shrink-0 items-center gap-2 border-b border-line px-4">
-          <FileText size={14} className="text-graphite" />
-          <p className="text-body-sm font-medium text-ink">{isEdit ? "bot 设置" : "新建 bot"}</p>
-          {isEdit && initial && <UnitContextBadge unit={initial} />}
-          <div className="flex-1" />
-          <button onClick={onClose} aria-label="关闭" className="rounded-btn p-1 text-ash hover:bg-line-soft hover:text-ink">
-            <X size={13} />
-          </button>
-        </div>
+        <Icon size={12} className={active ? "text-teal" : "text-ash"} />
+        <span className="truncate">{it.label}</span>
+      </button>
+    ) : (
+      <button
+        key={it.id}
+        onClick={() => setSection(it.id)}
+        aria-current={active}
+        className={cn(
+          "flex items-start gap-2 rounded-btn px-2 py-2 text-left",
+          active ? "bg-teal-tint" : "hover:bg-line-soft",
+        )}
+      >
+        <Icon size={13} className={cn("mt-0.5 shrink-0", active ? "text-teal" : "text-ash")} />
+        <span className="min-w-0">
+          <span className={cn("block truncate text-body-sm", active ? "font-medium text-ink" : "text-graphite")}>
+            {it.label}
+          </span>
+          <span className="block truncate text-caption text-ash">{it.hint}</span>
+        </span>
+      </button>
+    );
+  };
+  const navArea = embedded ? (
+    <div className="flex shrink-0 flex-wrap items-center gap-1 border-b border-line bg-rail px-2 py-1.5">
+      {visibleNavItems.map(navBtn)}
+    </div>
+  ) : (
+    <nav className="flex w-40 shrink-0 flex-col gap-0.5 border-r border-line bg-rail p-2">
+      {visibleNavItems.map(navBtn)}
+    </nav>
+  );
 
-        <div className="flex min-h-0 flex-1">
-          {/* 分区导航 */}
-          <nav className="flex w-40 shrink-0 flex-col gap-0.5 border-r border-line bg-rail p-2">
-            {SECTIONS.map(({ id, label, icon: Icon, hint }) => (
-              <button
-                key={id}
-                onClick={() => setSection(id)}
-                aria-current={section === id}
-                className={cn(
-                  "flex items-start gap-2 rounded-btn px-2 py-2 text-left",
-                  section === id ? "bg-teal-tint" : "hover:bg-line-soft",
-                )}
-              >
-                <Icon size={13} className={cn("mt-0.5 shrink-0", section === id ? "text-teal" : "text-ash")} />
-                <span className="min-w-0">
-                  <span className={cn("block truncate text-body-sm", section === id ? "font-medium text-ink" : "text-graphite")}>
-                    {label}
-                  </span>
-                  <span className="block truncate text-caption text-ash">{hint}</span>
-                </span>
-              </button>
-            ))}
-            {/* 工作区技能：编辑态专属（2026-10-23）——只管本 bot 工作目录内的技能源，
-                官方基础技能默认置顶；与设置页的全局技能分区分工（那边管全部源） */}
-            {isEdit && (
-              <button
-                onClick={() => setSection("skills")}
-                aria-current={section === "skills"}
-                className={cn(
-                  "flex items-start gap-2 rounded-btn px-2 py-2 text-left",
-                  section === "skills" ? "bg-teal-tint" : "hover:bg-line-soft",
-                )}
-              >
-                <Package size={13} className={cn("mt-0.5 shrink-0", section === "skills" ? "text-teal" : "text-ash")} />
-                <span className="min-w-0">
-                  <span className={cn("block truncate text-body-sm", section === "skills" ? "font-medium text-ink" : "text-graphite")}>
-                    工作区技能
-                  </span>
-                  <span className="block truncate text-caption text-ash">本目录技能置顶与停用</span>
-                </span>
-              </button>
-            )}
-            {/* 导入外部会话：编辑态专属（新建还没落盘，没有可查的工作目录） */}
-            {isEdit && (
-              <button
-                onClick={() => setSection("importSessions")}
-                aria-current={section === "importSessions"}
-                className={cn(
-                  "flex items-start gap-2 rounded-btn px-2 py-2 text-left",
-                  section === "importSessions" ? "bg-teal-tint" : "hover:bg-line-soft",
-                )}
-              >
-                <Download size={13} className={cn("mt-0.5 shrink-0", section === "importSessions" ? "text-teal" : "text-ash")} />
-                <span className="min-w-0">
-                  <span className={cn("block truncate text-body-sm", section === "importSessions" ? "font-medium text-ink" : "text-graphite")}>
-                    导入会话
-                  </span>
-                  <span className="block truncate text-caption text-ash">收入外部终端跑的 CLI 会话</span>
-                </span>
-              </button>
-            )}
-          </nav>
-
-          {/* 内容区 */}
+  // 内容区（分区主体）：弹窗与嵌入共用，classes 在两种父布局下都成立
+  const contentArea = (
           <div className="min-w-0 flex-1 overflow-y-auto p-4">
             {section === "identity" && (
               <div className="space-y-4">
@@ -736,7 +715,7 @@ export function AddBotDialog({
                   <div className="flex items-center justify-between">
                     <div>
                       <p className="text-body-sm font-medium text-ink">SOUL.md · 人设与语气</p>
-                      <p className="text-caption text-ash">保存时物化为文件夹根目录的 SOUL.md。默认裸跑（0 注入），创建后可在设置中按需打开</p>
+                      <p className="text-caption text-ash">保存时物化为文件夹根目录的 SOUL.md。默认 Bare（0 注入），创建后可在设置中按需打开</p>
                     </div>
                     {!personaTouched && (
                       <button
@@ -823,9 +802,10 @@ export function AddBotDialog({
                 disabled={!isEdit}
               />
             )}
-          </div>
 
-          {section === "importSessions" && isEdit && (
+            {/* 导入外部会话（收进滚动容器，2026-10-23 重构：原版挂在容器外，
+                布局上是 flex 行的第二个子项——归拢后统一进 contentArea） */}
+            {section === "importSessions" && isEdit && (
             <div className="space-y-3">
               <div>
                 <h2 className="text-body-sm font-medium text-ink">导入外部会话</h2>
@@ -840,9 +820,11 @@ export function AddBotDialog({
               )}
             </div>
           )}
-        </div>
+    </div>
+  );
 
-        {/* 底部 */}
+  // 底部（冲突三选一 / 错误提示 / 取消·保存）：两种形态原样共用
+  const footerArea = (
         <div className="flex min-h-12 shrink-0 items-center gap-3 border-t border-line px-4 py-2">
           {conflict !== null ? (
             <>
@@ -905,6 +887,45 @@ export function AddBotDialog({
             </>
           )}
         </div>
+  );
+
+  if (embedded) {
+    // 嵌入右栏（bot 设置归拢，2026-10-23）：tab 条即标题，导航横排，内容+底部纵向铺满
+    return (
+      <div className="flex h-full min-h-0 w-full flex-col overflow-hidden bg-card">
+        {navArea}
+        <div className="flex min-h-0 flex-1 flex-col">{contentArea}</div>
+        {footerArea}
+      </div>
+    );
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-6" onClick={onClose}>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={isEdit ? "bot 设置" : "新建 bot"}
+        onClick={(e) => e.stopPropagation()}
+        className="flex h-[620px] max-h-[92vh] w-[920px] max-w-[94vw] flex-col overflow-hidden rounded-card border border-line bg-card shadow-2xl"
+      >
+        {/* 头部 */}
+        <div className="flex h-12 shrink-0 items-center gap-2 border-b border-line px-4">
+          <FileText size={14} className="text-graphite" />
+          <p className="text-body-sm font-medium text-ink">{isEdit ? "bot 设置" : "新建 bot"}</p>
+          {isEdit && initial && <UnitContextBadge unit={initial} />}
+          <div className="flex-1" />
+          <button onClick={onClose} aria-label="关闭" className="rounded-btn p-1 text-ash hover:bg-line-soft hover:text-ink">
+            <X size={13} />
+          </button>
+        </div>
+
+        <div className="flex min-h-0 flex-1">
+          {navArea}
+          {contentArea}
+        </div>
+
+        {footerArea}
       </div>
     </div>
   );

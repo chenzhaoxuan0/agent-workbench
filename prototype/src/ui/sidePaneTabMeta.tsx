@@ -9,7 +9,7 @@ import { LiveSessionPane } from "./LiveSessionPane.tsx";
 import { PlanPane } from "./PlanPane.tsx";
 import { DiffPane } from "./DiffPane.tsx";
 import { NotificationsPane } from "./NotificationsPane.tsx";
-import { ContextPane } from "./ContextPane.tsx";
+import { BotSettingsPane } from "./BotSettingsPane.tsx";
 
 /**
  * 侧栏 tab 的 UI 注册表 —— 图标 / 标题 / 内容渲染 / 功能主页入口的唯一登记处。
@@ -76,8 +76,11 @@ const entries: readonly SidePaneTabMetaEntry[] = [
   {
     type: "context",
     icon: Layers,
-    title: (tab) => (tab.type === "context" ? `${tab.unitName} · Context` : ""),
-    render: (tab, ctx) => (tab.type === "context" ? <ContextPane unitId={tab.ownerUnitId} shown={ctx.shown} /> : null),
+    // 设置面归拢（2026-10-23）：原「Context 面板」升级为「bot 设置」——身份/上下文/
+    // 技能/渠道/导入的完整设置都在这（AddBotDialog embedded 形态），tab id 仍是
+    // context:*，原有入口（徽标/右键/胶囊「编辑各文件」）全部自然落进来
+    title: (tab) => (tab.type === "context" ? `${tab.unitName} · 设置` : ""),
+    render: (tab) => (tab.type === "context" ? <BotSettingsPane unitId={tab.ownerUnitId} /> : null),
   },  {
     type: "notify",
     icon: Bell,
@@ -172,8 +175,8 @@ export const SIDE_PANE_HOME_ENTRIES: readonly SidePaneHomeEntryDef[] = [
   },
   {
     key: "context",
-    label: "上下文清单",
-    desc: "这个 bot 知道什么：注入矩阵 + SOUL.md（ADR 0014）",
+    label: "bot 设置",
+    desc: "身份 / 上下文注入 / 工作区技能 / 渠道——bot 的完整设置（归拢自原上下文清单与 bot 设置弹窗）",
     icon: Layers,
     group: "companion",
     open: ({ unitId, unitName }) => {

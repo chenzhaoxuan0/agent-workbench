@@ -13,7 +13,6 @@ import {
   GitBranch,
   History,
   ImagePlus,
-  Layers,
   ListTodo,
   MessageSquare,
   PanelLeftClose,
@@ -146,16 +145,11 @@ export function Sidebar() {
   const [dragUnit, setDragUnit] = useState<string | null>(null);
   /** 拖拽悬停的分区（常驻/普通）——drop zone 高亮用 */
   const [zoneHover, setZoneHover] = useState<"resident" | "normal" | null>(null);
-  // 「添加 bot」的对话框开关在 useShell —— 标题行的 ＋ 和单元区空态两个入口共用
+  // 「添加 bot」的对话框开关在 useShell —— 标题行的 ＋ 和单元区空态两个入口共用。
+  // bot 设置（编辑）已归拢右栏面板（2026-10-23），对话框只剩新建一条路
   const addBotOpen = useShell((s) => s.addBotOpen);
-  const editUnitId = useShell((s) => s.editUnitId);
   const updateUnit = useWorkbench((s) => s.updateUnit);
   const settingsActive = useShell((s) => s.settingsOpen);
-  /** 正在编辑的单元；单元被删掉时（daemon 重载等）自动退化成 null，不会开出一个空表单 */
-  const editingUnit = useMemo(
-    () => (editUnitId ? units.find((u) => u.id === editUnitId) ?? null : null),
-    [editUnitId, units],
-  );
 
   const allUnits = units;
 
@@ -386,7 +380,11 @@ export function Sidebar() {
                   <UnitRow
                     unit={u}
                     active={active}
-                    onOpenSettings={() => useShell.getState().openUnitSettings(u.id as UnitId)}
+                    onOpenSettings={() => {
+                    // 设置面归拢（2026-10-23）：bot 设置不再弹窗，右栏 bot 设置面板承载
+                    useWorkbench.getState().selectUnit(u.id);
+                    useSidePane.getState().openContext({ unitId: u.id as UnitId, unitName: u.name });
+                  }}
                     onToggleResident={() => makeNormal(u)}
                     isResident={true}
                     schedule={u.schedule?.enabled ? u.schedule.description : undefined}
@@ -476,7 +474,11 @@ export function Sidebar() {
                 <UnitRow
                   unit={u}
                   active={active}
-                  onOpenSettings={() => useShell.getState().openUnitSettings(u.id as UnitId)}
+                  onOpenSettings={() => {
+                    // 设置面归拢（2026-10-23）：bot 设置不再弹窗，右栏 bot 设置面板承载
+                    useWorkbench.getState().selectUnit(u.id);
+                    useSidePane.getState().openContext({ unitId: u.id as UnitId, unitName: u.name });
+                  }}
                   onToggleResident={() => makeResident(u)}
                   isResident={false}
                   schedule={u.schedule?.enabled ? u.schedule.description : undefined}
@@ -489,93 +491,50 @@ export function Sidebar() {
         </section>
       </div>
 
-      {/* bot 对话框（AGENTS.md 岗位说明书）—— 新建 / 编辑共用一个组件。
-          开关在 useShell：侧栏的 ＋ 和空态卡开新建，单元行的齿轮开编辑。 */}
-      {(addBotOpen || editingUnit) && (
+      {/* 新建 bot 对话框 —— 只剩新建一条路（2026-10-23 设置面归拢：编辑/设置走右栏
+          bot 设置面板，见 UnitRow 齿轮）。开关在 useShell：侧栏的 ＋ 和空态卡开新建。 */}
+      {addBotOpen && (
         <AddBotDialog
           open
-          initial={editingUnit ?? null}
-          onClose={() => {
+          initial={null}
+          onClose={() => useShell.getState().closeAddBot()}
+          onSubmit={async (draft) => {
             const sh = useShell.getState();
-            if (editingUnit) sh.closeUnitSettings();
-            else sh.closeAddBot();
-          }}
-          onSubmit={async (draft, opts) => {
-            const sh = useShell.getState();
-            if (editingUnit) {
-              // 编辑：保留 id / assets / tags，只换用户能改的那些字段（kind 来自
-              // 对话框的「单元形态」切换，ADR 0011 弱标签）。
-              // 读最新的 store 状态（避免在「上下文与文件」中单独保存后 revision 过期或正文被旧草稿覆盖）
-              const fresh = useWorkbench.getState().units.find((u) => u.id === editingUnit.id) ?? editingUnit;
-              await updateUnit(
-                {
-                  ...fresh,
-                  name: draft.name,
-                  rootPath: draft.rootPath,
-                  kind: draft.kind,
-                  resident: draft.resident,
-                  identity: {
-                    ...fresh.identity,
-                    role: draft.role,
-                    sourcePath: "AGENTS.md",
-                    loadedAt: fresh.identity?.loadedAt ?? Date.now(),
-                  },
-                  soulMd: fresh.soulMd,
-                  // 主执行器没选（daemon 未连接）就落空绑定，run() 里 find 返回 undefined 是安全的
-                  bindings: draft.runtimeId
-                    ? [
-                        {
-                          runtimeId: asRuntimeId(draft.runtimeId),
-                          modelHint: draft.modelHint ? asModelId(draft.modelHint) : undefined,
-                          primary: true,
-                        },
-                      ]
-                    : [],
-                  agentsMd: fresh.agentsMd,
-                  memory: draft.memory,
-                  channels: draft.channels,
-                  avatar: draft.avatar,
-                },
-                opts?.overwrite === true ? {} : guardsOf(fresh),
-              );
-              sh.closeUnitSettings();
-            } else {
-              // 新建：等写盘结果再关窗。目录不存在 / daemon 没起都该让用户看见，
-              // 否则侧栏多一个刷新就没了的"幽灵 bot"。
-              await addUnit({
-                id: asUnitId(`bot-${Date.now().toString(36)}`),
-                rootPath: draft.rootPath,
-                name: draft.name,
-                kind: "bot",
-                resident: draft.resident ?? false,
-                identity: {
-                  role: draft.role,
-                  sourcePath: "AGENTS.md",
-                  loadedAt: Date.now(),
-                },
-                // ADR 0014 D2：新建 bot 默认全关（裸跑）——注入是显式决定，
-                // 用户在右栏 Context 面板（或记忆选择器）按需打开
-                contextManifest: { agentsMd: "auto" },
-                soulMd: draft.persona || undefined,
-                bindings: draft.runtimeId
-                  ? [
-                      {
-                        runtimeId: asRuntimeId(draft.runtimeId),
-                        modelHint: draft.modelHint ? asModelId(draft.modelHint) : undefined,
-                        primary: true,
-                      },
-                    ]
-                  : [],
-                assets: { agentFiles: ["AGENTS.md"], skillDirs: [] },
-                agentsMd: draft.agentsMd,
-                memory: draft.memory,
-                channels: draft.channels,
-                avatar: draft.avatar,
-                tags: ["新建"],
-                lastActiveAt: Date.now(),
-              }, { createRoot: true });
-              sh.closeAddBot();
-            }
+            // 新建：等写盘结果再关窗。目录不存在 / daemon 没起都该让用户看见，
+            // 否则侧栏多一个刷新就没了的"幽灵 bot"。
+            await addUnit({
+              id: asUnitId(`bot-${Date.now().toString(36)}`),
+              rootPath: draft.rootPath,
+              name: draft.name,
+              kind: "bot",
+              resident: draft.resident ?? false,
+              identity: {
+                role: draft.role,
+                sourcePath: "AGENTS.md",
+                loadedAt: Date.now(),
+              },
+              // ADR 0014 D2：新建 bot 默认全关（Bare）——注入是显式决定，
+              // 用户在右栏 bot 设置面板（或输入框胶囊）按需打开
+              contextManifest: { agentsMd: "auto" },
+              soulMd: draft.persona || undefined,
+              bindings: draft.runtimeId
+                ? [
+                    {
+                      runtimeId: asRuntimeId(draft.runtimeId),
+                      modelHint: draft.modelHint ? asModelId(draft.modelHint) : undefined,
+                      primary: true,
+                    },
+                  ]
+                : [],
+              assets: { agentFiles: ["AGENTS.md"], skillDirs: [] },
+              agentsMd: draft.agentsMd,
+              memory: draft.memory,
+              channels: draft.channels,
+              avatar: draft.avatar,
+              tags: ["新建"],
+              lastActiveAt: Date.now(),
+            }, { createRoot: true });
+            sh.closeAddBot();
           }}
         />
       )}
@@ -817,14 +776,10 @@ function UnitRow({
   const setEntryOpenMode = useHistoryPrefs((s) => s.setEntryOpenMode);
   const togglePinned = useHistoryPrefs((s) => s.togglePinned);
   /**
-   * 打开这个 bot 的上下文清单面板（ADR 0014）——徽标 / 右键菜单 / hover 操作条
-   * 三个入口共用。先切到该 bot：右栏 tab 按 owner 过滤可见，不切的话点别人的
-   * 徽标「开了却看不见」（SidePaneHome 跨单元历史的同一处理）。
+   * 打开右栏 bot 设置面板（2026-10-23 归拢后）：齿轮 / 右键菜单走 onOpenSettings
+   * （父级传入，先切 bot 再开面板——右栏 tab 按 owner 过滤可见，不切的话点别人的
+   * 面板「开了却看不见」，SidePaneHome 跨单元历史的同一处理）。
    */
-  const openContextTab = (): void => {
-    useWorkbench.getState().selectUnit(unit.id);
-    useSidePane.getState().openContext({ unitId: unit.id, unitName: unit.name });
-  };
   /** 会话实时状态（turn 进行中 = 呼吸灯的事实来源） */
   const sessions = useWorkbench((s) => s.sessions);
   const activeSessionId = useWorkbench((s) => s.activeSessionId);
@@ -988,8 +943,7 @@ function UnitRow({
                   ]
                 : []),
               { label: "历史详情", icon: History, onSelect: openHistoryTab },
-              { label: "上下文清单", icon: Layers, onSelect: openContextTab },
-              { label: "设置", icon: Settings, onSelect: onOpenSettings },
+              { label: "bot 设置", icon: Settings, onSelect: onOpenSettings },
               { label: "新建 TUI 会话", icon: SquareTerminal, onSelect: () => openNewTuiForUnit(unit) },
               { label: "新建会话", icon: Plus, onSelect: () => openNewChatForUnit(unit) },
             ]),
@@ -997,7 +951,7 @@ function UnitRow({
         }
         aria-current={active}
         aria-expanded={historyOpen}
-        title={`${unit.name} —— 点击${historyOpen ? "收起" : "展开"}历史会话（右键：常驻 / 历史详情 / 上下文清单 / 设置 / 新建会话）`}
+        title={`${unit.name} —— 点击${historyOpen ? "收起" : "展开"}历史会话（右键：常驻 / 历史详情 / bot 设置 / 新建会话）`}
         className={cn(
           "flex w-full items-start gap-2 rounded-input px-2 py-1.5 text-left",
           active ? "bg-teal-tint" : "hover:bg-line-soft",
@@ -1421,20 +1375,8 @@ function UnitRow({
         >
           <History size={12} />
         </button>
-        <button
-          type="button"
-          draggable={false}
-          onMouseDown={(e) => e.stopPropagation()}
-          onClick={(e) => {
-            e.stopPropagation();
-            openContextTab();
-          }}
-          aria-label={`${unit.name} 上下文清单`}
-          title="上下文清单 —— 这个 bot 知道什么：注入矩阵、SOUL.md、技能名单"
-          className="cursor-pointer rounded-btn p-1 text-ash hover:bg-line-soft hover:text-ink active:scale-90 transition"
-        >
-          <Layers size={12} />
-        </button>
+        {/* 上下文清单悬浮钮已并入齿轮（2026-10-23 设置面归拢）：齿轮开的右栏 bot 设置
+            面板里就有完整上下文设置，两个入口冗余 */}
         <button
           type="button"
           draggable={false}
