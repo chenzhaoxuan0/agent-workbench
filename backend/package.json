@@ -57,6 +57,7 @@
     "smoke:steer-queue": "tsx scripts/smoke-steer-queue.ts",
     "smoke:phase9": "tsx scripts/smoke-phase9.ts",
     "smoke:quotaresume": "tsx scripts/smoke-quota-resume.ts",
+    "smoke:schedule-send": "tsx scripts/smoke-schedule-send.ts",
     "smoke:remote": "tsx scripts/smoke-remote-channels.ts",
     "smoke:skills": "tsx scripts/smoke-skills.ts",
     "smoke:terminal": "tsx scripts/smoke-terminal-reattach.ts",

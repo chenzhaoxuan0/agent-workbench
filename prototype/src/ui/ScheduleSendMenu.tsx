@@ -184,11 +184,13 @@ export function ScheduleSendMenu({ onClose }: { onClose: () => void }) {
         <span className="min-w-0 flex-1 truncate text-[11px] text-graphite">
           {promptText === ""
             ? "输入框为空 —— 先写点什么"
-            : !canSchedule
-              ? "本对话还没有可续接的会话"
-              : target === null
-                ? "时间无效（需在未来）"
-                : `将于 ${fmtTarget(target)} 发送`}
+            : session === undefined
+              ? "当前没有打开的对话"
+              : !canSchedule
+                ? "这个对话接不了定时消息 —— 换个对话试试"
+                : target === null
+                  ? "时间无效（需在未来）"
+                  : `将于 ${fmtTarget(target)} 发送`}
         </span>
         <button
           type="button"

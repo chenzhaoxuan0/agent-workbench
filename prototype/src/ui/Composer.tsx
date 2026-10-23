@@ -641,8 +641,8 @@ export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
                   type="button"
                   onClick={() => setPlusMenuOpen((v) => !v)}
                   aria-expanded={plusMenuOpen}
-                  aria-label="添加指令或附件"
-                  title="添加附件、快捷指令，或 @ 引用文件"
+                  aria-label="添加指令、附件，或定时发送本条消息"
+                  title="添加附件、快捷指令、@ 引用文件，或定时发送本条消息"
                   className={cn(
                     "flex shrink-0 items-center justify-center rounded-lg border border-line-soft bg-card/60 text-teal hover:bg-line-soft active:scale-95 transition",
                     "h-7 w-7 @min-[480px]:h-8 @min-[480px]:w-8",

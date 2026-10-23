@@ -580,11 +580,29 @@ function resolveSendTarget(
   automation: { runtimeId: string; targetSessionId?: string | null },
   fallbackSessionId?: string | null,
 ): string | null {
+  /**
+   * 这个会话能不能接住这条定时消息，判据是「发得出去」，不是「库里有引用」：
+   *  - 活着（impl 还在 daemon 进程里）→ 直接 sendMessage 就行，压根不需要 cli_ref
+   *  - 不活着但有 cli_ref → reattach 接回来再发
+   *  - 两者皆无 → 接不住
+   *
+   * ⚠ 这里曾经只认 cli_ref，于是「第一轮还没跑完」的对话被判成接不住 ——
+   * 而 cli_ref 要等首轮的 message.completed 才落盘（host.ts 的 syncCliRef），
+   * 恰好把最常见的一种用法挡在外面：刚开一个新对话就安排定时消息。
+   * 后果是 UI 说「能安排」（ScheduleSendMenu 判 live || resumable），
+   * 到点却静默另开一个对话把消息投过去 —— 用户在原对话里永远看不到那条消息，
+   * 只在自动化卡片上留一行红字。探针实证：会话数 1 → 3，消息没进目标对话。
+   */
   const pick = (id: string): string | null => {
     const row = store.getSession(id);
+    if (row === undefined) return null;
     // runtimeId 必须一致：会话是执行器私有的，跨执行器的 cli_ref 根本接不回来，
     // 钉了别家执行器的会话还投出去 = 把提示词发进一个必然失败（或错误家）的对话
-    return row !== undefined && row.cliRef !== null && row.runtimeId === automation.runtimeId ? id : null;
+    if (row.runtimeId !== automation.runtimeId) return null;
+    // 活着就能直接发 —— 不看 cli_ref
+    if (host.isLive(asSessionId(id))) return id;
+    // 不活着：得有执行器引用才接得回来
+    return row.cliRef !== null ? id : null;
   };
   // 1. 如果用户显式钉死了目标会话，只认该会话；接不回则直接返回 null，由外层回退到新开会话，绝不乱投到其它无关会话
   if (automation.targetSessionId !== null && automation.targetSessionId !== undefined && automation.targetSessionId !== "") {
@@ -595,6 +613,10 @@ function resolveSendTarget(
     const hit = pick(fallbackSessionId);
     if (hit !== null) return hit;
   }
+  // 3. 自动挑选（用户没钉死目标）：口径**比显式指定更严**，只认 cli_ref 非空的。
+  //    显式指定是「用户当下正看着这个对话」，它能不能收消息由 live 说了算；
+  //    自动挑选是「随便找个能接回来的」——「接回来」本义就是要 reattach，
+  //    所以必须有 cli_ref。判据不同不是遗漏，是两条路径的语义本就不同。
   for (const s of store.listSessions()) {
     // 导入的外部会话是档案不是可续发的对话 —— 自动续接不往里投
     if (s.runtimeId !== automation.runtimeId || s.cliRef === null || s.source === "imported") continue;
