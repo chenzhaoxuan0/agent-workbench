@@ -5,7 +5,7 @@ import type { AutomationWriteInput } from "../adapters/daemon/client.ts";
 import { cn } from "./cn.ts";
 
 /**
- * 定时发送弹层（Composer [+] 菜单入口）—— 把当前输入框内容安排为
+ * 定时发送弹层（Composer 顶栏右上角的常驻按钮入口）—— 把当前输入框内容安排为
  * 「N 分钟后 / 指定几号几点几分」发到**本对话**的一次性任务。
  *
  * 后端零新增：完全复用 automation 体系（dispatchTarget=existing_session，
@@ -97,7 +97,7 @@ export function ScheduleSendMenu({ onClose }: { onClose: () => void }) {
   const canSubmit = canSchedule && promptText !== "" && target !== null && !submitting;
 
   return (
-    <div className="absolute bottom-full left-0 mb-2 w-72 rounded-xl border border-line bg-canvas p-3 shadow-xl backdrop-blur-md z-50 text-ink animate-in fade-in zoom-in-95 duration-100">
+    <div className="absolute bottom-full right-0 mb-2 w-72 rounded-xl border border-line bg-canvas p-3 shadow-xl backdrop-blur-md z-50 text-ink animate-in fade-in zoom-in-95 duration-100">
       <div className="mb-2.5 flex items-center gap-2">
         <CalendarClock size={14} className="shrink-0 text-teal" />
         <span className="text-xs font-semibold">定时发送到本对话</span>

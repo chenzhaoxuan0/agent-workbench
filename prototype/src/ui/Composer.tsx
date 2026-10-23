@@ -62,6 +62,7 @@ export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
   const activeRuntime = useWorkbench((s) => s.activeRuntimeId);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const plusMenuRef = useRef<HTMLDivElement>(null);
+  const schedRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
@@ -174,14 +175,14 @@ export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
     };
   }, []);
 
-  // 点击外部关闭 [+] 菜单 / 定时发送弹层（同一锚点容器）
+  // 点击外部关闭 [+] 菜单 / 定时发送弹层（各自独立锚点：菜单在底栏左，弹层在顶栏右）
   useEffect(() => {
     if (!plusMenuOpen && !schedOpen) return;
     const onDown = (e: MouseEvent) => {
-      if (plusMenuRef.current && !plusMenuRef.current.contains(e.target as Node)) {
-        setPlusMenuOpen(false);
-        setSchedOpen(false);
-      }
+      const target = e.target as Node;
+      // 两个锚点各自判：点在定时发送按钮/面板里不该把 [+] 菜单也关了，反之亦然
+      if (plusMenuRef.current?.contains(target) !== true) setPlusMenuOpen(false);
+      if (schedRef.current?.contains(target) !== true) setSchedOpen(false);
     };
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
@@ -429,7 +430,7 @@ export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
               <GitActionTrigger rootPath={unit?.rootPath} />
             </div>
 
-            {/* 附件数量提示 + 输入历史浏览指示 */}
+            {/* 附件数量提示 + 输入历史浏览指示 + 定时发送常驻按钮 */}
             <div className="flex items-center gap-2">
               {attachments.length > 0 && (
                 <span className="text-[11px] font-medium text-teal font-mono">
@@ -444,6 +445,33 @@ export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
                   ↑ 历史 {inputHistory.length - histPos}/{inputHistory.length}
                 </span>
               )}
+
+              {/* 定时发送 —— 顶栏右上角的常驻独立按钮。
+                  原先它藏在底栏左下角的 [+] 菜单里：折叠一层的入口几乎没人会注意到，
+                  功能等于不存在（「这功能我找不到」就是这么来的）。给它一个不折叠的位置。 */}
+              <div className="relative" ref={schedRef}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSchedOpen((v) => !v);
+                    // 草稿为空就把光标送回输入框：面板开着照样能打字，预览实时跟着变
+                    if (!isMobile && draft.trim() === "") taRef.current?.focus();
+                  }}
+                  aria-expanded={schedOpen}
+                  aria-label="定时发送本条消息"
+                  title="定时发送本条消息 —— N 分钟后或指定时刻，发到本对话"
+                  className={cn(
+                    "flex shrink-0 items-center justify-center rounded-lg border border-line-soft bg-card/60 text-teal hover:bg-line-soft active:scale-95 transition",
+                    "h-7 w-7 @min-[480px]:h-8 @min-[480px]:w-8",
+                    schedOpen && "bg-teal-tint text-teal ring-1 ring-teal/30",
+                  )}
+                >
+                  <CalendarClock size={isMobile ? 14 : 16} />
+                </button>
+
+                {/* 定时发送弹层：跟斜杠菜单 / @ 提及菜单同惯例，向上弹（不遮正在写的草稿） */}
+                {schedOpen && <ScheduleSendMenu onClose={() => setSchedOpen(false)} />}
+              </div>
             </div>
           </div>
 
@@ -641,8 +669,8 @@ export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
                   type="button"
                   onClick={() => setPlusMenuOpen((v) => !v)}
                   aria-expanded={plusMenuOpen}
-                  aria-label="添加指令、附件，或定时发送本条消息"
-                  title="添加附件、快捷指令、@ 引用文件，或定时发送本条消息"
+                  aria-label="添加指令或附件"
+                  title="添加附件、快捷指令，或 @ 引用文件"
                   className={cn(
                     "flex shrink-0 items-center justify-center rounded-lg border border-line-soft bg-card/60 text-teal hover:bg-line-soft active:scale-95 transition",
                     "h-7 w-7 @min-[480px]:h-8 @min-[480px]:w-8",
@@ -709,26 +737,8 @@ export function Composer({ onOpenDrawer }: { onOpenDrawer?: () => void } = {}) {
                         <span className="block text-[10px] text-ash">输入 @ 选择文件或目录作为上下文</span>
                       </div>
                     </button>
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setPlusMenuOpen(false);
-                        setSchedOpen((v) => !v);
-                      }}
-                      className="mt-0.5 flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs text-graphite hover:bg-line-soft hover:text-ink transition"
-                    >
-                      <CalendarClock size={16} className="shrink-0 text-teal" />
-                      <div className="min-w-0 flex-1">
-                        <span className="block font-medium text-ink">定时发送本条消息</span>
-                        <span className="block text-[10px] text-ash">N 分钟后或指定时刻，发到本对话（一次性任务）</span>
-                      </div>
-                    </button>
                   </div>
                 )}
-
-                {/* 定时发送弹层：同一锚点容器内向上弹出 */}
-                {schedOpen && <ScheduleSendMenu onClose={() => setSchedOpen(false)} />}
               </div>
 
               {/* 权限模式选择器（计划模式 / 变更确认 / 自主模式 / 完全访问） */}
