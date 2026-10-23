@@ -154,8 +154,8 @@ export function UnitContextEditor({ unitId }: { unitId: string }): ReactElement 
         </p>
       </div>
 
-      {/* 预设（2026-10-23 口径）：自定义（可多条，存 bot.json contextPresets）/
-          预设（内置宏）/ 清空（全关）。名单与输入框胶囊两处对应。 */}
+      {/* 预设（2026-10-23 二次定稿）：默认 + 自定义N（存 bot.json contextPresets），
+          ＋存/清空管理，点击切换。名单与输入框胶囊两处对应。 */}
       <PresetRow unit={unit} manifest={manifest} patch={patch} />
 
       {/* 工作区生命周期与 Init 补齐栏 */}
@@ -310,14 +310,11 @@ export function UnitContextEditor({ unitId }: { unitId: string }): ReactElement 
 /* ------------------------------------------------------------- 小件 */
 
 /**
- * 预设行（2026-10-23 用户口径）：自定义（可多条，自定义1/自定义2…）/ 预设 / 清空。
- * - 预设：内置宏（裸跑/基础/完整），一次写一组开关；
- * - 自定义：本 bot 保存的清单快照（bot.json contextPresets），点击取回，× 删除，
- *   「＋ 存」把当前清单快照为新预设（自动命名 自定义N，三锁防覆盖并发修改）；
- *   同一份名单同时出现在输入框的上下文胶囊里——两处对应；
- * - 清空：全关（含 AGENTS.md）。
- * 「完整」刻意不开技能目录：执行器原生已发现 .agents/skills，工作台再注一份
- * 目录索引会重复（防双注，同 AGENTS.md auto 的思路）。
+ * 预设行（2026-10-23 二次定稿，用户口径）：按钮顺序 = 预设标题、＋存、清空、
+ * 然后是预设按钮（默认 + 自定义N）。没有下拉菜单，没有裸跑/基础/完整内置宏——
+ * 内置只留「默认」（ADR 0014 默认态 = 全关）；自定义预设「＋ 存」随时添加、
+ * × 单删、「清空」一键删光。点击预设按钮即切换（当前清单与哪个预设一致就高亮谁）。
+ * 同一份名单同时出现在输入框的上下文胶囊里——两处对应。
  */
 function PresetRow({
   unit,
@@ -333,7 +330,8 @@ function PresetRow({
   const [busy, setBusy] = useState(false);
   const customs = unit.contextPresets ?? [];
 
-  const ALL_OFF: ContextManifest = {
+  /** 默认预设（ADR 0014）：全关裸跑——新建与存量同一规则 */
+  const DEFAULT_MANIFEST: ContextManifest = {
     agentsMd: "off",
     soul: false,
     user: false,
@@ -342,11 +340,11 @@ function PresetRow({
     memoryStanding: false,
     skills: false,
   };
-  const presets: readonly { id: string; label: string; apply: ContextManifest }[] = [
-    { id: "bare", label: "裸跑", apply: ALL_OFF },
-    { id: "basic", label: "基础", apply: { agentsMd: "auto", soul: true, user: true, memorySemantic: true, memoryDaily: false, memoryStanding: true, skills: false } },
-    { id: "full", label: "完整", apply: { agentsMd: "auto", soul: true, user: true, memorySemantic: true, memoryDaily: true, memoryStanding: true, skills: false } },
-  ];
+  const sameManifest = (a: ContextManifest, b: ContextManifest): boolean => {
+    const keys: (keyof ContextManifest)[] = ["agentsMd", "soul", "user", "memorySemantic", "memoryDaily", "memoryStanding", "skills"];
+    return keys.every((k) => a[k] === b[k]);
+  };
+  const defaultActive = sameManifest(manifest, DEFAULT_MANIFEST);
 
   /** 自动命名：自定义1、自定义2……取第一个空缺号，不与现存重名 */
   const nextPresetName = (): string => {
@@ -376,31 +374,52 @@ function PresetRow({
   return (
     <div className="flex flex-wrap items-center gap-1.5">
       <span className="text-[10px] text-ash">预设</span>
-      <select
-        value=""
-        onChange={(e) => {
-          const hit = presets.find((p) => p.id === e.target.value);
-          if (hit !== undefined) patch(hit.apply);
-        }}
-        className="h-6 rounded-btn border border-line bg-canvas px-1.5 text-[11px] text-graphite hover:border-teal/50 focus:outline-none"
-        aria-label="内置预设"
+      <button
+        type="button"
+        disabled={busy}
+        onClick={() => void writePresets([...customs, { name: nextPresetName(), manifest }])}
+        className="rounded-btn border border-line px-2 py-0.5 text-[11px] text-graphite transition hover:border-teal/50 hover:text-ink disabled:opacity-40"
+        title="把当前注入清单存为一条自定义预设（输入框胶囊同款可切换）"
       >
-        <option value="">预设…</option>
-        {presets.map((p) => (
-          <option key={p.id} value={p.id}>{p.label}</option>
-        ))}
-      </select>
+        ＋ 存
+      </button>
+      <button
+        type="button"
+        disabled={busy || customs.length === 0}
+        onClick={() => void writePresets([])}
+        className="rounded-btn border border-line px-2 py-0.5 text-[11px] text-graphite transition hover:border-teal/50 hover:text-ink disabled:opacity-40"
+        title="清空全部自定义预设（只删预设按钮，不动当前注入清单）"
+      >
+        清空
+      </button>
+      <button
+        type="button"
+        onClick={() => patch(DEFAULT_MANIFEST)}
+        title="切换到默认清单：全部关闭（裸跑，ADR 0014 默认态）"
+        className={cn(
+          "rounded-btn border px-2 py-0.5 text-[11px] transition",
+          defaultActive
+            ? "border-teal/50 bg-teal-tint text-teal font-medium"
+            : "border-line text-graphite hover:border-teal/40 hover:text-ink",
+        )}
+      >
+        默认
+      </button>
       {customs.map((c) => (
         <span
           key={c.name}
-          className="inline-flex items-center gap-0.5 rounded-btn border border-teal/40 px-1.5 py-0.5 text-[11px] text-teal transition hover:bg-teal-tint"
+          className={cn(
+            "inline-flex items-center gap-0.5 rounded-btn border px-1.5 py-0.5 text-[11px] transition",
+            sameManifest(manifest, c.manifest)
+              ? "border-teal/50 bg-teal-tint text-teal font-medium"
+              : "border-line text-graphite hover:border-teal/40 hover:text-ink",
+          )}
         >
           <button
             type="button"
             disabled={busy}
             onClick={() => patch(c.manifest)}
-            title={`取回「${c.name}」预设快照`}
-            className="font-medium"
+            title={`切换到「${c.name}」`}
           >
             {c.name}
           </button>
@@ -416,23 +435,6 @@ function PresetRow({
           </button>
         </span>
       ))}
-      <button
-        type="button"
-        disabled={busy}
-        onClick={() => void writePresets([...customs, { name: nextPresetName(), manifest }])}
-        className="rounded-btn border border-line px-2 py-0.5 text-[11px] text-graphite transition hover:border-teal/50 hover:text-ink disabled:opacity-40"
-        title="把当前注入清单快照为一条自定义预设（输入框胶囊同款可取回）"
-      >
-        {busy ? "…" : "＋ 存"}
-      </button>
-      <button
-        type="button"
-        onClick={() => patch(ALL_OFF)}
-        className="rounded-btn border border-line px-2 py-0.5 text-[11px] text-graphite transition hover:border-teal/50 hover:text-ink"
-        title="全部关闭（含 AGENTS.md 注入）——回到裸跑"
-      >
-        清空
-      </button>
     </div>
   );
 }

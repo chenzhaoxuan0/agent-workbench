@@ -487,19 +487,31 @@ export const useWorkbench = create<WorkbenchState>((set, get) => ({
   setPermissionMode: (permissionMode) => set({ permissionMode }),
 
   patchUnitContext: async (unitId, patch) => {
-    const u = get().units.find((x) => x.id === unitId);
-    if (u === undefined) return;
-    const next: ContextManifest = { ...normalizeContextManifest(u.contextManifest), ...patch };
-    // updateUnit 自带乐观锁与回滚；这里吞掉冲突异常并提示——快捷开关的调用方
-    // （Composer 记忆选择器）没有冲突三选一的 UI 面，静默失败会让人以为切过了。
-    // 三锁全带（Sidebar guardsOf 同款）：部分更新会带着 store 缓存的 agentsMd/soulMd
-    // 正文走 putBot，只锁 revision 的话，期间 VS Code 里改过的文件会被静默覆盖。
-    try {
+    const apply = async (): Promise<void> => {
+      const u = get().units.find((x) => x.id === unitId);
+      if (u === undefined) return;
+      const next: ContextManifest = { ...normalizeContextManifest(u.contextManifest), ...patch };
+      // 三锁全带（Sidebar guardsOf 同款）：部分更新会带着 store 缓存的 agentsMd/soulMd
+      // 正文走 putBot，只锁 revision 的话，期间 VS Code 里改过的文件会被静默覆盖。
       await get().updateUnit({ ...u, contextManifest: next }, {
         ifRevision: u.revision,
         ifAgentsMdHash: u.agentsMdMeta?.hash,
         ifSoulMdHash: u.soulMdMeta?.hash,
       });
+    };
+    try {
+      try {
+        await apply();
+      } catch (err: unknown) {
+        // 冲突自愈（2026-10-23 修「注入开关未写入后卡死」）：store 的锁基线可能落后于
+        // 盘上（他端 putBot / 重开后的旧快照 / applyPutResult 不刷文件 meta）。上下文
+        // 开关是高频小写，冲突时拉一次盘上真值、用新基线重试一次——补丁只动
+        // contextManifest，不会覆盖他端对正文文件的修改。
+        const code = (err as { code?: string }).code;
+        if (code !== BOT_CONFLICT) throw err;
+        await get().reloadUnit(unitId as UnitId);
+        await apply();
+      }
     } catch (err: unknown) {
       get().pushNotice(
         "注入开关未写入",

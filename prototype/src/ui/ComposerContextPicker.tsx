@@ -32,7 +32,7 @@ import { cn } from "./cn.ts";
  * 核心设计哲学：
  * 1. 默认行为极度丝滑：首轮默认跟随 Bot 预设，续聊默认不重复注入；
  * 2. 极致的自由度与自主权：用户可在任意一轮随时开启/关闭注入，自主勾选要注入的文件；
- * 3. 快捷预设秒切（2026-10-23 与 bot 设置对应）：跟随 Bot 默认、内置宏（裸跑/基础/完整）、
+ * 3. 快捷预设秒切（2026-10-23 二次定稿，与 bot 设置对应）：跟随 Bot 默认、
  *    本 bot 的自定义预设（bot.json contextPresets 同一份名单）、清空；
  * 4. 默认「单轮生效」防污染：发送后自动复位为后续默认，亦可勾选「本会话保持」。
  */
@@ -114,14 +114,9 @@ export function ComposerContextPicker({ compact }: { compact?: boolean } = {}) {
     });
   };
 
-  // 快捷预设设置（2026-10-23 口径，与 bot 设置的预设行对应）：
-  // 跟随 Bot 默认 / 内置宏（裸跑·基础·完整）/ 本 bot 的自定义预设 / 清空。
-  // 自定义预设的增删在 bot 设置（bot.json contextPresets），这里同一份名单一键取回。
-  const builtinPresets: readonly { id: string; label: string; manifest: ContextManifest }[] = [
-    { id: "bare", label: "裸跑", manifest: { agentsMd: "off", soul: false, user: false, memorySemantic: false, memoryDaily: false, memoryStanding: false, skills: false } },
-    { id: "basic", label: "基础", manifest: { agentsMd: "auto", soul: true, user: true, memorySemantic: true, memoryDaily: false, memoryStanding: true, skills: false } },
-    { id: "full", label: "完整", manifest: { agentsMd: "auto", soul: true, user: true, memorySemantic: true, memoryDaily: true, memoryStanding: true, skills: false } },
-  ];
+  // 快捷预设设置（2026-10-23 二次定稿，与 bot 设置的预设行对应）：
+  // 跟随 Bot 默认 / 本 bot 的自定义预设 / 清空。没有内置宏下拉——默认即「跟随预设」；
+  // 自定义预设的增删在 bot 设置（bot.json contextPresets），这里同一份名单一键切换。
   const customs = unit?.contextPresets ?? [];
 
   const applyPreset = (preset: "bot_default" | "off") => {
@@ -220,7 +215,7 @@ export function ComposerContextPicker({ compact }: { compact?: boolean } = {}) {
             </button>
           </div>
 
-          {/* 快捷预设条（与 bot 设置的预设行对应）：跟随预设 / 预设宏 / 自定义 / 清空 */}
+          {/* 快捷预设条（与 bot 设置的预设行对应）：跟随预设 / 自定义 / 清空 */}
           <div className="pt-2 pb-1.5">
             <div className="text-[10px] text-ash font-medium mb-1.5 flex items-center justify-between">
               <span>快捷预设</span>
@@ -240,27 +235,12 @@ export function ComposerContextPicker({ compact }: { compact?: boolean } = {}) {
               >
                 跟随预设
               </button>
-              <select
-                value=""
-                onChange={(e) => {
-                  const hit = builtinPresets.find((p) => p.id === e.target.value);
-                  if (hit !== undefined) applyManifest(hit.manifest);
-                }}
-                title="内置预设宏（裸跑 / 基础 / 完整）"
-                className="h-[26px] rounded-lg border border-line-soft bg-canvas px-1.5 text-[11px] text-graphite hover:border-teal/40 focus:outline-none"
-                aria-label="内置预设"
-              >
-                <option value="">预设…</option>
-                {builtinPresets.map((p) => (
-                  <option key={p.id} value={p.id}>{p.label}</option>
-                ))}
-              </select>
               {customs.map((c) => (
                 <button
                   key={c.name}
                   type="button"
                   onClick={() => applyManifest(c.manifest)}
-                  title={`本轮取回「${c.name}」（bot 设置里保存的预设）`}
+                  title={`本轮切换到「${c.name}」（bot 设置里保存的预设）`}
                   className={cn(
                     "rounded-lg border px-1.5 py-1 text-[11px] transition truncate text-center",
                     manifestActive(c.manifest)
